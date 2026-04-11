@@ -40,6 +40,8 @@ __pycache__/
 *.pub
 wavis-deploy-key*
 infrastructure/environments/dev/wavis-deploy-key*
+tools/compat/machines.local.toml
+compat-results/
 
 # AI tool configs and local assistant artifacts
 .kiro/

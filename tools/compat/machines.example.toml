@@ -1,0 +1,33 @@
+# Copy this file to tools/compat/machines.local.toml and edit for your lab.
+# machines.local.toml is gitignored because it contains local network addresses
+# and private SSH key paths.
+
+[[machines]]
+name = "mac-ventura-intel"
+host = "192.168.1.42"
+user = "ci"
+ssh_key = "~/.ssh/compat_rsa"
+arch = "x86_64"
+macos = "13.6"
+notes = "MacBook Pro 2019, physical"
+tiers = ["t0", "t1", "t2", "t3"]
+
+[[machines]]
+name = "mac-bigsur-intel"
+host = "192.168.1.55"
+user = "ci"
+ssh_key = "~/.ssh/compat_rsa"
+arch = "x86_64"
+macos = "11.5.2"
+notes = "VMware Fusion VM, Intel"
+tiers = ["t0", "t1", "t2"]  # t3 skipped: SCK absent on Big Sur
+
+[[machines]]
+name = "mac-tahoe-arm"
+host = "192.168.1.10"
+user = "dev"
+ssh_key = "~/.ssh/compat_rsa"
+arch = "arm64"
+macos = "26.0"
+notes = "MacBook Pro M3, baseline reference"
+tiers = ["t0", "t1", "t2", "t3"]

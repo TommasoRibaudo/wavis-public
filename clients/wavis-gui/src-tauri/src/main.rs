@@ -334,6 +334,11 @@ fn main() {
                 if let Err(err) = tray::setup_tray(app) {
                     eprintln!("wavis: tray unavailable: {err}");
                 }
+
+                #[cfg(debug_assertions)]
+                if let Err(err) = setup_compat_probe_window(app) {
+                    eprintln!("wavis: compat probe window unavailable: {err}");
+                }
             }
             Ok(())
         })
@@ -415,6 +420,8 @@ fn main() {
             native_mic::native_mic_stop,
             native_mic::native_mic_set_denoise_enabled,
             native_mic::native_mic_set_input_device,
+            __compat_check,
+            __compat_write_result,
         ])
         .build(tauri::generate_context!())
         .expect("error while building wavis")
@@ -724,4 +731,202 @@ fn set_input_gain(gain: f32, state: tauri::State<'_, media::MediaState>) -> Resu
 #[tauri::command]
 fn is_window_visible(state: tauri::State<'_, tray::WindowVisibility>) -> bool {
     !state.hidden.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[derive(serde::Serialize)]
+struct CompatCheckResult {
+    ipc_ok: bool,
+    audio_devices: Vec<AudioDevice>,
+    store_ok: bool,
+    screen_capture_kit: CompatCapabilityStatus,
+    audio_process_tap: CompatCapabilityStatus,
+    notes: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CompatCapabilityKind {
+    AvailableByOs,
+    Skipped,
+    Unknown,
+    NotApplicable,
+}
+
+#[derive(serde::Serialize)]
+struct CompatCapabilityStatus {
+    status: CompatCapabilityKind,
+    detail: String,
+}
+
+#[cfg(debug_assertions)]
+fn setup_compat_probe_window(app: &mut tauri::App) -> Result<(), String> {
+    if std::env::var("WAVIS_COMPAT_PROBE_PATH").is_err()
+        && std::env::var("WAVIS_COMPAT_RESULT_PATH").is_err()
+    {
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "compat-probe",
+        tauri::WebviewUrl::App("compat-probe.html".into()),
+    )
+    .title("Wavis Compatibility Probe")
+    .inner_size(320.0, 200.0)
+    .decorations(false)
+    .focused(false)
+    .visible(false)
+    .build()
+    .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn __compat_check() -> Result<CompatCheckResult, String> {
+    #[cfg(not(debug_assertions))]
+    {
+        Err("__compat_check is only available in debug builds".to_string())
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let mut notes = Vec::new();
+        let audio_devices = match list_audio_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                notes.push(format!("audio enumeration failed: {err}"));
+                Vec::new()
+            }
+        };
+
+        Ok(CompatCheckResult {
+            ipc_ok: true,
+            audio_devices,
+            // The app-bundled compat probe performs the actual plugin-store
+            // round trip before writing the final result.
+            store_ok: true,
+            screen_capture_kit: compat_screen_capture_kit_status(),
+            audio_process_tap: compat_audio_process_tap_status(),
+            notes,
+        })
+    }
+}
+
+#[cfg(debug_assertions)]
+fn compat_screen_capture_kit_status() -> CompatCapabilityStatus {
+    #[cfg(target_os = "macos")]
+    {
+        match compat_macos_version() {
+            Some((major, minor, patch)) if major > 12 || (major == 12 && minor >= 3) => {
+                CompatCapabilityStatus {
+                    status: CompatCapabilityKind::AvailableByOs,
+                    detail: format!(
+                        "macOS {major}.{minor}.{patch} is within ScreenCaptureKit availability"
+                    ),
+                }
+            }
+            Some((major, minor, patch)) => CompatCapabilityStatus {
+                status: CompatCapabilityKind::Skipped,
+                detail: format!(
+                    "macOS {major}.{minor}.{patch} predates ScreenCaptureKit 12.3"
+                ),
+            },
+            None => CompatCapabilityStatus {
+                status: CompatCapabilityKind::Unknown,
+                detail: "could not read sw_vers -productVersion".to_string(),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        CompatCapabilityStatus {
+            status: CompatCapabilityKind::NotApplicable,
+            detail: "ScreenCaptureKit is macOS-only".to_string(),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn compat_audio_process_tap_status() -> CompatCapabilityStatus {
+    #[cfg(target_os = "macos")]
+    {
+        match compat_macos_version() {
+            Some((major, minor, patch)) if major > 14 || (major == 14 && minor >= 2) => {
+                CompatCapabilityStatus {
+                    status: CompatCapabilityKind::AvailableByOs,
+                    detail: format!(
+                        "macOS {major}.{minor}.{patch} is within AudioHardwareCreateProcessTap availability"
+                    ),
+                }
+            }
+            Some((major, minor, patch)) => CompatCapabilityStatus {
+                status: CompatCapabilityKind::Skipped,
+                detail: format!(
+                    "macOS {major}.{minor}.{patch} predates AudioHardwareCreateProcessTap 14.2"
+                ),
+            },
+            None => CompatCapabilityStatus {
+                status: CompatCapabilityKind::Unknown,
+                detail: "could not read sw_vers -productVersion".to_string(),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        CompatCapabilityStatus {
+            status: CompatCapabilityKind::NotApplicable,
+            detail: "AudioHardwareCreateProcessTap is macOS-only".to_string(),
+        }
+    }
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn compat_macos_version() -> Option<(isize, isize, isize)> {
+    let output = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut parts = stdout.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+#[tauri::command]
+fn __compat_write_result(result: serde_json::Value) -> Result<(), String> {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = result;
+        Err("__compat_write_result is only available in debug builds".to_string())
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let path = std::env::var("WAVIS_COMPAT_RESULT_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::temp_dir()
+                    .join("wavis-compat")
+                    .join("ipc-result.json")
+            });
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create compat result directory: {err}"))?;
+        }
+
+        let bytes = serde_json::to_vec_pretty(&result)
+            .map_err(|err| format!("failed to serialize compat result: {err}"))?;
+        std::fs::write(&path, bytes)
+            .map_err(|err| format!("failed to write compat result {}: {err}", path.display()))?;
+        Ok(())
+    }
 }

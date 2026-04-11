@@ -1,0 +1,127 @@
+name: macOS Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_path:
+        description: "Optional prebuilt Wavis.app path on the self-hosted runner"
+        required: false
+        default: ""
+      machine:
+        description: "Optional machines.local.toml machine name to run"
+        required: false
+        default: ""
+      parallel:
+        description: "Remote target parallelism"
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tier0-tier1:
+    name: Tier 0 + Tier 1 compatibility
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 60
+
+    steps:
+      - name: Require release tag dispatch
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              echo "Running compatibility workflow for $GITHUB_REF"
+              ;;
+            *)
+              echo "This workflow is manual-only and must be dispatched from a release tag."
+              echo "Current ref: $GITHUB_REF"
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          # Preserve tools/compat/machines.local.toml on the self-hosted runner.
+          clean: false
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install GUI dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: clients/wavis-gui
+
+      - name: Build macOS app
+        if: ${{ inputs.app_path == '' }}
+        run: npx tauri build
+        working-directory: clients/wavis-gui
+
+      - name: Resolve app path
+        id: app
+        env:
+          INPUT_APP_PATH: ${{ inputs.app_path }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_APP_PATH" ]; then
+            APP_PATH="$INPUT_APP_PATH"
+          else
+            APP_ROOT="clients/wavis-gui/src-tauri/target/release/bundle/macos"
+            if [ -d "$APP_ROOT" ]; then
+              APP_PATH="$(find "$APP_ROOT" -maxdepth 1 -name 'Wavis.app' -print -quit)"
+            else
+              APP_PATH=""
+            fi
+          fi
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Could not find Wavis.app. Provide workflow input app_path or check the Tauri build output."
+            exit 1
+          fi
+
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "Using app: $APP_PATH"
+
+      - name: Check machine inventory
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/compat/machines.local.toml ]; then
+            echo "Missing tools/compat/machines.local.toml on the self-hosted runner."
+            echo "Create it from tools/compat/machines.example.toml and configure SSH targets."
+            exit 1
+          fi
+
+      - name: Run Tier 0 + Tier 1 compatibility
+        env:
+          APP_PATH: ${{ steps.app.outputs.app_path }}
+          MACHINE: ${{ inputs.machine }}
+          PARALLEL: ${{ inputs.parallel }}
+        run: |
+          set -euo pipefail
+          args=(
+            --app "$APP_PATH"
+            --config tools/compat/machines.local.toml
+            --tiers t0,t1
+            --parallel "$PARALLEL"
+          )
+          if [ -n "$MACHINE" ]; then
+            args+=(--machine "$MACHINE")
+          fi
+          python3 tools/compat/compat-run.py "${args[@]}"
+
+      - name: Upload compatibility results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-compat-results
+          path: compat-results/
+          if-no-files-found: warn
