@@ -15,20 +15,6 @@ clients/wavis-gui/src-tauri/gen/
 clients/wavis-gui/src-tauri/target/
 infrastructure/wavis-backend-dev-jey.pem
 
-# Misc
-.DS_Store
-.nvimlog
-body.json
-bug-reports/
-review-output.txt
-tasks.md
-multi-room-voice-plan.md
-skills/
-node_modules/
-.pytest_cache/
-SECURITY_CHECKLIST.md
-pre-dev-summary.md
-
 # Hypothesis test cache
 .hypothesis/
 
@@ -43,24 +29,12 @@ infrastructure/environments/dev/wavis-deploy-key*
 tools/compat/machines.local.toml
 compat-results/
 
-# AI tool configs and local assistant artifacts
-.kiro/
-*.kiro
-*.kiro.*
+# AI tool configs (keep local only)
 .gemini/
 .claude/
-.codex
-.codex/
 CLAUDE.md
 GEMINI.md
 AGENTS.md
-CODEX.md
-codex-*.txt
-pre-dev-summary.md
-LINUX_AUDIO_SHARE_FIX_PLAN.md
-doc/
-peerA.log
-peerA.logclea
 /target-clippy-docsrs
 /target-clippy-repro
 /target-clippy-workspace
@@ -70,8 +44,4 @@ clippy-workspace.log
 .terraform/
 *.tfstate
 *.tfstate.*
-clients/wavis-gui/LINUX_AUDIO_FIX.md
-multi-room-voice-plan.md
-tasks.md
-clients/shared/SECURITY.md
-deploy/MIGRATION-RUNBOOK.md
+Wavis.zip
