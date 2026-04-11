@@ -1935,7 +1935,7 @@ fn audio_share_start_macos(
         patch: version_raw.patch_version,
     };
     if !version.supports_screen_capture_kit() {
-        return Err("audio sharing requires macOS 12.3 or later".to_string());
+        return Err("System audio sharing requires macOS 12.3 or later. Your Mac is running an older version and this feature is not available.".to_string());
     }
 
     // ── macOS 14.2+: Core Audio process tap ────────────────────────
