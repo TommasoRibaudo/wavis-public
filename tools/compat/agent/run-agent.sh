@@ -7,6 +7,7 @@ MACHINE_NAME=""
 TIERS="t1"
 TIMEOUT_SECS="120"
 TIER_RESULTS=""
+DEBUG_BUILD=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
     --machine) MACHINE_NAME="$2"; shift 2 ;;
     --tiers) TIERS="$2"; shift 2 ;;
     --timeout) TIMEOUT_SECS="$2"; shift 2 ;;
+    --debug) DEBUG_BUILD=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -61,6 +63,31 @@ json_field_status() {
   ' "$file"
 }
 
+# Parse auth_value for a TCC service from sqlite3 pipe-delimited output.
+# Depends on sqlite3 default "list" output mode (pipe-delimited).
+# Format: kTCCServiceMicrophone|com.wavis.desktop|2
+tcc_auth_value() {
+  local file="$1" service="$2"
+  awk -F'|' -v service="$service" '
+    $1 == service { value=$3 }
+    END {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value != "") print value
+    }
+  ' "$file"
+}
+
+json_array_length() {
+  local file="$1" field="$2"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys; value = json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2]); print(len(value) if isinstance(value, list) else -1)' "$file" "$field" 2>/dev/null || printf '%s\n' "-1"
+  elif command -v ruby >/dev/null 2>&1; then
+    ruby -rjson -e 'value = JSON.parse(File.read(ARGV[0]))[ARGV[1]]; puts(value.is_a?(Array) ? value.length : -1)' "$file" "$field" 2>/dev/null || printf '%s\n' "-1"
+  else
+    printf '%s\n' "-1"
+  fi
+}
+
 plist_value() {
   local key="$1"
   local fallback="$2"
@@ -98,23 +125,29 @@ EOF
 }
 
 write_machine_info() {
-  local sw_vers_value uname_value model_value arch_value
+  local sw_vers_value uname_value model_value arch_value proc_translated_value
   sw_vers_value="$(sw_vers -productVersion 2>/dev/null || true)"
   uname_value="$(uname -a 2>/dev/null || true)"
   model_value="$(sysctl -n hw.model 2>/dev/null || true)"
   arch_value="$(uname -m 2>/dev/null || true)"
+  proc_translated_value="$(sysctl -n sysctl.proc_translated 2>/dev/null || true)"
+  case "$proc_translated_value" in
+    1) ;;
+    *) proc_translated_value=0 ;;
+  esac
   cat > "$OUT_DIR/machine-info.json" <<JSON
 {
   "macos": "$(json_escape "$sw_vers_value")",
   "uname": "$(json_escape "$uname_value")",
   "model": "$(json_escape "$model_value")",
-  "arch": "$(json_escape "$arch_value")"
+  "arch": "$(json_escape "$arch_value")",
+  "proc_translated": $proc_translated_value
 }
 JSON
 }
 
 run_t1() {
-  local app_name executable bundle_id marker launch_exit running pids crash_count pass notes_json failures_json
+  local app_name executable bundle_id marker launch_exit running pids crash_count log_error_count pass notes_json failures_json
   app_name="$(plist_value CFBundleName "$(basename "$APP_PATH" .app)")"
   executable="$(plist_value CFBundleExecutable "$app_name")"
   bundle_id="$(plist_value CFBundleIdentifier "")"
@@ -122,12 +155,13 @@ run_t1() {
   launch_exit=0
   running=false
   crash_count=0
+  log_error_count=0
   : > "$OUT_DIR/t1-notes.txt"
   : > "$OUT_DIR/t1-failures.txt"
   touch "$marker"
 
   if [ ! -d "$APP_PATH" ]; then
-    printf 'app bundle missing on remote target: %s\n' "$APP_PATH" >> "$OUT_DIR/t1-failures.txt"
+    printf 'APP_BUNDLE_MISSING: app bundle missing on remote target: %s\n' "$APP_PATH" >> "$OUT_DIR/t1-failures.txt"
   else
     open -n "$APP_PATH" > "$OUT_DIR/launch-open.out" 2> "$OUT_DIR/launch-open.err" || launch_exit=$?
     sleep 10
@@ -148,17 +182,31 @@ run_t1() {
     fi
     crash_count="$(find "$OUT_DIR/crash-reports" -type f 2>/dev/null | wc -l | tr -d ' ')"
 
-    log show --style syslog --predicate "process == \"$executable\" OR process == \"$app_name\"" --last 30s \
+    log show --style syslog --predicate "process == \"$executable\" OR process == \"$app_name\" OR subsystem CONTAINS \"coreaudio\" OR subsystem CONTAINS \"ScreenCapture\"" --last 30s \
       > "$OUT_DIR/system.log" 2> "$OUT_DIR/system-log.err" || true
+    log_error_count="$(awk -v executable="$executable" -v app_name="$app_name" '
+      # Match error/fault lines where the process field (before the first [:])
+      # matches the app executable or name. log show --style syslog format:
+      # timestamp thread type activity pid ttl process[pid]: message
+      (/<Error>/ || /<Fault>/) {
+        # Extract the process field: word before the first [pid] bracket
+        match($0, /[[:space:]]([^[:space:]]+)\[[0-9]+\]/, m)
+        if (m[1] == executable || m[1] == app_name) count++
+      }
+      END { print count + 0 }
+    ' "$OUT_DIR/system.log")"
 
     if [ "$launch_exit" -ne 0 ]; then
-      printf 'open failed with exit code %s\n' "$launch_exit" >> "$OUT_DIR/t1-failures.txt"
+      printf 'LAUNCH_OPEN_FAILED: open failed with exit code %s\n' "$launch_exit" >> "$OUT_DIR/t1-failures.txt"
     fi
     if [ "$running" != "true" ]; then
-      printf 'app process was not running after launch wait\n' >> "$OUT_DIR/t1-failures.txt"
+      printf 'LAUNCH_NOT_RUNNING: app process was not running after launch wait\n' >> "$OUT_DIR/t1-failures.txt"
     fi
     if [ "$crash_count" -gt 0 ]; then
-      printf 'captured %s crash report(s)\n' "$crash_count" >> "$OUT_DIR/t1-failures.txt"
+      printf 'LAUNCH_CRASH: captured %s crash report(s)\n' "$crash_count" >> "$OUT_DIR/t1-failures.txt"
+    fi
+    if [ "$log_error_count" -gt 0 ]; then
+      printf 'system.log contained %s app error/fault line(s)\n' "$log_error_count" >> "$OUT_DIR/t1-notes.txt"
     fi
 
     if [ "$running" = "true" ]; then
@@ -184,6 +232,7 @@ run_t1() {
       \"launch_exit_code\": $launch_exit,
       \"process_running_after_10s\": $running,
       \"crash_report_count\": $crash_count,
+      \"log_error_count\": $log_error_count,
       \"notes\": $notes_json,
       \"failures\": $failures_json,
       \"artifacts\": [\"machine-info.json\", \"launch-open.out\", \"launch-open.err\", \"system.log\", \"crash-reports/\"]
@@ -197,6 +246,16 @@ run_t2() {
   # may differ from a real user launch via Finder/Dock. T1 uses `open` for
   # a realistic launch-crash check; T2/T3 trade that for IPC testability.
   local app_name executable bundle_id result_path probe_path pid wait_count pass notes_json failures_json
+  if [ "$DEBUG_BUILD" != "true" ]; then
+    append_tier_result "\"t2\": {
+      \"pass\": true,
+      \"notes\": [\"skipped: t2/t3 require debug builds (pass --debug)\"],
+      \"failures\": [],
+      \"artifacts\": []
+    }"
+    return
+  fi
+
   app_name="$(plist_value CFBundleName "$(basename "$APP_PATH" .app)")"
   executable="$(plist_value CFBundleExecutable "$app_name")"
   bundle_id="$(plist_value CFBundleIdentifier "")"
@@ -210,7 +269,7 @@ run_t2() {
   printf '<!doctype html><title>Wavis compat probe marker</title>\n' > "$probe_path"
 
   if [ ! -x "$APP_PATH/Contents/MacOS/$executable" ]; then
-    printf 'bundle executable missing or not executable: %s\n' "$APP_PATH/Contents/MacOS/$executable" >> "$OUT_DIR/t2-failures.txt"
+    printf 'BINARY_MISSING: bundle executable missing or not executable: %s\n' "$APP_PATH/Contents/MacOS/$executable" >> "$OUT_DIR/t2-failures.txt"
   else
     WAVIS_COMPAT_PROBE_PATH="$probe_path" \
     WAVIS_COMPAT_RESULT_PATH="$result_path" \
@@ -229,11 +288,11 @@ run_t2() {
     done
 
     if [ ! -s "$result_path" ]; then
-      printf 'ipc-result.json was not written within 15s\n' >> "$OUT_DIR/t2-failures.txt"
+      printf 'IPC_TIMEOUT: ipc-result.json was not written within 15s\n' >> "$OUT_DIR/t2-failures.txt"
     elif ! grep -q '"ipc_ok"[[:space:]]*:[[:space:]]*true' "$result_path"; then
-      printf 'ipc_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t2-failures.txt"
+      printf 'IPC_FAILED: ipc_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t2-failures.txt"
     elif ! grep -q '"store_ok"[[:space:]]*:[[:space:]]*true' "$result_path"; then
-      printf 'store_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t2-failures.txt"
+      printf 'STORE_FAILED: store_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t2-failures.txt"
     fi
 
     log show --style syslog --predicate "process == \"$executable\" OR process == \"$app_name\" OR subsystem == \"com.wavis.desktop\"" --last 30s \
@@ -264,6 +323,18 @@ run_t2() {
 
 run_t3() {
   local app_name executable bundle_id result_path probe_path pid wait_count pass notes_json failures_json tcc_db
+  local mic_auth_value screen_auth_value mic_tcc_granted screen_tcc_granted audio_devices_found
+  local virtual_audio_driver_found
+  if [ "$DEBUG_BUILD" != "true" ]; then
+    append_tier_result "\"t3\": {
+      \"pass\": true,
+      \"notes\": [\"skipped: t2/t3 require debug builds (pass --debug)\"],
+      \"failures\": [],
+      \"artifacts\": []
+    }"
+    return
+  fi
+
   app_name="$(plist_value CFBundleName "$(basename "$APP_PATH" .app)")"
   executable="$(plist_value CFBundleExecutable "$app_name")"
   bundle_id="$(plist_value CFBundleIdentifier "com.wavis.desktop")"
@@ -271,6 +342,10 @@ run_t3() {
   probe_path="$OUT_DIR/compat-probe.html"
   wait_count=0
   pass=false
+  mic_tcc_granted=false
+  screen_tcc_granted=false
+  audio_devices_found=-1
+  virtual_audio_driver_found=null
   : > "$OUT_DIR/t3-notes.txt"
   : > "$OUT_DIR/t3-failures.txt"
   rm -f "$result_path"
@@ -283,9 +358,17 @@ run_t3() {
   else
     printf 'sqlite3 unavailable or TCC.db not readable at %s\n' "$tcc_db" > "$OUT_DIR/tcc-dump.txt"
   fi
+  mic_auth_value="$(tcc_auth_value "$OUT_DIR/tcc-dump.txt" "kTCCServiceMicrophone")"
+  screen_auth_value="$(tcc_auth_value "$OUT_DIR/tcc-dump.txt" "kTCCServiceScreenCapture")"
+  if [ "$mic_auth_value" = "2" ]; then
+    mic_tcc_granted=true
+  fi
+  if [ "$screen_auth_value" = "2" ]; then
+    screen_tcc_granted=true
+  fi
 
   if [ ! -x "$APP_PATH/Contents/MacOS/$executable" ]; then
-    printf 'bundle executable missing or not executable: %s\n' "$APP_PATH/Contents/MacOS/$executable" >> "$OUT_DIR/t3-failures.txt"
+    printf 'BINARY_MISSING: bundle executable missing or not executable: %s\n' "$APP_PATH/Contents/MacOS/$executable" >> "$OUT_DIR/t3-failures.txt"
   else
     WAVIS_COMPAT_PROBE_PATH="$probe_path" \
     WAVIS_COMPAT_RESULT_PATH="$result_path" \
@@ -304,16 +387,42 @@ run_t3() {
     done
 
     if [ ! -s "$result_path" ]; then
-      printf 'ipc-result.json was not written within 15s\n' >> "$OUT_DIR/t3-failures.txt"
+      printf 'IPC_TIMEOUT: ipc-result.json was not written within 15s\n' >> "$OUT_DIR/t3-failures.txt"
     elif ! grep -q '"ipc_ok"[[:space:]]*:[[:space:]]*true' "$result_path"; then
-      printf 'ipc_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t3-failures.txt"
+      printf 'IPC_FAILED: ipc_ok was not true in ipc-result.json\n' >> "$OUT_DIR/t3-failures.txt"
+    fi
+
+    if [ -s "$result_path" ]; then
+      audio_devices_found="$(json_array_length "$result_path" "audio_devices")"
+      if [ "$audio_devices_found" -lt 0 ]; then
+        printf 'could not parse audio_devices length from ipc-result.json\n' >> "$OUT_DIR/t3-notes.txt"
+      elif [ "$audio_devices_found" -eq 0 ] && [ "$mic_tcc_granted" = "true" ]; then
+        printf 'AUDIO_DEVICES_EMPTY: audio_devices was empty while microphone TCC is granted\n' >> "$OUT_DIR/t3-failures.txt"
+      fi
+    fi
+
+    if [ -s "$result_path" ] && macos_before 12 3; then
+      local vad_status
+      vad_status="$(json_field_status "$result_path" "virtual_audio_driver")"
+      case "$vad_status" in
+        available_by_os)
+          virtual_audio_driver_found=true
+          ;;
+        skipped)
+          virtual_audio_driver_found=false
+          printf 'virtual audio driver not found on pre-12.3 macOS; system audio capture requires BlackHole or Wavis Audio Tap\n' >> "$OUT_DIR/t3-notes.txt"
+          ;;
+        *)
+          printf 'could not parse virtual_audio_driver status from ipc-result.json on pre-12.3 macOS: %s\n' "$vad_status" >> "$OUT_DIR/t3-notes.txt"
+          ;;
+      esac
     fi
 
     if [ -s "$result_path" ] && macos_before 12 3; then
       local sck_status
       sck_status="$(json_field_status "$result_path" "screen_capture_kit")"
       if [ "$sck_status" != "skipped" ]; then
-        printf 'ScreenCaptureKit status was "%s" (expected "skipped") on pre-12.3 macOS\n' "$sck_status" >> "$OUT_DIR/t3-failures.txt"
+        printf 'SCK_VERSION_WRONG: ScreenCaptureKit status was "%s" (expected "skipped") on pre-12.3 macOS\n' "$sck_status" >> "$OUT_DIR/t3-failures.txt"
       fi
     fi
 
@@ -321,7 +430,7 @@ run_t3() {
       local tap_status
       tap_status="$(json_field_status "$result_path" "audio_process_tap")"
       if [ "$tap_status" != "skipped" ]; then
-        printf 'AudioHardwareCreateProcessTap status was "%s" (expected "skipped") on pre-14.2 macOS\n' "$tap_status" >> "$OUT_DIR/t3-failures.txt"
+        printf 'TAP_VERSION_WRONG: AudioHardwareCreateProcessTap status was "%s" (expected "skipped") on pre-14.2 macOS\n' "$tap_status" >> "$OUT_DIR/t3-failures.txt"
       fi
     fi
 
@@ -345,6 +454,10 @@ run_t3() {
 
   append_tier_result "\"t3\": {
       \"pass\": $pass,
+      \"audio_devices_found\": $audio_devices_found,
+      \"mic_tcc_granted\": $mic_tcc_granted,
+      \"screen_tcc_granted\": $screen_tcc_granted,
+      \"virtual_audio_driver_found\": $virtual_audio_driver_found,
       \"notes\": $notes_json,
       \"failures\": $failures_json,
       \"artifacts\": [\"ipc-result.json\", \"t3-app.out\", \"t3-app.err\", \"t3-system.log\", \"tcc-dump.txt\"]

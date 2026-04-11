@@ -1,9 +1,14 @@
 {
-    "folders": [
-        {
-            "path": "."
-        }
-    ],
-    "settings": {
-    }
+	"folders": [
+		{
+			"name": "Wavis Project",
+			"path": "."
+		}
+	],
+	"settings": {
+		"terminal.integrated.tabs.enabled": true,
+		"terminal.integrated.splitCwd": "workspaceRoot",
+		"terminal.integrated.defaultLocation": "editor",
+		"workbench.startupEditor": "none"
+	}
 }

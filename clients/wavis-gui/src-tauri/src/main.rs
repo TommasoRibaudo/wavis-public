@@ -740,6 +740,7 @@ struct CompatCheckResult {
     store_ok: bool,
     screen_capture_kit: CompatCapabilityStatus,
     audio_process_tap: CompatCapabilityStatus,
+    virtual_audio_driver: CompatCapabilityStatus,
     notes: Vec<String>,
 }
 
@@ -808,8 +809,45 @@ fn __compat_check() -> Result<CompatCheckResult, String> {
             store_ok: true,
             screen_capture_kit: compat_screen_capture_kit_status(),
             audio_process_tap: compat_audio_process_tap_status(),
+            virtual_audio_driver: compat_virtual_audio_driver_status(),
             notes,
         })
+    }
+}
+
+#[cfg(debug_assertions)]
+fn compat_virtual_audio_driver_status() -> CompatCapabilityStatus {
+    #[cfg(target_os = "macos")]
+    {
+        match compat_macos_version() {
+            Some((major, minor, _patch)) if major < 12 || (major == 12 && minor < 3) => {
+                let found = audio_capture::check_audio_driver();
+                CompatCapabilityStatus {
+                    status: if found {
+                        CompatCapabilityKind::AvailableByOs
+                    } else {
+                        CompatCapabilityKind::Skipped
+                    },
+                    detail: if found {
+                        "virtual audio loopback driver detected".to_string()
+                    } else {
+                        "no virtual audio loopback driver found; system audio capture requires BlackHole or Wavis Audio Tap".to_string()
+                    },
+                }
+            }
+            _ => CompatCapabilityStatus {
+                status: CompatCapabilityKind::NotApplicable,
+                detail: "macOS >= 12.3 uses ScreenCaptureKit; virtual audio driver not required".to_string(),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        CompatCapabilityStatus {
+            status: CompatCapabilityKind::NotApplicable,
+            detail: "virtual audio driver check is macOS-only".to_string(),
+        }
     }
 }
 
