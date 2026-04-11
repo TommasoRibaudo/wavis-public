@@ -1,3 +1,9 @@
 {
-  "bundle": {}
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Santiago Alfonso Pineda (9459534V77)",
+      "minimumSystemVersion": "10.15",
+      "entitlements": "Entitlements.plist"
+    }
+  }
 }
