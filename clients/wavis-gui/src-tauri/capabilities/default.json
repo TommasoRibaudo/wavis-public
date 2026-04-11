@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for all windows (production)",
-  "windows": ["main", "screen-share-*", "share-picker", "share-indicator", "watch-all", "diagnostics"],
+  "windows": ["main", "screen-share-*", "share-picker", "share-indicator", "watch-all", "diagnostics", "compat-probe"],
   "permissions": [
     "core:default",
     "core:window:default",
