@@ -122,7 +122,7 @@ locals {
 resource "aws_security_group" "mac_compat" {
   count       = local.any_enabled ? 1 : 0
   name_prefix = "${local.project}-mac-compat-"
-  description = "macOS compat test hosts — SSH from controller IPs only"
+  description = "macOS compat test hosts - SSH from controller IPs only"
   vpc_id      = data.aws_subnet.existing.vpc_id
 
   tags = merge(local.tags, { Name = "${local.project}-mac-compat-sg-${local.env}" })
