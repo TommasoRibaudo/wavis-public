@@ -18,6 +18,7 @@ type CompatCheckResult = {
   store_ok: boolean;
   screen_capture_kit?: CompatCapabilityStatus;
   audio_process_tap?: CompatCapabilityStatus;
+  virtual_audio_driver?: CompatCapabilityStatus;
   notes: string[];
 };
 

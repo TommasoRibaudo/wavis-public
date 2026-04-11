@@ -163,6 +163,53 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+
+    // ─── LLM Terminal Launchers ───────────────────────────────
+    {
+      "label": "Launch LLM Terminals",
+      "dependsOn": ["Claude", "Codex", "Gemini"],
+      "dependsOrder": "parallel",
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Claude",
+      "type": "shell",
+      "command": "claude",
+      "isBackground": true,
+      "presentation": {
+        "group": "llm-terminals",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Codex",
+      "type": "shell",
+      "command": "codex",
+      "isBackground": true,
+      "presentation": {
+        "group": "llm-terminals",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gemini",
+      "type": "shell",
+      "command": "gemini",
+      "isBackground": true,
+      "presentation": {
+        "group": "llm-terminals",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": []
     }
   ]
 }
