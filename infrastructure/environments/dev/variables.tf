@@ -176,3 +176,92 @@ variable "rds_max_connections_threshold" {
   type        = number
   default     = 90
 }
+
+# ---------- macOS Compatibility Testing ----------
+
+variable "enable_mac_compat_intel" {
+  description = <<-EOT
+    Allocate one mac1.metal Dedicated Host for Intel macOS compatibility testing.
+    Runs either macOS 13 Ventura or macOS 11 Big Sur (set by mac_intel_target_macos).
+    Swapping between the two costs nothing extra — the same host keeps billing.
+    Off by default. ~$1.08/hr, 24-hour minimum (~$26/session).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "enable_mac_compat_arm" {
+  description = <<-EOT
+    Allocate one mac2.metal Dedicated Host for ARM macOS compatibility testing.
+    Off by default. ~$0.65/hr, 24-hour minimum (~$16/session).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "mac_intel_target_macos" {
+  description = <<-EOT
+    Which macOS version to run on the single Intel Dedicated Host.
+    "ventura" → macOS 13.x (full tier suite: t0-t3)
+    "bigsur"  → macOS 11.x (t0-t2 only; no ScreenCaptureKit)
+    Change this value and re-apply to swap the instance on the same host.
+    The host keeps billing continuously — you pay the 24-hour minimum once
+    regardless of how many swaps you do within that window.
+  EOT
+  type    = string
+  default = "ventura"
+  validation {
+    condition     = contains(["ventura", "bigsur"], var.mac_intel_target_macos)
+    error_message = "mac_intel_target_macos must be \"ventura\" or \"bigsur\"."
+  }
+}
+
+variable "mac_compat_az" {
+  description = <<-EOT
+    Availability zone for Mac Dedicated Hosts.
+    The mac_compat_subnet_id must be in this same AZ.
+    EC2 Mac instances are not available in every AZ — check availability with:
+      aws ec2 describe-instance-type-offerings \
+        --location-type availability-zone \
+        --filters Name=instance-type,Values=mac1.metal \
+        --region us-east-2 --output table
+  EOT
+  type        = string
+  default     = "us-east-2a"
+}
+
+variable "mac_compat_subnet_id" {
+  description = <<-EOT
+    Subnet for Mac compat instances (must be in mac_compat_az).
+    Leave empty to reuse the existing subnet_id — only works if that subnet is
+    already in mac_compat_az.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "mac_arm_ami_name_filter" {
+  description = <<-EOT
+    AMI name filter for the ARM mac2.metal instance. Used when mac_arm_ami_id is
+    empty. AWS publishes macOS AMIs as "amzn-ec2-macos-<version>.*".
+    Default targets macOS 26 (Tahoe). Fall back to "amzn-ec2-macos-15.*" (Sequoia)
+    if Tahoe is not yet available as an AWS AMI in your region.
+  EOT
+  type        = string
+  default     = "amzn-ec2-macos-26.*"
+}
+
+variable "mac_arm_ami_id" {
+  description = <<-EOT
+    Explicit AMI ID for the ARM mac2.metal instance. Overrides mac_arm_ami_name_filter
+    when set. Use this when the desired macOS version is not yet indexed by the data
+    source, or to pin to a specific AMI snapshot.
+    Find available macOS AMIs:
+      aws ec2 describe-images --owners amazon \
+        --filters "Name=name,Values=amzn-ec2-macos-*" \
+        --query 'sort_by(Images,&CreationDate)[-10:].{Name:Name,ID:ImageId,Arch:Architecture}' \
+        --region us-east-2 --output table
+  EOT
+  type        = string
+  default     = ""
+}
