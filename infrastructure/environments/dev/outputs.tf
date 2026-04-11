@@ -141,6 +141,74 @@ output "rds_connections_alarm_arn" {
   value       = var.enable_rds ? aws_cloudwatch_metric_alarm.rds_connections[0].arn : null
 }
 
+# ---------- macOS Compatibility Testing ----------
+
+output "mac_compat_intel_enabled" {
+  description = "Whether the Intel Mac Dedicated Host is currently allocated"
+  value       = var.enable_mac_compat_intel
+}
+
+output "mac_compat_arm_enabled" {
+  description = "Whether the ARM Mac Dedicated Host is currently allocated"
+  value       = var.enable_mac_compat_arm
+}
+
+output "mac_intel_target_macos" {
+  description = "Which macOS the Intel instance is currently running (ventura or bigsur)"
+  value       = var.enable_mac_compat_intel ? var.mac_intel_target_macos : null
+}
+
+output "mac_compat_intel_instance_id" {
+  description = "Instance ID of the Intel compat instance (ventura or bigsur)"
+  value       = var.enable_mac_compat_intel ? aws_instance.mac_compat_intel[0].id : null
+}
+
+output "mac_compat_arm_instance_id" {
+  description = "Instance ID of the ARM mac2.metal compat instance"
+  value       = var.enable_mac_compat_arm ? aws_instance.mac_compat_arm[0].id : null
+}
+
+output "mac_compat_intel_public_ip" {
+  description = "Public IP of the Intel compat instance"
+  value       = var.enable_mac_compat_intel ? aws_instance.mac_compat_intel[0].public_ip : null
+}
+
+output "mac_compat_arm_public_ip" {
+  description = "Public IP of the ARM mac2.metal compat instance"
+  value       = var.enable_mac_compat_arm ? aws_instance.mac_compat_arm[0].public_ip : null
+}
+
+output "mac_compat_intel_ami" {
+  description = "AMI name used by the current Intel instance"
+  value = (
+    var.enable_mac_compat_intel
+    ? (var.mac_intel_target_macos == "ventura"
+      ? data.aws_ami.mac_ventura[0].name
+      : data.aws_ami.mac_bigsur[0].name)
+    : null
+  )
+}
+
+output "mac_compat_arm_ami" {
+  description = "AMI used for the ARM instance"
+  value       = var.enable_mac_compat_arm ? local.mac_arm_ami_resolved : null
+}
+
+output "mac_compat_ssh_key_file" {
+  description = "Path to the SSH private key for Mac compat instances (relative to repo root)"
+  value       = "infrastructure/wavis-backend-dev-jey.pem"
+}
+
+output "mac_compat_ssh_user" {
+  description = "SSH user for AWS macOS AMIs"
+  value       = "ec2-user"
+}
+
+output "mac_compat_gen_command" {
+  description = "Command to regenerate machines.local.toml from current Terraform outputs"
+  value       = "python tools/compat/gen-machines-local.py --tf-dir infrastructure/environments/dev"
+}
+
 # ---------- LiveKit (Separate Instance) ----------
 
 output "livekit_instance_id" {
