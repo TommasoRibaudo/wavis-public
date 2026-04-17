@@ -1,0 +1,38 @@
+environment_name               = "dev"
+region = "us-east-2"
+
+vpc_cidr = "10.40.0.0/16"
+
+public_subnet_cidrs      = ["10.40.0.0/24", "10.40.1.0/24"]
+private_app_subnet_cidrs = ["10.40.10.0/24", "10.40.11.0/24"]
+private_data_subnet_cidrs = ["10.40.20.0/24", "10.40.21.0/24"]
+
+rds_instance_class        = "db.t4g.small"
+rds_allocated_storage     = 20
+rds_max_allocated_storage = 100
+rds_backup_retention      = 14
+rds_master_username       = "wavis"
+rds_db_name               = "wavis"
+rds_multi_az              = false
+
+alert_email                    = ""
+backend_enable_https           = true
+route53_hosted_zone_id         = "Z1234567890EXAMPLE"
+backend_public_hostname        = "api.wavis.app"
+backend_certificate_arn        = ""
+backend_task_cpu               = 512
+backend_task_memory            = 1024
+backend_desired_count          = 1
+backend_autoscaling_enabled    = false
+backend_autoscaling_min_capacity = 1
+backend_autoscaling_max_capacity = 2
+backend_memory_alarm_threshold = 85
+backend_target_5xx_alarm_threshold = 5
+backend_image_tag              = "latest"
+livekit_public_hostname        = "livekit.wavis.app"
+create_livekit_instance        = true
+existing_livekit_instance_id   = ""
+livekit_ami_id                 = "ami-051de6a4e7ae45f77"
+livekit_instance_type          = "c7a.large"
+cloudfront_5xx_error_rate_alarm_threshold = 1
+rds_connections_alarm_threshold            = 40

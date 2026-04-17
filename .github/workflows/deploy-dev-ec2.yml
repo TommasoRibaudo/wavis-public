@@ -1,0 +1,272 @@
+name: Deploy Dev ECS
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-2
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: wavis-dev-backend
+  ECS_SERVICE: wavis-dev-backend
+  CONTAINER_NAME: wavis-backend
+  HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+
+jobs:
+  # ── Stage 1: Pre-deploy CI gate ─────────────────────────────────────────
+  # Uncomment when runner minutes allow. While commented, rely on
+  # workspace-ci.yml running in parallel (enforce via branch protection).
+  #
+  # ci-gate:
+  #   name: CI gate (pre-deploy tests)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Remove Tauri GUI crate from workspace
+  #       run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+  #     - name: Install system dependencies
+  #       run: |
+  #         sudo apt-get update -qq
+  #         sudo apt-get install -y --no-install-recommends \
+  #           build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         shared-key: rust-${{ runner.os }}
+  #         save-if: 'false'
+  #     - name: Run tests
+  #       run: cargo test -p wavis-backend -p shared -p wavis-client-shared
+
+  # ── Stage 2: Deploy ──────────────────────────────────────────────────────
+  deploy:
+    # needs: [ci-gate]   # uncomment when ci-gate is re-enabled
+    runs-on: ubuntu-latest
+    outputs:
+      previous_taskdef: ${{ steps.capture_taskdef.outputs.arn }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mask deployment values
+        run: |
+          set -euo pipefail
+          for name in AWS_ROLE_ARN ECR_REPOSITORY HEALTHCHECK_URL; do
+            if [ -n "${!name-}" ]; then
+              echo "::add-mask::${!name}"
+            fi
+          done
+
+      - name: Validate deployment variables
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in AWS_ROLE_ARN ECR_REPOSITORY HEALTHCHECK_URL; do
+            if [ -z "${!name-}" ]; then
+              echo "::error::$name repository variable is required for deploy-dev-ec2.yml"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Capture current task definition ARN
+        id: capture_taskdef
+        run: |
+          ARN=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        id: image
+        env:
+          IMAGE_SHA_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build -f wavis-backend/Dockerfile -t "$ECR_REPOSITORY:$IMAGE_SHA_TAG" .
+          docker push "$ECR_REPOSITORY:$IMAGE_SHA_TAG"
+          echo "image=$ECR_REPOSITORY:$IMAGE_SHA_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Render ECS task definition
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_SERVICE" \
+            --query taskDefinition > task-definition.json
+
+          jq --arg IMAGE "$IMAGE_URI" --arg NAME "$CONTAINER_NAME" '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            | .containerDefinitions = (
+                .containerDefinitions
+                | map(if .name == $NAME then .image = $IMAGE else . end)
+              )
+          ' task-definition.json > task-definition-rendered.json
+
+      - name: Register ECS task definition
+        id: register
+        run: |
+          set -euo pipefail
+          TASKDEF_ARN=$(
+            aws ecs register-task-definition \
+              --cli-input-json file://task-definition-rendered.json \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )
+          echo "taskdef_arn=$TASKDEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.register.outputs.taskdef_arn }}" \
+            --query 'service.serviceArn' \
+            --output text > /dev/null
+
+      - name: Wait for ECS stability
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 "$HEALTHCHECK_URL"
+
+  # ── Stage 3: Post-deploy smoke gate ─────────────────────────────────────
+  # Runs against the real CloudFront URL — tests the full client-visible path,
+  # not just the ECS health check endpoint.
+  smoke:
+    name: Smoke tests (live backend)
+    needs: [deploy]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mask smoke values
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+          WS_URL: ${{ vars.WS_URL }}
+          LIVEKIT_HEALTH_URL: ${{ vars.LIVEKIT_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          for name in BACKEND_URL WS_URL LIVEKIT_HEALTH_URL; do
+            if [ -n "${!name-}" ]; then
+              echo "::add-mask::${!name}"
+            fi
+          done
+
+      - name: Validate smoke variables
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+          WS_URL: ${{ vars.WS_URL }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in BACKEND_URL WS_URL; do
+            if [ -z "${!name-}" ]; then
+              echo "::error::$name repository variable is required for deploy-dev-ec2.yml smoke tests"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Install Python dependencies
+        run: pip install --quiet websockets httpx livekit
+
+      - name: Run smoke tests
+        env:
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+          WS_URL: ${{ vars.WS_URL }}
+          LIVEKIT_HEALTH_URL: ${{ vars.LIVEKIT_HEALTH_URL }}
+          SMOKE_TIMEOUT_SECS: "10"
+        run: python tools/smoke/smoke.py
+
+  # ── Stage 4: Rollback (conditional on smoke failure) ────────────────────
+  # Reverts the ECS service to the task definition revision that was live
+  # before this deploy. ECS task definition revisions are immutable — the
+  # previous revision is always available without any git operations.
+  rollback:
+    name: Rollback ECS to previous task definition
+    needs: [deploy, smoke]
+    if: failure() && needs.smoke.result == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mask rollback values
+        env:
+          PREVIOUS_TASKDEF: ${{ needs.deploy.outputs.previous_taskdef }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ROLE_ARN PREVIOUS_TASKDEF; do
+            if [ -n "${!name-}" ]; then
+              echo "::add-mask::${!name}"
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Roll back ECS service
+        env:
+          PREVIOUS_TASKDEF: ${{ needs.deploy.outputs.previous_taskdef }}
+        run: |
+          set -euo pipefail
+          echo "Smoke tests failed. Rolling back to previous task definition."
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$PREVIOUS_TASKDEF" \
+            --query 'service.serviceArn' \
+            --output text > /dev/null
+
+      - name: Wait for rollback stability
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+          echo "Rollback complete."

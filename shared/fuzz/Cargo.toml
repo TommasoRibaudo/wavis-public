@@ -1,0 +1,21 @@
+[package]
+name = "wavis-shared-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shared = { path = ".." }
+
+# Prevent this from being included in the workspace
+[workspace]
+
+[[bin]]
+name = "fuzz_signaling_parse"
+path = "fuzz_targets/fuzz_signaling_parse.rs"
+test = false
+doc = false

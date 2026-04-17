@@ -1,0 +1,87 @@
+name: LiveKit E2E
+
+on:
+  pull_request:
+    paths:
+      - 'wavis-backend/src/domain/livekit_bridge.rs'
+      - 'wavis-backend/src/domain/sfu_relay.rs'
+      - 'deploy/livekit.yaml'
+      - 'docker-compose.yml'
+      - '.github/workflows/livekit-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livekit-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  LIVEKIT_API_KEY: devkey
+  LIVEKIT_API_SECRET: secret
+  LIVEKIT_HOST: ws://localhost:7880
+  SFU_JWT_SECRET: dev-secret-32-bytes-minimum!!!XX
+
+jobs:
+  livekit-e2e:
+    name: LiveKit E2E tests
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      livekit:
+        image: livekit/livekit-server:latest
+        env:
+          LIVEKIT_KEYS: "devkey: secret"
+        ports:
+          - 7880:7880
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7880 || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-livekit-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-livekit-e2e-
+
+      - name: Wait for LiveKit to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7880 > /dev/null 2>&1; then
+              echo "LiveKit is ready"
+              exit 0
+            fi
+            echo "Waiting for LiveKit... ($i/30)"
+            sleep 2
+          done
+          echo "LiveKit failed to start"
+          exit 1
+
+      - name: Run LiveKit E2E tests
+        run: |
+          cargo test -p wavis-backend --test livekit_e2e_integration \
+            -- --ignored --test-threads=1

@@ -1,0 +1,93 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/security-audit.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/security-audit.yml'
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Dependency audit & SBOM
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: RustSec advisory audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        # Fails on any High/Critical advisories in the dependency tree.
+        # Requirements: 4.1, 4.3
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --quiet
+
+      - name: cargo deny check
+        run: cargo deny check
+        # License and advisory compliance. Requires deny.toml in workspace root.
+        # Requirements: 4.2, 4.3
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked --quiet
+
+      - name: Generate SBOM
+        run: |
+          for manifest in $(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import sys,json; [print(p['manifest_path']) for p in json.load(sys.stdin)['packages'] if p['name'] != 'wavis-gui']"); do
+            cargo cyclonedx --manifest-path "$manifest"
+          done
+        # Produces CycloneDX SBOM for all workspace crates.
+        # Requirements: 4.4
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ./**/bom.xml
+          if-no-files-found: warn

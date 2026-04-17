@@ -1,0 +1,101 @@
+services:
+  postgres:
+    container_name: wavis-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wavis
+      POSTGRES_PASSWORD: wavis
+      POSTGRES_DB: wavis
+    ports:
+      - "5432:5432"
+    volumes:
+      - wavis-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wavis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    container_name: wavis-redis
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+  livekit:
+    container_name: wavis-livekit
+    image: livekit/livekit-server:latest
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        sed -e "s|LIVEKIT_API_KEY_PLACEHOLDER|$$LIVEKIT_API_KEY|" \
+            -e "s|LIVEKIT_API_SECRET_PLACEHOLDER|$$LIVEKIT_API_SECRET|" \
+            /etc/livekit.yaml.tpl > /etc/livekit.yaml
+        exec /livekit-server --config /etc/livekit.yaml
+    depends_on:
+      - redis
+    ports:
+      - "7880:7880" # WebSocket + HTTP API
+      - "7881:7881" # ICE over TCP
+      - "51000-51100:51000-51100/udp" # ICE media ports
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+    volumes:
+      - ./deploy/livekit.yaml:/etc/livekit.yaml.tpl:ro
+    restart: unless-stopped
+
+  wavis-backend:
+    container_name: wavis-backend
+    build:
+      context: .
+      dockerfile: wavis-backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      REQUIRE_TLS: ${REQUIRE_TLS:-false}
+      DATABASE_URL: ${DATABASE_URL:-postgres://wavis:wavis@postgres:5432/wavis}
+      SFU_JWT_SECRET: ${SFU_JWT_SECRET:-dev-secret-32-bytes-minimum!!!XX}
+      SFU_URL: ${SFU_URL:-sfu://localhost}
+      SFU_HEALTH_CHECK_INTERVAL_SECS: ${SFU_HEALTH_CHECK_INTERVAL_SECS:-30}
+      ENABLE_DEBUG_ROUTES: ${ENABLE_DEBUG_ROUTES:-false}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+      LIVEKIT_HOST: ${LIVEKIT_HOST:-ws://livekit:7880}
+      LIVEKIT_PUBLIC_HOST: ${LIVEKIT_PUBLIC_HOST:-ws://localhost:7880}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-auth-secret-32-bytes-min!!XX}
+      REQUIRE_INVITE_CODE: ${REQUIRE_INVITE_CODE:-true}
+      MAX_ROOM_PARTICIPANTS: ${MAX_ROOM_PARTICIPANTS:-6}
+      INVITE_SWEEP_INTERVAL_SECS: ${INVITE_SWEEP_INTERVAL_SECS:-60}
+      SFU_JWT_ISSUER: ${SFU_JWT_ISSUER:-wavis-backend}
+      SFU_TOKEN_TTL_SECS: ${SFU_TOKEN_TTL_SECS:-600}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      AUTH_REFRESH_PEPPER: ${AUTH_REFRESH_PEPPER:-dev-pepper-32-bytes-minimum!!XXX}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-180}
+      PHRASE_ENCRYPTION_KEY: ${PHRASE_ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER:-dev-pairing-pepper-32-bytes!!XXX}
+      CF_ORIGIN_SECRET: ${CF_ORIGIN_SECRET:-}
+      GITHUB_BUG_REPORT_TOKEN: ${GITHUB_BUG_REPORT_TOKEN:-ghp_dev_placeholder}
+      GITHUB_BUG_REPORT_REPO: ${GITHUB_BUG_REPORT_REPO:-owner/repo}
+      BUG_REPORT_RATE_LIMIT_MAX: ${BUG_REPORT_RATE_LIMIT_MAX:-5}
+      BUG_REPORT_RATE_LIMIT_WINDOW_SECS: ${BUG_REPORT_RATE_LIMIT_WINDOW_SECS:-3600}
+      BUG_REPORT_LLM_API_KEY: ${BUG_REPORT_LLM_API_KEY:-}
+      BUG_REPORT_LLM_MODEL: ${BUG_REPORT_LLM_MODEL:-claude-sonnet-4-20250514}
+    restart: unless-stopped
+
+volumes:
+  wavis-pgdata:

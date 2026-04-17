@@ -1,0 +1,168 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Ensure Postgres",
+      "type": "shell",
+      "command": "docker compose up -d postgres",
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Ensure LiveKit",
+      "type": "shell",
+      "command": "docker compose up -d livekit",
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Ensure Backend Services",
+      "dependsOn": ["Ensure Postgres", "Ensure LiveKit"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "Wait for Backend Ready",
+      "type": "shell",
+      "command": "Write-Host 'Waiting for backend on http://127.0.0.1:3000/health (up to 180s)...'; $ready = $false; for ($i = 0; $i -lt 360; $i++) { Start-Sleep -Milliseconds 500; try { $r = Invoke-WebRequest -Uri http://127.0.0.1:3000/health -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop; if ($r.StatusCode -eq 200) { $ready = $true; break } } catch {} }; if ($ready) { Write-Host 'Backend is ready.' } else { Write-Host 'ERROR: Backend did not become ready within 180s'; exit 1 }",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "problemMatcher": []
+    },
+
+    // ─── Test Tasks (multi-binary, can't use LLDB launch) ─────
+    {
+      "label": "Integration Tests Backend (all)",
+      "type": "shell",
+      "command": "cargo test --package=wavis-backend --tests --features=test-metrics",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "RUST_LOG": "debug,wavis_backend=trace",
+          "RUST_BACKTRACE": "full"
+        }
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Integration Tests Client Shared (all)",
+      "type": "shell",
+      "command": "cargo test --package=wavis-client-shared --tests",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "RUST_LOG": "debug,wavis_client_shared=trace",
+          "RUST_BACKTRACE": "full"
+        }
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Test Entire Workspace",
+      "type": "shell",
+      "command": "cargo test --workspace --features=test-metrics",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "RUST_LOG": "info",
+          "RUST_BACKTRACE": "1"
+        }
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": "$rustc"
+    },
+
+    // ─── Python / Terraform Tests ─────────────────────────────
+    {
+      "label": "Pytest: Validate Plan",
+      "type": "shell",
+      "command": "python -m pytest tests/validate_plan.py -v --plan-json plan.json",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Pytest: Workflow Validation",
+      "type": "shell",
+      "command": "python -m pytest tests/test_workflow.py -v",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Pytest: Health Integration",
+      "type": "shell",
+      "command": "python -m pytest tests/test_health_integration.py -v",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "BACKEND_URL": "http://localhost:3000"
+        }
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Pytest: All Terraform Tests",
+      "type": "shell",
+      "command": "python -m pytest tests/ -v --plan-json plan.json",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

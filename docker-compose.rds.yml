@@ -1,0 +1,9 @@
+services:
+  postgres:
+    deploy:
+      replicas: 0
+
+  wavis-backend:
+    depends_on: !override
+      livekit:
+        condition: service_started
