@@ -1,0 +1,619 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // ─── Run Binaries ───────────────────────────────────────────
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run Backend",
+      "preLaunchTask": "Ensure Backend Services",
+      "cargo": {
+        "args": ["build", "--bin=wavis-backend", "--features=test-metrics", "--package=wavis-backend"]
+      },
+      "args": [],
+      "env": {
+        "LIVEKIT_HOST": "ws://localhost:7880",
+        "LIVEKIT_PUBLIC_HOST": "ws://localhost:7880",
+        "RUST_LOG": "debug,wavis_backend=trace,wavis_backend::handlers::ws=trace,wavis_backend::domain=trace",
+        "RUST_BACKTRACE": "1"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run CLI Client",
+      "cargo": {
+        "args": ["build", "--bin=wavis-client", "--package=wavis-client"]
+      },
+      "args": ["--server", "${input:wsUrl}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_client=trace,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "1"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run CLI Test Client (loopback)",
+      "cargo": {
+        "args": ["build", "--bin=wavis-cli-test", "--package=wavis-cli-test"]
+      },
+      "args": ["--loopback"],
+      "env": {
+        "RUST_LOG": "debug,wavis_cli_test=trace,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "1"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run CLI Test Client (server)",
+      "cargo": {
+        "args": ["build", "--bin=wavis-cli-test", "--package=wavis-cli-test"]
+      },
+      "args": ["--server", "${input:wsUrl}", "--room", "${input:roomId}", "--invite", "${input:inviteCode}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_cli_test=trace,wavis_client_shared::signaling=trace,shared::signaling=trace",
+        "RUST_BACKTRACE": "1"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run CLI Test Client (SFU)",
+      "cargo": {
+        "args": ["build", "--bin=wavis-cli-test", "--package=wavis-cli-test", "--features=livekit"]
+      },
+      "args": ["--server", "${input:wsUrl}", "--room", "${input:roomId}", "--sfu", "--invite", "${input:inviteCode}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_cli_test=trace,wavis_client_shared::livekit=trace,wavis_client_shared::room_session=trace",
+        "RUST_BACKTRACE": "1",
+        "LIVEKIT_HOST": "ws://localhost:7880"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+
+    // ─── Unit Tests (all tests in a crate) ──────────────────────
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Backend (all)",
+      "cargo": {
+        "args": ["test", "--package=wavis-backend", "--lib", "--features=test-metrics", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,wavis_backend=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Shared Signaling (all)",
+      "cargo": {
+        "args": ["test", "--package=shared", "--lib", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Client Shared (all)",
+      "cargo": {
+        "args": ["test", "--package=wavis-client-shared", "--lib", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+
+    // ─── Unit Test: Single Test by Name ─────────────────────────
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Backend (single)",
+      "cargo": {
+        "args": ["test", "--package=wavis-backend", "--lib", "--features=test-metrics", "--no-run"]
+      },
+      "args": ["${input:testName}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_backend=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": true,
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Client Shared (single)",
+      "cargo": {
+        "args": ["test", "--package=wavis-client-shared", "--lib", "--no-run"]
+      },
+      "args": ["${input:testName}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": true,
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+
+    // ─── Integration Tests ──────────────────────────────────────
+    // NOTE: "Integration Tests Backend (all)" is a Task, not a launch config,
+    //       because --tests produces 32 separate binaries and LLDB needs exactly one.
+    //       Use: Terminal > Run Task > Integration Tests Backend (all)
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Integration Test Backend (single file)",
+      "cargo": {
+        "args": ["test", "--package=wavis-backend", "--test", "${input:integrationTestFile}", "--features=test-metrics", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,wavis_backend=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Integration Test Backend (single test)",
+      "cargo": {
+        "args": ["test", "--package=wavis-backend", "--test", "${input:integrationTestFile}", "--features=test-metrics", "--no-run"]
+      },
+      "args": ["${input:testName}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_backend=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": true,
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    // NOTE: "Integration Tests Client Shared (all)" is a Task, not a launch config.
+    //       Use: Terminal > Run Task > Integration Tests Client Shared (all)
+
+    // ─── Stress Testing ─────────────────────────────────────────
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Stress Harness (in-process, CI scale)",
+      "cargo": {
+        "args": ["build", "--bin=stress-harness", "--package=stress-harness", "--features=test-metrics"]
+      },
+      "args": ["--in-process", "--ci"],
+      "env": {
+        "RUST_LOG": "info,stress_harness=debug,stress_harness::scenarios=debug",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "stress-harness-default-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Stress Harness (in-process, local scale)",
+      "cargo": {
+        "args": ["build", "--bin=stress-harness", "--package=stress-harness", "--features=test-metrics"]
+      },
+      "args": ["--in-process", "--local"],
+      "env": {
+        "RUST_LOG": "warn,stress_harness=info",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "stress-harness-default-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Stress Harness (single scenario, in-process)",
+      "cargo": {
+        "args": ["build", "--bin=stress-harness", "--package=stress-harness", "--features=test-metrics"]
+      },
+      "args": ["--in-process", "--ci", "--scenario", "${input:stressScenario}"],
+      "env": {
+        "RUST_LOG": "debug,stress_harness=trace,stress_harness::scenarios=trace",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "stress-harness-default-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Stress Harness (external backend)",
+      "preLaunchTask": "Wait for Backend Ready",
+      "cargo": {
+        "args": ["build", "--bin=stress-harness", "--package=stress-harness"]
+      },
+      "args": ["--ci", "--url", "${input:wsUrl}", "--metrics-url", "${input:metricsUrl}"],
+      "env": {
+        "RUST_LOG": "info,stress_harness=debug",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "stress-harness-default-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Stress Harness (external, localhost)",
+      "preLaunchTask": "Wait for Backend Ready",
+      "cargo": {
+        "args": ["build", "--bin=stress-harness", "--package=stress-harness"]
+      },
+      "args": ["--ci", "--url", "ws://127.0.0.1:3000/ws", "--metrics-url", "http://127.0.0.1:3001/test/metrics"],
+      "env": {
+        "RUST_LOG": "info,stress_harness=debug",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "stress-harness-default-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+
+    // ─── GUI Surface Tests ──────────────────────────────────────
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "GUI Surface Test",
+      "preLaunchTask": "Wait for Backend Ready",
+      "cargo": {
+        "args": ["build", "--bin=gui-surface-test", "--package=gui-surface-test"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,gui_surface_test=trace",
+        "RUST_BACKTRACE": "1",
+        "TEST_METRICS_TOKEN": "dev-surface-test-token"
+      },
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ]
+    },
+
+    // ─── Python / Terraform Tests ───────────────────────────────
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Pytest: Validate Plan",
+      "module": "pytest",
+      "args": ["tests/validate_plan.py", "-v", "--plan-json", "${input:planJsonPath}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Pytest: Workflow Validation",
+      "module": "pytest",
+      "args": ["tests/test_workflow.py", "-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Pytest: Health Integration",
+      "module": "pytest",
+      "args": ["tests/test_health_integration.py", "-v"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "BACKEND_URL": "http://localhost:3000"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "Pytest: All Terraform Tests",
+      "module": "pytest",
+      "args": ["tests/", "-v", "--plan-json", "${input:planJsonPath}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ─── GUI (Tauri) ────────────────────────────────────────────
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "Run Wavis GUI (Tauri Dev)",
+      "command": "npx tauri dev",
+      "cwd": "${workspaceFolder}/clients/wavis-gui",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    },
+
+    // ─── Workspace-Wide ─────────────────────────────────────────
+    // NOTE: "Test Entire Workspace" is a Task, not a launch config,
+    //       because --workspace produces binaries for every crate.
+    //       Use: Terminal > Run Task > Test Entire Workspace
+  ],
+
+  // ─── Compound Launch Configurations ─────────────────────────
+  "compounds": [
+    {
+      "name": "Backend + CLI Client (P2P)",
+      "configurations": ["Run Backend", "Run CLI Test Client (server)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 1
+      }
+    },
+    {
+      "name": "Backend + CLI Client (SFU)",
+      "configurations": ["Run Backend", "Run CLI Test Client (SFU)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 2
+      }
+    },
+    {
+      "name": "Backend + Full CLI Client",
+      "configurations": ["Run Backend", "Run CLI Client"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 3
+      }
+    },
+    {
+      "name": "Backend + Stress (single scenario)",
+      "configurations": ["Run Backend", "Stress Harness (single scenario, in-process)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 4
+      }
+    },
+    {
+      "name": "Backend + GUI Surface Test",
+      "configurations": ["Run Backend", "GUI Surface Test"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 5
+      }
+    },
+    {
+      "name": "Backend + Stress (external, localhost)",
+      "configurations": ["Run Backend", "Stress Harness (external, localhost)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 6
+      }
+    },
+    {
+      "name": "Backend + Stress (external, custom URL)",
+      "configurations": ["Run Backend", "Stress Harness (external backend)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 7
+      }
+    },
+    {
+      "name": "Backend + Wavis GUI",
+      "configurations": ["Run Backend", "Run Wavis GUI (Tauri Dev)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "compound",
+        "order": 8
+      }
+    }
+  ],
+
+  "inputs": [
+    {
+      "id": "testName",
+      "description": "Test function name (or substring to filter)",
+      "type": "promptString",
+      "default": ""
+    },
+    {
+      "id": "integrationTestFile",
+      "description": "Integration test file name (without .rs)",
+      "type": "promptString",
+      "default": "signaling_relay_integration"
+    },
+    {
+      "id": "stressScenario",
+      "description": "Stress scenario name (e.g. join_flood, brute_force_invite, slowloris)",
+      "type": "promptString",
+      "default": "join_flood"
+    },
+    {
+      "id": "wsUrl",
+      "description": "WebSocket URL for external backend",
+      "type": "promptString",
+      "default": "ws://127.0.0.1:3000/ws"
+    },
+    {
+      "id": "roomId",
+      "description": "Room ID to join",
+      "type": "promptString",
+      "default": "test-room"
+    },
+    {
+      "id": "inviteCode",
+      "description": "Invite code (leave empty to create a new room)",
+      "type": "promptString",
+      "default": ""
+    },
+    {
+      "id": "metricsUrl",
+      "description": "Metrics endpoint URL for external backend",
+      "type": "promptString",
+      "default": "http://127.0.0.1:3001/test/metrics"
+    },
+    {
+      "id": "planJsonPath",
+      "description": "Path to terraform show -json plan.out output file",
+      "type": "promptString",
+      "default": "plan.json"
+    }
+  ]
+}

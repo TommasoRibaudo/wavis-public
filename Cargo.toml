@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "shared",
+    "wavis-backend",
+    "clients/shared",
+    "clients/cli-test",
+    "clients/wavis-client",
+    "clients/wavis-gui/src-tauri",
+    "scripts/ws-sfu-test",
+    "tools/stress",
+    "tools/gui-surface-test",
+]

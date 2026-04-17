@@ -1,0 +1,229 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Wavis CLI Colors — Catppuccin Mocha */
+  --wavis-bg: #1e1e2e;           /* Base */
+  --wavis-panel: #181825;        /* Mantle */
+  --wavis-text: #cdd6f4;         /* Text */
+  --wavis-text-secondary: #a6adc8; /* Subtext 0 */
+  --wavis-text-contrast: #1e1e2e;  /* Base — text on coloured surfaces */
+  --wavis-accent: #a6e3a1;       /* Green — success / active */
+  --wavis-danger: #f38ba8;       /* Red — errors / destructive */
+  --wavis-danger-glow: #eba0ac;  /* Maroon — lighter danger (animations) */
+  --wavis-warn: #f9e2af;         /* Yellow — warnings */
+  --wavis-overlay-base: #11111b; /* Crust — modal / scrim backdrop */
+  --wavis-purple: #cba6f7;       /* Mauve */
+
+  /* Shadcn semantic tokens — Catppuccin Mocha */
+  --background: #1e1e2e;         /* Base */
+  --foreground: #cdd6f4;         /* Text */
+  --card: #181825;               /* Mantle */
+  --card-foreground: #cdd6f4;    /* Text */
+  --popover: #313244;            /* Surface 0 */
+  --popover-foreground: #cdd6f4; /* Text */
+  --primary: #89b4fa;            /* Blue */
+  --primary-foreground: #1e1e2e; /* Base */
+  --secondary: #45475a;          /* Surface 1 */
+  --secondary-foreground: #cdd6f4; /* Text */
+  --muted: #313244;              /* Surface 0 */
+  --muted-foreground: #a6adc8;   /* Subtext 0 */
+  --accent: #45475a;             /* Surface 1 */
+  --accent-foreground: #cdd6f4;  /* Text */
+  --destructive: #f38ba8;        /* Red */
+  --destructive-foreground: #1e1e2e; /* Base */
+  --border: #45475a;             /* Surface 1 */
+  --input: #313244;              /* Surface 0 */
+  --input-background: #313244;   /* Surface 0 */
+  --switch-background: #6c7086;  /* Overlay 0 */
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: #89b4fa;               /* Blue */
+  --chart-1: #cba6f7;            /* Mauve */
+  --chart-2: #89b4fa;            /* Blue */
+  --chart-3: #a6e3a1;            /* Green */
+  --chart-4: #fab387;            /* Peach */
+  --chart-5: #f38ba8;            /* Red */
+  --radius: 0.625rem;
+  --sidebar: #313244;            /* Surface 0 */
+  --sidebar-foreground: #cdd6f4; /* Text */
+  --sidebar-primary: #89b4fa;    /* Blue */
+  --sidebar-primary-foreground: #1e1e2e; /* Base */
+  --sidebar-accent: #45475a;     /* Surface 1 */
+  --sidebar-accent-foreground: #cdd6f4; /* Text */
+  --sidebar-border: #45475a;     /* Surface 1 */
+  --sidebar-ring: #89b4fa;       /* Blue */
+}
+
+/* Catppuccin Mocha is dark-only — .dark mirrors :root, no overrides needed */
+
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Wavis tokens → Tailwind utilities */
+  --color-wavis-bg: var(--wavis-bg);
+  --color-wavis-panel: var(--wavis-panel);
+  --color-wavis-text: var(--wavis-text);
+  --color-wavis-text-secondary: var(--wavis-text-secondary);
+  --color-wavis-text-contrast: var(--wavis-text-contrast);
+  --color-wavis-accent: var(--wavis-accent);
+  --color-wavis-danger: var(--wavis-danger);
+  --color-wavis-danger-glow: var(--wavis-danger-glow);
+  --color-wavis-warn: var(--wavis-warn);
+  --color-wavis-overlay-base: var(--wavis-overlay-base);
+  --color-wavis-purple: var(--wavis-purple);
+
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html, body, #root {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+      filter: brightness(1.5);
+    }
+    50% {
+      opacity: 0.8;
+      filter: brightness(2);
+    }
+  }
+
+  @keyframes watchPulse {
+    0%, 100% { color: var(--wavis-danger); }
+    50%       { color: var(--wavis-danger-glow); }
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+
+  /* ── Wavis scrollbar ─────────────────────────────────────────── */
+
+  /* Webkit (Chrome, Edge, Safari) */
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: var(--wavis-bg);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--wavis-text-secondary);
+    border-radius: 0;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--wavis-text);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: var(--wavis-bg);
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wavis-text-secondary) var(--wavis-bg);
+  }
+}

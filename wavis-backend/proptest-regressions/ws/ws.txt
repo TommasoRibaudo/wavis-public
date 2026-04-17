@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dde64c58d025a54c41953f178ab5d4234dfb0b439960d174262915dff46d3db5 # shrinks to message = SfuColdStarting(SfuColdStartingPayload { estimated_wait_secs: 0 })

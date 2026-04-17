@@ -1,0 +1,39 @@
+# Prod overlay — strips dev defaults so compose fails fast on missing env vars.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Non-secret config (MAX_ROOM_PARTICIPANTS, INVITE_SWEEP_INTERVAL_SECS, etc.)
+# keeps its defaults in the base file since those aren't sensitive.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+  livekit:
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+
+  wavis-backend:
+    environment:
+      RUST_LOG: ${RUST_LOG}
+      REQUIRE_TLS: ${REQUIRE_TLS}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS}
+      DATABASE_URL: ${DATABASE_URL}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+      AUTH_REFRESH_PEPPER: ${AUTH_REFRESH_PEPPER}
+      PHRASE_ENCRYPTION_KEY: ${PHRASE_ENCRYPTION_KEY}
+      PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER}
+      SFU_JWT_SECRET: ${SFU_JWT_SECRET}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_HOST: ${LIVEKIT_HOST}
+      LIVEKIT_PUBLIC_HOST: ${LIVEKIT_PUBLIC_HOST}
+      GITHUB_BUG_REPORT_TOKEN: ${GITHUB_BUG_REPORT_TOKEN}
+      GITHUB_BUG_REPORT_REPO: ${GITHUB_BUG_REPORT_REPO}
+      BUG_REPORT_RATE_LIMIT_MAX: ${BUG_REPORT_RATE_LIMIT_MAX}
+      BUG_REPORT_RATE_LIMIT_WINDOW_SECS: ${BUG_REPORT_RATE_LIMIT_WINDOW_SECS}
+      BUG_REPORT_LLM_API_KEY: ${BUG_REPORT_LLM_API_KEY}
+      BUG_REPORT_LLM_MODEL: ${BUG_REPORT_LLM_MODEL}

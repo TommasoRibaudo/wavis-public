@@ -1,0 +1,30 @@
+services:
+  redis:
+    container_name: wavis-livekit-redis
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+  livekit:
+    container_name: wavis-livekit
+    image: livekit/livekit-server:v1.9.3
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        sed -e "s|LIVEKIT_API_KEY_PLACEHOLDER|$$LIVEKIT_API_KEY|" \
+            -e "s|LIVEKIT_API_SECRET_PLACEHOLDER|$$LIVEKIT_API_SECRET|" \
+            /etc/livekit.yaml.tpl > /etc/livekit.yaml
+        exec /livekit-server --config /etc/livekit.yaml
+    depends_on:
+      - redis
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "51000-51100:51000-51100/udp"
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    volumes:
+      - ./deploy/livekit.prod.yaml:/etc/livekit.yaml.tpl:ro
+    restart: unless-stopped

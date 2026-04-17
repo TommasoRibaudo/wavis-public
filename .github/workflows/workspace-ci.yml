@@ -1,0 +1,334 @@
+name: Workspace CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wavis-backend/**'
+      - 'shared/**'
+      - 'clients/**'
+      - '.github/workflows/workspace-ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - 'wavis-backend/**'
+      - 'shared/**'
+      - 'clients/**'
+      - '.github/workflows/workspace-ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Cancel previous runs for the same PR/branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Disable debug info on CI — the symbol tables are what bloat linker memory,
+  # not the code.  A single link of aws-sdk-ec2 + full backend with full debug
+  # info exceeds the 7 GB GitHub Actions runner limit.  0 = no debug info.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # Limit to 1 parallel link job as a secondary guard against OOM.
+  CARGO_BUILD_JOBS: 1
+  # All workspace packages EXCEPT wavis-gui (Tauri crate needs GTK/WebKit
+  # system libs that aren't available on the CI runner).
+  CI_PACKAGES: >-
+    -p shared
+    -p wavis-backend
+    -p wavis-client-shared
+    -p wavis-cli-test
+    -p wavis-client
+    -p ws-sfu-test
+    -p stress-harness
+    -p gui-surface-test
+
+jobs:
+  # ── Detect which areas changed ──────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      shared: ${{ steps.filter.outputs.shared }}
+      clients: ${{ steps.filter.outputs.clients }}
+      gui: ${{ steps.filter.outputs.gui }}
+      cargo-root: ${{ steps.filter.outputs.cargo-root }}
+      # Granular Backend Filters
+      auth: ${{ steps.filter.outputs.auth }}
+      voice: ${{ steps.filter.outputs.voice }}
+      channel: ${{ steps.filter.outputs.channel }}
+      abuse: ${{ steps.filter.outputs.abuse }}
+      ws: ${{ steps.filter.outputs.ws }}
+      security: ${{ steps.filter.outputs.security }}
+      screen: ${{ steps.filter.outputs.screen }}
+      core: ${{ steps.filter.outputs.core }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'wavis-backend/**'
+            shared:
+              - 'shared/**'
+            clients:
+              - 'clients/**'
+              - '!clients/wavis-gui/**'
+            gui:
+              - 'clients/wavis-gui/**'
+            cargo-root:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/workspace-ci.yml'
+            # Granular Backend Logic
+            auth:
+              - 'wavis-backend/src/auth/**'
+              - 'wavis-backend/tests/auth_integration.rs'
+              - 'wavis-backend/tests/ws_auth_integration.rs'
+              - 'wavis-backend/tests/jwt_validation.rs'
+              - 'wavis-backend/tests/device_integration.rs'
+              - 'wavis-backend/tests/pairing_integration.rs'
+              - 'wavis-backend/tests/recovery_integration.rs'
+            voice:
+              - 'wavis-backend/src/voice/**'
+              - 'wavis-backend/tests/voice_orchestration_integration.rs'
+              - 'wavis-backend/tests/voice_ws_integration.rs'
+              - 'wavis-backend/tests/sfu_relay_integration.rs'
+              - 'wavis-backend/tests/p2p_relay_integration.rs'
+              - 'wavis-backend/tests/turn_credentials_integration.rs'
+              - 'wavis-backend/tests/livekit_e2e_integration.rs'
+            channel:
+              - 'wavis-backend/src/channel/**'
+              - 'wavis-backend/tests/channel_integration.rs'
+              - 'wavis-backend/tests/channel_rest_integration.rs'
+              - 'wavis-backend/tests/invite_lifecycle_integration.rs'
+              - 'wavis-backend/tests/create_room_integration.rs'
+              - 'wavis-backend/tests/display_name_integration.rs'
+            abuse:
+              - 'wavis-backend/src/abuse/**'
+              - 'wavis-backend/tests/abuse_controls_integration.rs'
+            ws:
+              - 'wavis-backend/src/ws/**'
+              - 'wavis-backend/tests/signaling_relay_integration.rs'
+            security:
+              - 'wavis-backend/src/redaction.rs'
+              - 'wavis-backend/tests/security_hardening_integration.rs'
+              - 'wavis-backend/tests/no_sensitive_logs.rs'
+              - 'wavis-backend/tests/authorization_matrix_integration.rs'
+            screen:
+              - 'wavis-backend/tests/screen_share_integration.rs'
+              - 'wavis-backend/tests/screen_share_ws_integration.rs'
+            core:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/**'
+              - 'wavis-backend/src/lib.rs'
+              - 'wavis-backend/src/main.rs'
+              - 'wavis-backend/src/app_state.rs'
+              - 'wavis-backend/src/state.rs'
+
+
+  # ── Secret scanning (gitleaks CLI, no license needed) ────────────────
+  gitleaks:
+    name: Gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar xz -C /usr/local/bin gitleaks
+      - name: Run gitleaks
+        run: gitleaks detect --source . --verbose
+
+
+  # ── Rust build + test (backend, shared crate, client crates) ────────
+  rust-test:
+    name: Rust tests (workspace)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.shared == 'true' ||
+      needs.changes.outputs.clients == 'true' ||
+      needs.changes.outputs.cargo-root == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove Tauri GUI crate from workspace
+        run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Caches ~/.cargo/registry, ~/.cargo/git, and target/ — shared key
+      # means test-db job can restore from this job's saved cache.
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Clippy first — its artifacts are reused by cargo test below,
+      # minimising recompilation within the job.
+      - name: Clippy (default features)
+        run: cargo clippy $CI_PACKAGES -- -D warnings
+
+      - name: Clippy (livekit feature)
+        run: cargo clippy -p wavis-client-shared --features livekit,real-backends -p wavis-client --features livekit -p wavis-cli-test --features livekit -- -D warnings
+
+      # cargo test builds implicitly — no separate cargo build step needed.
+      - name: Full workspace tests
+        if: github.ref == 'refs/heads/main' || needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true'
+        run: cargo test $CI_PACKAGES
+
+      - name: "Targeted Backend: Auth"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.auth == 'true'
+        run: cargo test -p wavis-backend --test auth_integration --test ws_auth_integration --test jwt_validation --test device_integration --test pairing_integration --test recovery_integration
+
+      - name: "Targeted Backend: Voice"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.voice == 'true'
+        run: cargo test -p wavis-backend --test voice_orchestration_integration --test voice_ws_integration --test sfu_relay_integration --test p2p_relay_integration --test turn_credentials_integration --test livekit_e2e_integration
+
+      - name: "Targeted Backend: Channel"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.channel == 'true'
+        run: cargo test -p wavis-backend --test channel_integration --test channel_rest_integration --test invite_lifecycle_integration --test create_room_integration --test display_name_integration
+
+      - name: "Targeted Backend: WS & Signaling"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.ws == 'true'
+        run: cargo test -p wavis-backend --test signaling_relay_integration --test ws_auth_integration
+
+      - name: "Targeted Backend: Security & Abuse"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && (needs.changes.outputs.security == 'true' || needs.changes.outputs.abuse == 'true')
+        run: cargo test -p wavis-backend --test security_hardening_integration --test no_sensitive_logs --test authorization_matrix_integration --test abuse_controls_integration
+
+      - name: "Targeted Backend: Screen Share"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.screen == 'true'
+        run: cargo test -p wavis-backend --test screen_share_integration --test screen_share_ws_integration
+
+      - name: Client tests
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.clients == 'true'
+        run: |
+          cargo test -p wavis-client-shared
+          cargo test -p wavis-client
+          cargo test -p wavis-cli-test
+
+      - name: Unit and integration tests (livekit feature)
+        if: needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true' || needs.changes.outputs.clients == 'true' || needs.changes.outputs.voice == 'true'
+        run: cargo test -p wavis-client-shared --features livekit,real-backends
+
+
+  # ── GUI unit tests (vitest) ─────────────────────────────────────────
+  gui-test:
+    name: GUI tests (vitest + tsc)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.gui == 'true' ||
+      needs.changes.outputs.cargo-root == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('clients/wavis-gui/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+
+      - name: Install GUI dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: clients/wavis-gui
+
+      - name: GUI TypeScript type check
+        run: npx tsc --noEmit
+        working-directory: clients/wavis-gui
+
+      - name: GUI unit tests
+        run: npm test
+        working-directory: clients/wavis-gui
+
+
+  # ── DB-dependent integration tests (Postgres) ──────────────────────
+  test-db:
+    name: DB tests (Postgres)
+    runs-on: ubuntu-latest
+    needs: [changes, rust-test]
+    if: >-
+      always() &&
+      (needs.rust-test.result == 'success' || needs.rust-test.result == 'skipped') &&
+      (
+        github.ref == 'refs/heads/main' ||
+        needs.changes.outputs.core == 'true' ||
+        needs.changes.outputs.shared == 'true' ||
+        needs.changes.outputs.auth == 'true' ||
+        needs.changes.outputs.channel == 'true'
+      )
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wavis
+          POSTGRES_PASSWORD: wavis
+          POSTGRES_DB: wavis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wavis"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://wavis:wavis@localhost:5432/wavis
+      AUTH_JWT_SECRET: ci-auth-secret-at-least-32-bytes!!
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove Tauri GUI crate from workspace
+        run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Restores the cache saved by rust-test (same shared-key).
+      # save-if: false — rust-test owns the save, this job only reads.
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ runner.os }}
+          save-if: 'false'
+
+      - name: Run DB-dependent integration tests
+        run: cargo test -p wavis-backend --test auth_integration -- --ignored

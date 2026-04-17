@@ -1,0 +1,30 @@
+[package]
+name = "wavis-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "wavis-client"
+path = "src/main.rs"
+
+[dependencies]
+wavis-client-shared = { path = "../shared", features = ["real-backends"] }
+wavis-cli-test = { path = "../cli-test" }
+shared = { path = "../../shared" }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+native-tls = "0.2"
+futures-util = "0.3"
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+url = "2"
+
+[dev-dependencies]
+proptest = "1"
+shared = { path = "../../shared", features = ["proptest-support"] }
+
+[features]
+default = []
+livekit = ["wavis-client-shared/livekit"]

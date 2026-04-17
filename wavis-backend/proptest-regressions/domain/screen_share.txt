@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8f2d6713ef3575738ba1f26103f3c0f8d47a4372cb97c9fc2bdf21b2942c468f # shrinks to room_id = "xnla", sender_id = "tnfkyax", owner_id = "ybhlhyfh"

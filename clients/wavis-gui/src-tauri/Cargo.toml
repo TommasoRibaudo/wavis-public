@@ -1,0 +1,158 @@
+[package]
+name = "wavis-gui"
+version = "0.1.0"
+description = "Wavis native voice client"
+authors = ["Wavis"]
+edition = "2021"
+default-run = "wavis-gui"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-store = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-log = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+fern = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+cpal = "0.15"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+base64 = "0.22"
+# Process memory / child process enumeration for diagnostics window (env-gated).
+# 0.32 API: System::new(), refresh_processes(ProcessesToUpdate::All, false), p.memory(), p.parent()
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+# Load .env in dev builds so WAVIS_* env vars don't have to be exported in the shell manually.
+dotenvy = "0.15"
+
+# Native media bridge — uses the Rust LiveKit SDK directly, bypassing
+# the webview's (potentially missing) WebRTC stack.
+# On macOS the JS SDK handles media, so only `real-backends` is needed.
+# Linux and Windows override this below to add the `livekit` feature.
+wavis-client-shared = { path = "../../shared", features = ["real-backends"] }
+
+# ─── Linux-only dependencies ───────────────────────────────────────────────────
+# Required system-level packages for building on Linux (developer onboarding):
+#   - libpipewire-0.3-dev   → required by `pipewire` crate
+#   - libx11-dev             → required by `x11rb` with XShm extension
+#   - libpulse-dev           → required by `libpulse-binding` (PulseAudio client)
+#   - libclang-dev           → required by any `-sys` crates that use bindgen
+#   - pkg-config             → required by crate build scripts that probe system libs
+# Install on Ubuntu/Debian:
+#   sudo apt install libpipewire-0.3-dev libx11-dev libpulse-dev libclang-dev pkg-config
+# Install on Fedora:
+#   sudo dnf install pipewire-devel libX11-devel pulseaudio-libs-devel clang-devel pkgconf-pkg-config
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# On Linux, use the Rust LiveKit SDK directly (WebKitGTK lacks WebRTC).
+wavis-client-shared = { path = "../../shared", features = ["livekit", "real-backends"] }
+
+# xdg-desktop-portal D-Bus bindings — PipeWire/portal screen capture (primary path).
+# 0.10 is the latest stable series with ScreenCast improvements over 0.9.
+ashpd = "0.10"
+
+# PipeWire client bindings — frame reception from portal ScreenCast stream.
+# 0.8 is the latest release, reworked module hierarchy from 0.7.
+pipewire = "0.9"
+
+# libc — used by pw_capture_helper for stderr redirect to log file and mmap.
+libc = "0.2"
+
+# GBM — GPU buffer manager, used by pw_capture_helper to import and detile
+# DMA-BUF screen capture buffers from PipeWire portal sources.
+gbm = "0.18"
+
+# DRM — Direct Rendering Manager bindings, needed for DRM fourcc format codes
+# used with GBM buffer import.
+drm-fourcc = "2"
+
+# GTK3 bindings — needed for test_pw debug binary to simulate Tauri's GTK init.
+gtk = "0.18"
+
+# WebKitGTK — needed for test_pw debug binary to simulate Tauri's webview.
+webkit2gtk = "2.0"
+
+# X11 protocol bindings — fallback capture via XGetImage/XShm when portal is unavailable.
+# 0.13 is the latest stable series; enable `shm` feature for XShm shared-memory capture.
+x11rb = { version = "0.13", features = ["shm"] }
+
+# JPEG encoding for remote screen share frame IPC (quality 75, libjpeg scale).
+# Only need the jpeg codec feature to keep compile times down.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Base64 encoding for frame transport over Tauri events.
+# 0.22 is the latest stable API.
+base64 = "0.22"
+
+# PulseAudio client bindings — audio source enumeration (monitor sources) and
+# loopback exclusion for system audio capture.
+# Imported as `pulse` in Rust code.
+pulse = { version = "2.0", package = "libpulse-binding" }
+
+# PulseAudio simple API — blocking read from monitor sources for audio capture.
+# Imported as `psimple` in Rust code.
+psimple = { version = "2.0", package = "libpulse-simple-binding" }
+
+# ─── macOS-only dependencies ───────────────────────────────────────────────────
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreGraphics bindings — window screenshot capture via CGWindowListCreateImage.
+core-graphics = "0.24"
+# CoreFoundation bindings — CFData for CGImage PNG export.
+core-foundation = "0.10"
+# Objective-C runtime — needed for windowNumber message send.
+objc = "0.2"
+# ScreenCaptureKit audio capture with process exclusion (macOS 12.3+).
+# objc2-screen-capture-kit 0.3.x requires objc2 0.6.x and block2 0.6.x.
+objc2 = "0.6"
+objc2-screen-capture-kit = { version = "0.3", features = ["SCShareableContent", "SCStream", "objc2-core-media"] }
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMBlockBuffer", "objc2-core-audio-types"] }
+objc2-foundation = "0.3"
+# block2 — ObjC block types for SCKit completion handler bridges (async→sync).
+# Must match objc2 0.6.x series (block2 0.5 causes IntoBlock trait mismatch).
+block2 = "0.6"
+
+# ─── Windows-only dependencies ─────────────────────────────────────────────────
+[target.'cfg(windows)'.dependencies]
+# On Windows, the Rust LiveKit SDK is still used for native video frame capture.
+# WASAPI audio capture now streams PCM to JS via Tauri events instead.
+wavis-client-shared = { path = "../../shared", features = ["livekit", "real-backends"] }
+
+# Windows API bindings — Graphics Capture API for screen/window enumeration,
+# Win32 UI for window handle enumeration, WASAPI for audio source enumeration.
+windows = { version = "0.58", features = [
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Foundation",
+    "System",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Dwm",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+] }
+
+# JPEG encoding for thumbnail capture (quality 75).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Base64 encoding for thumbnail transport over Tauri events.
+base64 = "0.22"
+
+[dev-dependencies]
+proptest = "1"

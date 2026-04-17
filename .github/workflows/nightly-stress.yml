@@ -1,0 +1,42 @@
+name: Nightly Stress
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 3 AM UTC daily
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly-stress:
+    name: full stress run (in-process, local)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      TEST_METRICS_TOKEN: ci-dummy-token
+      SFU_JWT_SECRET: ci-dummy-secret-at-least-32-bytes!!
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Run stress harness (full local suite)
+        run: cargo run -p stress -- --in-process --local
+        # Runs all registered scenarios at local scale (longer duration than CI subset).
+        # Uses --local flag for full scenario coverage with extended iterations.
+        # Exit code 1 on any invariant violation.
+        # Requirements: 2.5

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	 macOS Screen Recording consent is managed by TCC and does not use an
+	 Info.plist usage-description key. Wavis surfaces Screen Recording denial
+	 through runtime errors when starting screen or system-audio capture.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Wavis needs access to your microphone for voice chat.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Wavis needs access to your camera for video features.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Wavis needs system audio access to share your computer's audio during screen share.</string>
+</dict>
+</plist>

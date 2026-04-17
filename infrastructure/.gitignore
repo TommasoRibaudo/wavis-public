@@ -1,0 +1,11 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+crash.log
+
+# Don't commit actual secrets in tfvars
+# (terraform.tfvars is committed with placeholders — override locally)
+*.auto.tfvars

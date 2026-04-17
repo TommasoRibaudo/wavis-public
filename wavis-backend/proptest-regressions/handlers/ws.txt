@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6caa5e501073408dd5254c4b80835042c885e1f0e5a5a6a1e0b5fa185834a90e # shrinks to message = KickParticipant(KickParticipantPayload { target_participant_id: "" })
+cc 9e629826afd4794f3150092eeaeaf630a7f76ec74dd6e405114fa3c060d04d04 # shrinks to msg = Leave
+cc 1fa38b61297402eb7fdd16b12bb00cc9f1ee03265831cd4e180d0ef08bd47b31 # shrinks to message = JoinVoice(JoinVoicePayload { channel_id: "", display_name: None })
+cc 1aee1b4160de63102af5405371b3f66c5f9f2ba77208665a9d2e30be9c115d05 # shrinks to message = StopAllShares

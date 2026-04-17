@@ -1,0 +1,29 @@
+# Gitleaks configuration — allowlist false positives
+#
+# All entries below are test fixtures, documentation examples, or RFC constants.
+# No real secrets are allowlisted here.
+
+[allowlist]
+description = "False positives: RFC 6455 nonces, doc placeholders, log-redaction test fixtures"
+
+regexes = [
+  # RFC 6455 §4.1 example WebSocket nonce (base64 of "the sample nonce").
+  # Used in stress-test scenarios and integration tests for raw HTTP upgrade requests.
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+
+  # Fake JWT prefix used in log-leak / redaction tests to verify the
+  # grep_sensitive pipeline catches token patterns. Not a real token.
+  '''eyJhbGciOiJIUzI1NiJ9\.\.\.''',
+]
+
+paths = [
+  # Markdown docs contain example curl commands with placeholder Bearer tokens
+  # (my-token, my-test-token, dev-secret-*). Not real credentials.
+  '''doc/QUICKSTART\.md''',
+  '''doc/TESTING\.md''',
+
+  # Stress harness log-capture and log-leak tests that intentionally embed
+  # fake tokens to assert the redaction pipeline works.
+  '''tools/stress/src/log_capture\.rs''',
+  '''tools/stress/src/scenarios/log_leak\.rs''',
+]
