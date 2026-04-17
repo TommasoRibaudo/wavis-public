@@ -53,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       previous_taskdef: ${{ steps.capture_taskdef.outputs.arn }}
+      livekit_health_url: ${{ steps.livekit_url.outputs.url }}
 
     steps:
       - name: Checkout
@@ -98,6 +99,18 @@ jobs:
             --query 'services[0].taskDefinition' \
             --output text)
           echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve LiveKit health URL
+        id: livekit_url
+        run: |
+          set -euo pipefail
+          IP=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters "Name=tag:Name,Values=*livekit*" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].PublicIpAddress" \
+            --output text)
+          echo "::add-mask::$IP"
+          echo "url=http://${IP}:7880/" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
@@ -186,7 +199,7 @@ jobs:
         env:
           BACKEND_URL: ${{ vars.BACKEND_URL }}
           WS_URL: ${{ vars.WS_URL }}
-          LIVEKIT_HEALTH_URL: ${{ vars.LIVEKIT_HEALTH_URL }}
+          LIVEKIT_HEALTH_URL: ${{ needs.deploy.outputs.livekit_health_url }}
         run: |
           set -euo pipefail
           for name in BACKEND_URL WS_URL LIVEKIT_HEALTH_URL; do
@@ -217,7 +230,7 @@ jobs:
         env:
           BACKEND_URL: ${{ vars.BACKEND_URL }}
           WS_URL: ${{ vars.WS_URL }}
-          LIVEKIT_HEALTH_URL: ${{ vars.LIVEKIT_HEALTH_URL }}
+          LIVEKIT_HEALTH_URL: ${{ needs.deploy.outputs.livekit_health_url }}
           SMOKE_TIMEOUT_SECS: "10"
         run: python tools/smoke/smoke.py
 
