@@ -22,7 +22,8 @@ use crate::cpal_audio::PeerVolumes;
 #[cfg(feature = "real-backends")]
 use crate::denoise_filter::DenoiseFilter;
 use crate::room_session::{LiveKitConnection, RoomError};
-use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackSource};
+use livekit::participant::Participant;
+use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackKind, TrackSource};
 use livekit::Room as LkRoom;
 use log::warn;
 #[cfg(feature = "real-backends")]
@@ -125,6 +126,10 @@ pub struct RealLiveKitConnection {
     /// `(rtt_ms, packet_loss_percent, jitter_ms)`.
     #[allow(clippy::type_complexity)]
     stats_cb: Arc<Mutex<Option<Box<dyn Fn(f64, f64, f64) + Send + 'static>>>>,
+    /// Callback for remote/local microphone mute state changes.
+    /// Receives `(participant_identity, is_muted)`.
+    #[allow(clippy::type_complexity)]
+    participant_mute_cb: Arc<Mutex<Option<Box<dyn Fn(&str, bool) + Send + 'static>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +188,7 @@ impl RealLiveKitConnection {
             #[cfg(feature = "real-backends")]
             denoise: Arc::new(Mutex::new(None)),
             stats_cb: Arc::new(Mutex::new(None)),
+            participant_mute_cb: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -249,6 +255,11 @@ impl RealLiveKitConnection {
     pub fn on_stats(&self, cb: Box<dyn Fn(f64, f64, f64) + Send + 'static>) {
         *self.stats_cb.lock().unwrap() = Some(cb);
     }
+
+    /// Register a callback for microphone mute state changes.
+    pub fn on_participant_mute_changed(&self, cb: Box<dyn Fn(&str, bool) + Send + 'static>) {
+        *self.participant_mute_cb.lock().unwrap() = Some(cb);
+    }
 }
 
 impl Default for RealLiveKitConnection {
@@ -290,6 +301,7 @@ impl LiveKitConnection for RealLiveKitConnection {
         let audio_cb = Arc::clone(&self.audio_cb);
         let video_frame_cb = Arc::clone(&self.video.video_frame_cb);
         let video_track_ended_cb = Arc::clone(&self.video.video_track_ended_cb);
+        let participant_mute_cb = Arc::clone(&self.participant_mute_cb);
         let connected = Arc::clone(&self.connected);
         let closing = Arc::clone(&self.closing);
         #[cfg(feature = "real-backends")]
@@ -420,6 +432,28 @@ impl LiveKitConnection for RealLiveKitConnection {
                         if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
                             cb(&participant_id);
                         }
+                    }
+                    livekit::RoomEvent::TrackMuted {
+                        participant,
+                        publication,
+                    } => {
+                        emit_participant_mute_change(
+                            &participant_mute_cb,
+                            &participant,
+                            &publication,
+                            true,
+                        );
+                    }
+                    livekit::RoomEvent::TrackUnmuted {
+                        participant,
+                        publication,
+                    } => {
+                        emit_participant_mute_change(
+                            &participant_mute_cb,
+                            &participant,
+                            &publication,
+                            false,
+                        );
                     }
                     livekit::RoomEvent::Disconnected { .. } => {
                         // Server-initiated disconnect: clean up connected flag.
@@ -1082,6 +1116,20 @@ impl LiveKitConnection for RealLiveKitConnection {
 
         log::info!("unpublish_screen_audio: screen share audio track unpublished");
         Ok(())
+    }
+}
+
+fn emit_participant_mute_change(
+    cb: &Arc<Mutex<Option<Box<dyn Fn(&str, bool) + Send + 'static>>>>,
+    participant: &Participant,
+    publication: &livekit::publication::TrackPublication,
+    is_muted: bool,
+) {
+    if publication.kind() != TrackKind::Audio || publication.source() != TrackSource::Microphone {
+        return;
+    }
+    if let Some(callback) = cb.lock().unwrap().as_ref() {
+        callback(&participant.identity().to_string(), is_muted);
     }
 }
 
