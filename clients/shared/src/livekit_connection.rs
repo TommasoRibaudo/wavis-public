@@ -35,6 +35,10 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
+pub type ParticipantMuteCallback = Box<dyn Fn(&str, bool) + Send + 'static>;
+
+type SharedParticipantMuteCallback = Arc<Mutex<Option<ParticipantMuteCallback>>>;
+
 // ---------------------------------------------------------------------------
 // RealLiveKitConnection
 // ---------------------------------------------------------------------------
@@ -128,8 +132,7 @@ pub struct RealLiveKitConnection {
     stats_cb: Arc<Mutex<Option<Box<dyn Fn(f64, f64, f64) + Send + 'static>>>>,
     /// Callback for remote/local microphone mute state changes.
     /// Receives `(participant_identity, is_muted)`.
-    #[allow(clippy::type_complexity)]
-    participant_mute_cb: Arc<Mutex<Option<Box<dyn Fn(&str, bool) + Send + 'static>>>>,
+    participant_mute_cb: SharedParticipantMuteCallback,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +260,7 @@ impl RealLiveKitConnection {
     }
 
     /// Register a callback for microphone mute state changes.
-    pub fn on_participant_mute_changed(&self, cb: Box<dyn Fn(&str, bool) + Send + 'static>) {
+    pub fn on_participant_mute_changed(&self, cb: ParticipantMuteCallback) {
         *self.participant_mute_cb.lock().unwrap() = Some(cb);
     }
 }
@@ -347,6 +350,7 @@ impl LiveKitConnection for RealLiveKitConnection {
                         let source = publication.source();
                         let queue_key =
                             format!("{participant_id}::{source:?}::{}", publication.sid());
+                        #[cfg(feature = "real-backends")]
                         let volume_key = if source == TrackSource::ScreenshareAudio {
                             format!("{participant_id}:screen-share")
                         } else {
@@ -1120,7 +1124,7 @@ impl LiveKitConnection for RealLiveKitConnection {
 }
 
 fn emit_participant_mute_change(
-    cb: &Arc<Mutex<Option<Box<dyn Fn(&str, bool) + Send + 'static>>>>,
+    cb: &SharedParticipantMuteCallback,
     participant: &Participant,
     publication: &livekit::publication::TrackPublication,
     is_muted: bool,
