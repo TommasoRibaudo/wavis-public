@@ -48,3 +48,5 @@ Wavis.zip
 doc/gh_public_checklist.md
 doc/implementation/backend_ec2_migration/plan.md
 doc/marketing-context.md
+/.kiro
+/doc
