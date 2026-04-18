@@ -32,7 +32,7 @@
     .\tests\smoke_test.ps1 -InstanceId "i-0123456789abcdef0" -CloudFrontDomain "example.cloudfront.net"
 
 .EXAMPLE
-    .\tests\smoke_test.ps1 -InstanceId "i-0123456789abcdef0" -CloudFrontDomain "example.cloudfront.net" -LiveKitInstanceId "i-0abc123" -LiveKitPublicIp "3.14.15.92"
+    .\tests\smoke_test.ps1 -InstanceId "i-0123456789abcdef0" -CloudFrontDomain "example.cloudfront.net" -LiveKitInstanceId "i-0123456789abcdef0" -LiveKitPublicIp "203.0.113.10"
 #>
 
 param(

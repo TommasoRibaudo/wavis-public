@@ -13,8 +13,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-BENCHMARK_ID="i-0123456789abcdef0"
-LIVEKIT_ID="i-0123456789abcdef0"
+BENCHMARK_ID="${BENCHMARK_ID:?set BENCHMARK_ID to the benchmark EC2 instance ID}"
+LIVEKIT_ID="${LIVEKIT_ID:?set LIVEKIT_ID to the LiveKit EC2 instance ID}"
 REGION="${AWS_REGION:-us-east-2}"
 RESULTS_DIR="doc/testing/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
