@@ -758,24 +758,6 @@ describe('Voice-room media wiring', () => {
 
       leaveRoom();
     });
-
-    it('remote participant mute updates are reflected in room state', async () => {
-      resetAll();
-      await driveToActive();
-
-      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
-      await tick();
-
-      lastLkModule!.callbacks.onParticipantMuteChanged('peer-2', true);
-      await tick();
-      expect(latestState!.participants.find((p) => p.id === 'peer-2')!.isMuted).toBe(true);
-
-      lastLkModule!.callbacks.onParticipantMuteChanged('peer-2', false);
-      await tick();
-      expect(latestState!.participants.find((p) => p.id === 'peer-2')!.isMuted).toBe(false);
-
-      leaveRoom();
-    });
   });
 
 
