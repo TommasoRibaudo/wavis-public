@@ -56,10 +56,6 @@ pub enum MediaEvent {
         reason: String,
     },
     Disconnected,
-    ParticipantMuteChanged {
-        identity: String,
-        is_muted: bool,
-    },
     AudioLevels {
         levels: Vec<AudioLevelEntry>,
     },
@@ -592,17 +588,6 @@ pub fn media_connect(
                 rtt_ms,
                 packet_loss_percent,
                 jitter_ms,
-            },
-        );
-    }));
-
-    let app_mute = app.clone();
-    conn.on_participant_mute_changed(Box::new(move |identity, is_muted| {
-        let _ = app_mute.emit(
-            "media-event",
-            MediaEvent::ParticipantMuteChanged {
-                identity: identity.to_string(),
-                is_muted,
             },
         );
     }));

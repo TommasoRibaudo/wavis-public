@@ -155,17 +155,6 @@ pub(super) fn stop(
     macos::stop(state, audio_capture)
 }
 
-#[cfg(target_os = "macos")]
-pub(super) fn platform_capabilities() -> (bool, bool) {
-    let v = macos::current_macos_version();
-    (v.supports_screen_capture_kit(), v.supports_process_tap())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(super) fn platform_capabilities() -> (bool, bool) {
-    (false, false)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::audio_capture::proptest_support::{
