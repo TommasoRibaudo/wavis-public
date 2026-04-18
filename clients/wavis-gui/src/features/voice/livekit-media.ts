@@ -800,6 +800,16 @@ export class LiveKitModule {
     console.log(LOG, 'created');
   }
 
+  private syncParticipantMicMute(
+    participant: Participant,
+    publication: TrackPublication | RemoteTrackPublication | null | undefined,
+  ): void {
+    if (!publication) return;
+    if (publication.kind !== Track.Kind.Audio) return;
+    if (publication.source !== Track.Source.Microphone) return;
+    this.callbacks.onParticipantMuteChanged(participant.identity, publication.isMuted);
+  }
+
   private setNoiseSuppressionActive(active: boolean): void {
     if (this.jsDenoiseProcessorActive === active) return;
     this.jsDenoiseProcessorActive = active;
@@ -1739,6 +1749,7 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        this.syncParticipantMicMute(participant, publication);
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
         if (!this.screenShareAudioPending.has(participant.identity)) {
@@ -1753,6 +1764,7 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        this.syncParticipantMicMute(participant, publication);
         if (track.kind === Track.Kind.Audio) {
           // Defer screen share audio — only attach when user opens the viewer
           if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
@@ -1893,6 +1905,8 @@ export class LiveKitModule {
       // Fires for existing participants on room join as well as new joiners.
       addListener(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
+        const micPub = participant.getTrackPublication(Track.Source.Microphone);
+        this.syncParticipantMicMute(participant, micPub);
         const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
         if (screenShareAudioPub) {
           this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
@@ -1964,7 +1978,11 @@ export class LiveKitModule {
       // m. TrackMuted — remote participant muted their audio
       addListener(RoomEvent.TrackMuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
-        if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
+        if (
+          publication.kind === Track.Kind.Audio &&
+          publication.source === Track.Source.Microphone &&
+          participant !== this.room?.localParticipant
+        ) {
           this.callbacks.onParticipantMuteChanged(participant.identity, true);
         }
       });
@@ -1972,7 +1990,11 @@ export class LiveKitModule {
       // n. TrackUnmuted — remote participant unmuted their audio
       addListener(RoomEvent.TrackUnmuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
-        if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
+        if (
+          publication.kind === Track.Kind.Audio &&
+          publication.source === Track.Source.Microphone &&
+          participant !== this.room?.localParticipant
+        ) {
           this.callbacks.onParticipantMuteChanged(participant.identity, false);
         }
       });
@@ -1981,13 +2003,21 @@ export class LiveKitModule {
       // (e.g. LiveKit re-enabling mic on reconnect, or OS-level mute)
       addListener(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
         if (this.disposed) return;
-        if (participant === this.room?.localParticipant && publication.kind === Track.Kind.Audio) {
+        if (
+          participant === this.room?.localParticipant &&
+          publication.kind === Track.Kind.Audio &&
+          publication.source === Track.Source.Microphone
+        ) {
           this.callbacks.onParticipantMuteChanged(participant.identity, true);
         }
       });
       addListener(RoomEvent.TrackUnmuted, (publication: TrackPublication, participant: Participant) => {
         if (this.disposed) return;
-        if (participant === this.room?.localParticipant && publication.kind === Track.Kind.Audio) {
+        if (
+          participant === this.room?.localParticipant &&
+          publication.kind === Track.Kind.Audio &&
+          publication.source === Track.Source.Microphone
+        ) {
           this.callbacks.onParticipantMuteChanged(participant.identity, false);
         }
       });

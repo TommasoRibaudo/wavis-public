@@ -529,18 +529,28 @@ async fn main() -> io::Result<()> {
         );
     }
 
-    // Perform initial health check on startup.
+    // Perform initial health check on startup — with a 5s timeout so a
+    // slow or unreachable SFU cannot block the server from starting.
     {
         let bridge = app_state.sfu_room_manager.clone();
         let health_status = app_state.sfu_health_status.clone();
-        match bridge.health_check().await {
-            Ok(health) => {
+        let check_result = tokio::time::timeout(
+            Duration::from_secs(5),
+            bridge.health_check(),
+        )
+        .await;
+        match check_result {
+            Ok(Ok(health)) => {
                 tracing::info!("SFU initial health check: {:?}", health);
                 *health_status.write().await = health;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!("SFU initial health check failed: {e}");
                 *health_status.write().await = SfuHealth::Unavailable(e.to_string());
+            }
+            Err(_) => {
+                tracing::warn!("SFU initial health check timed out — starting anyway");
+                *health_status.write().await = SfuHealth::Unavailable("startup timeout".to_string());
             }
         }
     }

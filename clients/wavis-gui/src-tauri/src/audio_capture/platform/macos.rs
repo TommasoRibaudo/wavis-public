@@ -49,6 +49,36 @@ pub(super) fn resolve_monitor_fast() -> Result<String, String> {
     resolve_monitor()
 }
 
+pub(super) fn current_macos_version() -> MacOsVersion {
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NSOperatingSystemVersion {
+        major_version: isize,
+        minor_version: isize,
+        patch_version: isize,
+    }
+    unsafe impl objc2::Encode for NSOperatingSystemVersion {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "NSOperatingSystemVersion",
+            &[isize::ENCODING, isize::ENCODING, isize::ENCODING],
+        );
+    }
+    unsafe impl objc2::RefEncode for NSOperatingSystemVersion {
+        const ENCODING_REF: objc2::Encoding =
+            objc2::Encoding::Pointer(&<Self as objc2::Encode>::ENCODING);
+    }
+    let raw: NSOperatingSystemVersion = unsafe {
+        let info: &objc2_foundation::NSProcessInfo =
+            objc2::msg_send![objc2_foundation::NSProcessInfo::class(), processInfo];
+        objc2::msg_send![info, operatingSystemVersion]
+    };
+    MacOsVersion {
+        major: raw.major_version,
+        minor: raw.minor_version,
+        patch: raw.patch_version,
+    }
+}
+
 pub(super) fn start(
     source_id: String,
     state: State<'_, crate::media::MediaState>,
@@ -1903,37 +1933,7 @@ fn audio_share_start_macos(
     }
 
     // ── Runtime macOS version check ────────────────────────────────
-    // NSOperatingSystemVersion is a C struct — define it locally so we
-    // don't depend on objc2-foundation exposing it.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct NSOperatingSystemVersion {
-        major_version: isize,
-        minor_version: isize,
-        patch_version: isize,
-    }
-    // SAFETY: The struct layout matches the ObjC NSOperatingSystemVersion.
-    unsafe impl objc2::Encode for NSOperatingSystemVersion {
-        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-            "NSOperatingSystemVersion",
-            &[isize::ENCODING, isize::ENCODING, isize::ENCODING],
-        );
-    }
-    // SAFETY: All fields are plain integers.
-    unsafe impl objc2::RefEncode for NSOperatingSystemVersion {
-        const ENCODING_REF: objc2::Encoding =
-            objc2::Encoding::Pointer(&<Self as objc2::Encode>::ENCODING);
-    }
-    let version_raw: NSOperatingSystemVersion = unsafe {
-        let info: &objc2_foundation::NSProcessInfo =
-            objc2::msg_send![objc2_foundation::NSProcessInfo::class(), processInfo];
-        objc2::msg_send![info, operatingSystemVersion]
-    };
-    let version = MacOsVersion {
-        major: version_raw.major_version,
-        minor: version_raw.minor_version,
-        patch: version_raw.patch_version,
-    };
+    let version = current_macos_version();
     if !version.supports_screen_capture_kit() {
         return Err("audio sharing requires macOS 12.3 or later".to_string());
     }
