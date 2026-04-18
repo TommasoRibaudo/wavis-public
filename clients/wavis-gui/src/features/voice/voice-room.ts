@@ -2143,8 +2143,8 @@ export function initSession(
   client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
-      if (state.machineState === 'active') {
-        // Connection dropped during active session — start reconnecting.
+      if (state.machineState === 'active' || state.machineState === 'joining') {
+        // Connection dropped during active session or mid-join — start reconnecting.
         // Do NOT tear down LiveKit media — it connects directly to the SFU,
         // independent of the signaling WS. Tearing it down causes an
         // unnecessary audio/screenshare interruption during WS reconnects

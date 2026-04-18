@@ -4,6 +4,7 @@
 //! (per-participant PCM decoder), and [`convert_audio_frame`] (normalises arbitrary
 //! PCM → mono 48kHz f32). All items are `pub(super)`.
 
+#[cfg(feature = "real-backends")]
 use livekit::track::TrackSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use std::sync::atomic::AtomicBool;

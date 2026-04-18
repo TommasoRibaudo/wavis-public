@@ -84,6 +84,7 @@ import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
+import { usePlatformCapabilities } from '@features/screen-share/usePlatformCapabilities';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function voiceIcon(p: RoomParticipant, isDeafened?: boolean): { char: string; color: string; strikethrough?: boolean; transform?: string } {
@@ -1317,7 +1318,11 @@ export default function ActiveRoom() {
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
-  const macShareAudioDisabledMessage = "mac sucks and we can't make this feature work yet";
+
+  // macOS: load OS-level feature availability (SCK requires 12.3+, process tap 14.2+).
+  const platformCaps = usePlatformCapabilities();
+  const macAudioShareSupported = !isMacPlatform || platformCaps.hasScreenCaptureKit;
+  const macShareAudioDisabledMessage = 'Screen share with audio requires macOS 12.3 or later.';
 
   // macOS: check / install the WavisAudioTap HAL driver needed for echo-free audio share.
   const { driverState, installError, triggerInstall } = useAudioDriverInstall(isMacPlatform);
@@ -2114,13 +2119,14 @@ export default function ActiveRoom() {
                         </button>
                         <button
                           onClick={() => {
-                            if (isMacPlatform) return;
+                            if (!macAudioShareSupported) return;
                             const next = !shareAudioOn;
                             setShareAudioOn(next);
                             void toggleShareAudio(next);
                           }}
-                          disabled={isMacPlatform}
-                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${isMacPlatform
+                          disabled={!macAudioShareSupported}
+                          title={!macAudioShareSupported ? macShareAudioDisabledMessage : undefined}
+                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${!macAudioShareSupported
                             ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
                             : shareAudioOn
                               ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
@@ -2414,26 +2420,26 @@ export default function ActiveRoom() {
               <div
                 className="relative"
                 onMouseEnter={() => {
-                  if (isMacPlatform) setShowMacAudioHoverMessage(true);
+                  if (!macAudioShareSupported) setShowMacAudioHoverMessage(true);
                 }}
                 onMouseLeave={() => setShowMacAudioHoverMessage(false)}
               >
                 <button
                   onClick={() => {
-                    if (isMacPlatform) return;
+                    if (!macAudioShareSupported) return;
                     setShowPostShareAudioPrompt(false);
                     setShareAudioOn(true);
                     void toggleShareAudio(true);
                   }}
-                  disabled={isMacPlatform}
-                  className={`border px-4 py-1 text-xs transition-colors ${isMacPlatform
+                  disabled={!macAudioShareSupported}
+                  className={`border px-4 py-1 text-xs transition-colors ${!macAudioShareSupported
                     ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
                     : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
                     }`}
                 >
                   Yes
                 </button>
-                {isMacPlatform && showMacAudioHoverMessage && (
+                {!macAudioShareSupported && showMacAudioHoverMessage && (
                   <span className="absolute bottom-full right-0 mb-2 whitespace-nowrap border border-wavis-text-secondary bg-wavis-panel px-2 py-1 text-[10px] text-wavis-text shadow-lg">
                     {macShareAudioDisabledMessage}
                   </span>
