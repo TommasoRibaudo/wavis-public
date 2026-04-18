@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_rgba_to_i420_supports_minimum_1x1_input() {
-        let i420 = rgba_to_i420(&[100u8, 150, 200, 255], 1, 1);
+        let i420 = rgba_to_i420(&vec![100u8, 150, 200, 255], 1, 1);
         let (stride_y, stride_u, stride_v) = i420.strides();
         let (y_data, u_data, v_data) = i420.data();
 

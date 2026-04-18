@@ -119,10 +119,10 @@ pub async fn purge_expired_messages(
     let result = sqlx::query(
         "DELETE FROM chat_messages WHERE ctid IN \
          (SELECT ctid FROM chat_messages \
-          WHERE created_at < now() - ($1::bigint * interval '1 hour') \
+          WHERE created_at < now() - make_interval(hours => $1) \
           LIMIT $2)",
     )
-    .bind(retention_hours as i64)
+    .bind(retention_hours as f64)
     .bind(batch_size)
     .execute(pool)
     .await?;

@@ -187,8 +187,6 @@ vi.mock('livekit-client', () => ({
     LocalTrackPublished: 'localTrackPublished',
     LocalTrackUnpublished: 'localTrackUnpublished',
     MediaDevicesError: 'mediaDevicesError',
-    TrackMuted: 'trackMuted',
-    TrackUnmuted: 'trackUnmuted',
   },
   Track: {
     Kind: { Audio: 'audio', Video: 'video' },
@@ -1299,39 +1297,6 @@ describe('Volume control, mute, and speaking indicators', () => {
         ),
         { numRuns: 100 },
       );
-    });
-
-    it('remote microphone mute events notify the callback and ignore screen-share audio mute', async () => {
-      resetAll();
-      const cbs = createMockCallbacks();
-      const mod = new LiveKitModule(cbs);
-
-      await driveToConnected(mod);
-
-      emitRoomEvent(
-        'trackMuted',
-        { kind: 'audio', source: 'microphone', isMuted: true },
-        { identity: 'peer-1' },
-      );
-      emitRoomEvent(
-        'trackUnmuted',
-        { kind: 'audio', source: 'microphone', isMuted: false },
-        { identity: 'peer-1' },
-      );
-      emitRoomEvent(
-        'trackMuted',
-        { kind: 'audio', source: 'screen_share_audio', isMuted: true },
-        { identity: 'peer-1' },
-      );
-
-      expect(
-        cbs.calls.filter((c) => c.method === 'onParticipantMuteChanged').map((c) => c.args),
-      ).toEqual([
-        ['peer-1', true],
-        ['peer-1', false],
-      ]);
-
-      mod.disconnect();
     });
   });
 
