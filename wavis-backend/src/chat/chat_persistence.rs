@@ -122,7 +122,7 @@ pub async fn purge_expired_messages(
           WHERE created_at < now() - make_interval(hours => $1) \
           LIMIT $2)",
     )
-    .bind(retention_hours as f64)
+    .bind(retention_hours as i32)
     .bind(batch_size)
     .execute(pool)
     .await?;

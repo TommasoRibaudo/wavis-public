@@ -73,3 +73,9 @@ multi-room-voice-plan.md
 tasks.md
 clients/shared/SECURITY.md
 deploy/MIGRATION-RUNBOOK.md
+
+# Compatibility test artifacts and local overrides
+tools/compat/machines.local.toml
+tools/compat/aws-compat-poll.ps1
+tools/compat/setup-autologin.sh
+compat-results/
