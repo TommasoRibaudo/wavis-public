@@ -1958,14 +1958,28 @@ export default function ActiveRoom() {
 
         return (
           <div key={subRoom.id} className="border-b border-wavis-text-secondary">
-            <div className="w-full px-3 py-2 flex items-center gap-2 text-sm">
-              <button onClick={() => toggleSection(sectionKey)} className="text-left flex items-center gap-2 hover:opacity-80 flex-1 min-w-0">
+            <button
+              type="button"
+              onClick={() => toggleSection(sectionKey)}
+              className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80"
+            >
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
                 <span>{`ROOM ${subRoom.roomNumber}`}</span>
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
-              </button>
+              </div>
+            </button>
+            {isExpanded && (
+              <div className="px-3 py-2 space-y-1 text-sm">
+                {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
+                  <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
+                )}
+              </div>
+            )}
+            <div className="px-3 pb-3 pt-1 flex items-center justify-center gap-2">
               {roomState.joinedSubRoomId === subRoom.id ? (
                 <button
+                  type="button"
                   onClick={() => leaveSubRoom()}
                   className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
                 >
@@ -1973,6 +1987,7 @@ export default function ActiveRoom() {
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={() => joinSubRoom(subRoom.id)}
                   className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
                 >
@@ -1981,6 +1996,7 @@ export default function ActiveRoom() {
               )}
               {showJoinedRoomWatchAll && (
                 <button
+                  type="button"
                   onClick={toggleWatchAllWindow}
                   className={`text-xs py-0.5 px-1 border transition-colors ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                 >
@@ -1999,13 +2015,6 @@ export default function ActiveRoom() {
                 </button>
               )}
             </div>
-            {isExpanded && (
-              <div className="px-3 py-2 space-y-1 text-sm">
-                {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
-                  <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
-                )}
-              </div>
-            )}
           </div>
         );
       })}

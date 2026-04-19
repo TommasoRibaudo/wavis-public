@@ -435,6 +435,39 @@ interface SharesPanelState {
   watchAllOpen: boolean;
 }
 
+interface RoomPanelLayoutState {
+  isJoinedRoom: boolean;
+  joinedRoomRemoteSharersCount: number;
+  otherRoomRemoteSharersCount: number;
+  watchAllOpen: boolean;
+}
+
+/**
+ * Replicates the Phase 9 room-panel layout contract from ActiveRoom.tsx:
+ * - header is a dedicated collapse toggle
+ * - action controls live in a centered footer row below participants
+ */
+function roomPanelLayout(state: RoomPanelLayoutState): {
+  headerOnlyToggles: boolean;
+  footerCentered: boolean;
+  actionsBelowParticipants: boolean;
+  footerButtons: string[];
+} {
+  const footerButtons = [state.isJoinedRoom ? '/leave' : '/join'];
+  if (state.isJoinedRoom && state.joinedRoomRemoteSharersCount > 0) {
+    footerButtons.push(state.watchAllOpen ? '/close-all' : '/watch-all');
+  } else if (!state.isJoinedRoom && state.otherRoomRemoteSharersCount > 0) {
+    footerButtons.push('/watch-all');
+  }
+
+  return {
+    headerOnlyToggles: true,
+    footerCentered: true,
+    actionsBelowParticipants: true,
+    footerButtons,
+  };
+}
+
 /**
  * Replicates the joined-room /watch-all button visibility logic from ActiveRoom.tsx.
  */
@@ -644,6 +677,36 @@ describe('Watch All Lifecycle', () => {
 /* ═══ 14.2 — Watch All Entry Point Integration Tests ════════════════ */
 
 describe('Watch All Entry Points', () => {
+  describe('room panel layout', () => {
+    it('keeps the room header as a dedicated toggle and moves controls into the footer row', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: true,
+        joinedRoomRemoteSharersCount: 2,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      })).toEqual({
+        headerOnlyToggles: true,
+        footerCentered: true,
+        actionsBelowParticipants: true,
+        footerButtons: ['/leave', '/watch-all'],
+      });
+    });
+
+    it('shows the disabled other-room watch-all affordance in the footer row', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+      })).toEqual({
+        headerOnlyToggles: true,
+        footerCentered: true,
+        actionsBelowParticipants: true,
+        footerButtons: ['/join', '/watch-all'],
+      });
+    });
+  });
+
   describe('/watch-all button visibility', () => {
     it('button visible when the joined room has remote sharers', () => {
       expect(isWatchAllButtonVisible({
