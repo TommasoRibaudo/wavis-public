@@ -468,6 +468,31 @@ function roomPanelLayout(state: RoomPanelLayoutState): {
   };
 }
 
+interface ScopedShareWindow {
+  scope: 'direct' | 'watch-all';
+}
+
+interface RoomScopedViewerState extends WatchAllState {
+  openWindows: Map<string, ScopedShareWindow>;
+}
+
+function handleJoinedRoomChange(
+  state: RoomScopedViewerState,
+  nextScopedParticipantIds: Set<string>,
+): RoomScopedViewerState {
+  const next = new Map(state.openWindows);
+  for (const [participantId, window] of next) {
+    if (window.scope === 'watch-all' && !nextScopedParticipantIds.has(participantId)) {
+      next.delete(participantId);
+    }
+  }
+  return {
+    watchAllOpen: false,
+    watchAllWindowRef: { current: null },
+    openWindows: next,
+  };
+}
+
 /**
  * Replicates the joined-room /watch-all button visibility logic from ActiveRoom.tsx.
  */
@@ -671,6 +696,41 @@ describe('Watch All Lifecycle', () => {
 
     expect(first.restoredToWatchAll).toBe(true);
     expect(second.restoredToWatchAll).toBe(false);
+  });
+
+  it('room changes close Watch All and remove watch-all-scoped viewers that are no longer valid', () => {
+    const state: RoomScopedViewerState = {
+      watchAllOpen: true,
+      watchAllWindowRef: { current: { label: 'watch-all' } },
+      openWindows: new Map([
+        ['user-1', { scope: 'watch-all' }],
+        ['user-2', { scope: 'direct' }],
+      ]),
+    };
+
+    const result = handleJoinedRoomChange(state, new Set(['user-3']));
+
+    expect(result.watchAllOpen).toBe(false);
+    expect(result.watchAllWindowRef.current).toBeNull();
+    expect(result.openWindows.has('user-1')).toBe(false);
+    expect(result.openWindows.has('user-2')).toBe(true);
+  });
+
+  it('room changes preserve watch-all-scoped viewers that still belong to the new room scope', () => {
+    const state: RoomScopedViewerState = {
+      watchAllOpen: true,
+      watchAllWindowRef: { current: { label: 'watch-all' } },
+      openWindows: new Map([
+        ['user-1', { scope: 'watch-all' }],
+        ['user-2', { scope: 'direct' }],
+      ]),
+    };
+
+    const result = handleJoinedRoomChange(state, new Set(['user-1']));
+
+    expect(result.watchAllOpen).toBe(false);
+    expect(result.openWindows.has('user-1')).toBe(true);
+    expect(result.openWindows.has('user-2')).toBe(true);
   });
 });
 

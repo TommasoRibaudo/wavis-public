@@ -791,6 +791,7 @@ function shouldUseNativeMedia(): boolean {
   return !(hasRtc && hasGetUserMedia && hasGetDisplayMedia);
 }
 let bufferedMediaToken: { sfuUrl: string; token: string } | null = null;
+let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
@@ -975,6 +976,12 @@ function syncDerivedSubRoomState(): void {
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
 }
 
+function syncDesiredSubRoomPreference(): void {
+  state.desiredSubRoomId = desiredSubRoomIntent === undefined
+    ? state.joinedSubRoomId
+    : desiredSubRoomIntent;
+}
+
 function playSubRoomMembershipSounds(
   previousParticipantSubRoomById: Record<string, string>,
   previousJoinedSubRoomId: string | null,
@@ -1013,12 +1020,22 @@ function playSubRoomMembershipSounds(
   }
 }
 
-function maybeAutoRejoinDesiredSubRoom(): void {
+function reconcileDesiredSubRoomMembership(): void {
+  syncDesiredSubRoomPreference();
   if (!client || client.status !== 'connected') return;
-  if (!state.desiredSubRoomId) return;
-  if (state.joinedSubRoomId === state.desiredSubRoomId) return;
-  if (!state.subRooms.some((room) => room.id === state.desiredSubRoomId)) return;
-  client.send({ type: 'join_sub_room', subRoomId: state.desiredSubRoomId });
+
+  const desiredSubRoomId = state.desiredSubRoomId;
+  if (desiredSubRoomIntent === undefined || desiredSubRoomId === state.joinedSubRoomId) return;
+
+  if (desiredSubRoomId === null) {
+    if (state.joinedSubRoomId) {
+      client.send({ type: 'leave_sub_room' });
+    }
+    return;
+  }
+
+  if (!state.subRooms.some((room) => room.id === desiredSubRoomId)) return;
+  client.send({ type: 'join_sub_room', subRoomId: desiredSubRoomId });
 }
 
 function buildSyntheticSelfParticipant(): RoomParticipant | null {
@@ -1406,6 +1423,7 @@ function dispatchMessage(raw: unknown): void {
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
       syncDerivedSubRoomState();
+      syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
       const participants = (msg.participants as Array<Record<string, unknown>>) || [];
       state.participants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
@@ -1459,7 +1477,7 @@ function dispatchMessage(raw: unknown): void {
         if (since) historyReq.since = since;
         client.send(historyReq);
       }
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
 
       notify();
       break;
@@ -1587,12 +1605,9 @@ function dispatchMessage(raw: unknown): void {
       })).sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
       syncDerivedSubRoomState();
-      if (state.joinedSubRoomId) {
-        state.desiredSubRoomId = state.joinedSubRoomId;
-      }
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1613,7 +1628,7 @@ function dispatchMessage(raw: unknown): void {
         .sort((a, b) => a.roomNumber - b.roomNumber);
       syncDerivedSubRoomState();
       applyEffectiveParticipantVolumes();
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1635,12 +1650,10 @@ function dispatchMessage(raw: unknown): void {
           : room;
       });
       syncDerivedSubRoomState();
-      if (participantId === state.selfParticipantId) {
-        state.desiredSubRoomId = subRoomId;
-      }
       void source;
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1656,11 +1669,9 @@ function dispatchMessage(raw: unknown): void {
           : room
       ));
       syncDerivedSubRoomState();
-      if (participantId === state.selfParticipantId) {
-        state.desiredSubRoomId = null;
-      }
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1669,10 +1680,11 @@ function dispatchMessage(raw: unknown): void {
       const subRoomId = msg.subRoomId as string;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
-      if (state.desiredSubRoomId === subRoomId) {
-        state.desiredSubRoomId = null;
+      if (desiredSubRoomIntent === subRoomId) {
+        desiredSubRoomIntent = undefined;
       }
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -2162,6 +2174,7 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  desiredSubRoomIntent = undefined;
 
   // Push initial state to the component
   notify();
@@ -2347,6 +2360,7 @@ export function leaveRoom(): void {
 
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+  desiredSubRoomIntent = undefined;
 
   // Reset reconnect cooldown timer
   lastReconnectMediaTime = 0;
@@ -3067,6 +3081,7 @@ export function createSubRoom(): void {
 
 export function joinSubRoom(subRoomId: string): void {
   if (!subRoomId) return;
+  desiredSubRoomIntent = subRoomId;
   state.desiredSubRoomId = subRoomId;
   notify();
   if (!client || client.status !== 'connected') return;
@@ -3074,6 +3089,7 @@ export function joinSubRoom(subRoomId: string): void {
 }
 
 export function leaveSubRoom(): void {
+  desiredSubRoomIntent = null;
   state.desiredSubRoomId = null;
   notify();
   if (!client || client.status !== 'connected') return;

@@ -218,6 +218,8 @@ vi.mock('../native-media', () => ({
 import {
   initSession,
   leaveRoom,
+  leaveSubRoom,
+  joinSubRoom,
   toggleSelfMute,
   reconnectMedia,
   resetMediaReconnectFailures,
@@ -355,6 +357,17 @@ describe('VoiceRoom sub-room state', () => {
     await driveToActive('ch-subrooms', 'subroom-test');
 
     messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    joinSubRoom('room-2');
+
+    messageHandler!({
       type: 'sub_room_joined',
       participantId: 'self-peer',
       subRoomId: 'room-2',
@@ -392,6 +405,76 @@ describe('VoiceRoom sub-room state', () => {
       subRoomId: 'room-2',
     });
     expect(getState().desiredSubRoomId).toBe('room-2');
+  });
+
+  it('keeps the latest join intent when stale self join acknowledgements arrive out of order', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+        { subRoomId: 'room-3', roomNumber: 3, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    sentMessages = [];
+
+    joinSubRoom('room-2');
+    joinSubRoom('room-3');
+
+    expect(getState().desiredSubRoomId).toBe('room-3');
+    expect(sentMessages.filter((m) => m.type === 'join_sub_room')).toEqual([
+      { type: 'join_sub_room', subRoomId: 'room-2' },
+      { type: 'join_sub_room', subRoomId: 'room-3' },
+    ]);
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-2');
+    expect(getState().desiredSubRoomId).toBe('room-3');
+    expect(sentMessages.filter((m) => m.type === 'join_sub_room').at(-1)).toEqual({
+      type: 'join_sub_room',
+      subRoomId: 'room-3',
+    });
+  });
+
+  it('keeps an explicit leave intent when a stale self join acknowledgement arrives later', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    sentMessages = [];
+
+    joinSubRoom('room-2');
+    leaveSubRoom();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-2');
+    expect(getState().desiredSubRoomId).toBeNull();
+    expect(sentMessages.filter((m) => m.type === 'leave_sub_room').at(-1)).toEqual({
+      type: 'leave_sub_room',
+    });
   });
 });
 

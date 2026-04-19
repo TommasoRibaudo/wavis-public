@@ -142,6 +142,13 @@ function getEventUsername(event: RoomEvent): string | null {
   return null;
 }
 
+type ShareViewerScope = 'direct' | 'watch-all';
+
+interface ShareViewerWindow {
+  scope: ShareViewerScope;
+  window: WebviewWindow;
+}
+
 /* ─── Sub-components ────────────────────────────────────────────── */
 
 function signalingIndicator(state: VoiceRoomMachineState): { color: string; label: string } {
@@ -565,7 +572,7 @@ export default function ActiveRoom() {
   // Toast notification tracking
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
-  const shareWindowsRef = useRef<Map<string, WebviewWindow>>(new Map());
+  const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -696,7 +703,7 @@ export default function ActiveRoom() {
     }
 
     const shareWindow = shareWindowsRef.current.get(participantId);
-    if (!shareWindow || shareWindow.label !== windowLabel) return;
+    if (!shareWindow || shareWindow.window.label !== windowLabel) return;
     attachScreenShareAudio(participantId);
     setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
     void emit('share:user-state', shareUserStateRef.current);
@@ -875,11 +882,11 @@ export default function ActiveRoom() {
       // If already open, bring to foreground
       const existingWin = shareWindowsRef.current.get(pid);
       if (existingWin) {
-        existingWin.setFocus();
+        existingWin.window.setFocus();
         return;
       }
       // openShareWindow handles removing the tile from Watch All grid
-      openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null);
+      openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
     });
     return () => { unlisten.then((fn) => fn?.()); };
   }, [syncScreenShareVolume]);
@@ -1054,7 +1061,12 @@ export default function ActiveRoom() {
   }, []);
 
   /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
-  const openShareWindow = async (participantId: string, participant: RoomParticipant, stream: MediaStream | null) => {
+  const openShareWindow = async (
+    participantId: string,
+    participant: RoomParticipant,
+    stream: MediaStream | null,
+    scope: ShareViewerScope = 'direct',
+  ) => {
     // If already watching this participant, close it first and wait for Tauri to
     // destroy the webview before creating a new one with the same label.
     if (shareWindowsRef.current.has(participantId)) {
@@ -1062,7 +1074,7 @@ export default function ActiveRoom() {
       closeShareWindow(participantId);
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(resolve, 1000);
-        oldWin.once('tauri://destroyed', () => { clearTimeout(timeout); resolve(); });
+        oldWin.window.once('tauri://destroyed', () => { clearTimeout(timeout); resolve(); });
       });
     }
 
@@ -1115,7 +1127,7 @@ export default function ActiveRoom() {
         handleShareWindowClosed(participantId);
       });
 
-      shareWindowsRef.current.set(participantId, win);
+      shareWindowsRef.current.set(participantId, { window: win, scope });
       setWatchingShareIds((prev) => new Set(prev).add(participantId));
 
       // If Watch All is open, remove this tile from the grid — the pop-out owns it now
@@ -1135,12 +1147,12 @@ export default function ActiveRoom() {
   const closeShareWindow = (participantId: string) => {
     stopSending(participantId, `screen-share-${participantId}`);
     detachScreenShareAudio(participantId);
-    const win = shareWindowsRef.current.get(participantId);
-    if (win) {
+    const shareWindow = shareWindowsRef.current.get(participantId);
+    if (shareWindow) {
       // Delete BEFORE win.close() so the screen-share:closed handler
       // sees delete() return false and skips its re-add (no double-fire).
       shareWindowsRef.current.delete(participantId);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     setWatchingShareIds((prev) => {
       const next = new Set(prev);
@@ -1154,9 +1166,9 @@ export default function ActiveRoom() {
   const closeAllShareWindows = () => {
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
-    for (const [pid, win] of shareWindowsRef.current) {
+    for (const [pid, shareWindow] of shareWindowsRef.current) {
       detachScreenShareAudio(pid);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
@@ -1179,10 +1191,10 @@ export default function ActiveRoom() {
     // Close any existing individual pop-out windows — WatchAll subsumes them.
     // We close the windows but don't detach audio (WatchAll doesn't handle
     // per-stream audio — the main window's audio attachment is independent).
-    for (const [pid, win] of [...shareWindowsRef.current.entries()]) {
+    for (const [pid, shareWindow] of [...shareWindowsRef.current.entries()]) {
       stopSending(pid, `screen-share-${pid}`);
       detachScreenShareAudio(pid);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
@@ -1277,6 +1289,24 @@ export default function ActiveRoom() {
     watchAllWindowRef.current = null;
     setWatchAllOpen(false);
   };
+
+  const previousJoinedSubRoomIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previousJoinedSubRoomId = previousJoinedSubRoomIdRef.current;
+    const nextJoinedSubRoomId = roomState?.joinedSubRoomId ?? null;
+    previousJoinedSubRoomIdRef.current = nextJoinedSubRoomId;
+
+    if (previousJoinedSubRoomId === nextJoinedSubRoomId) return;
+
+    const scopeParticipantIds = getWatchAllScope(roomState).participantIds;
+    closeWatchAllWindow();
+
+    for (const [participantId, shareWindow] of [...shareWindowsRef.current.entries()]) {
+      if (shareWindow.scope !== 'watch-all') continue;
+      if (scopeParticipantIds.has(participantId)) continue;
+      closeShareWindow(participantId);
+    }
+  }, [getWatchAllScope, roomState, roomState?.joinedSubRoomId]);
 
   /** Toggle the Watch All window open/closed. */
   const toggleWatchAllWindow = () => {
