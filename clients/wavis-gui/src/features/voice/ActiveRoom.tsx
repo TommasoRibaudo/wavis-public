@@ -1976,6 +1976,7 @@ export default function ActiveRoom() {
     <div className="flex-1 overflow-y-auto">
       {roomState.subRooms.map((subRoom) => {
         const sectionKey = `sub-room:${subRoom.id}`;
+        const roomPanelId = `sub-room-panel-${subRoom.id}`;
         const isExpanded = expandedSections[sectionKey] ?? true;
         const roomParticipantIds = new Set(subRoom.participantIds);
         const roomParticipants = roomState.participants.filter((participant) => roomParticipantIds.has(participant.id));
@@ -1988,9 +1989,22 @@ export default function ActiveRoom() {
 
         return (
           <div key={subRoom.id} className="border-b border-wavis-text-secondary">
-            <button
-              type="button"
-              onClick={() => toggleSection(sectionKey)}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={isExpanded}
+              aria-controls={roomPanelId}
+              onPointerDown={(event) => {
+                if (!event.isPrimary || event.button !== 0) return;
+                event.preventDefault();
+                event.currentTarget.focus();
+                toggleSection(sectionKey);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                toggleSection(sectionKey);
+              }}
               className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80"
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -1998,9 +2012,9 @@ export default function ActiveRoom() {
                 <span>{`ROOM ${subRoom.roomNumber}`}</span>
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
               </div>
-            </button>
+            </div>
             {isExpanded && (
-              <div className="px-3 py-2 space-y-1 text-sm">
+              <div id={roomPanelId} className="px-3 py-2 space-y-1 text-sm">
                 {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
                   <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
                 )}

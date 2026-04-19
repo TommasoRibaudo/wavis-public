@@ -468,6 +468,19 @@ function roomPanelLayout(state: RoomPanelLayoutState): {
   };
 }
 
+function toggleRoomHeaderOnPointerDown(
+  expanded: boolean,
+  event: { isPrimary: boolean; button: number },
+): boolean {
+  if (!event.isPrimary || event.button !== 0) return expanded;
+  return !expanded;
+}
+
+function toggleRoomHeaderOnKeyDown(expanded: boolean, key: string): boolean {
+  if (key !== 'Enter' && key !== ' ') return expanded;
+  return !expanded;
+}
+
 interface ScopedShareWindow {
   scope: 'direct' | 'watch-all';
 }
@@ -764,6 +777,24 @@ describe('Watch All Entry Points', () => {
         actionsBelowParticipants: true,
         footerButtons: ['/join', '/watch-all'],
       });
+    });
+  });
+
+  describe('room collapse interaction', () => {
+    it('toggles immediately on the first primary pointer interaction', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 0 })).toBe(false);
+      expect(toggleRoomHeaderOnPointerDown(false, { isPrimary: true, button: 0 })).toBe(true);
+    });
+
+    it('ignores non-primary pointer interactions', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: false, button: 0 })).toBe(true);
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 1 })).toBe(true);
+    });
+
+    it('preserves keyboard toggling on Enter and Space', () => {
+      expect(toggleRoomHeaderOnKeyDown(true, 'Enter')).toBe(false);
+      expect(toggleRoomHeaderOnKeyDown(true, ' ')).toBe(false);
+      expect(toggleRoomHeaderOnKeyDown(true, 'Escape')).toBe(true);
     });
   });
 
