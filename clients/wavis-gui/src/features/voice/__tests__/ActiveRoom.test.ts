@@ -443,28 +443,35 @@ interface RoomPanelLayoutState {
 }
 
 /**
- * Replicates the Phase 9 room-panel layout contract from ActiveRoom.tsx:
- * - header is a dedicated collapse toggle
- * - action controls live in a centered footer row below participants
+ * Replicates the Phase 14 room-panel layout contract from ActiveRoom.tsx:
+ * - header is the collapse toggle and contains /join or /leave on the right
+ * - /watch-all lives in a right-aligned row inside the expanded room body
+ * - collapsing the room hides the watch-all row with the participants
  */
 function roomPanelLayout(state: RoomPanelLayoutState): {
-  headerOnlyToggles: boolean;
-  footerCentered: boolean;
-  actionsBelowParticipants: boolean;
-  footerButtons: string[];
+  headerContainsRoomAction: boolean;
+  headerRoomAction: string;
+  watchAllRowInsideExpandedBody: boolean;
+  watchAllRowRightAligned: boolean;
+  watchAllVisibleWhenExpanded: boolean;
+  watchAllVisibleWhenCollapsed: boolean;
+  watchAllButton: string | null;
 } {
-  const footerButtons = [state.isJoinedRoom ? '/leave' : '/join'];
+  let watchAllButton: string | null = null;
   if (state.isJoinedRoom && state.joinedRoomRemoteSharersCount > 0) {
-    footerButtons.push(state.watchAllOpen ? '/close-all' : '/watch-all');
+    watchAllButton = state.watchAllOpen ? '/close-all' : '/watch-all';
   } else if (!state.isJoinedRoom && state.otherRoomRemoteSharersCount > 0) {
-    footerButtons.push('/watch-all');
+    watchAllButton = '/watch-all';
   }
 
   return {
-    headerOnlyToggles: true,
-    footerCentered: true,
-    actionsBelowParticipants: true,
-    footerButtons,
+    headerContainsRoomAction: true,
+    headerRoomAction: state.isJoinedRoom ? '/leave' : '/join',
+    watchAllRowInsideExpandedBody: true,
+    watchAllRowRightAligned: true,
+    watchAllVisibleWhenExpanded: watchAllButton !== null,
+    watchAllVisibleWhenCollapsed: false,
+    watchAllButton,
   };
 }
 
@@ -474,6 +481,18 @@ function toggleRoomHeaderOnPointerDown(
 ): boolean {
   if (!event.isPrimary || event.button !== 0) return expanded;
   return !expanded;
+}
+
+function toggleRoomHeaderFromStoredState(
+  storedExpanded: boolean | undefined,
+  event: { isPrimary: boolean; button: number },
+): boolean {
+  const effectiveExpanded = storedExpanded ?? true;
+  return toggleRoomHeaderOnPointerDown(effectiveExpanded, event);
+}
+
+function headerPointerDownTriggeredByRoomAction(event: { stopPropagationCalled: boolean }): boolean {
+  return !event.stopPropagationCalled;
 }
 
 function toggleRoomHeaderOnKeyDown(expanded: boolean, key: string): boolean {
@@ -751,32 +770,47 @@ describe('Watch All Lifecycle', () => {
 
 describe('Watch All Entry Points', () => {
   describe('room panel layout', () => {
-    it('keeps the room header as a dedicated toggle and moves controls into the footer row', () => {
+    it('keeps join or leave in the room header and keeps watch-all right-aligned in expanded content', () => {
       expect(roomPanelLayout({
         isJoinedRoom: true,
         joinedRoomRemoteSharersCount: 2,
         otherRoomRemoteSharersCount: 0,
         watchAllOpen: false,
       })).toEqual({
-        headerOnlyToggles: true,
-        footerCentered: true,
-        actionsBelowParticipants: true,
-        footerButtons: ['/leave', '/watch-all'],
+        headerContainsRoomAction: true,
+        headerRoomAction: '/leave',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
       });
     });
 
-    it('shows the disabled other-room watch-all affordance in the footer row', () => {
+    it('shows the disabled other-room watch-all affordance inside expanded room content only', () => {
       expect(roomPanelLayout({
         isJoinedRoom: false,
         joinedRoomRemoteSharersCount: 0,
         otherRoomRemoteSharersCount: 1,
         watchAllOpen: false,
       })).toEqual({
-        headerOnlyToggles: true,
-        footerCentered: true,
-        actionsBelowParticipants: true,
-        footerButtons: ['/join', '/watch-all'],
+        headerContainsRoomAction: true,
+        headerRoomAction: '/join',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
       });
+    });
+
+    it('hides watch-all entirely when the room is collapsed', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: true,
+        joinedRoomRemoteSharersCount: 1,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: true,
+      }).watchAllVisibleWhenCollapsed).toBe(false);
     });
   });
 
@@ -784,6 +818,15 @@ describe('Watch All Entry Points', () => {
     it('toggles immediately on the first primary pointer interaction', () => {
       expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 0 })).toBe(false);
       expect(toggleRoomHeaderOnPointerDown(false, { isPrimary: true, button: 0 })).toBe(true);
+    });
+
+    it('first click on an uninitialized room section collapses immediately', () => {
+      expect(toggleRoomHeaderFromStoredState(undefined, { isPrimary: true, button: 0 })).toBe(false);
+    });
+
+    it('second click after collapsing re-expands the room', () => {
+      const collapsed = toggleRoomHeaderFromStoredState(undefined, { isPrimary: true, button: 0 });
+      expect(toggleRoomHeaderFromStoredState(collapsed, { isPrimary: true, button: 0 })).toBe(true);
     });
 
     it('ignores non-primary pointer interactions', () => {
@@ -795,6 +838,20 @@ describe('Watch All Entry Points', () => {
       expect(toggleRoomHeaderOnKeyDown(true, 'Enter')).toBe(false);
       expect(toggleRoomHeaderOnKeyDown(true, ' ')).toBe(false);
       expect(toggleRoomHeaderOnKeyDown(true, 'Escape')).toBe(true);
+    });
+
+    it('treats the header room action as separate from the collapse toggle', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 0 })).toBe(false);
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      }).headerRoomAction).toBe('/join');
+    });
+
+    it('join or leave button pointer handling blocks the header collapse handler', () => {
+      expect(headerPointerDownTriggeredByRoomAction({ stopPropagationCalled: true })).toBe(false);
     });
   });
 

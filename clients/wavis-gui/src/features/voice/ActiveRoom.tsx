@@ -300,7 +300,10 @@ export default function ActiveRoom() {
     participants: true,
   });
   const toggleSection = (key: string) =>
-    setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+    setExpandedSections((prev) => {
+      const current = prev[key] ?? true;
+      return { ...prev, [key]: !current };
+    });
 
   // Per-participant expanded host controls
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
@@ -1986,6 +1989,35 @@ export default function ActiveRoom() {
         const isJoinedRoom = roomState.joinedSubRoomId === subRoom.id;
         const showJoinedRoomWatchAll = isJoinedRoom && roomRemoteSharers.length > 0;
         const showDisabledWatchAll = !isJoinedRoom && roomRemoteSharers.length > 0;
+        const roomActionButton = isJoinedRoom ? (
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              leaveSubRoom();
+            }}
+            className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg cursor-pointer"
+          >
+            /leave
+          </button>
+        ) : (
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              joinSubRoom(subRoom.id);
+            }}
+            className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer"
+          >
+            /join
+          </button>
+        );
 
         return (
           <div key={subRoom.id} className="border-b border-wavis-text-secondary">
@@ -2005,12 +2037,15 @@ export default function ActiveRoom() {
                 event.preventDefault();
                 toggleSection(sectionKey);
               }}
-              className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80"
+              className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
                 <span>{`ROOM ${subRoom.roomNumber}`}</span>
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
+              </div>
+              <div className="shrink-0">
+                {roomActionButton}
               </div>
             </div>
             {isExpanded && (
@@ -2018,47 +2053,32 @@ export default function ActiveRoom() {
                 {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
                   <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
                 )}
+                {(showJoinedRoomWatchAll || showDisabledWatchAll) && (
+                  <div className="pt-2 flex items-center justify-end gap-2">
+                    {showJoinedRoomWatchAll && (
+                      <button
+                        type="button"
+                        onClick={toggleWatchAllWindow}
+                        className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                      >
+                        {watchAllOpen ? '/close-all' : '/watch-all'}
+                      </button>
+                    )}
+                    {showDisabledWatchAll && (
+                      <button
+                        type="button"
+                        disabled
+                        aria-disabled="true"
+                        title="Join this room to watch all streams together."
+                        className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
+                      >
+                        /watch-all
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
-            <div className="px-3 pb-3 pt-1 flex items-center justify-center gap-2">
-              {roomState.joinedSubRoomId === subRoom.id ? (
-                <button
-                  type="button"
-                  onClick={() => leaveSubRoom()}
-                  className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
-                >
-                  /leave
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => joinSubRoom(subRoom.id)}
-                  className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
-                >
-                  /join
-                </button>
-              )}
-              {showJoinedRoomWatchAll && (
-                <button
-                  type="button"
-                  onClick={toggleWatchAllWindow}
-                  className={`text-xs py-0.5 px-1 border transition-colors ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-                >
-                  {watchAllOpen ? '/close-all' : '/watch-all'}
-                </button>
-              )}
-              {showDisabledWatchAll && (
-                <button
-                  type="button"
-                  disabled
-                  aria-disabled="true"
-                  title="Join this room to watch all streams together."
-                  className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
-                >
-                  /watch-all
-                </button>
-              )}
-            </div>
           </div>
         );
       })}
@@ -2414,7 +2434,7 @@ export default function ActiveRoom() {
 
       {/* ═══ DESKTOP LAYOUT (md+) ═══ */}
       <div className="hidden md:flex flex-1 overflow-hidden">
-        <div className="w-64 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
           {mediaRetryBanner}
           {participantsSections}
