@@ -7,6 +7,9 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    target: ['safari15'],
+  },
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, './src/shared'),
