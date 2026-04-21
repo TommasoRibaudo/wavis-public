@@ -36,6 +36,8 @@
     "global-shortcut:allow-is-registered",
     "clipboard-manager:allow-write-text",
     "log:default",
+    "updater:default",
+    "process:default",
     "shell:allow-open"
   ]
 }
