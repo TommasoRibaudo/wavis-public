@@ -25,13 +25,17 @@
 use crate::app_state::ActiveRoomMap;
 use crate::auth::jwt::{sign_livekit_token, sign_media_token};
 use crate::channel::channel_models::ChannelRole;
-use crate::state::{InMemoryRoomState, RoomInfo, SubRoomInfo, SubRoomMembershipSource, SubRoomState};
+use crate::state::{
+    InMemoryRoomState, PassthroughPair, RoomInfo, SubRoomInfo, SubRoomMembershipSource,
+    SubRoomState,
+};
 use crate::voice::sfu_bridge::SfuRoomManager;
 use crate::voice::sfu_relay::{OutboundSignal, ParticipantRole, TokenMode};
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use shared::signaling::{
     MediaTokenPayload, ParticipantInfo, ParticipantJoinedPayload, ParticipantLeftPayload,
+    PassthroughStatePayload,
     RoomStatePayload, SignalingMessage, SubRoomCreatedPayload, SubRoomDeletedPayload,
     SubRoomInfoPayload, SubRoomJoinedPayload, SubRoomLeftPayload, SubRoomStatePayload,
     WireSubRoomMembershipSource,
@@ -146,9 +150,81 @@ fn sub_room_info_payload(room: &SubRoomInfo) -> SubRoomInfoPayload {
     }
 }
 
+fn passthrough_label(a: u32, b: u32) -> String {
+    format!("{a} - {b}")
+}
+
+fn active_passthrough_payload(state: &SubRoomState) -> Option<PassthroughStatePayload> {
+    let pair = state.active_passthrough.as_ref()?;
+    let source_room = state
+        .rooms
+        .iter()
+        .find(|room| room.sub_room_id == pair.source_sub_room_id)?;
+    let target_room = state
+        .rooms
+        .iter()
+        .find(|room| room.sub_room_id == pair.target_sub_room_id)?;
+    Some(PassthroughStatePayload {
+        source_sub_room_id: pair.source_sub_room_id.clone(),
+        target_sub_room_id: pair.target_sub_room_id.clone(),
+        label: passthrough_label(source_room.room_number, target_room.room_number),
+    })
+}
+
+fn normalize_passthrough_pair(
+    sub_rooms: &SubRoomState,
+    source_sub_room_id: &str,
+    target_sub_room_id: &str,
+) -> Result<PassthroughPair, String> {
+    if source_sub_room_id == target_sub_room_id {
+        return Err("passthrough requires a different target room".to_string());
+    }
+
+    let source_room = sub_rooms
+        .rooms
+        .iter()
+        .find(|room| room.sub_room_id == source_sub_room_id)
+        .ok_or_else(|| "source sub-room not found".to_string())?;
+    let target_room = sub_rooms
+        .rooms
+        .iter()
+        .find(|room| room.sub_room_id == target_sub_room_id)
+        .ok_or_else(|| "target sub-room not found".to_string())?;
+
+    if source_room.room_number <= target_room.room_number {
+        Ok(PassthroughPair {
+            source_sub_room_id: source_room.sub_room_id.clone(),
+            target_sub_room_id: target_room.sub_room_id.clone(),
+        })
+    } else {
+        Ok(PassthroughPair {
+            source_sub_room_id: target_room.sub_room_id.clone(),
+            target_sub_room_id: source_room.sub_room_id.clone(),
+        })
+    }
+}
+
+fn clear_invalid_passthrough_locked(sub_rooms: &mut SubRoomState) {
+    let Some(pair) = sub_rooms.active_passthrough.as_ref() else {
+        return;
+    };
+    let has_source = sub_rooms
+        .rooms
+        .iter()
+        .any(|room| room.sub_room_id == pair.source_sub_room_id);
+    let has_target = sub_rooms
+        .rooms
+        .iter()
+        .any(|room| room.sub_room_id == pair.target_sub_room_id);
+    if !has_source || !has_target || pair.source_sub_room_id == pair.target_sub_room_id {
+        sub_rooms.active_passthrough = None;
+    }
+}
+
 fn sub_room_state_payload(state: &SubRoomState) -> SubRoomStatePayload {
     SubRoomStatePayload {
         rooms: state.rooms.iter().map(sub_room_info_payload).collect(),
+        passthrough: active_passthrough_payload(state),
     }
 }
 
@@ -374,6 +450,7 @@ pub fn sync_sub_room_state_on_voice_join(
         let Some(sub_rooms) = info.sub_room_state.as_mut() else {
             return;
         };
+        clear_invalid_passthrough_locked(sub_rooms);
 
         if supports_sub_rooms {
             sub_rooms.participant_assignments.remove(participant_id);
@@ -427,6 +504,7 @@ pub fn create_sub_room(room_state: &InMemoryRoomState, room_id: &str) -> Result<
         let Some(sub_rooms) = info.sub_room_state.as_mut() else {
             return;
         };
+        clear_invalid_passthrough_locked(sub_rooms);
 
         let next_room_number = sub_rooms
             .rooms
@@ -478,6 +556,7 @@ pub fn join_sub_room(
         let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
             return Err("sub-room state unavailable".to_string());
         };
+        clear_invalid_passthrough_locked(sub_rooms);
 
         let target_room_id = sub_room_id.to_string();
         let target_idx = sub_rooms
@@ -543,6 +622,7 @@ pub fn leave_sub_room(
             let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
                 return Ok::<(), String>(());
             };
+            clear_invalid_passthrough_locked(sub_rooms);
 
             let Some(current_room_id) = sub_rooms.participant_assignments.remove(participant_id) else {
                 sub_rooms.membership_sources.remove(participant_id);
@@ -583,6 +663,92 @@ pub fn remove_participant_from_sub_room(
     leave_sub_room(room_state, room_id, participant_id).unwrap_or_default()
 }
 
+pub fn set_passthrough(
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+    participant_id: &str,
+    target_sub_room_id: &str,
+) -> Result<SubRoomActionResult, String> {
+    let changed = room_state
+        .with_room_write(room_id, |members| {
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return Err("sub-room state unavailable".to_string());
+            };
+            clear_invalid_passthrough_locked(sub_rooms);
+
+            let source_sub_room_id = sub_rooms
+                .participant_assignments
+                .get(participant_id)
+                .cloned()
+                .ok_or_else(|| "join a room to use passthrough".to_string())?;
+
+            if let Some(active_pair) = sub_rooms.active_passthrough.as_ref() {
+                let caller_involved = active_pair.source_sub_room_id == source_sub_room_id
+                    || active_pair.target_sub_room_id == source_sub_room_id;
+                if !caller_involved {
+                    return Err("passthrough is controlled by the active room pair".to_string());
+                }
+            }
+
+            let next_pair =
+                normalize_passthrough_pair(sub_rooms, &source_sub_room_id, target_sub_room_id)?;
+            let changed = sub_rooms.active_passthrough.as_ref() != Some(&next_pair);
+            sub_rooms.active_passthrough = Some(next_pair);
+            Ok(changed)
+        })
+        .map_err(|_| "voice session not found".to_string())??;
+
+    if !changed {
+        return Ok(SubRoomActionResult::default());
+    }
+
+    Ok(SubRoomActionResult {
+        signals: sub_room_state_signals(room_state, room_id),
+        expiry: None,
+    })
+}
+
+pub fn clear_passthrough(
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+    participant_id: &str,
+) -> Result<SubRoomActionResult, String> {
+    let changed = room_state
+        .with_room_write(room_id, |members| {
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return Err("sub-room state unavailable".to_string());
+            };
+            clear_invalid_passthrough_locked(sub_rooms);
+
+            let source_sub_room_id = sub_rooms
+                .participant_assignments
+                .get(participant_id)
+                .cloned()
+                .ok_or_else(|| "join a room to use passthrough".to_string())?;
+            let Some(active_pair) = sub_rooms.active_passthrough.as_ref() else {
+                return Ok(false);
+            };
+            let caller_involved = active_pair.source_sub_room_id == source_sub_room_id
+                || active_pair.target_sub_room_id == source_sub_room_id;
+            if !caller_involved {
+                return Err("passthrough is controlled by the active room pair".to_string());
+            }
+
+            sub_rooms.active_passthrough = None;
+            Ok(true)
+        })
+        .map_err(|_| "voice session not found".to_string())??;
+
+    if !changed {
+        return Ok(SubRoomActionResult::default());
+    }
+
+    Ok(SubRoomActionResult {
+        signals: sub_room_state_signals(room_state, room_id),
+        expiry: None,
+    })
+}
+
 pub fn expire_sub_room(
     room_state: &InMemoryRoomState,
     room_id: &str,
@@ -595,6 +761,7 @@ pub fn expire_sub_room(
         let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
             return;
         };
+        clear_invalid_passthrough_locked(sub_rooms);
         let Some(idx) = sub_rooms
             .rooms
             .iter()
@@ -607,6 +774,7 @@ pub fn expire_sub_room(
             return;
         }
         sub_rooms.rooms.remove(idx);
+        clear_invalid_passthrough_locked(sub_rooms);
         deleted = true;
     });
 

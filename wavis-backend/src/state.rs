@@ -87,6 +87,8 @@ pub struct SubRoomState {
     pub participant_assignments: HashMap<String, String>,
     /// How each participant's current assignment was chosen.
     pub membership_sources: HashMap<String, SubRoomMembershipSource>,
+    /// Optional active passthrough pair for this voice session.
+    pub active_passthrough: Option<PassthroughPair>,
 }
 
 impl SubRoomState {
@@ -95,8 +97,16 @@ impl SubRoomState {
             rooms: vec![SubRoomInfo::room_one(room_one_id)],
             participant_assignments: HashMap::new(),
             membership_sources: HashMap::new(),
+            active_passthrough: None,
         }
     }
+}
+
+/// Normalized authoritative passthrough pair between two synchronized sub-rooms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassthroughPair {
+    pub source_sub_room_id: String,
+    pub target_sub_room_id: String,
 }
 
 /// Room metadata stored alongside the peer list.
