@@ -1,0 +1,96 @@
+# Codemagic desktop release workflows.
+#
+# Initial scope:
+# - Build Linux AppImage artifacts for the Tauri desktop client.
+# - Do not publish to GitHub Releases yet.
+# - Use this workflow first to prove Ubuntu can produce the AppImage/update
+#   artifacts that local Arch currently cannot package because of linuxdeploy
+#   `.relr.dyn` strip errors.
+#
+# Required Codemagic secret:
+# - TAURI_SIGNING_PRIVATE_KEY: contents of .local-secrets/wavis-tauri-updater.key
+
+workflows:
+  desktop-linux-release:
+    name: Desktop Linux Release
+    instance_type: linux_x2
+    max_build_duration: 120
+    triggering:
+      events:
+        - push
+      tag_patterns:
+        - pattern: "desktop-v*"
+          include: true
+      cancel_previous_builds: true
+    environment:
+      groups:
+        - desktop-release
+      vars:
+        WAVIS_GUI_DIR: clients/wavis-gui
+    scripts:
+      - name: Install Linux build dependencies
+        script: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libclang-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libx11-dev \
+            patchelf \
+            pkg-config \
+            rpm
+      - name: Install frontend dependencies
+        script: |
+          cd "$WAVIS_GUI_DIR"
+          npm install
+      - name: Install Rust toolchain
+        script: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup default stable
+      - name: Verify toolchains
+        script: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
+      - name: Run frontend tests
+        script: |
+          cd "$WAVIS_GUI_DIR"
+          npm test
+      - name: Build frontend
+        script: |
+          cd "$WAVIS_GUI_DIR"
+          npm run build
+      - name: Build signed Linux AppImage
+        script: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is required for updater artifacts."
+            exit 1
+          fi
+
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cd "$WAVIS_GUI_DIR"
+          npm run tauri build -- --bundles appimage --verbose
+      - name: List generated desktop artifacts
+        script: |
+          find target/release/bundle -maxdepth 3 -type f \
+            \( -name "*.AppImage" -o -name "*.sig" -o -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" \) \
+            -print
+    artifacts:
+      - target/release/bundle/appimage/*.AppImage
+      - target/release/bundle/appimage/*.AppImage.sig
+      - target/release/bundle/appimage/*.tar.gz
+      - target/release/bundle/appimage/*.tar.gz.sig
+      - target/release/bundle/deb/*.deb
+      - target/release/bundle/rpm/*.rpm
