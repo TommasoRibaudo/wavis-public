@@ -32,6 +32,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -41,9 +42,20 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15",
+      "minimumSystemVersion": "11.6",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5NkQwQ0VENTQ0NDBBMUYKUldRZkNrUlU3UXh0V2Fvd0J1R0lmTm5hUEdCLzBFREF0UjJjUG56QUF3VVBma2FNN1dsUUJ4ZVQK",
+      "endpoints": [
+        "https://github.com/TommasoRibaudo/wavis-public/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

@@ -73,3 +73,5 @@ multi-room-voice-plan.md
 tasks.md
 clients/shared/SECURITY.md
 deploy/MIGRATION-RUNBOOK.md
+/compat-results
+/tools/compat
