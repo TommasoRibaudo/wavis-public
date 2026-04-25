@@ -8,6 +8,7 @@ import { initNotificationBridge } from '@shared/notification-bridge';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
 import { getState } from '@features/voice/voice-room';
+import AppUpdatePrompt from '@shared/AppUpdatePrompt';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -88,6 +89,7 @@ export default function App() {
       <div className="flex flex-col h-full">
         <TitleBar />
         <BugReportButton />
+        <AppUpdatePrompt />
         <div className="flex-1 overflow-hidden">
           <RouterProvider router={router} />
         </div>
