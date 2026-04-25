@@ -128,12 +128,33 @@ fn test_sub_room_state_round_trip() {
                 delete_at_ms: Some(1_746_000_000_000),
             },
         ],
+        passthrough: Some(PassthroughStatePayload {
+            source_sub_room_id: "sub-room-1".to_string(),
+            target_sub_room_id: "sub-room-2".to_string(),
+            label: "1 - 2".to_string(),
+        }),
     });
     let json = to_json(&msg).unwrap();
     assert!(json.contains(r#""type":"sub_room_state""#));
     assert!(json.contains(r#""subRoomId":"sub-room-1""#));
     assert!(json.contains(r#""roomNumber":1"#));
     assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_passthrough_actions_round_trip() {
+    let set_msg = SignalingMessage::SetPassthrough(SetPassthroughPayload {
+        target_sub_room_id: "sub-room-2".to_string(),
+    });
+    let set_json = to_json(&set_msg).unwrap();
+    assert!(set_json.contains(r#""type":"set_passthrough""#));
+    assert!(set_json.contains(r#""targetSubRoomId":"sub-room-2""#));
+    assert_eq!(parse(&set_json).unwrap(), set_msg);
+
+    let clear_msg = SignalingMessage::ClearPassthrough(ClearPassthroughPayload {});
+    let clear_json = to_json(&clear_msg).unwrap();
+    assert_eq!(clear_json, r#"{"type":"clear_passthrough"}"#);
+    assert_eq!(parse(&clear_json).unwrap(), clear_msg);
 }
 
 // --- Unit tests for ChatSend serialization ---
@@ -300,6 +321,7 @@ proptest! {
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
+                           "set_passthrough", "clear_passthrough",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",
                            "sfu_cold_starting",

@@ -80,6 +80,8 @@ vi.mock('../voice-room', () => ({
   createSubRoom: vi.fn(),
   joinSubRoom: vi.fn(),
   leaveSubRoom: vi.fn(),
+  setPassthrough: vi.fn(),
+  clearPassthrough: vi.fn(),
   stopParticipantShare: vi.fn(),
   stopAllShares: vi.fn(),
   sendChatMessage: vi.fn(),

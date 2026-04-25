@@ -31,6 +31,7 @@ let statusChangeHandler: ((status: string) => void) | null;
 
 /** Whether connectWithAuth should reject. */
 let connectShouldFail: boolean;
+let playNotificationSoundCalls: string[];
 
 // ─── Mock LiveKitModule ────────────────────────────────────────────
 
@@ -177,6 +178,12 @@ vi.mock('@shared/hotkey-bridge', () => ({
   unregisterMuteHotkey: vi.fn(async () => {}),
 }));
 
+vi.mock('../notification-sounds', () => ({
+  playNotificationSound: vi.fn(async (name: string) => {
+    playNotificationSoundCalls.push(name);
+  }),
+}));
+
 // ─── Mock Tauri APIs ───────────────────────────────────────────────
 // voice-room.ts imports invoke, listen, emit, and WebviewWindow from
 // @tauri-apps/api — these access window.__TAURI_INTERNALS__ which
@@ -211,6 +218,8 @@ vi.mock('../native-media', () => ({
 import {
   initSession,
   leaveRoom,
+  leaveSubRoom,
+  joinSubRoom,
   toggleSelfMute,
   reconnectMedia,
   resetMediaReconnectFailures,
@@ -232,6 +241,7 @@ function resetAll() {
   statusChangeHandler = null;
   connectShouldFail = false;
   mockMaxRetries = 10;
+  playNotificationSoundCalls = [];
 }
 
 /** Flush microtask queue. */
@@ -330,6 +340,11 @@ describe('VoiceRoom sub-room state', () => {
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['peer-2'] },
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['self-peer'] },
       ],
+      passthrough: {
+        sourceSubRoomId: 'room-1',
+        targetSubRoomId: 'room-2',
+        label: '1 - 2',
+      },
     });
     await tick();
 
@@ -341,10 +356,26 @@ describe('VoiceRoom sub-room state', () => {
     });
     expect(state.joinedSubRoomId).toBe('room-2');
     expect(state.desiredSubRoomId).toBe('room-2');
+    expect(state.passthrough).toEqual({
+      sourceSubRoomId: 'room-1',
+      targetSubRoomId: 'room-2',
+      label: '1 - 2',
+    });
   });
 
   it('rejoins the desired sub-room after reconnect when the room still exists', async () => {
     await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    joinSubRoom('room-2');
 
     messageHandler!({
       type: 'sub_room_joined',
@@ -384,6 +415,76 @@ describe('VoiceRoom sub-room state', () => {
       subRoomId: 'room-2',
     });
     expect(getState().desiredSubRoomId).toBe('room-2');
+  });
+
+  it('keeps the latest join intent when stale self join acknowledgements arrive out of order', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+        { subRoomId: 'room-3', roomNumber: 3, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    sentMessages = [];
+
+    joinSubRoom('room-2');
+    joinSubRoom('room-3');
+
+    expect(getState().desiredSubRoomId).toBe('room-3');
+    expect(sentMessages.filter((m) => m.type === 'join_sub_room')).toEqual([
+      { type: 'join_sub_room', subRoomId: 'room-2' },
+      { type: 'join_sub_room', subRoomId: 'room-3' },
+    ]);
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-2');
+    expect(getState().desiredSubRoomId).toBe('room-3');
+    expect(sentMessages.filter((m) => m.type === 'join_sub_room').at(-1)).toEqual({
+      type: 'join_sub_room',
+      subRoomId: 'room-3',
+    });
+  });
+
+  it('keeps an explicit leave intent when a stale self join acknowledgement arrives later', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    sentMessages = [];
+
+    joinSubRoom('room-2');
+    leaveSubRoom();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-2');
+    expect(getState().desiredSubRoomId).toBeNull();
+    expect(sentMessages.filter((m) => m.type === 'leave_sub_room').at(-1)).toEqual({
+      type: 'leave_sub_room',
+    });
   });
 });
 
@@ -433,6 +534,218 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
     expect(newCalls).toContainEqual({ id: 'peer-2', vol: 0 });
     expect(getState().joinedSubRoomId).toBeNull();
+  });
+
+  it('attenuates participants in the paired passthrough room and preserves their saved volume preference', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    const callsBefore = lastLkModule!.setParticipantVolumeCalls.length;
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+      passthrough: {
+        sourceSubRoomId: 'room-1',
+        targetSubRoomId: 'room-2',
+        label: '1 - 2',
+      },
+    });
+    await tick();
+
+    const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
+    expect(newCalls).toContainEqual({ id: 'peer-2', vol: 14 });
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.volume).toBe(70);
+    expect(getState().passthrough).toEqual({
+      sourceSubRoomId: 'room-1',
+      targetSubRoomId: 'room-2',
+      label: '1 - 2',
+    });
+  });
+});
+
+describe('VoiceRoom room-scoped join/leave sounds', () => {
+  it('does not play join sound for voice-session joined or participant_joined before room membership exists', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    expect(playNotificationSoundCalls).toEqual([]);
+
+    messageHandler!({
+      type: 'participant_joined',
+      participantId: 'peer-3',
+      displayName: 'Bob',
+      userId: 'u3',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+  });
+
+  it('plays join when the local user is assigned into a sub-room', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
+  it('plays leave then join when the local user switches rooms', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave', 'join']);
+  });
+
+  it('plays join when another user enters the local user current room', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
+  it('plays leave when another user leaves the local user current room', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'participant_left',
+      participantId: 'peer-2',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+  });
+
+  it('does not play room sound when another user moves outside the local user current room', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+        { subRoomId: 'room-3', roomNumber: 3, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+  });
+
+  it('does not double-play room sounds when an incremental event is followed by the same snapshot', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
+  it('does not play leave sound for explicit whole-session leave', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+      ],
+    });
+    await tick();
+    playNotificationSoundCalls = [];
+
+    leaveRoom();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+    expect(sentMessages).toContainEqual({ type: 'leave' });
   });
 });
 
