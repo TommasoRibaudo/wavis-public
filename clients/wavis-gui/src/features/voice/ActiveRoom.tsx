@@ -679,8 +679,21 @@ export default function ActiveRoom() {
       };
     }
 
-    const currentRoom = currentState.subRooms.find((subRoom) => subRoom.id === currentState.joinedSubRoomId);
-    const participantIds = new Set(currentRoom?.participantIds ?? []);
+    const scopedSubRoomIds = new Set<string>([currentState.joinedSubRoomId]);
+    const passthrough = currentState.passthrough;
+    if (passthrough?.sourceSubRoomId === currentState.joinedSubRoomId) {
+      scopedSubRoomIds.add(passthrough.targetSubRoomId);
+    } else if (passthrough?.targetSubRoomId === currentState.joinedSubRoomId) {
+      scopedSubRoomIds.add(passthrough.sourceSubRoomId);
+    }
+
+    const participantIds = new Set<string>();
+    for (const subRoom of currentState.subRooms) {
+      if (!scopedSubRoomIds.has(subRoom.id)) continue;
+      for (const participantId of subRoom.participantIds) {
+        participantIds.add(participantId);
+      }
+    }
     const participants = currentState.participants.filter((participant) => participantIds.has(participant.id));
     const remoteSharers = participants.filter((participant) => participant.isSharing && participant.id !== currentState.selfParticipantId);
     const streams = new Map(
@@ -974,7 +987,7 @@ export default function ActiveRoom() {
     }
 
     prevWatchAllStreamsRef.current = new Map(currentStreams);
-  }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -998,7 +1011,7 @@ export default function ActiveRoom() {
       newMap.set(p.id, { displayName: p.displayName, color: p.color });
     }
     prevParticipantsRef.current = newMap;
-  }, [getWatchAllScope, watchAllOpen, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [getWatchAllScope, watchAllOpen, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   // Custom share picker + indicator event listeners
   useEffect(() => {
@@ -1361,9 +1374,7 @@ export default function ActiveRoom() {
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
-  const joinedSubRoom = roomState?.subRooms.find((subRoom) => subRoom.id === roomState.joinedSubRoomId) ?? null;
-  const joinedSubRoomParticipantIds = new Set(joinedSubRoom?.participantIds ?? []);
-  const joinedRoomParticipants = roomState?.participants.filter((participant) => joinedSubRoomParticipantIds.has(participant.id)) ?? [];
+  const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
     ? isShareEnabled(roomState.sharePermission, isHost, roomState.machineState, roomState.mediaState)
     : false;
@@ -1393,7 +1404,7 @@ export default function ActiveRoom() {
       })) ?? [],
   };
   watchAllVoiceParticipantsRef.current = {
-    participants: joinedRoomParticipants
+    participants: watchAllScope.participants
       .filter((participant) => participant.id !== roomState?.selfParticipantId)
       .map((participant) => ({
         id: participant.id,
@@ -1417,7 +1428,7 @@ export default function ActiveRoom() {
   useEffect(() => {
     if (!roomState) return;
     void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
-  }, [roomState, roomState?.participants, roomState?.selfParticipantId, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [roomState, roomState?.participants, roomState?.selfParticipantId, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   /** Open custom share picker or invoke getDisplayMedia fallback based on platform. */
   const handleStartShare = async () => {
@@ -1987,8 +1998,15 @@ export default function ActiveRoom() {
           (participant) => participant.isSharing && participant.id !== roomState.selfParticipantId,
         );
         const isJoinedRoom = roomState.joinedSubRoomId === subRoom.id;
-        const showJoinedRoomWatchAll = isJoinedRoom && roomRemoteSharers.length > 0;
-        const showDisabledWatchAll = !isJoinedRoom && roomRemoteSharers.length > 0;
+        const passthrough = roomState.passthrough;
+        const pairedSubRoomId = passthrough?.sourceSubRoomId === roomState.joinedSubRoomId
+          ? passthrough.targetSubRoomId
+          : passthrough?.targetSubRoomId === roomState.joinedSubRoomId
+            ? passthrough.sourceSubRoomId
+            : null;
+        const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
+        const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
+        const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
         const roomActionButton = isJoinedRoom ? (
           <button
             type="button"
@@ -2053,9 +2071,9 @@ export default function ActiveRoom() {
                 {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
                   <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
                 )}
-                {(showJoinedRoomWatchAll || showDisabledWatchAll) && (
+                {(showEnabledWatchAll || showDisabledWatchAll) && (
                   <div className="pt-2 flex items-center justify-end gap-2">
-                    {showJoinedRoomWatchAll && (
+                    {showEnabledWatchAll && (
                       <button
                         type="button"
                         onClick={toggleWatchAllWindow}

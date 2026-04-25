@@ -433,6 +433,7 @@ interface SharesPanelState {
   joinedRoomRemoteSharersCount: number;
   otherRoomRemoteSharersCount: number;
   watchAllOpen: boolean;
+  isPassthroughPairedRoom?: boolean;
 }
 
 interface RoomPanelLayoutState {
@@ -440,6 +441,7 @@ interface RoomPanelLayoutState {
   joinedRoomRemoteSharersCount: number;
   otherRoomRemoteSharersCount: number;
   watchAllOpen: boolean;
+  isPassthroughPairedRoom?: boolean;
 }
 
 /**
@@ -458,7 +460,7 @@ function roomPanelLayout(state: RoomPanelLayoutState): {
   watchAllButton: string | null;
 } {
   let watchAllButton: string | null = null;
-  if (state.isJoinedRoom && state.joinedRoomRemoteSharersCount > 0) {
+  if ((state.isJoinedRoom || state.isPassthroughPairedRoom) && state.joinedRoomRemoteSharersCount > 0) {
     watchAllButton = state.watchAllOpen ? '/close-all' : '/watch-all';
   } else if (!state.isJoinedRoom && state.otherRoomRemoteSharersCount > 0) {
     watchAllButton = '/watch-all';
@@ -525,18 +527,83 @@ function handleJoinedRoomChange(
   };
 }
 
+interface WatchAllScopeRoom {
+  id: string;
+  participantIds: string[];
+}
+
+interface WatchAllScopeParticipant {
+  id: string;
+  isSharing: boolean;
+}
+
+interface WatchAllScopeData {
+  joinedSubRoomId: string | null;
+  passthrough: { sourceSubRoomId: string; targetSubRoomId: string } | null;
+  subRooms: WatchAllScopeRoom[];
+  participants: WatchAllScopeParticipant[];
+  selfParticipantId: string | null;
+  streams: Map<string, string | null>;
+}
+
+function computeWatchAllScope(state: WatchAllScopeData | null): {
+  participantIds: Set<string>;
+  remoteSharers: WatchAllScopeParticipant[];
+  streams: Map<string, string | null>;
+} {
+  if (!state?.joinedSubRoomId) {
+    return {
+      participantIds: new Set(),
+      remoteSharers: [],
+      streams: new Map(),
+    };
+  }
+
+  const scopedSubRoomIds = new Set([state.joinedSubRoomId]);
+  if (state.passthrough?.sourceSubRoomId === state.joinedSubRoomId) {
+    scopedSubRoomIds.add(state.passthrough.targetSubRoomId);
+  } else if (state.passthrough?.targetSubRoomId === state.joinedSubRoomId) {
+    scopedSubRoomIds.add(state.passthrough.sourceSubRoomId);
+  }
+
+  const participantIds = new Set<string>();
+  for (const room of state.subRooms) {
+    if (!scopedSubRoomIds.has(room.id)) continue;
+    for (const participantId of room.participantIds) {
+      participantIds.add(participantId);
+    }
+  }
+
+  const participants = state.participants.filter((participant) => participantIds.has(participant.id));
+  const remoteSharers = participants.filter(
+    (participant) => participant.isSharing && participant.id !== state.selfParticipantId,
+  );
+  const streams = new Map([...state.streams].filter(([participantId]) => participantIds.has(participantId)));
+
+  return { participantIds, remoteSharers, streams };
+}
+
+function diffWatchAllStreams(
+  previous: Map<string, string | null>,
+  current: Map<string, string | null>,
+): { added: string[]; removed: string[] } {
+  const added = [...current.keys()].filter((participantId) => !previous.has(participantId));
+  const removed = [...previous.keys()].filter((participantId) => !current.has(participantId));
+  return { added, removed };
+}
+
 /**
  * Replicates the joined-room /watch-all button visibility logic from ActiveRoom.tsx.
  */
 function isWatchAllButtonVisible(panel: SharesPanelState): boolean {
-  return panel.joinedRoomRemoteSharersCount > 0;
+  return panel.joinedRoomRemoteSharersCount > 0 || (!!panel.isPassthroughPairedRoom && panel.otherRoomRemoteSharersCount > 0);
 }
 
 /**
  * Replicates the disabled /watch-all button shown for other rooms with sharers.
  */
 function isDisabledWatchAllVisible(panel: SharesPanelState): boolean {
-  return panel.otherRoomRemoteSharersCount > 0;
+  return !panel.isPassthroughPairedRoom && panel.otherRoomRemoteSharersCount > 0;
 }
 
 /**
@@ -804,6 +871,24 @@ describe('Watch All Entry Points', () => {
       });
     });
 
+    it('enables watch-all in the paired passthrough room while passthrough is active', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        isPassthroughPairedRoom: true,
+        joinedRoomRemoteSharersCount: 1,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      })).toEqual({
+        headerContainsRoomAction: true,
+        headerRoomAction: '/join',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
+      });
+    });
+
     it('hides watch-all entirely when the room is collapsed', () => {
       expect(roomPanelLayout({
         isJoinedRoom: true,
@@ -877,6 +962,15 @@ describe('Watch All Entry Points', () => {
       })).toBe(false);
     });
 
+    it('button visible in the paired passthrough room when that room has sharers', () => {
+      expect(isWatchAllButtonVisible({
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+        isPassthroughPairedRoom: true,
+      })).toBe(true);
+    });
+
     it('shows a disabled watch-all button for other rooms with sharers', () => {
       expect(isDisabledWatchAllVisible({
         joinedRoomRemoteSharersCount: 0,
@@ -888,6 +982,87 @@ describe('Watch All Entry Points', () => {
         otherRoomRemoteSharersCount: 0,
         watchAllOpen: false,
       })).toBe(false);
+    });
+
+    it('does not disable watch-all for the paired passthrough room', () => {
+      expect(isDisabledWatchAllVisible({
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+        isPassthroughPairedRoom: true,
+      })).toBe(false);
+    });
+  });
+
+  describe('/watch-all passthrough scope', () => {
+    const baseScope: WatchAllScopeData = {
+      joinedSubRoomId: 'room-1',
+      passthrough: null,
+      selfParticipantId: 'self',
+      subRooms: [
+        { id: 'room-1', participantIds: ['self', 'user-1'] },
+        { id: 'room-2', participantIds: ['user-2'] },
+        { id: 'room-3', participantIds: ['user-3'] },
+      ],
+      participants: [
+        { id: 'self', isSharing: false },
+        { id: 'user-1', isSharing: true },
+        { id: 'user-2', isSharing: true },
+        { id: 'user-3', isSharing: true },
+      ],
+      streams: new Map([
+        ['user-1', 'stream-1'],
+        ['user-2', 'stream-2'],
+        ['user-3', 'stream-3'],
+      ]),
+    };
+
+    it('includes both rooms in the active passthrough pair when the joined room is involved', () => {
+      const scope = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      });
+
+      expect([...scope.participantIds].sort()).toEqual(['self', 'user-1', 'user-2']);
+      expect(scope.remoteSharers.map((participant) => participant.id).sort()).toEqual(['user-1', 'user-2']);
+      expect([...scope.streams.keys()].sort()).toEqual(['user-1', 'user-2']);
+    });
+
+    it('does not include passthrough rooms when the joined room is uninvolved', () => {
+      const scope = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-2', targetSubRoomId: 'room-3' },
+      });
+
+      expect([...scope.participantIds].sort()).toEqual(['self', 'user-1']);
+      expect(scope.remoteSharers.map((participant) => participant.id)).toEqual(['user-1']);
+      expect([...scope.streams.keys()]).toEqual(['user-1']);
+    });
+
+    it('adds newly in-scope streams when passthrough starts while Watch All is open', () => {
+      const before = computeWatchAllScope(baseScope).streams;
+      const after = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      }).streams;
+
+      expect(diffWatchAllStreams(before, after)).toEqual({
+        added: ['user-2'],
+        removed: [],
+      });
+    });
+
+    it('removes other-room streams when passthrough stops while Watch All is open', () => {
+      const before = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      }).streams;
+      const after = computeWatchAllScope(baseScope).streams;
+
+      expect(diffWatchAllStreams(before, after)).toEqual({
+        added: [],
+        removed: ['user-2'],
+      });
     });
   });
 
