@@ -27,6 +27,8 @@ import {
   createSubRoom,
   joinSubRoom,
   leaveSubRoom,
+  setPassthrough,
+  clearPassthrough,
   stopParticipantShare,
   stopAllShares,
   setSharePermission,
@@ -2007,6 +2009,52 @@ export default function ActiveRoom() {
         const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
         const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
         const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
+        const activePassthrough = roomState.passthrough;
+        const activePassthroughInvolvesRoom = !!activePassthrough
+          && (activePassthrough.sourceSubRoomId === subRoom.id || activePassthrough.targetSubRoomId === subRoom.id);
+        const activePassthroughInvolvesLocalRoom = !!activePassthrough
+          && !!roomState.joinedSubRoomId
+          && (
+            activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId
+            || activePassthrough.targetSubRoomId === roomState.joinedSubRoomId
+          );
+        const canSetPassthrough = !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
+        const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
+        const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
+        const passthroughLabel = activePassthroughInvolvesRoom ? activePassthrough?.label ?? '' : '';
+        const passthroughClassName = activePassthroughInvolvesRoom
+          ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
+          : passthroughDisabled
+            ? 'border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed'
+            : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg';
+        const passthroughButton = (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                disabled={passthroughDisabled}
+                aria-label="Passthrough: listen and talk to this room at a lower volume"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (canClearPassthrough) {
+                    clearPassthrough();
+                  } else if (canSetPassthrough) {
+                    setPassthrough(subRoom.id);
+                  }
+                }}
+                className={`min-w-7 text-xs py-0.5 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
+              >
+                {passthroughLabel}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="bg-wavis-panel text-wavis-text border border-wavis-text-secondary font-mono text-xs">
+              Passthrough: listen and talk to this room at a lower volume
+            </TooltipContent>
+          </Tooltip>
+        );
         const roomActionButton = isJoinedRoom ? (
           <button
             type="button"
@@ -2059,10 +2107,11 @@ export default function ActiveRoom() {
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
-                <span>{`ROOM ${subRoom.roomNumber}`}</span>
+              <span>{`ROOM ${subRoom.roomNumber}`}</span>
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
               </div>
-              <div className="shrink-0">
+              <div className="shrink-0 flex items-center gap-1">
+                {passthroughButton}
                 {roomActionButton}
               </div>
             </div>

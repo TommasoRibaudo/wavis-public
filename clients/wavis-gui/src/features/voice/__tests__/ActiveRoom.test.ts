@@ -32,6 +32,8 @@ vi.mock('../voice-room', () => ({
   createSubRoom: vi.fn(),
   joinSubRoom: vi.fn(),
   leaveSubRoom: vi.fn(),
+  setPassthrough: vi.fn(),
+  clearPassthrough: vi.fn(),
   stopParticipantShare: vi.fn(),
   stopAllShares: vi.fn(),
   sendChatMessage: vi.fn(),
@@ -592,6 +594,38 @@ function diffWatchAllStreams(
   return { added, removed };
 }
 
+interface PassthroughButtonInput {
+  subRoomId: string;
+  joinedSubRoomId: string | null;
+  isJoinedRoom: boolean;
+  passthrough: { sourceSubRoomId: string; targetSubRoomId: string; label: string } | null;
+}
+
+function passthroughButtonPresentation(input: PassthroughButtonInput): {
+  label: string;
+  tone: 'green' | 'red' | 'gray';
+  disabled: boolean;
+  action: 'set' | 'clear' | 'none';
+  tooltip: string;
+} {
+  const active = input.passthrough;
+  const activeInvolvesRoom = !!active
+    && (active.sourceSubRoomId === input.subRoomId || active.targetSubRoomId === input.subRoomId);
+  const activeInvolvesLocalRoom = !!active
+    && !!input.joinedSubRoomId
+    && (active.sourceSubRoomId === input.joinedSubRoomId || active.targetSubRoomId === input.joinedSubRoomId);
+  const canSet = !active && !!input.joinedSubRoomId && !input.isJoinedRoom;
+  const canClear = activeInvolvesRoom && activeInvolvesLocalRoom;
+
+  return {
+    label: activeInvolvesRoom ? active?.label ?? '' : '',
+    tone: activeInvolvesRoom ? 'red' : canSet ? 'green' : 'gray',
+    disabled: !(canSet || canClear),
+    action: canClear ? 'clear' : canSet ? 'set' : 'none',
+    tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+  };
+}
+
 /**
  * Replicates the joined-room /watch-all button visibility logic from ActiveRoom.tsx.
  */
@@ -1063,6 +1097,62 @@ describe('Watch All Entry Points', () => {
         added: [],
         removed: ['user-2'],
       });
+    });
+  });
+
+  describe('passthrough button presentation', () => {
+    it('renders the default passthrough button as green with an empty label for joinable rooms', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: null,
+      })).toEqual({
+        label: '',
+        tone: 'green',
+        disabled: false,
+        action: 'set',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('renders active paired-room passthrough buttons as red with the pair label', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      })).toEqual({
+        label: '1 - 2',
+        tone: 'red',
+        disabled: false,
+        action: 'clear',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('renders uninvolved passthrough buttons as gray and disabled while another pair is active', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-3',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      })).toEqual({
+        label: '',
+        tone: 'gray',
+        disabled: true,
+        action: 'none',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('uses the exact passthrough tooltip text', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: null,
+      }).tooltip).toBe('Passthrough: listen and talk to this room at a lower volume');
     });
   });
 

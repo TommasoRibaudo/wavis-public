@@ -69,6 +69,12 @@ export interface VoiceSubRoom {
   deleteAtMs: number | null;
 }
 
+export interface VoicePassthroughState {
+  sourceSubRoomId: string;
+  targetSubRoomId: string;
+  label: string;
+}
+
 export type RoomEventType =
   | 'join'
   | 'leave'
@@ -173,6 +179,8 @@ export interface VoiceRoomState {
   desiredSubRoomId: string | null;
   /** Derived reverse index of participant id -> synchronized sub-room id. */
   participantSubRoomById: Record<string, string>;
+  /** Authoritative active passthrough pair, if any. */
+  passthrough: VoicePassthroughState | null;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -356,10 +364,21 @@ export function computeEffectiveParticipantVolume(
   selfParticipantId: string | null,
   joinedSubRoomId: string | null,
   participantSubRoomById: Record<string, string>,
+  passthrough: VoicePassthroughState | null,
 ): number {
   if (participantId === selfParticipantId) return manualVolume;
   if (!joinedSubRoomId) return 0;
-  return participantSubRoomById[participantId] === joinedSubRoomId ? manualVolume : 0;
+  const participantSubRoomId = participantSubRoomById[participantId] ?? null;
+  if (participantSubRoomId === joinedSubRoomId) return manualVolume;
+  if (!participantSubRoomId || !passthrough) return 0;
+
+  const pairedSubRoomId = passthrough.sourceSubRoomId === joinedSubRoomId
+    ? passthrough.targetSubRoomId
+    : passthrough.targetSubRoomId === joinedSubRoomId
+      ? passthrough.sourceSubRoomId
+      : null;
+  if (participantSubRoomId !== pairedSubRoomId) return 0;
+  return Math.round(manualVolume * 0.2);
 }
 
 /**
@@ -388,6 +407,7 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.selfParticipantId,
       state.joinedSubRoomId,
       state.participantSubRoomById,
+      state.passthrough,
     ),
   );
 }
@@ -754,6 +774,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   joinedSubRoomId: null,
   desiredSubRoomId: null,
   participantSubRoomById: {},
+  passthrough: null,
 };
 
 let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
@@ -1365,6 +1386,7 @@ function dispatchMessage(raw: unknown): void {
           state.subRooms = [];
           state.participantSubRoomById = {};
           state.joinedSubRoomId = null;
+          state.passthrough = null;
           state.selfParticipantId = null;
           state.error = null;
           state.rejectionReason = null;
@@ -1604,6 +1626,17 @@ function dispatchMessage(raw: unknown): void {
         deleteAtMs: typeof room.deleteAtMs === 'number' ? room.deleteAtMs : null,
       })).sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
+      const passthrough = msg.passthrough as Record<string, unknown> | null | undefined;
+      state.passthrough = passthrough
+        && typeof passthrough.sourceSubRoomId === 'string'
+        && typeof passthrough.targetSubRoomId === 'string'
+        && typeof passthrough.label === 'string'
+        ? {
+            sourceSubRoomId: passthrough.sourceSubRoomId,
+            targetSubRoomId: passthrough.targetSubRoomId,
+            label: passthrough.label,
+          }
+        : null;
       syncDerivedSubRoomState();
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
@@ -3006,6 +3039,7 @@ export function setParticipantVolume(participantId: string, volume: number): voi
         state.selfParticipantId,
         state.joinedSubRoomId,
         state.participantSubRoomById,
+        state.passthrough,
       ),
     );
   }
@@ -3096,6 +3130,17 @@ export function leaveSubRoom(): void {
   client.send({ type: 'leave_sub_room' });
 }
 
+export function setPassthrough(targetSubRoomId: string): void {
+  if (!targetSubRoomId) return;
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'set_passthrough', targetSubRoomId });
+}
+
+export function clearPassthrough(): void {
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'clear_passthrough' });
+}
+
 /* ─── Chat ──────────────────────────────────────────────────────── */
 
 export function sendChatMessage(text: string): void {
@@ -3148,6 +3193,7 @@ export function getState(): VoiceRoomState {
       participantIds: [...room.participantIds],
     })),
     participantSubRoomById: { ...state.participantSubRoomById },
+    passthrough: state.passthrough ? { ...state.passthrough } : null,
   };
 }
 

@@ -340,6 +340,11 @@ describe('VoiceRoom sub-room state', () => {
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['peer-2'] },
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['self-peer'] },
       ],
+      passthrough: {
+        sourceSubRoomId: 'room-1',
+        targetSubRoomId: 'room-2',
+        label: '1 - 2',
+      },
     });
     await tick();
 
@@ -351,6 +356,11 @@ describe('VoiceRoom sub-room state', () => {
     });
     expect(state.joinedSubRoomId).toBe('room-2');
     expect(state.desiredSubRoomId).toBe('room-2');
+    expect(state.passthrough).toEqual({
+      sourceSubRoomId: 'room-1',
+      targetSubRoomId: 'room-2',
+      label: '1 - 2',
+    });
   });
 
   it('rejoins the desired sub-room after reconnect when the room still exists', async () => {
@@ -524,6 +534,40 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
     expect(newCalls).toContainEqual({ id: 'peer-2', vol: 0 });
     expect(getState().joinedSubRoomId).toBeNull();
+  });
+
+  it('attenuates participants in the paired passthrough room and preserves their saved volume preference', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    const callsBefore = lastLkModule!.setParticipantVolumeCalls.length;
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+      passthrough: {
+        sourceSubRoomId: 'room-1',
+        targetSubRoomId: 'room-2',
+        label: '1 - 2',
+      },
+    });
+    await tick();
+
+    const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
+    expect(newCalls).toContainEqual({ id: 'peer-2', vol: 14 });
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.volume).toBe(70);
+    expect(getState().passthrough).toEqual({
+      sourceSubRoomId: 'room-1',
+      targetSubRoomId: 'room-2',
+      label: '1 - 2',
+    });
   });
 });
 
