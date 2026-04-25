@@ -62,6 +62,7 @@ import { getWatchAllHotkey } from '@features/settings/settings-store';
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
+const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 import { registerWatchAllHotkey, unregisterWatchAllHotkey } from '@shared/hotkey-bridge';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
 import type { TrayAction } from './tray-bridge';
@@ -117,6 +118,17 @@ function rttColor(rttMs: number): string {
   if (rttMs < 100) return 'var(--wavis-accent)';
   if (rttMs <= 300) return 'var(--wavis-warn)';
   return 'var(--wavis-danger)';
+}
+
+function roomRemovalCountdownText(deleteAtMs: number | null, nowMs: number): string | null {
+  if (deleteAtMs === null) return null;
+  const remainingMs = Math.max(0, deleteAtMs - nowMs);
+  const seconds = Math.max(
+    10,
+    Math.ceil(remainingMs / ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS)
+      * (ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS / 1000),
+  );
+  return `Removing in less than ${seconds} seconds`;
 }
 
 function formatTime(isoString: string): string {
@@ -251,6 +263,7 @@ export default function ActiveRoom() {
     (location.state as { channelId: string; channelName: string; channelRole: ChannelRole }) ?? {};
 
   const [roomState, setRoomState] = useState<VoiceRoomState | null>(null);
+  const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
 
   const [leaving, setLeaving] = useState(false);
   const [cliInput, setCliInput] = useState('');
@@ -337,6 +350,18 @@ export default function ActiveRoom() {
       navigate('/');
     }
   }, [channelId, navigate]);
+
+  useEffect(() => {
+    const hasScheduledRemoval = roomState?.subRooms.some((subRoom) => subRoom.deleteAtMs !== null) ?? false;
+    if (!hasScheduledRemoval) return;
+
+    setCountdownNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setCountdownNowMs(Date.now());
+    }, ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [roomState?.subRooms]);
 
   // Keep the room mounted unless the app explicitly allows navigation out.
   useEffect(() => {
@@ -2009,6 +2034,9 @@ export default function ActiveRoom() {
         const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
         const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
         const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
+        const roomRemovalText = roomParticipants.length === 0
+          ? roomRemovalCountdownText(subRoom.deleteAtMs, countdownNowMs)
+          : null;
         const activePassthrough = roomState.passthrough;
         const activePassthroughInvolvesRoom = !!activePassthrough
           && (activePassthrough.sourceSubRoomId === subRoom.id || activePassthrough.targetSubRoomId === subRoom.id);
@@ -2021,7 +2049,9 @@ export default function ActiveRoom() {
         const canSetPassthrough = !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
         const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
         const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
-        const passthroughLabel = activePassthroughInvolvesRoom ? activePassthrough?.label ?? '' : '';
+        const passthroughLabel = activePassthroughInvolvesRoom && activePassthrough?.label
+          ? `“${activePassthrough.label}”`
+          : '“ ”';
         const passthroughClassName = activePassthroughInvolvesRoom
           ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
           : passthroughDisabled
@@ -2118,7 +2148,10 @@ export default function ActiveRoom() {
             {isExpanded && (
               <div id={roomPanelId} className="px-3 py-2 space-y-1 text-sm">
                 {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
-                  <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
+                  <div className="pl-8 text-xs text-wavis-text-secondary space-y-1">
+                    <div>No participants in this room.</div>
+                    {roomRemovalText && <div>{roomRemovalText}</div>}
+                  </div>
                 )}
                 {(showEnabledWatchAll || showDisabledWatchAll) && (
                   <div className="pt-2 flex items-center justify-end gap-2">

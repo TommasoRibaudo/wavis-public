@@ -15,6 +15,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ShareQualityInfo } from '../livekit-media';
 
+const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
+
 /* ─── Mock voice-room module ────────────────────────────────────── */
 
 const mockToggleShareAudio = vi.fn();
@@ -618,12 +620,23 @@ function passthroughButtonPresentation(input: PassthroughButtonInput): {
   const canClear = activeInvolvesRoom && activeInvolvesLocalRoom;
 
   return {
-    label: activeInvolvesRoom ? active?.label ?? '' : '',
+    label: activeInvolvesRoom && active?.label ? `“${active.label}”` : '“ ”',
     tone: activeInvolvesRoom ? 'red' : canSet ? 'green' : 'gray',
     disabled: !(canSet || canClear),
     action: canClear ? 'clear' : canSet ? 'set' : 'none',
     tooltip: 'Passthrough: listen and talk to this room at a lower volume',
   };
+}
+
+function roomRemovalCountdownText(deleteAtMs: number | null, nowMs: number): string | null {
+  if (deleteAtMs === null) return null;
+  const remainingMs = Math.max(0, deleteAtMs - nowMs);
+  const seconds = Math.max(
+    10,
+    Math.ceil(remainingMs / ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS)
+      * (ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS / 1000),
+  );
+  return `Removing in less than ${seconds} seconds`;
 }
 
 /**
@@ -1101,14 +1114,14 @@ describe('Watch All Entry Points', () => {
   });
 
   describe('passthrough button presentation', () => {
-    it('renders the default passthrough button as green with an empty label for joinable rooms', () => {
+    it('renders the default passthrough button as green with empty inline curly quotes for joinable rooms', () => {
       expect(passthroughButtonPresentation({
         subRoomId: 'room-2',
         joinedSubRoomId: 'room-1',
         isJoinedRoom: false,
         passthrough: null,
       })).toEqual({
-        label: '',
+        label: '“ ”',
         tone: 'green',
         disabled: false,
         action: 'set',
@@ -1116,14 +1129,14 @@ describe('Watch All Entry Points', () => {
       });
     });
 
-    it('renders active paired-room passthrough buttons as red with the pair label', () => {
+    it('renders active paired-room passthrough buttons as red with the pair label inside quotes', () => {
       expect(passthroughButtonPresentation({
         subRoomId: 'room-2',
         joinedSubRoomId: 'room-1',
         isJoinedRoom: false,
         passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
       })).toEqual({
-        label: '1 - 2',
+        label: '“1 - 2”',
         tone: 'red',
         disabled: false,
         action: 'clear',
@@ -1138,7 +1151,7 @@ describe('Watch All Entry Points', () => {
         isJoinedRoom: false,
         passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
       })).toEqual({
-        label: '',
+        label: '“ ”',
         tone: 'gray',
         disabled: true,
         action: 'none',
@@ -1153,6 +1166,25 @@ describe('Watch All Entry Points', () => {
         isJoinedRoom: false,
         passthrough: null,
       }).tooltip).toBe('Passthrough: listen and talk to this room at a lower volume');
+    });
+  });
+
+  describe('empty room removal countdown', () => {
+    it('does not render removal text when the room has no delete timestamp', () => {
+      expect(roomRemovalCountdownText(null, 1_000)).toBeNull();
+    });
+
+    it('rounds remaining time up to the next 10 second boundary', () => {
+      expect(roomRemovalCountdownText(61_000, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(60_999, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(60_000, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(59_999, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(51_000, 1_000)).toBe('Removing in less than 50 seconds');
+    });
+
+    it('keeps the final visible bucket at less than 10 seconds until deletion arrives', () => {
+      expect(roomRemovalCountdownText(5_000, 1_000)).toBe('Removing in less than 10 seconds');
+      expect(roomRemovalCountdownText(1_000, 1_000)).toBe('Removing in less than 10 seconds');
     });
   });
 
