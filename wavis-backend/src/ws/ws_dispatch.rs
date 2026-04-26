@@ -2520,6 +2520,85 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
+        SignalingMessage::SetPassthrough(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            if session_ref.channel_id.is_none() {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "passthrough requires a channel voice session".to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+
+            match voice_orchestrator::set_passthrough(
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                &session_ref.participant_id,
+                &payload.target_sub_room_id,
+            ) {
+                Ok(result) => {
+                    dispatch_signals(
+                        result.signals,
+                        &session_ref.room_id,
+                        ctx.app_state.room_state.as_ref(),
+                        ctx.app_state.connections.as_ref(),
+                    );
+                }
+                Err(message) => {
+                    ctx.app_state.connections.send_to(
+                        ctx.peer_id,
+                        &SignalingMessage::Error(ErrorPayload { message }),
+                    );
+                }
+            }
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::ClearPassthrough(_) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            if session_ref.channel_id.is_none() {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "passthrough requires a channel voice session".to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+
+            match voice_orchestrator::clear_passthrough(
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                &session_ref.participant_id,
+            ) {
+                Ok(result) => {
+                    dispatch_signals(
+                        result.signals,
+                        &session_ref.room_id,
+                        ctx.app_state.room_state.as_ref(),
+                        ctx.app_state.connections.as_ref(),
+                    );
+                }
+                Err(message) => {
+                    ctx.app_state.connections.send_to(
+                        ctx.peer_id,
+                        &SignalingMessage::Error(ErrorPayload { message }),
+                    );
+                }
+            }
+            DispatchOutcome::Continue
+        }
         SignalingMessage::SubRoomState(_)
         | SignalingMessage::SubRoomCreated(_)
         | SignalingMessage::SubRoomJoined(_)
@@ -2817,6 +2896,8 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::CreateSubRoom(_)
         | SignalingMessage::JoinSubRoom(_)
         | SignalingMessage::LeaveSubRoom(_)
+        | SignalingMessage::SetPassthrough(_)
+        | SignalingMessage::ClearPassthrough(_)
         | SignalingMessage::SubRoomState(_)
         | SignalingMessage::SubRoomCreated(_)
         | SignalingMessage::SubRoomJoined(_)

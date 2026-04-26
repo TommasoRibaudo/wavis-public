@@ -27,6 +27,8 @@ import {
   createSubRoom,
   joinSubRoom,
   leaveSubRoom,
+  setPassthrough,
+  clearPassthrough,
   stopParticipantShare,
   stopAllShares,
   setSharePermission,
@@ -60,6 +62,7 @@ import { getWatchAllHotkey } from '@features/settings/settings-store';
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
+const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 import { registerWatchAllHotkey, unregisterWatchAllHotkey } from '@shared/hotkey-bridge';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
 import type { TrayAction } from './tray-bridge';
@@ -117,6 +120,17 @@ function rttColor(rttMs: number): string {
   return 'var(--wavis-danger)';
 }
 
+function roomRemovalCountdownText(deleteAtMs: number | null, nowMs: number): string | null {
+  if (deleteAtMs === null) return null;
+  const remainingMs = Math.max(0, deleteAtMs - nowMs);
+  const seconds = Math.max(
+    10,
+    Math.ceil(remainingMs / ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS)
+      * (ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS / 1000),
+  );
+  return `Removing in less than ${seconds} seconds`;
+}
+
 function formatTime(isoString: string): string {
   try {
     const d = new Date(isoString);
@@ -140,6 +154,13 @@ function getEventUsername(event: RoomEvent): string | null {
     if (idx > 0) return msg.slice(0, idx);
   }
   return null;
+}
+
+type ShareViewerScope = 'direct' | 'watch-all';
+
+interface ShareViewerWindow {
+  scope: ShareViewerScope;
+  window: WebviewWindow;
 }
 
 /* ─── Sub-components ────────────────────────────────────────────── */
@@ -242,6 +263,7 @@ export default function ActiveRoom() {
     (location.state as { channelId: string; channelName: string; channelRole: ChannelRole }) ?? {};
 
   const [roomState, setRoomState] = useState<VoiceRoomState | null>(null);
+  const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
 
   const [leaving, setLeaving] = useState(false);
   const [cliInput, setCliInput] = useState('');
@@ -293,7 +315,10 @@ export default function ActiveRoom() {
     participants: true,
   });
   const toggleSection = (key: string) =>
-    setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+    setExpandedSections((prev) => {
+      const current = prev[key] ?? true;
+      return { ...prev, [key]: !current };
+    });
 
   // Per-participant expanded host controls
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
@@ -325,6 +350,18 @@ export default function ActiveRoom() {
       navigate('/');
     }
   }, [channelId, navigate]);
+
+  useEffect(() => {
+    const hasScheduledRemoval = roomState?.subRooms.some((subRoom) => subRoom.deleteAtMs !== null) ?? false;
+    if (!hasScheduledRemoval) return;
+
+    setCountdownNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setCountdownNowMs(Date.now());
+    }, ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [roomState?.subRooms]);
 
   // Keep the room mounted unless the app explicitly allows navigation out.
   useEffect(() => {
@@ -565,7 +602,7 @@ export default function ActiveRoom() {
   // Toast notification tracking
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
-  const shareWindowsRef = useRef<Map<string, WebviewWindow>>(new Map());
+  const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -669,8 +706,21 @@ export default function ActiveRoom() {
       };
     }
 
-    const currentRoom = currentState.subRooms.find((subRoom) => subRoom.id === currentState.joinedSubRoomId);
-    const participantIds = new Set(currentRoom?.participantIds ?? []);
+    const scopedSubRoomIds = new Set<string>([currentState.joinedSubRoomId]);
+    const passthrough = currentState.passthrough;
+    if (passthrough?.sourceSubRoomId === currentState.joinedSubRoomId) {
+      scopedSubRoomIds.add(passthrough.targetSubRoomId);
+    } else if (passthrough?.targetSubRoomId === currentState.joinedSubRoomId) {
+      scopedSubRoomIds.add(passthrough.sourceSubRoomId);
+    }
+
+    const participantIds = new Set<string>();
+    for (const subRoom of currentState.subRooms) {
+      if (!scopedSubRoomIds.has(subRoom.id)) continue;
+      for (const participantId of subRoom.participantIds) {
+        participantIds.add(participantId);
+      }
+    }
     const participants = currentState.participants.filter((participant) => participantIds.has(participant.id));
     const remoteSharers = participants.filter((participant) => participant.isSharing && participant.id !== currentState.selfParticipantId);
     const streams = new Map(
@@ -696,7 +746,7 @@ export default function ActiveRoom() {
     }
 
     const shareWindow = shareWindowsRef.current.get(participantId);
-    if (!shareWindow || shareWindow.label !== windowLabel) return;
+    if (!shareWindow || shareWindow.window.label !== windowLabel) return;
     attachScreenShareAudio(participantId);
     setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
     void emit('share:user-state', shareUserStateRef.current);
@@ -875,11 +925,11 @@ export default function ActiveRoom() {
       // If already open, bring to foreground
       const existingWin = shareWindowsRef.current.get(pid);
       if (existingWin) {
-        existingWin.setFocus();
+        existingWin.window.setFocus();
         return;
       }
       // openShareWindow handles removing the tile from Watch All grid
-      openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null);
+      openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
     });
     return () => { unlisten.then((fn) => fn?.()); };
   }, [syncScreenShareVolume]);
@@ -964,7 +1014,7 @@ export default function ActiveRoom() {
     }
 
     prevWatchAllStreamsRef.current = new Map(currentStreams);
-  }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -988,7 +1038,7 @@ export default function ActiveRoom() {
       newMap.set(p.id, { displayName: p.displayName, color: p.color });
     }
     prevParticipantsRef.current = newMap;
-  }, [getWatchAllScope, watchAllOpen, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [getWatchAllScope, watchAllOpen, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   // Custom share picker + indicator event listeners
   useEffect(() => {
@@ -1054,7 +1104,12 @@ export default function ActiveRoom() {
   }, []);
 
   /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
-  const openShareWindow = async (participantId: string, participant: RoomParticipant, stream: MediaStream | null) => {
+  const openShareWindow = async (
+    participantId: string,
+    participant: RoomParticipant,
+    stream: MediaStream | null,
+    scope: ShareViewerScope = 'direct',
+  ) => {
     // If already watching this participant, close it first and wait for Tauri to
     // destroy the webview before creating a new one with the same label.
     if (shareWindowsRef.current.has(participantId)) {
@@ -1062,7 +1117,7 @@ export default function ActiveRoom() {
       closeShareWindow(participantId);
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(resolve, 1000);
-        oldWin.once('tauri://destroyed', () => { clearTimeout(timeout); resolve(); });
+        oldWin.window.once('tauri://destroyed', () => { clearTimeout(timeout); resolve(); });
       });
     }
 
@@ -1115,7 +1170,7 @@ export default function ActiveRoom() {
         handleShareWindowClosed(participantId);
       });
 
-      shareWindowsRef.current.set(participantId, win);
+      shareWindowsRef.current.set(participantId, { window: win, scope });
       setWatchingShareIds((prev) => new Set(prev).add(participantId));
 
       // If Watch All is open, remove this tile from the grid — the pop-out owns it now
@@ -1135,12 +1190,12 @@ export default function ActiveRoom() {
   const closeShareWindow = (participantId: string) => {
     stopSending(participantId, `screen-share-${participantId}`);
     detachScreenShareAudio(participantId);
-    const win = shareWindowsRef.current.get(participantId);
-    if (win) {
+    const shareWindow = shareWindowsRef.current.get(participantId);
+    if (shareWindow) {
       // Delete BEFORE win.close() so the screen-share:closed handler
       // sees delete() return false and skips its re-add (no double-fire).
       shareWindowsRef.current.delete(participantId);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     setWatchingShareIds((prev) => {
       const next = new Set(prev);
@@ -1154,9 +1209,9 @@ export default function ActiveRoom() {
   const closeAllShareWindows = () => {
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
-    for (const [pid, win] of shareWindowsRef.current) {
+    for (const [pid, shareWindow] of shareWindowsRef.current) {
       detachScreenShareAudio(pid);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
@@ -1179,10 +1234,10 @@ export default function ActiveRoom() {
     // Close any existing individual pop-out windows — WatchAll subsumes them.
     // We close the windows but don't detach audio (WatchAll doesn't handle
     // per-stream audio — the main window's audio attachment is independent).
-    for (const [pid, win] of [...shareWindowsRef.current.entries()]) {
+    for (const [pid, shareWindow] of [...shareWindowsRef.current.entries()]) {
       stopSending(pid, `screen-share-${pid}`);
       detachScreenShareAudio(pid);
-      win.close().catch(() => { });
+      shareWindow.window.close().catch(() => { });
     }
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
@@ -1278,6 +1333,24 @@ export default function ActiveRoom() {
     setWatchAllOpen(false);
   };
 
+  const previousJoinedSubRoomIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previousJoinedSubRoomId = previousJoinedSubRoomIdRef.current;
+    const nextJoinedSubRoomId = roomState?.joinedSubRoomId ?? null;
+    previousJoinedSubRoomIdRef.current = nextJoinedSubRoomId;
+
+    if (previousJoinedSubRoomId === nextJoinedSubRoomId) return;
+
+    const scopeParticipantIds = getWatchAllScope(roomState).participantIds;
+    closeWatchAllWindow();
+
+    for (const [participantId, shareWindow] of [...shareWindowsRef.current.entries()]) {
+      if (shareWindow.scope !== 'watch-all') continue;
+      if (scopeParticipantIds.has(participantId)) continue;
+      closeShareWindow(participantId);
+    }
+  }, [getWatchAllScope, roomState, roomState?.joinedSubRoomId]);
+
   /** Toggle the Watch All window open/closed. */
   const toggleWatchAllWindow = () => {
     if (watchAllOpen) {
@@ -1328,9 +1401,7 @@ export default function ActiveRoom() {
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
-  const joinedSubRoom = roomState?.subRooms.find((subRoom) => subRoom.id === roomState.joinedSubRoomId) ?? null;
-  const joinedSubRoomParticipantIds = new Set(joinedSubRoom?.participantIds ?? []);
-  const joinedRoomParticipants = roomState?.participants.filter((participant) => joinedSubRoomParticipantIds.has(participant.id)) ?? [];
+  const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
     ? isShareEnabled(roomState.sharePermission, isHost, roomState.machineState, roomState.mediaState)
     : false;
@@ -1360,7 +1431,7 @@ export default function ActiveRoom() {
       })) ?? [],
   };
   watchAllVoiceParticipantsRef.current = {
-    participants: joinedRoomParticipants
+    participants: watchAllScope.participants
       .filter((participant) => participant.id !== roomState?.selfParticipantId)
       .map((participant) => ({
         id: participant.id,
@@ -1384,7 +1455,7 @@ export default function ActiveRoom() {
   useEffect(() => {
     if (!roomState) return;
     void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
-  }, [roomState, roomState?.participants, roomState?.selfParticipantId, roomState?.joinedSubRoomId, roomState?.subRooms]);
+  }, [roomState, roomState?.participants, roomState?.selfParticipantId, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
 
   /** Open custom share picker or invoke getDisplayMedia fallback based on platform. */
   const handleStartShare = async () => {
@@ -1946,6 +2017,7 @@ export default function ActiveRoom() {
     <div className="flex-1 overflow-y-auto">
       {roomState.subRooms.map((subRoom) => {
         const sectionKey = `sub-room:${subRoom.id}`;
+        const roomPanelId = `sub-room-panel-${subRoom.id}`;
         const isExpanded = expandedSections[sectionKey] ?? true;
         const roomParticipantIds = new Set(subRoom.participantIds);
         const roomParticipants = roomState.participants.filter((participant) => roomParticipantIds.has(participant.id));
@@ -1953,56 +2025,157 @@ export default function ActiveRoom() {
           (participant) => participant.isSharing && participant.id !== roomState.selfParticipantId,
         );
         const isJoinedRoom = roomState.joinedSubRoomId === subRoom.id;
-        const showJoinedRoomWatchAll = isJoinedRoom && roomRemoteSharers.length > 0;
-        const showDisabledWatchAll = !isJoinedRoom && roomRemoteSharers.length > 0;
+        const passthrough = roomState.passthrough;
+        const pairedSubRoomId = passthrough?.sourceSubRoomId === roomState.joinedSubRoomId
+          ? passthrough.targetSubRoomId
+          : passthrough?.targetSubRoomId === roomState.joinedSubRoomId
+            ? passthrough.sourceSubRoomId
+            : null;
+        const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
+        const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
+        const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
+        const roomRemovalText = roomParticipants.length === 0
+          ? roomRemovalCountdownText(subRoom.deleteAtMs, countdownNowMs)
+          : null;
+        const activePassthrough = roomState.passthrough;
+        const activePassthroughInvolvesRoom = !!activePassthrough
+          && (activePassthrough.sourceSubRoomId === subRoom.id || activePassthrough.targetSubRoomId === subRoom.id);
+        const activePassthroughInvolvesLocalRoom = !!activePassthrough
+          && !!roomState.joinedSubRoomId
+          && (
+            activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId
+            || activePassthrough.targetSubRoomId === roomState.joinedSubRoomId
+          );
+        const canSetPassthrough = !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
+        const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
+        const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
+        const passthroughLabel = activePassthroughInvolvesRoom && activePassthrough?.label
+          ? `“${activePassthrough.label}”`
+          : '“ ”';
+        const passthroughClassName = activePassthroughInvolvesRoom
+          ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
+          : passthroughDisabled
+            ? 'border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed'
+            : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg';
+        const passthroughButton = (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                disabled={passthroughDisabled}
+                aria-label="Passthrough: listen and talk to this room at a lower volume"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (canClearPassthrough) {
+                    clearPassthrough();
+                  } else if (canSetPassthrough) {
+                    setPassthrough(subRoom.id);
+                  }
+                }}
+                className={`min-w-7 text-xs py-0.5 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
+              >
+                {passthroughLabel}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="bg-wavis-panel text-wavis-text border border-wavis-text-secondary font-mono text-xs">
+              Passthrough: listen and talk to this room at a lower volume
+            </TooltipContent>
+          </Tooltip>
+        );
+        const roomActionButton = isJoinedRoom ? (
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              leaveSubRoom();
+            }}
+            className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg cursor-pointer"
+          >
+            /leave
+          </button>
+        ) : (
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              joinSubRoom(subRoom.id);
+            }}
+            className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer"
+          >
+            /join
+          </button>
+        );
 
         return (
           <div key={subRoom.id} className="border-b border-wavis-text-secondary">
-            <div className="w-full px-3 py-2 flex items-center gap-2 text-sm">
-              <button onClick={() => toggleSection(sectionKey)} className="text-left flex items-center gap-2 hover:opacity-80 flex-1 min-w-0">
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={isExpanded}
+              aria-controls={roomPanelId}
+              onPointerDown={(event) => {
+                if (!event.isPrimary || event.button !== 0) return;
+                event.preventDefault();
+                event.currentTarget.focus();
+                toggleSection(sectionKey);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                toggleSection(sectionKey);
+              }}
+              className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
+            >
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
-                <span>{`ROOM ${subRoom.roomNumber}`}</span>
+              <span>{`ROOM ${subRoom.roomNumber}`}</span>
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
-              </button>
-              {roomState.joinedSubRoomId === subRoom.id ? (
-                <button
-                  onClick={() => leaveSubRoom()}
-                  className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
-                >
-                  /leave
-                </button>
-              ) : (
-                <button
-                  onClick={() => joinSubRoom(subRoom.id)}
-                  className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
-                >
-                  /join
-                </button>
-              )}
-              {showJoinedRoomWatchAll && (
-                <button
-                  onClick={toggleWatchAllWindow}
-                  className={`text-xs py-0.5 px-1 border transition-colors ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-                >
-                  {watchAllOpen ? '/close-all' : '/watch-all'}
-                </button>
-              )}
-              {showDisabledWatchAll && (
-                <button
-                  type="button"
-                  disabled
-                  aria-disabled="true"
-                  title="Join this room to watch all streams together."
-                  className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
-                >
-                  /watch-all
-                </button>
-              )}
+              </div>
+              <div className="shrink-0 flex items-center gap-1">
+                {passthroughButton}
+                {roomActionButton}
+              </div>
             </div>
             {isExpanded && (
-              <div className="px-3 py-2 space-y-1 text-sm">
+              <div id={roomPanelId} className="px-3 py-2 space-y-1 text-sm">
                 {roomParticipants.length > 0 ? roomParticipants.map(renderParticipantRow) : (
-                  <div className="pl-8 text-xs text-wavis-text-secondary">no participants in this room</div>
+                  <div className="pl-8 text-xs text-wavis-text-secondary space-y-1">
+                    <div>No participants in this room.</div>
+                    {roomRemovalText && <div>{roomRemovalText}</div>}
+                  </div>
+                )}
+                {(showEnabledWatchAll || showDisabledWatchAll) && (
+                  <div className="pt-2 flex items-center justify-end gap-2">
+                    {showEnabledWatchAll && (
+                      <button
+                        type="button"
+                        onClick={toggleWatchAllWindow}
+                        className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                      >
+                        {watchAllOpen ? '/close-all' : '/watch-all'}
+                      </button>
+                    )}
+                    {showDisabledWatchAll && (
+                      <button
+                        type="button"
+                        disabled
+                        aria-disabled="true"
+                        title="Join this room to watch all streams together."
+                        className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
+                      >
+                        /watch-all
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -2361,7 +2534,7 @@ export default function ActiveRoom() {
 
       {/* ═══ DESKTOP LAYOUT (md+) ═══ */}
       <div className="hidden md:flex flex-1 overflow-hidden">
-        <div className="w-64 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
           {mediaRetryBanner}
           {participantsSections}

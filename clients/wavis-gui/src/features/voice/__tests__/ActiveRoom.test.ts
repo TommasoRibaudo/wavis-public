@@ -15,6 +15,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ShareQualityInfo } from '../livekit-media';
 
+const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
+
 /* ─── Mock voice-room module ────────────────────────────────────── */
 
 const mockToggleShareAudio = vi.fn();
@@ -32,6 +34,8 @@ vi.mock('../voice-room', () => ({
   createSubRoom: vi.fn(),
   joinSubRoom: vi.fn(),
   leaveSubRoom: vi.fn(),
+  setPassthrough: vi.fn(),
+  clearPassthrough: vi.fn(),
   stopParticipantShare: vi.fn(),
   stopAllShares: vi.fn(),
   sendChatMessage: vi.fn(),
@@ -433,20 +437,220 @@ interface SharesPanelState {
   joinedRoomRemoteSharersCount: number;
   otherRoomRemoteSharersCount: number;
   watchAllOpen: boolean;
+  isPassthroughPairedRoom?: boolean;
+}
+
+interface RoomPanelLayoutState {
+  isJoinedRoom: boolean;
+  joinedRoomRemoteSharersCount: number;
+  otherRoomRemoteSharersCount: number;
+  watchAllOpen: boolean;
+  isPassthroughPairedRoom?: boolean;
+}
+
+/**
+ * Replicates the Phase 14 room-panel layout contract from ActiveRoom.tsx:
+ * - header is the collapse toggle and contains /join or /leave on the right
+ * - /watch-all lives in a right-aligned row inside the expanded room body
+ * - collapsing the room hides the watch-all row with the participants
+ */
+function roomPanelLayout(state: RoomPanelLayoutState): {
+  headerContainsRoomAction: boolean;
+  headerRoomAction: string;
+  watchAllRowInsideExpandedBody: boolean;
+  watchAllRowRightAligned: boolean;
+  watchAllVisibleWhenExpanded: boolean;
+  watchAllVisibleWhenCollapsed: boolean;
+  watchAllButton: string | null;
+} {
+  let watchAllButton: string | null = null;
+  if ((state.isJoinedRoom || state.isPassthroughPairedRoom) && state.joinedRoomRemoteSharersCount > 0) {
+    watchAllButton = state.watchAllOpen ? '/close-all' : '/watch-all';
+  } else if (!state.isJoinedRoom && state.otherRoomRemoteSharersCount > 0) {
+    watchAllButton = '/watch-all';
+  }
+
+  return {
+    headerContainsRoomAction: true,
+    headerRoomAction: state.isJoinedRoom ? '/leave' : '/join',
+    watchAllRowInsideExpandedBody: true,
+    watchAllRowRightAligned: true,
+    watchAllVisibleWhenExpanded: watchAllButton !== null,
+    watchAllVisibleWhenCollapsed: false,
+    watchAllButton,
+  };
+}
+
+function toggleRoomHeaderOnPointerDown(
+  expanded: boolean,
+  event: { isPrimary: boolean; button: number },
+): boolean {
+  if (!event.isPrimary || event.button !== 0) return expanded;
+  return !expanded;
+}
+
+function toggleRoomHeaderFromStoredState(
+  storedExpanded: boolean | undefined,
+  event: { isPrimary: boolean; button: number },
+): boolean {
+  const effectiveExpanded = storedExpanded ?? true;
+  return toggleRoomHeaderOnPointerDown(effectiveExpanded, event);
+}
+
+function headerPointerDownTriggeredByRoomAction(event: { stopPropagationCalled: boolean }): boolean {
+  return !event.stopPropagationCalled;
+}
+
+function toggleRoomHeaderOnKeyDown(expanded: boolean, key: string): boolean {
+  if (key !== 'Enter' && key !== ' ') return expanded;
+  return !expanded;
+}
+
+interface ScopedShareWindow {
+  scope: 'direct' | 'watch-all';
+}
+
+interface RoomScopedViewerState extends WatchAllState {
+  openWindows: Map<string, ScopedShareWindow>;
+}
+
+function handleJoinedRoomChange(
+  state: RoomScopedViewerState,
+  nextScopedParticipantIds: Set<string>,
+): RoomScopedViewerState {
+  const next = new Map(state.openWindows);
+  for (const [participantId, window] of next) {
+    if (window.scope === 'watch-all' && !nextScopedParticipantIds.has(participantId)) {
+      next.delete(participantId);
+    }
+  }
+  return {
+    watchAllOpen: false,
+    watchAllWindowRef: { current: null },
+    openWindows: next,
+  };
+}
+
+interface WatchAllScopeRoom {
+  id: string;
+  participantIds: string[];
+}
+
+interface WatchAllScopeParticipant {
+  id: string;
+  isSharing: boolean;
+}
+
+interface WatchAllScopeData {
+  joinedSubRoomId: string | null;
+  passthrough: { sourceSubRoomId: string; targetSubRoomId: string } | null;
+  subRooms: WatchAllScopeRoom[];
+  participants: WatchAllScopeParticipant[];
+  selfParticipantId: string | null;
+  streams: Map<string, string | null>;
+}
+
+function computeWatchAllScope(state: WatchAllScopeData | null): {
+  participantIds: Set<string>;
+  remoteSharers: WatchAllScopeParticipant[];
+  streams: Map<string, string | null>;
+} {
+  if (!state?.joinedSubRoomId) {
+    return {
+      participantIds: new Set(),
+      remoteSharers: [],
+      streams: new Map(),
+    };
+  }
+
+  const scopedSubRoomIds = new Set([state.joinedSubRoomId]);
+  if (state.passthrough?.sourceSubRoomId === state.joinedSubRoomId) {
+    scopedSubRoomIds.add(state.passthrough.targetSubRoomId);
+  } else if (state.passthrough?.targetSubRoomId === state.joinedSubRoomId) {
+    scopedSubRoomIds.add(state.passthrough.sourceSubRoomId);
+  }
+
+  const participantIds = new Set<string>();
+  for (const room of state.subRooms) {
+    if (!scopedSubRoomIds.has(room.id)) continue;
+    for (const participantId of room.participantIds) {
+      participantIds.add(participantId);
+    }
+  }
+
+  const participants = state.participants.filter((participant) => participantIds.has(participant.id));
+  const remoteSharers = participants.filter(
+    (participant) => participant.isSharing && participant.id !== state.selfParticipantId,
+  );
+  const streams = new Map([...state.streams].filter(([participantId]) => participantIds.has(participantId)));
+
+  return { participantIds, remoteSharers, streams };
+}
+
+function diffWatchAllStreams(
+  previous: Map<string, string | null>,
+  current: Map<string, string | null>,
+): { added: string[]; removed: string[] } {
+  const added = [...current.keys()].filter((participantId) => !previous.has(participantId));
+  const removed = [...previous.keys()].filter((participantId) => !current.has(participantId));
+  return { added, removed };
+}
+
+interface PassthroughButtonInput {
+  subRoomId: string;
+  joinedSubRoomId: string | null;
+  isJoinedRoom: boolean;
+  passthrough: { sourceSubRoomId: string; targetSubRoomId: string; label: string } | null;
+}
+
+function passthroughButtonPresentation(input: PassthroughButtonInput): {
+  label: string;
+  tone: 'green' | 'red' | 'gray';
+  disabled: boolean;
+  action: 'set' | 'clear' | 'none';
+  tooltip: string;
+} {
+  const active = input.passthrough;
+  const activeInvolvesRoom = !!active
+    && (active.sourceSubRoomId === input.subRoomId || active.targetSubRoomId === input.subRoomId);
+  const activeInvolvesLocalRoom = !!active
+    && !!input.joinedSubRoomId
+    && (active.sourceSubRoomId === input.joinedSubRoomId || active.targetSubRoomId === input.joinedSubRoomId);
+  const canSet = !active && !!input.joinedSubRoomId && !input.isJoinedRoom;
+  const canClear = activeInvolvesRoom && activeInvolvesLocalRoom;
+
+  return {
+    label: activeInvolvesRoom && active?.label ? `“${active.label}”` : '“ ”',
+    tone: activeInvolvesRoom ? 'red' : canSet ? 'green' : 'gray',
+    disabled: !(canSet || canClear),
+    action: canClear ? 'clear' : canSet ? 'set' : 'none',
+    tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+  };
+}
+
+function roomRemovalCountdownText(deleteAtMs: number | null, nowMs: number): string | null {
+  if (deleteAtMs === null) return null;
+  const remainingMs = Math.max(0, deleteAtMs - nowMs);
+  const seconds = Math.max(
+    10,
+    Math.ceil(remainingMs / ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS)
+      * (ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS / 1000),
+  );
+  return `Removing in less than ${seconds} seconds`;
 }
 
 /**
  * Replicates the joined-room /watch-all button visibility logic from ActiveRoom.tsx.
  */
 function isWatchAllButtonVisible(panel: SharesPanelState): boolean {
-  return panel.joinedRoomRemoteSharersCount > 0;
+  return panel.joinedRoomRemoteSharersCount > 0 || (!!panel.isPassthroughPairedRoom && panel.otherRoomRemoteSharersCount > 0);
 }
 
 /**
  * Replicates the disabled /watch-all button shown for other rooms with sharers.
  */
 function isDisabledWatchAllVisible(panel: SharesPanelState): boolean {
-  return panel.otherRoomRemoteSharersCount > 0;
+  return !panel.isPassthroughPairedRoom && panel.otherRoomRemoteSharersCount > 0;
 }
 
 /**
@@ -639,11 +843,150 @@ describe('Watch All Lifecycle', () => {
     expect(first.restoredToWatchAll).toBe(true);
     expect(second.restoredToWatchAll).toBe(false);
   });
+
+  it('room changes close Watch All and remove watch-all-scoped viewers that are no longer valid', () => {
+    const state: RoomScopedViewerState = {
+      watchAllOpen: true,
+      watchAllWindowRef: { current: { label: 'watch-all' } },
+      openWindows: new Map([
+        ['user-1', { scope: 'watch-all' }],
+        ['user-2', { scope: 'direct' }],
+      ]),
+    };
+
+    const result = handleJoinedRoomChange(state, new Set(['user-3']));
+
+    expect(result.watchAllOpen).toBe(false);
+    expect(result.watchAllWindowRef.current).toBeNull();
+    expect(result.openWindows.has('user-1')).toBe(false);
+    expect(result.openWindows.has('user-2')).toBe(true);
+  });
+
+  it('room changes preserve watch-all-scoped viewers that still belong to the new room scope', () => {
+    const state: RoomScopedViewerState = {
+      watchAllOpen: true,
+      watchAllWindowRef: { current: { label: 'watch-all' } },
+      openWindows: new Map([
+        ['user-1', { scope: 'watch-all' }],
+        ['user-2', { scope: 'direct' }],
+      ]),
+    };
+
+    const result = handleJoinedRoomChange(state, new Set(['user-1']));
+
+    expect(result.watchAllOpen).toBe(false);
+    expect(result.openWindows.has('user-1')).toBe(true);
+    expect(result.openWindows.has('user-2')).toBe(true);
+  });
 });
 
 /* ═══ 14.2 — Watch All Entry Point Integration Tests ════════════════ */
 
 describe('Watch All Entry Points', () => {
+  describe('room panel layout', () => {
+    it('keeps join or leave in the room header and keeps watch-all right-aligned in expanded content', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: true,
+        joinedRoomRemoteSharersCount: 2,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      })).toEqual({
+        headerContainsRoomAction: true,
+        headerRoomAction: '/leave',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
+      });
+    });
+
+    it('shows the disabled other-room watch-all affordance inside expanded room content only', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+      })).toEqual({
+        headerContainsRoomAction: true,
+        headerRoomAction: '/join',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
+      });
+    });
+
+    it('enables watch-all in the paired passthrough room while passthrough is active', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        isPassthroughPairedRoom: true,
+        joinedRoomRemoteSharersCount: 1,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      })).toEqual({
+        headerContainsRoomAction: true,
+        headerRoomAction: '/join',
+        watchAllRowInsideExpandedBody: true,
+        watchAllRowRightAligned: true,
+        watchAllVisibleWhenExpanded: true,
+        watchAllVisibleWhenCollapsed: false,
+        watchAllButton: '/watch-all',
+      });
+    });
+
+    it('hides watch-all entirely when the room is collapsed', () => {
+      expect(roomPanelLayout({
+        isJoinedRoom: true,
+        joinedRoomRemoteSharersCount: 1,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: true,
+      }).watchAllVisibleWhenCollapsed).toBe(false);
+    });
+  });
+
+  describe('room collapse interaction', () => {
+    it('toggles immediately on the first primary pointer interaction', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 0 })).toBe(false);
+      expect(toggleRoomHeaderOnPointerDown(false, { isPrimary: true, button: 0 })).toBe(true);
+    });
+
+    it('first click on an uninitialized room section collapses immediately', () => {
+      expect(toggleRoomHeaderFromStoredState(undefined, { isPrimary: true, button: 0 })).toBe(false);
+    });
+
+    it('second click after collapsing re-expands the room', () => {
+      const collapsed = toggleRoomHeaderFromStoredState(undefined, { isPrimary: true, button: 0 });
+      expect(toggleRoomHeaderFromStoredState(collapsed, { isPrimary: true, button: 0 })).toBe(true);
+    });
+
+    it('ignores non-primary pointer interactions', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: false, button: 0 })).toBe(true);
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 1 })).toBe(true);
+    });
+
+    it('preserves keyboard toggling on Enter and Space', () => {
+      expect(toggleRoomHeaderOnKeyDown(true, 'Enter')).toBe(false);
+      expect(toggleRoomHeaderOnKeyDown(true, ' ')).toBe(false);
+      expect(toggleRoomHeaderOnKeyDown(true, 'Escape')).toBe(true);
+    });
+
+    it('treats the header room action as separate from the collapse toggle', () => {
+      expect(toggleRoomHeaderOnPointerDown(true, { isPrimary: true, button: 0 })).toBe(false);
+      expect(roomPanelLayout({
+        isJoinedRoom: false,
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 0,
+        watchAllOpen: false,
+      }).headerRoomAction).toBe('/join');
+    });
+
+    it('join or leave button pointer handling blocks the header collapse handler', () => {
+      expect(headerPointerDownTriggeredByRoomAction({ stopPropagationCalled: true })).toBe(false);
+    });
+  });
+
   describe('/watch-all button visibility', () => {
     it('button visible when the joined room has remote sharers', () => {
       expect(isWatchAllButtonVisible({
@@ -666,6 +1009,15 @@ describe('Watch All Entry Points', () => {
       })).toBe(false);
     });
 
+    it('button visible in the paired passthrough room when that room has sharers', () => {
+      expect(isWatchAllButtonVisible({
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+        isPassthroughPairedRoom: true,
+      })).toBe(true);
+    });
+
     it('shows a disabled watch-all button for other rooms with sharers', () => {
       expect(isDisabledWatchAllVisible({
         joinedRoomRemoteSharersCount: 0,
@@ -677,6 +1029,162 @@ describe('Watch All Entry Points', () => {
         otherRoomRemoteSharersCount: 0,
         watchAllOpen: false,
       })).toBe(false);
+    });
+
+    it('does not disable watch-all for the paired passthrough room', () => {
+      expect(isDisabledWatchAllVisible({
+        joinedRoomRemoteSharersCount: 0,
+        otherRoomRemoteSharersCount: 1,
+        watchAllOpen: false,
+        isPassthroughPairedRoom: true,
+      })).toBe(false);
+    });
+  });
+
+  describe('/watch-all passthrough scope', () => {
+    const baseScope: WatchAllScopeData = {
+      joinedSubRoomId: 'room-1',
+      passthrough: null,
+      selfParticipantId: 'self',
+      subRooms: [
+        { id: 'room-1', participantIds: ['self', 'user-1'] },
+        { id: 'room-2', participantIds: ['user-2'] },
+        { id: 'room-3', participantIds: ['user-3'] },
+      ],
+      participants: [
+        { id: 'self', isSharing: false },
+        { id: 'user-1', isSharing: true },
+        { id: 'user-2', isSharing: true },
+        { id: 'user-3', isSharing: true },
+      ],
+      streams: new Map([
+        ['user-1', 'stream-1'],
+        ['user-2', 'stream-2'],
+        ['user-3', 'stream-3'],
+      ]),
+    };
+
+    it('includes both rooms in the active passthrough pair when the joined room is involved', () => {
+      const scope = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      });
+
+      expect([...scope.participantIds].sort()).toEqual(['self', 'user-1', 'user-2']);
+      expect(scope.remoteSharers.map((participant) => participant.id).sort()).toEqual(['user-1', 'user-2']);
+      expect([...scope.streams.keys()].sort()).toEqual(['user-1', 'user-2']);
+    });
+
+    it('does not include passthrough rooms when the joined room is uninvolved', () => {
+      const scope = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-2', targetSubRoomId: 'room-3' },
+      });
+
+      expect([...scope.participantIds].sort()).toEqual(['self', 'user-1']);
+      expect(scope.remoteSharers.map((participant) => participant.id)).toEqual(['user-1']);
+      expect([...scope.streams.keys()]).toEqual(['user-1']);
+    });
+
+    it('adds newly in-scope streams when passthrough starts while Watch All is open', () => {
+      const before = computeWatchAllScope(baseScope).streams;
+      const after = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      }).streams;
+
+      expect(diffWatchAllStreams(before, after)).toEqual({
+        added: ['user-2'],
+        removed: [],
+      });
+    });
+
+    it('removes other-room streams when passthrough stops while Watch All is open', () => {
+      const before = computeWatchAllScope({
+        ...baseScope,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2' },
+      }).streams;
+      const after = computeWatchAllScope(baseScope).streams;
+
+      expect(diffWatchAllStreams(before, after)).toEqual({
+        added: [],
+        removed: ['user-2'],
+      });
+    });
+  });
+
+  describe('passthrough button presentation', () => {
+    it('renders the default passthrough button as green with empty inline curly quotes for joinable rooms', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: null,
+      })).toEqual({
+        label: '“ ”',
+        tone: 'green',
+        disabled: false,
+        action: 'set',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('renders active paired-room passthrough buttons as red with the pair label inside quotes', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      })).toEqual({
+        label: '“1 - 2”',
+        tone: 'red',
+        disabled: false,
+        action: 'clear',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('renders uninvolved passthrough buttons as gray and disabled while another pair is active', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-3',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      })).toEqual({
+        label: '“ ”',
+        tone: 'gray',
+        disabled: true,
+        action: 'none',
+        tooltip: 'Passthrough: listen and talk to this room at a lower volume',
+      });
+    });
+
+    it('uses the exact passthrough tooltip text', () => {
+      expect(passthroughButtonPresentation({
+        subRoomId: 'room-2',
+        joinedSubRoomId: 'room-1',
+        isJoinedRoom: false,
+        passthrough: null,
+      }).tooltip).toBe('Passthrough: listen and talk to this room at a lower volume');
+    });
+  });
+
+  describe('empty room removal countdown', () => {
+    it('does not render removal text when the room has no delete timestamp', () => {
+      expect(roomRemovalCountdownText(null, 1_000)).toBeNull();
+    });
+
+    it('rounds remaining time up to the next 10 second boundary', () => {
+      expect(roomRemovalCountdownText(61_000, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(60_999, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(60_000, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(59_999, 1_000)).toBe('Removing in less than 60 seconds');
+      expect(roomRemovalCountdownText(51_000, 1_000)).toBe('Removing in less than 50 seconds');
+    });
+
+    it('keeps the final visible bucket at less than 10 seconds until deletion arrives', () => {
+      expect(roomRemovalCountdownText(5_000, 1_000)).toBe('Removing in less than 10 seconds');
+      expect(roomRemovalCountdownText(1_000, 1_000)).toBe('Removing in less than 10 seconds');
     });
   });
 

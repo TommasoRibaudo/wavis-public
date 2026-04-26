@@ -203,6 +203,10 @@ pub enum SignalingMessage {
     JoinSubRoom(JoinSubRoomPayload),
     /// Client -> server request to leave the current sub-room while staying in voice.
     LeaveSubRoom(LeaveSubRoomPayload),
+    /// Client -> server request to enable or replace passthrough using the caller's joined room as the source.
+    SetPassthrough(SetPassthroughPayload),
+    /// Client -> server request to clear the active passthrough pair.
+    ClearPassthrough(ClearPassthroughPayload),
     /// Server -> client snapshot of the synchronized sub-room layout.
     SubRoomState(SubRoomStatePayload),
     /// Server -> client broadcast that a new sub-room was created.
@@ -748,12 +752,40 @@ pub struct JoinSubRoomPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LeaveSubRoomPayload {}
 
+/// Client requests passthrough from their currently joined room to another synchronized sub-room.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughPayload {
+    /// Target sub-room identifier. The source room is derived from the caller's membership.
+    #[serde(rename = "targetSubRoomId")]
+    pub target_sub_room_id: String,
+}
+
+/// Client requests that the active passthrough pair be cleared.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClearPassthroughPayload {}
+
+/// Authoritative passthrough pair included in synchronized sub-room snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PassthroughStatePayload {
+    /// One involved synchronized sub-room id.
+    #[serde(rename = "sourceSubRoomId")]
+    pub source_sub_room_id: String,
+    /// The other involved synchronized sub-room id.
+    #[serde(rename = "targetSubRoomId")]
+    pub target_sub_room_id: String,
+    /// Server-authored display label such as "1 - 2".
+    pub label: String,
+}
+
 /// Server snapshot of every sub-room in the active channel voice session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubRoomStatePayload {
     /// Ordered synchronized room list as rendered by the client.
     #[serde(default)]
     pub rooms: Vec<SubRoomInfoPayload>,
+    /// Optional active passthrough pair for the voice session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<PassthroughStatePayload>,
 }
 
 /// Server announces a newly created sub-room.
