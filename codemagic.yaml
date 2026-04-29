@@ -54,6 +54,7 @@ workflows:
             libasound2-dev \
             libayatana-appindicator3-dev \
             libclang-dev \
+            libopus-dev \
             libpipewire-0.3-dev \
             libpulse-dev \
             librsvg2-dev \
@@ -110,7 +111,7 @@ workflows:
             echo "Not a tag build, skipping GitHub Releases publish."
             exit 0
           fi
-          export GITHUB_TOKEN="$CM_GITHUB_TOKEN"
+          export GH_TOKEN="$CM_GITHUB_TOKEN"
           gh release create "$CM_TAG" --title "$CM_TAG" --generate-notes || true
           gh release upload "$CM_TAG" \
             target/release/bundle/appimage/*.AppImage \
@@ -190,7 +191,7 @@ workflows:
             Write-Host "Not a tag build, skipping GitHub Releases publish."
             exit 0
           }
-          $env:GITHUB_TOKEN = $env:CM_GITHUB_TOKEN
+          $env:GH_TOKEN = $env:CM_GITHUB_TOKEN
           gh release create $env:CM_TAG --title $env:CM_TAG --generate-notes
           if ($LASTEXITCODE -ne 0) { Write-Host "Release already exists, continuing." }
           $artifacts = Get-ChildItem `
@@ -230,7 +231,7 @@ workflows:
     scripts:
       - name: Install macOS build dependencies
         script: |
-          brew install automake libtool
+          brew install automake libtool opus
       - name: Install Rust toolchain
         script: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -284,7 +285,7 @@ workflows:
             echo "Not a tag build, skipping GitHub Releases publish."
             exit 0
           fi
-          export GITHUB_TOKEN="$CM_GITHUB_TOKEN"
+          export GH_TOKEN="$CM_GITHUB_TOKEN"
           gh release create "$CM_TAG" --title "$CM_TAG" --generate-notes || true
           gh release upload "$CM_TAG" \
             target/release/bundle/dmg/*.dmg \
