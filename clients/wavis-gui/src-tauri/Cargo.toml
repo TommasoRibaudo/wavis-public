@@ -1,6 +1,6 @@
 [package]
 name = "wavis-gui"
-version = "0.1.2"
+version = "0.1.3"
 description = "Wavis native voice client"
 authors = ["Wavis"]
 edition = "2021"

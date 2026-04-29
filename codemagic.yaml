@@ -264,7 +264,8 @@ workflows:
           if (-not $json.notes) { $json | Add-Member -NotePropertyName notes -NotePropertyValue "" -Force }
           $json.platforms | Add-Member -NotePropertyName "windows-x86_64" -NotePropertyValue @{url=$url; signature=$signature.Trim()} -Force
 
-          $json | ConvertTo-Json -Depth 10 | Set-Content "$env:TEMP/latest.json" -Encoding UTF8
+          $jsonStr = $json | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText("$env:TEMP/latest.json", $jsonStr, [System.Text.UTF8Encoding]::new($false))
           Write-Host "Generated latest.json with platform windows-x86_64"
           Get-Content "$env:TEMP/latest.json"
           gh release upload $env:CM_TAG "$env:TEMP/latest.json" --repo $repo --clobber
