@@ -2471,9 +2471,16 @@ export default function ActiveRoom() {
   return (
     <div className="h-full flex flex-col bg-wavis-bg font-mono text-wavis-text">
       <Toaster
-        position="bottom-right"
+        className="wavis-room-toaster"
+        position="top-center"
         duration={4000}
+        closeButton
+        offset={{ top: 12 }}
+        mobileOffset={{ top: 8, left: 12, right: 12 }}
+        gap={6}
         toastOptions={{
+          closeButton: true,
+          closeButtonAriaLabel: 'Close notification',
           style: { fontFamily: 'var(--font-mono)', fontSize: '0.875rem' },
         }}
       />
