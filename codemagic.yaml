@@ -54,6 +54,7 @@ workflows:
             libasound2-dev \
             libayatana-appindicator3-dev \
             libclang-dev \
+            libgbm-dev \
             libopus-dev \
             libpipewire-0.3-dev \
             libpulse-dev \
@@ -99,7 +100,7 @@ workflows:
 
           export PATH="$HOME/.cargo/bin:$PATH"
           cd "$WAVIS_GUI_DIR"
-          npm run tauri build -- --bundles appimage --verbose
+          npm run tauri build -- --bundles appimage,updater --verbose
       - name: List generated desktop artifacts
         script: |
           find target/release/bundle -maxdepth 3 -type f \
@@ -111,14 +112,21 @@ workflows:
             echo "Not a tag build, skipping GitHub Releases publish."
             exit 0
           fi
-          export GH_TOKEN="$CM_GITHUB_TOKEN"
+          export GH_TOKEN="$GITHUB_TOKEN"
           gh release create "$CM_TAG" --title "$CM_TAG" --generate-notes || true
-          gh release upload "$CM_TAG" \
-            target/release/bundle/appimage/*.AppImage \
-            target/release/bundle/appimage/*.AppImage.sig \
-            target/release/bundle/appimage/*.tar.gz \
-            target/release/bundle/appimage/*.tar.gz.sig \
-            --clobber
+          shopt -s nullglob
+          files=(
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
+            target/release/bundle/appimage/*.tar.gz
+            target/release/bundle/appimage/*.tar.gz.sig
+          )
+          if [ ${#files[@]} -gt 0 ]; then
+            gh release upload "$CM_TAG" "${files[@]}" --clobber
+          else
+            echo "No artifacts found to upload."
+            exit 1
+          fi
     artifacts:
       - target/release/bundle/appimage/*.AppImage
       - target/release/bundle/appimage/*.AppImage.sig
@@ -184,14 +192,14 @@ workflows:
           }
           $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
           cd $env:WAVIS_GUI_DIR
-          npm run tauri build -- --bundles nsis --verbose
+          npm run tauri build -- --bundles nsis,updater --verbose
       - name: Publish to GitHub Releases
         script: |
           if (-not $env:CM_TAG) {
             Write-Host "Not a tag build, skipping GitHub Releases publish."
             exit 0
           }
-          $env:GH_TOKEN = $env:CM_GITHUB_TOKEN
+          $env:GH_TOKEN = $env:GITHUB_TOKEN
           gh release create $env:CM_TAG --title $env:CM_TAG --generate-notes
           if ($LASTEXITCODE -ne 0) { Write-Host "Release already exists, continuing." }
           $artifacts = Get-ChildItem `
@@ -258,18 +266,6 @@ workflows:
         script: |
           cd "$WAVIS_GUI_DIR"
           npm run build
-      - name: Import Apple signing certificate
-        script: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
-          security create-keychain -p "" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security import /tmp/certificate.p12 -k build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
-          rm /tmp/certificate.p12
       - name: Build signed macOS DMG
         script: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
@@ -278,20 +274,27 @@ workflows:
           fi
           export PATH="$HOME/.cargo/bin:$PATH"
           cd "$WAVIS_GUI_DIR"
-          npm run tauri build -- --bundles dmg --verbose
+          npm run tauri build -- --bundles dmg,updater --verbose
       - name: Publish to GitHub Releases
         script: |
           if [ -z "$CM_TAG" ]; then
             echo "Not a tag build, skipping GitHub Releases publish."
             exit 0
           fi
-          export GH_TOKEN="$CM_GITHUB_TOKEN"
+          export GH_TOKEN="$GITHUB_TOKEN"
           gh release create "$CM_TAG" --title "$CM_TAG" --generate-notes || true
-          gh release upload "$CM_TAG" \
-            target/release/bundle/dmg/*.dmg \
-            target/release/bundle/macos/*.app.tar.gz \
-            target/release/bundle/macos/*.app.tar.gz.sig \
-            --clobber
+          shopt -s nullglob
+          files=(
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
+          )
+          if [ ${#files[@]} -gt 0 ]; then
+            gh release upload "$CM_TAG" "${files[@]}" --clobber
+          else
+            echo "No artifacts found to upload."
+            exit 1
+          fi
     artifacts:
       - target/release/bundle/dmg/*.dmg
       - target/release/bundle/macos/*.app.tar.gz
