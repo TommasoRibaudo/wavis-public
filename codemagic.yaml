@@ -8,12 +8,12 @@
 # All workflows trigger on tags matching desktop-v*.
 # All workflows publish artifacts to GitHub Releases on success.
 #
-# Required secrets — all stored in the "desktop-release" Codemagic environment group:
+# Required secrets — split across two Codemagic environment groups:
 #
-#   Shared (all platforms):
+#   "desktop-shared" (all platforms):
 #     TAURI_SIGNING_PRIVATE_KEY  — contents of .local-secrets/wavis-tauri-updater.key
 #
-#   macOS only:
+#   "desktop-macos" (macOS only):
 #     APPLE_CERTIFICATE          — base64-encoded Developer ID Application .p12 cert
 #     APPLE_CERTIFICATE_PASSWORD — password for the .p12
 #     APPLE_SIGNING_IDENTITY     — e.g. "Developer ID Application: Wavis (TEAMID)"
@@ -40,7 +40,7 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-release
+        - desktop-shared
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
@@ -51,6 +51,7 @@ workflows:
             build-essential \
             curl \
             file \
+            libasound2-dev \
             libayatana-appindicator3-dev \
             libclang-dev \
             libpipewire-0.3-dev \
@@ -143,7 +144,7 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-release
+        - desktop-shared
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
@@ -223,10 +224,14 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-release
+        - desktop-shared
+        - desktop-macos
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
+      - name: Install macOS build dependencies
+        script: |
+          brew install automake libtool
       - name: Install Rust toolchain
         script: |
           if ! command -v rustup >/dev/null 2>&1; then
