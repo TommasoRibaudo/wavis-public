@@ -1,0 +1,194 @@
+# Generate and upload latest.json for the Tauri in-app auto-updater.
+#
+# Problem: three Codemagic workflows build platform binaries in parallel,
+# each uploading its own .sig file. latest.json needs all three signatures
+# and URLs, so no single Codemagic workflow can produce it.
+#
+# Solution: this lightweight GHA job polls the GitHub Release until all
+# three platform .sig files are present, then assembles and uploads
+# latest.json. Runs on a free Ubuntu runner (~3 minutes).
+#
+# The updater endpoint in tauri.conf.json points to:
+#   https://github.com/TommasoRibaudo/wavis-public/releases/latest/download/latest.json
+#
+# Manual re-run: use workflow_dispatch with the tag name if a Codemagic
+# build was re-triggered after initial failure.
+
+name: Updater Manifest
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to generate manifest for (e.g. desktop-v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: updater-manifest-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  generate-manifest:
+    name: Generate and upload latest.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${TAG#desktop-v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      # ── Wait for the GitHub Release to exist ──────────────────────
+      # Codemagic creates it with `gh release create ... || true`,
+      # so the first workflow to finish creates it.
+      - name: Wait for release to exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEADLINE=$(( $(date +%s) + 3600 ))
+          until gh release view "${TAG}" --json tagName -q .tagName > /dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::Timed out waiting for release ${TAG} to be created (60 min)."
+              exit 1
+            fi
+            echo "Release not yet created. Retrying in 30s..."
+            sleep 30
+          done
+          echo "Release ${TAG} found."
+
+      # ── Wait for all three platform updater .sig files ────────────
+      # Artifact naming (from Tauri + codemagic.yaml):
+      #   Linux:   *.AppImage.tar.gz.sig  (crate name: wavis-gui)
+      #   Windows: *.nsis.zip.sig         (productName: Wavis)
+      #   macOS:   *.app.tar.gz.sig       (productName: Wavis)
+      - name: Wait for all platform sig files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEADLINE=$(( $(date +%s) + 3600 ))
+          while true; do
+            ASSETS=$(gh release view "${TAG}" --json assets -q '[.assets[].name]')
+
+            LINUX_SIG=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage\\.tar\\.gz\\.sig$"))] | first // empty')
+            WIN_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.nsis\\.zip\\.sig$"))]          | first // empty')
+            MAC_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz\\.sig$"))]      | first // empty')
+
+            echo "linux_sig=${LINUX_SIG:-(missing)}  win_sig=${WIN_SIG:-(missing)}  mac_sig=${MAC_SIG:-(missing)}"
+
+            if [ -n "$LINUX_SIG" ] && [ -n "$WIN_SIG" ] && [ -n "$MAC_SIG" ]; then
+              echo "All 3 platform sig files present."
+              break
+            fi
+
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::Timed out waiting for all sig files (60 min). Missing platforms will not get auto-updates."
+              exit 1
+            fi
+            sleep 30
+          done
+
+      # ── Discover the updater bundle asset names (without .sig) ───
+      - name: Discover asset names
+        id: assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ASSETS=$(gh release view "${TAG}" --json assets -q '[.assets[].name]')
+
+          LINUX=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage\\.tar\\.gz$"))] | first // empty')
+          WIN=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.nsis\\.zip$"))]          | first // empty')
+          MAC=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz$"))]      | first // empty')
+
+          if [ -z "$LINUX" ] || [ -z "$WIN" ] || [ -z "$MAC" ]; then
+            echo "::error::Could not find all updater bundle assets."
+            echo "  linux=${LINUX:-(missing)}  win=${WIN:-(missing)}  mac=${MAC:-(missing)}"
+            exit 1
+          fi
+
+          echo "linux=${LINUX}" >> "$GITHUB_OUTPUT"
+          echo "win=${WIN}"     >> "$GITHUB_OUTPUT"
+          echo "mac=${MAC}"     >> "$GITHUB_OUTPUT"
+          echo "Discovered: linux=${LINUX}  win=${WIN}  mac=${MAC}"
+
+      # ── Download .sig files ──────────────────────────────────────
+      - name: Download sig files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINUX: ${{ steps.assets.outputs.linux }}
+          WIN: ${{ steps.assets.outputs.win }}
+          MAC: ${{ steps.assets.outputs.mac }}
+        run: |
+          mkdir -p sigs
+          gh release download "${TAG}" \
+            --pattern "${LINUX}.sig" \
+            --pattern "${WIN}.sig"   \
+            --pattern "${MAC}.sig"   \
+            --dir ./sigs
+
+          echo "Downloaded sig files:"
+          ls -la sigs/
+
+      # ── Build latest.json and upload ─────────────────────────────
+      # Schema: https://v2.tauri.app/plugin/updater/
+      # Platform keys: linux-x86_64, windows-x86_64, darwin-aarch64
+      # (macOS is ARM64-only — built on mac_mini_m2)
+      - name: Build and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          LINUX: ${{ steps.assets.outputs.linux }}
+          WIN: ${{ steps.assets.outputs.win }}
+          MAC: ${{ steps.assets.outputs.mac }}
+        run: |
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          NOTES=$(gh release view "${TAG}" --json body -q '.body // ""')
+
+          jq -n \
+            --arg version  "$VERSION" \
+            --arg notes    "$NOTES" \
+            --arg pub_date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg lurl     "${BASE}/${LINUX}" \
+            --arg lsig     "$(cat sigs/${LINUX}.sig)" \
+            --arg wurl     "${BASE}/${WIN}" \
+            --arg wsig     "$(cat sigs/${WIN}.sig)" \
+            --arg murl     "${BASE}/${MAC}" \
+            --arg msig     "$(cat sigs/${MAC}.sig)" \
+            '{
+              version:  $version,
+              notes:    $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "linux-x86_64":   { url: $lurl, signature: $lsig },
+                "windows-x86_64": { url: $wurl, signature: $wsig },
+                "darwin-aarch64": { url: $murl, signature: $msig }
+              }
+            }' > latest.json
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+          # Validate: all signatures must be non-empty
+          for platform in "linux-x86_64" "windows-x86_64" "darwin-aarch64"; do
+            SIG=$(jq -r ".platforms.\"${platform}\".signature" latest.json)
+            if [ -z "$SIG" ] || [ "$SIG" = "null" ]; then
+              echo "::error::Empty signature for ${platform}"
+              exit 1
+            fi
+          done
+
+          gh release upload "${TAG}" latest.json --clobber
+          echo "latest.json uploaded to release ${TAG}."
