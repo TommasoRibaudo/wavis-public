@@ -100,7 +100,7 @@ workflows:
 
           export PATH="$HOME/.cargo/bin:$PATH"
           cd "$WAVIS_GUI_DIR"
-          npm run tauri build -- --bundles appimage,updater --verbose
+          npm run tauri build -- --bundles appimage --verbose
       - name: List generated desktop artifacts
         script: |
           find target/release/bundle -maxdepth 3 -type f \
@@ -209,7 +209,7 @@ workflows:
           }
           $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
           cd $env:WAVIS_GUI_DIR
-          npm run tauri build -- --bundles nsis,updater --verbose
+          npm run tauri build -- --bundles nsis --verbose
       - name: List generated desktop artifacts
         script: |
           Get-ChildItem -Recurse target/release/bundle -Include *.exe,*.sig,*.nsis.zip,*.nsis.zip.sig | Select-Object FullName
@@ -333,7 +333,7 @@ workflows:
           fi
           export PATH="$HOME/.cargo/bin:$PATH"
           cd "$WAVIS_GUI_DIR"
-          npm run tauri build -- --bundles dmg,updater --verbose
+          npm run tauri build -- --bundles app,dmg --verbose
       - name: List generated desktop artifacts
         script: |
           find target/release/bundle -type f \( -name "*.dmg" -o -name "*.sig" -o -name "*.tar.gz" -o -name "*.app" \) -print
