@@ -227,3 +227,83 @@
     scrollbar-color: var(--wavis-text-secondary) var(--wavis-bg);
   }
 }
+
+.wavis-room-toaster {
+  --wavis-room-toast-max-width: min(24rem, calc(100vw - 1.5rem));
+  --wavis-room-toast-close-width: 2.5rem;
+
+  width: var(--wavis-room-toast-max-width);
+  max-width: var(--wavis-room-toast-max-width);
+}
+
+.wavis-room-toaster[data-sonner-toaster][data-y-position='top'] {
+  bottom: auto !important;
+}
+
+.wavis-room-toaster[data-sonner-toaster][data-x-position='center'] {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] {
+  align-items: center;
+  left: 50%;
+  right: auto;
+  width: fit-content;
+  max-width: var(--wavis-room-toast-max-width);
+  min-height: 0;
+  padding: 0.5rem calc(var(--wavis-room-toast-close-width) + 0.75rem) 0.5rem 0.75rem;
+  transform: var(--y) translateX(-50%);
+  border-radius: 0.25rem;
+  background: var(--wavis-panel);
+  border-color: var(--wavis-text-secondary);
+  color: var(--wavis-text);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 28%);
+}
+
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] [data-content] {
+  min-width: 0;
+  max-width: calc(var(--wavis-room-toast-max-width) - var(--wavis-room-toast-close-width) - 1.5rem);
+}
+
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] [data-title],
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] [data-description] {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] [data-close-button] {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  display: flex;
+  width: var(--wavis-room-toast-close-width);
+  height: auto;
+  transform: none;
+  border: 0;
+  border-left: 1px solid var(--wavis-text-secondary);
+  border-radius: 0 0.25rem 0.25rem 0;
+  background: transparent;
+  color: var(--wavis-text-secondary);
+  align-items: center;
+  justify-content: center;
+}
+
+.wavis-room-toaster [data-sonner-toast][data-styled='true'] [data-close-button]:hover,
+.wavis-room-toaster [data-sonner-toast][data-styled='true']:hover [data-close-button]:hover {
+  background: rgb(166 173 200 / 14%);
+  color: var(--wavis-text);
+}
+
+@media (max-width: 600px) {
+  .wavis-room-toaster[data-sonner-toaster] {
+    width: var(--wavis-room-toast-max-width);
+    max-width: var(--wavis-room-toast-max-width);
+  }
+}
