@@ -135,13 +135,13 @@ workflows:
           VERSION="${CM_TAG#desktop-v}"
           REPO="TommasoRibaudo/wavis-public"
           shopt -s nullglob
-          sig_files=(target/release/bundle/appimage/*.AppImage.tar.gz.sig)
+          sig_files=(target/release/bundle/appimage/*.AppImage.sig)
           if [ ${#sig_files[@]} -eq 0 ]; then
             echo "No .sig file found, skipping latest.json update."
             exit 0
           fi
-          tar_files=(target/release/bundle/appimage/*.AppImage.tar.gz)
-          ARTIFACT_NAME=$(basename "${tar_files[0]}")
+          appimage_files=(target/release/bundle/appimage/*.AppImage)
+          ARTIFACT_NAME=$(basename "${appimage_files[0]}")
           ARTIFACT_URL="https://github.com/${REPO}/releases/download/${CM_TAG}/${ARTIFACT_NAME}"
           bash scripts/update-latest-json.sh "$CM_TAG" "$VERSION" "linux-x86_64" "$ARTIFACT_URL" "${sig_files[0]}"
     artifacts:
@@ -210,6 +210,9 @@ workflows:
           $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
           cd $env:WAVIS_GUI_DIR
           npm run tauri build -- --bundles nsis,updater --verbose
+      - name: List generated desktop artifacts
+        script: |
+          Get-ChildItem -Recurse target/release/bundle -Include *.exe,*.sig,*.nsis.zip,*.nsis.zip.sig | Select-Object FullName
       - name: Publish to GitHub Releases
         script: |
           if (-not $env:CM_TAG) {
@@ -235,14 +238,14 @@ workflows:
           $version = $env:CM_TAG -replace '^desktop-v', ''
           $repo = "TommasoRibaudo/wavis-public"
 
-          $sigFiles = Get-ChildItem target/release/bundle/nsis/*.nsis.zip.sig -ErrorAction SilentlyContinue
+          $sigFiles = Get-ChildItem target/release/bundle/nsis/*-setup.exe.sig -ErrorAction SilentlyContinue
           if (-not $sigFiles) {
             Write-Host "No .sig file found, skipping latest.json update."
             exit 0
           }
           $signature = Get-Content $sigFiles[0].FullName -Raw
-          $zipName = ($sigFiles[0].Name -replace '\.sig$', '')
-          $url = "https://github.com/$repo/releases/download/$($env:CM_TAG)/$zipName"
+          $exeName = ($sigFiles[0].Name -replace '\.sig$', '')
+          $url = "https://github.com/$repo/releases/download/$($env:CM_TAG)/$exeName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           # Try to download existing latest.json
@@ -331,6 +334,9 @@ workflows:
           export PATH="$HOME/.cargo/bin:$PATH"
           cd "$WAVIS_GUI_DIR"
           npm run tauri build -- --bundles dmg,updater --verbose
+      - name: List generated desktop artifacts
+        script: |
+          find target/release/bundle -type f \( -name "*.dmg" -o -name "*.sig" -o -name "*.tar.gz" -o -name "*.app" \) -print
       - name: Publish to GitHub Releases
         script: |
           if [ -z "$CM_TAG" ]; then
@@ -360,11 +366,21 @@ workflows:
           shopt -s nullglob
           sig_files=(target/release/bundle/macos/*.app.tar.gz.sig)
           if [ ${#sig_files[@]} -eq 0 ]; then
+            # Fallback: check for dmg sig if tar.gz sig doesn't exist
+            sig_files=(target/release/bundle/dmg/*.dmg.sig)
+          fi
+          if [ ${#sig_files[@]} -eq 0 ]; then
             echo "No .sig file found, skipping latest.json update."
             exit 0
           fi
+          # Find the corresponding updater artifact (prefer .app.tar.gz, fallback to .dmg)
           tar_files=(target/release/bundle/macos/*.app.tar.gz)
-          ARTIFACT_NAME=$(basename "${tar_files[0]}")
+          if [ ${#tar_files[@]} -gt 0 ]; then
+            ARTIFACT_NAME=$(basename "${tar_files[0]}")
+          else
+            dmg_files=(target/release/bundle/dmg/*.dmg)
+            ARTIFACT_NAME=$(basename "${dmg_files[0]}")
+          fi
           ARTIFACT_URL="https://github.com/${REPO}/releases/download/${CM_TAG}/${ARTIFACT_NAME}"
           bash scripts/update-latest-json.sh "$CM_TAG" "$VERSION" "darwin-aarch64" "$ARTIFACT_URL" "${sig_files[0]}"
     artifacts:
