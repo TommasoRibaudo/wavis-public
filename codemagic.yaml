@@ -8,12 +8,12 @@
 # All workflows trigger on tags matching desktop-v*.
 # All workflows publish artifacts to GitHub Releases on success.
 #
-# Required secrets — split across two Codemagic environment groups:
+# Required secrets — all stored in the "desktop-release" Codemagic environment group:
 #
-#   "desktop-shared" (all platforms):
+#   Shared (all platforms):
 #     TAURI_SIGNING_PRIVATE_KEY  — contents of .local-secrets/wavis-tauri-updater.key
 #
-#   "desktop-macos" (macOS only):
+#   macOS only:
 #     APPLE_CERTIFICATE          — base64-encoded Developer ID Application .p12 cert
 #     APPLE_CERTIFICATE_PASSWORD — password for the .p12
 #     APPLE_SIGNING_IDENTITY     — e.g. "Developer ID Application: Wavis (TEAMID)"
@@ -40,7 +40,7 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-shared
+        - desktop-release
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
@@ -144,7 +144,7 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-shared
+        - desktop-release
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
@@ -224,8 +224,7 @@ workflows:
       cancel_previous_builds: true
     environment:
       groups:
-        - desktop-shared
-        - desktop-macos
+        - desktop-release
       vars:
         WAVIS_GUI_DIR: clients/wavis-gui
     scripts:
