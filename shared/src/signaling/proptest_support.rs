@@ -661,13 +661,51 @@ impl Arbitrary for LeaveSubRoomPayload {
     }
 }
 
+impl Arbitrary for SetPassthroughPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|target_sub_room_id| SetPassthroughPayload { target_sub_room_id })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ClearPassthroughPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        Just(ClearPassthroughPayload {}).boxed()
+    }
+}
+
+impl Arbitrary for PassthroughStatePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<String>(), any::<String>(), any::<String>())
+            .prop_map(|(source_sub_room_id, target_sub_room_id, label)| PassthroughStatePayload {
+                source_sub_room_id,
+                target_sub_room_id,
+                label,
+            })
+            .boxed()
+    }
+}
+
 impl Arbitrary for SubRoomStatePayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6)
-            .prop_map(|rooms| SubRoomStatePayload { rooms })
+        (
+            prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6),
+            prop::option::of(any::<PassthroughStatePayload>()),
+        )
+            .prop_map(|(rooms, passthrough)| SubRoomStatePayload { rooms, passthrough })
             .boxed()
     }
 }
@@ -916,6 +954,8 @@ impl Arbitrary for SignalingMessage {
             any::<CreateSubRoomPayload>().prop_map(SignalingMessage::CreateSubRoom),
             any::<JoinSubRoomPayload>().prop_map(SignalingMessage::JoinSubRoom),
             any::<LeaveSubRoomPayload>().prop_map(SignalingMessage::LeaveSubRoom),
+            any::<SetPassthroughPayload>().prop_map(SignalingMessage::SetPassthrough),
+            any::<ClearPassthroughPayload>().prop_map(SignalingMessage::ClearPassthrough),
             any::<SubRoomStatePayload>().prop_map(SignalingMessage::SubRoomState),
             any::<SubRoomCreatedPayload>().prop_map(SignalingMessage::SubRoomCreated),
             any::<SubRoomJoinedPayload>().prop_map(SignalingMessage::SubRoomJoined),

@@ -63,11 +63,6 @@ export type ActiveShareInfo = {
 interface MediaEventConnected { type: 'connected' }
 interface MediaEventFailed { type: 'failed'; reason: string }
 interface MediaEventDisconnected { type: 'disconnected' }
-interface MediaEventParticipantMuteChanged {
-  type: 'participant_mute_changed';
-  identity: string;
-  is_muted: boolean;
-}
 interface MediaEventAudioLevels {
   type: 'audio_levels';
   levels: Array<{ identity: string; rms_level: number; is_speaking: boolean }>;
@@ -101,7 +96,6 @@ type MediaEventPayload =
   | MediaEventConnected
   | MediaEventFailed
   | MediaEventDisconnected
-  | MediaEventParticipantMuteChanged
   | MediaEventAudioLevels
   | MediaEventLocalAudioLevel
   | MediaEventStats
@@ -148,10 +142,6 @@ export class NativeMediaModule {
 
         case 'disconnected':
           this.callbacks.onMediaDisconnected();
-          break;
-
-        case 'participant_mute_changed':
-          this.callbacks.onParticipantMuteChanged(payload.identity, payload.is_muted);
           break;
 
         case 'audio_levels': {

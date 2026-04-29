@@ -4,15 +4,12 @@
 //! connection) and the pure helpers [`extract_livekit_rtt_from_stats`] and
 //! [`extract_livekit_loss_jitter`]. All items are `pub(super)`.
 
-#[cfg(feature = "real-backends")]
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "real-backends")]
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "real-backends")]
 use std::sync::atomic::AtomicU64;
 
-#[cfg(feature = "real-backends")]
 use livekit::Room as LkRoom;
 
 #[cfg(feature = "real-backends")]

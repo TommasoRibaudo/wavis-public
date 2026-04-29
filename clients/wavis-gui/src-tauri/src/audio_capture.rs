@@ -17,20 +17,6 @@ pub(crate) mod proptest_support;
 
 pub use audio_capture_state::{AudioCaptureState, AudioShareStartResult};
 
-/// Returns which audio-share features the current OS supports.
-/// Used by the frontend to gate UI before attempting a Rust call that would fail.
-#[tauri::command]
-pub fn get_platform_capabilities() -> PlatformCapabilities {
-    let (has_screen_capture_kit, has_process_tap) = platform::platform_capabilities();
-    PlatformCapabilities { has_screen_capture_kit, has_process_tap }
-}
-
-#[derive(serde::Serialize)]
-pub struct PlatformCapabilities {
-    pub has_screen_capture_kit: bool,
-    pub has_process_tap: bool,
-}
-
 /// Resolve the default system audio monitor source name.
 ///
 /// Used by Screen+Audio and Window+Audio modes where the audio source is implicit.

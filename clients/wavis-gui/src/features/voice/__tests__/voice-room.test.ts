@@ -213,19 +213,45 @@ describe('event log cap enforcement', () => {
 describe('computeEffectiveParticipantVolume', () => {
   it('preserves the manual volume for participants in the same joined room', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-1' }),
+      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-1' }, null),
     ).toBe(44);
   });
 
   it('mutes participants in different rooms', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-2' }),
+      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-2' }, null),
     ).toBe(0);
   });
 
   it('mutes everyone else when the local user has not joined a room', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', null, { 'peer-2': 'room-1' }),
+      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', null, { 'peer-2': 'room-1' }, null),
+    ).toBe(0);
+  });
+
+  it('attenuates the paired passthrough room to 20% of the saved manual volume', () => {
+    expect(
+      computeEffectiveParticipantVolume(
+        44,
+        'peer-2',
+        'self-peer',
+        'room-1',
+        { 'peer-2': 'room-2' },
+        { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      ),
+    ).toBe(9);
+  });
+
+  it('keeps unrelated rooms muted even when another passthrough pair is active', () => {
+    expect(
+      computeEffectiveParticipantVolume(
+        44,
+        'peer-2',
+        'self-peer',
+        'room-1',
+        { 'peer-2': 'room-3' },
+        { sourceSubRoomId: 'room-1', targetSubRoomId: 'room-2', label: '1 - 2' },
+      ),
     ).toBe(0);
   });
 });

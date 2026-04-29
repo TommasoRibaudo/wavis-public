@@ -311,6 +311,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(KeyringCache::new())
         .manage(media::MediaState::new())
         .manage(external_share_helper::ExternalShareHelperState::new())
@@ -403,7 +405,6 @@ fn main() {
             screen_recording_auth::ensure_screen_recording_access,
             external_share_helper::external_share_start,
             external_share_helper::external_share_stop,
-            audio_capture::get_platform_capabilities,
             audio_capture::get_default_audio_monitor,
             audio_capture::get_default_audio_monitor_fast,
             audio_capture::audio_share_start,

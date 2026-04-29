@@ -420,6 +420,8 @@ mod tests {
                         SignalingMessage::CreateSubRoom(_) |
                         SignalingMessage::JoinSubRoom(_) |
                         SignalingMessage::LeaveSubRoom(_) |
+                        SignalingMessage::SetPassthrough(_) |
+                        SignalingMessage::ClearPassthrough(_) |
                         SignalingMessage::SubRoomState(_) |
                         SignalingMessage::SubRoomCreated(_) |
                         SignalingMessage::SubRoomJoined(_) |

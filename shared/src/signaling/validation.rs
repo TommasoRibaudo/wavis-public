@@ -250,12 +250,20 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             check("subRoomId", &p.sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
         }
         SignalingMessage::LeaveSubRoom(_) => {}
+        SignalingMessage::SetPassthrough(p) => {
+            check("targetSubRoomId", &p.target_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
+        }
+        SignalingMessage::ClearPassthrough(_) => {}
         SignalingMessage::SubRoomState(p) => {
             for room in &p.rooms {
                 check("subRoomId", &room.sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
                 for participant_id in &room.participant_ids {
                     check("participantId", participant_id, MAX_PEER_ID_LEN)?;
                 }
+            }
+            if let Some(passthrough) = &p.passthrough {
+                check("sourceSubRoomId", &passthrough.source_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
+                check("targetSubRoomId", &passthrough.target_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
             }
         }
         SignalingMessage::SubRoomCreated(p) => {
@@ -366,6 +374,16 @@ mod tests {
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "subRoomId");
+        assert_eq!(err.max_len, MAX_SUB_ROOM_ID_LEN);
+    }
+
+    #[test]
+    fn oversized_passthrough_target_sub_room_id_rejected() {
+        let msg = SignalingMessage::SetPassthrough(SetPassthroughPayload {
+            target_sub_room_id: long_str(MAX_SUB_ROOM_ID_LEN + 1),
+        });
+        let err = validate_field_lengths(&msg).unwrap_err();
+        assert_eq!(err.field, "targetSubRoomId");
         assert_eq!(err.max_len, MAX_SUB_ROOM_ID_LEN);
     }
 

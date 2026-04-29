@@ -18,9 +18,10 @@ export type WsMessageHandler = (message: unknown) => void;
 
 const LOG_PREFIX = '[wavis:ws]';
 
-/** Keepalive ping interval (ms). CloudFront VPC origin_read_timeout is 60s;
- *  ping every 30s to stay safely within that window. */
-const KEEPALIVE_INTERVAL_MS = 30_000;
+/** Keepalive ping interval (ms). Prevents idle-timeout disconnects from
+ *  reverse proxies (e.g. CloudFront default 600s). 5 minutes is well
+ *  within typical proxy idle windows. */
+const KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Slow periodic retry interval (ms) after fast reconnect attempts are exhausted. */
 const PERIODIC_RETRY_INTERVAL_MS = 30_000;

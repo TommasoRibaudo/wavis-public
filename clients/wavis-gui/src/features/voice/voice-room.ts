@@ -69,6 +69,12 @@ export interface VoiceSubRoom {
   deleteAtMs: number | null;
 }
 
+export interface VoicePassthroughState {
+  sourceSubRoomId: string;
+  targetSubRoomId: string;
+  label: string;
+}
+
 export type RoomEventType =
   | 'join'
   | 'leave'
@@ -173,6 +179,8 @@ export interface VoiceRoomState {
   desiredSubRoomId: string | null;
   /** Derived reverse index of participant id -> synchronized sub-room id. */
   participantSubRoomById: Record<string, string>;
+  /** Authoritative active passthrough pair, if any. */
+  passthrough: VoicePassthroughState | null;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -356,10 +364,21 @@ export function computeEffectiveParticipantVolume(
   selfParticipantId: string | null,
   joinedSubRoomId: string | null,
   participantSubRoomById: Record<string, string>,
+  passthrough: VoicePassthroughState | null,
 ): number {
   if (participantId === selfParticipantId) return manualVolume;
   if (!joinedSubRoomId) return 0;
-  return participantSubRoomById[participantId] === joinedSubRoomId ? manualVolume : 0;
+  const participantSubRoomId = participantSubRoomById[participantId] ?? null;
+  if (participantSubRoomId === joinedSubRoomId) return manualVolume;
+  if (!participantSubRoomId || !passthrough) return 0;
+
+  const pairedSubRoomId = passthrough.sourceSubRoomId === joinedSubRoomId
+    ? passthrough.targetSubRoomId
+    : passthrough.targetSubRoomId === joinedSubRoomId
+      ? passthrough.sourceSubRoomId
+      : null;
+  if (participantSubRoomId !== pairedSubRoomId) return 0;
+  return Math.round(manualVolume * 0.2);
 }
 
 /**
@@ -388,6 +407,7 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.selfParticipantId,
       state.joinedSubRoomId,
       state.participantSubRoomById,
+      state.passthrough,
     ),
   );
 }
@@ -754,6 +774,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   joinedSubRoomId: null,
   desiredSubRoomId: null,
   participantSubRoomById: {},
+  passthrough: null,
 };
 
 let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
@@ -791,6 +812,7 @@ function shouldUseNativeMedia(): boolean {
   return !(hasRtc && hasGetUserMedia && hasGetDisplayMedia);
 }
 let bufferedMediaToken: { sfuUrl: string; token: string } | null = null;
+let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
@@ -975,12 +997,66 @@ function syncDerivedSubRoomState(): void {
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
 }
 
-function maybeAutoRejoinDesiredSubRoom(): void {
+function syncDesiredSubRoomPreference(): void {
+  state.desiredSubRoomId = desiredSubRoomIntent === undefined
+    ? state.joinedSubRoomId
+    : desiredSubRoomIntent;
+}
+
+function playSubRoomMembershipSounds(
+  previousParticipantSubRoomById: Record<string, string>,
+  previousJoinedSubRoomId: string | null,
+): void {
+  const selfParticipantId = state.selfParticipantId;
+  if (!selfParticipantId) return;
+
+  const currentParticipantSubRoomById = state.participantSubRoomById;
+  const currentJoinedSubRoomId = state.joinedSubRoomId;
+  const participantIds = new Set([
+    ...Object.keys(previousParticipantSubRoomById),
+    ...Object.keys(currentParticipantSubRoomById),
+  ]);
+
+  for (const participantId of participantIds) {
+    const previousRoomId = previousParticipantSubRoomById[participantId] ?? null;
+    const currentRoomId = currentParticipantSubRoomById[participantId] ?? null;
+    if (previousRoomId === currentRoomId) continue;
+
+    if (participantId === selfParticipantId) {
+      if (previousRoomId) {
+        void playNotificationSound('leave');
+      }
+      if (currentRoomId) {
+        void playNotificationSound('join');
+      }
+      continue;
+    }
+
+    if (previousJoinedSubRoomId && previousRoomId === previousJoinedSubRoomId) {
+      void playNotificationSound('leave');
+    }
+    if (currentJoinedSubRoomId && currentRoomId === currentJoinedSubRoomId) {
+      void playNotificationSound('join');
+    }
+  }
+}
+
+function reconcileDesiredSubRoomMembership(): void {
+  syncDesiredSubRoomPreference();
   if (!client || client.status !== 'connected') return;
-  if (!state.desiredSubRoomId) return;
-  if (state.joinedSubRoomId === state.desiredSubRoomId) return;
-  if (!state.subRooms.some((room) => room.id === state.desiredSubRoomId)) return;
-  client.send({ type: 'join_sub_room', subRoomId: state.desiredSubRoomId });
+
+  const desiredSubRoomId = state.desiredSubRoomId;
+  if (desiredSubRoomIntent === undefined || desiredSubRoomId === state.joinedSubRoomId) return;
+
+  if (desiredSubRoomId === null) {
+    if (state.joinedSubRoomId) {
+      client.send({ type: 'leave_sub_room' });
+    }
+    return;
+  }
+
+  if (!state.subRooms.some((room) => room.id === desiredSubRoomId)) return;
+  client.send({ type: 'join_sub_room', subRoomId: desiredSubRoomId });
 }
 
 function buildSyntheticSelfParticipant(): RoomParticipant | null {
@@ -1310,6 +1386,7 @@ function dispatchMessage(raw: unknown): void {
           state.subRooms = [];
           state.participantSubRoomById = {};
           state.joinedSubRoomId = null;
+          state.passthrough = null;
           state.selfParticipantId = null;
           state.error = null;
           state.rejectionReason = null;
@@ -1368,6 +1445,7 @@ function dispatchMessage(raw: unknown): void {
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
       syncDerivedSubRoomState();
+      syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
       const participants = (msg.participants as Array<Record<string, unknown>>) || [];
       state.participants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
@@ -1391,7 +1469,6 @@ function dispatchMessage(raw: unknown): void {
       });
       ensureSelfParticipant('joined');
       state.machineState = 'active';
-      void playNotificationSound('join');
 
       // Reconcile: if TrackSubscribed already fired before the participant
       // list was built, the stream is in screenShareStreams but the
@@ -1422,7 +1499,7 @@ function dispatchMessage(raw: unknown): void {
         if (since) historyReq.since = since;
         client.send(historyReq);
       }
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
 
       notify();
       break;
@@ -1502,12 +1579,13 @@ function dispatchMessage(raw: unknown): void {
         message: `${msg.displayName} joined`,
         participantId: msg.participantId as string,
       });
-      void playNotificationSound('join');
       notify();
       break;
     }
 
     case 'participant_left': {
+      const previousParticipantSubRoomById = { ...state.participantSubRoomById };
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const leftId = msg.participantId as string;
       const leftP = state.participants.find((p) => p.id === leftId);
       state.participants = state.participants.filter((p) => p.id !== leftId);
@@ -1519,6 +1597,7 @@ function dispatchMessage(raw: unknown): void {
             : room
         ));
         syncDerivedSubRoomState();
+        playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
       }
       speakingTracker.delete(leftId);
@@ -1530,12 +1609,13 @@ function dispatchMessage(raw: unknown): void {
         message: `${leftName} left`,
         participantId: leftId,
       });
-      void playNotificationSound('leave');
       notify();
       break;
     }
 
     case 'sub_room_state': {
+      const previousParticipantSubRoomById = { ...state.participantSubRoomById };
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const rooms = ((msg.rooms as Array<Record<string, unknown>>) || []).map((room) => ({
         id: room.subRoomId as string,
         roomNumber: room.roomNumber as number,
@@ -1546,12 +1626,21 @@ function dispatchMessage(raw: unknown): void {
         deleteAtMs: typeof room.deleteAtMs === 'number' ? room.deleteAtMs : null,
       })).sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
+      const passthrough = msg.passthrough as Record<string, unknown> | null | undefined;
+      state.passthrough = passthrough
+        && typeof passthrough.sourceSubRoomId === 'string'
+        && typeof passthrough.targetSubRoomId === 'string'
+        && typeof passthrough.label === 'string'
+        ? {
+            sourceSubRoomId: passthrough.sourceSubRoomId,
+            targetSubRoomId: passthrough.targetSubRoomId,
+            label: passthrough.label,
+          }
+        : null;
       syncDerivedSubRoomState();
-      if (state.joinedSubRoomId) {
-        state.desiredSubRoomId = state.joinedSubRoomId;
-      }
+      playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1572,12 +1661,14 @@ function dispatchMessage(raw: unknown): void {
         .sort((a, b) => a.roomNumber - b.roomNumber);
       syncDerivedSubRoomState();
       applyEffectiveParticipantVolumes();
-      maybeAutoRejoinDesiredSubRoom();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
 
     case 'sub_room_joined': {
+      const previousParticipantSubRoomById = { ...state.participantSubRoomById };
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const participantId = msg.participantId as string;
       const subRoomId = msg.subRoomId as string;
       const source = ((msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit') as SubRoomMembershipSource;
@@ -1592,16 +1683,17 @@ function dispatchMessage(raw: unknown): void {
           : room;
       });
       syncDerivedSubRoomState();
-      if (participantId === state.selfParticipantId) {
-        state.desiredSubRoomId = subRoomId;
-      }
       void source;
+      playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
 
     case 'sub_room_left': {
+      const previousParticipantSubRoomById = { ...state.participantSubRoomById };
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const participantId = msg.participantId as string;
       const subRoomId = msg.subRoomId as string;
       state.subRooms = state.subRooms.map((room) => (
@@ -1610,10 +1702,9 @@ function dispatchMessage(raw: unknown): void {
           : room
       ));
       syncDerivedSubRoomState();
-      if (participantId === state.selfParticipantId) {
-        state.desiredSubRoomId = null;
-      }
+      playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -1622,10 +1713,11 @@ function dispatchMessage(raw: unknown): void {
       const subRoomId = msg.subRoomId as string;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
-      if (state.desiredSubRoomId === subRoomId) {
-        state.desiredSubRoomId = null;
+      if (desiredSubRoomIntent === subRoomId) {
+        desiredSubRoomIntent = undefined;
       }
       applyEffectiveParticipantVolumes();
+      reconcileDesiredSubRoomMembership();
       notify();
       break;
     }
@@ -2115,6 +2207,7 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  desiredSubRoomIntent = undefined;
 
   // Push initial state to the component
   notify();
@@ -2143,8 +2236,8 @@ export function initSession(
   client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
-      if (state.machineState === 'active' || state.machineState === 'joining') {
-        // Connection dropped during active session or mid-join — start reconnecting.
+      if (state.machineState === 'active') {
+        // Connection dropped during active session — start reconnecting.
         // Do NOT tear down LiveKit media — it connects directly to the SFU,
         // independent of the signaling WS. Tearing it down causes an
         // unnecessary audio/screenshare interruption during WS reconnects
@@ -2273,7 +2366,6 @@ export function leaveRoom(): void {
 
   // Send Leave if still connected
   if (client && client.status === 'connected') {
-    void playNotificationSound('leave');
     client.send({ type: 'leave' });
   }
 
@@ -2301,6 +2393,7 @@ export function leaveRoom(): void {
 
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+  desiredSubRoomIntent = undefined;
 
   // Reset reconnect cooldown timer
   lastReconnectMediaTime = 0;
@@ -2946,6 +3039,7 @@ export function setParticipantVolume(participantId: string, volume: number): voi
         state.selfParticipantId,
         state.joinedSubRoomId,
         state.participantSubRoomById,
+        state.passthrough,
       ),
     );
   }
@@ -3021,6 +3115,7 @@ export function createSubRoom(): void {
 
 export function joinSubRoom(subRoomId: string): void {
   if (!subRoomId) return;
+  desiredSubRoomIntent = subRoomId;
   state.desiredSubRoomId = subRoomId;
   notify();
   if (!client || client.status !== 'connected') return;
@@ -3028,10 +3123,22 @@ export function joinSubRoom(subRoomId: string): void {
 }
 
 export function leaveSubRoom(): void {
+  desiredSubRoomIntent = null;
   state.desiredSubRoomId = null;
   notify();
   if (!client || client.status !== 'connected') return;
   client.send({ type: 'leave_sub_room' });
+}
+
+export function setPassthrough(targetSubRoomId: string): void {
+  if (!targetSubRoomId) return;
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'set_passthrough', targetSubRoomId });
+}
+
+export function clearPassthrough(): void {
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'clear_passthrough' });
 }
 
 /* ─── Chat ──────────────────────────────────────────────────────── */
@@ -3086,6 +3193,7 @@ export function getState(): VoiceRoomState {
       participantIds: [...room.participantIds],
     })),
     participantSubRoomById: { ...state.participantSubRoomById },
+    passthrough: state.passthrough ? { ...state.passthrough } : null,
   };
 }
 
