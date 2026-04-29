@@ -127,6 +127,23 @@ workflows:
             echo "No artifacts found to upload."
             exit 1
           fi
+      - name: Update latest.json for updater
+        script: |
+          if [ -z "$CM_TAG" ]; then exit 0; fi
+          export GH_TOKEN="$GITHUB_TOKEN"
+          sudo apt-get install -y jq || true
+          VERSION="${CM_TAG#desktop-v}"
+          REPO="TommasoRibaudo/wavis-public"
+          shopt -s nullglob
+          sig_files=(target/release/bundle/appimage/*.AppImage.tar.gz.sig)
+          if [ ${#sig_files[@]} -eq 0 ]; then
+            echo "No .sig file found, skipping latest.json update."
+            exit 0
+          fi
+          tar_files=(target/release/bundle/appimage/*.AppImage.tar.gz)
+          ARTIFACT_NAME=$(basename "${tar_files[0]}")
+          ARTIFACT_URL="https://github.com/${REPO}/releases/download/${CM_TAG}/${ARTIFACT_NAME}"
+          bash scripts/update-latest-json.sh "$CM_TAG" "$VERSION" "linux-x86_64" "$ARTIFACT_URL" "${sig_files[0]}"
     artifacts:
       - target/release/bundle/appimage/*.AppImage
       - target/release/bundle/appimage/*.AppImage.sig
@@ -208,7 +225,46 @@ workflows:
             target/release/bundle/nsis/*.nsis.zip, `
             target/release/bundle/nsis/*.nsis.zip.sig `
             -ErrorAction SilentlyContinue
-          gh release upload $env:CM_TAG $artifacts --clobber
+          if ($artifacts) {
+            gh release upload $env:CM_TAG $artifacts --clobber
+          }
+      - name: Update latest.json for updater
+        script: |
+          if (-not $env:CM_TAG) { exit 0 }
+          $env:GH_TOKEN = $env:GITHUB_TOKEN
+          $version = $env:CM_TAG -replace '^desktop-v', ''
+          $repo = "TommasoRibaudo/wavis-public"
+
+          $sigFiles = Get-ChildItem target/release/bundle/nsis/*.nsis.zip.sig -ErrorAction SilentlyContinue
+          if (-not $sigFiles) {
+            Write-Host "No .sig file found, skipping latest.json update."
+            exit 0
+          }
+          $signature = Get-Content $sigFiles[0].FullName -Raw
+          $zipName = ($sigFiles[0].Name -replace '\.sig$', '')
+          $url = "https://github.com/$repo/releases/download/$($env:CM_TAG)/$zipName"
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          # Try to download existing latest.json
+          $existing = '{}'
+          try {
+            gh release download $env:CM_TAG --pattern "latest.json" --dir $env:TEMP --repo $repo --clobber 2>$null
+            if (Test-Path "$env:TEMP/latest.json") {
+              $existing = Get-Content "$env:TEMP/latest.json" -Raw
+            }
+          } catch {}
+
+          $json = $existing | ConvertFrom-Json
+          if (-not $json.platforms) { $json | Add-Member -NotePropertyName platforms -NotePropertyValue @{} -Force }
+          $json.version = $version
+          $json.pub_date = $pubDate
+          if (-not $json.notes) { $json | Add-Member -NotePropertyName notes -NotePropertyValue "" -Force }
+          $json.platforms | Add-Member -NotePropertyName "windows-x86_64" -NotePropertyValue @{url=$url; signature=$signature.Trim()} -Force
+
+          $json | ConvertTo-Json -Depth 10 | Set-Content "$env:TEMP/latest.json" -Encoding UTF8
+          Write-Host "Generated latest.json with platform windows-x86_64"
+          Get-Content "$env:TEMP/latest.json"
+          gh release upload $env:CM_TAG "$env:TEMP/latest.json" --repo $repo --clobber
     artifacts:
       - target/release/bundle/nsis/*.exe
       - target/release/bundle/nsis/*.exe.sig
@@ -295,6 +351,22 @@ workflows:
             echo "No artifacts found to upload."
             exit 1
           fi
+      - name: Update latest.json for updater
+        script: |
+          if [ -z "$CM_TAG" ]; then exit 0; fi
+          export GH_TOKEN="$GITHUB_TOKEN"
+          VERSION="${CM_TAG#desktop-v}"
+          REPO="TommasoRibaudo/wavis-public"
+          shopt -s nullglob
+          sig_files=(target/release/bundle/macos/*.app.tar.gz.sig)
+          if [ ${#sig_files[@]} -eq 0 ]; then
+            echo "No .sig file found, skipping latest.json update."
+            exit 0
+          fi
+          tar_files=(target/release/bundle/macos/*.app.tar.gz)
+          ARTIFACT_NAME=$(basename "${tar_files[0]}")
+          ARTIFACT_URL="https://github.com/${REPO}/releases/download/${CM_TAG}/${ARTIFACT_NAME}"
+          bash scripts/update-latest-json.sh "$CM_TAG" "$VERSION" "darwin-aarch64" "$ARTIFACT_URL" "${sig_files[0]}"
     artifacts:
       - target/release/bundle/dmg/*.dmg
       - target/release/bundle/macos/*.app.tar.gz
