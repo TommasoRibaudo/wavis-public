@@ -33,7 +33,7 @@ workflows:
         - target
     triggering:
       events:
-        - push
+        - tag
       tag_patterns:
         - pattern: "desktop-v*"
           include: true
@@ -136,7 +136,7 @@ workflows:
         - target
     triggering:
       events:
-        - push
+        - tag
       tag_patterns:
         - pattern: "desktop-v*"
           include: true
@@ -216,7 +216,7 @@ workflows:
         - target
     triggering:
       events:
-        - push
+        - tag
       tag_patterns:
         - pattern: "desktop-v*"
           include: true
