@@ -101,6 +101,10 @@ export interface ChatMessage {
   isDivider?: boolean;
 }
 
+export type ChatDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'message'; message: ChatMessage };
+
 
 export interface RoomEvent {
   id: string;
@@ -437,6 +441,55 @@ export function computeSinceCursor(messages: ChatMessage[]): string | undefined 
   const d = new Date(earliest);
   d.setTime(d.getTime() - 1000);
   return d.toISOString();
+}
+
+export function getLocalChatDateKey(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function formatChatDateLabel(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[] {
+  const items: ChatDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const message of messages) {
+    if (message.isDivider) continue;
+
+    const dateKey = getLocalChatDateKey(message.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${message.id}`,
+        label: formatChatDateLabel(message.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function shouldPlayChatNotification(
+  participantId: string,
+  selfParticipantId: string | null,
+): boolean {
+  return !!selfParticipantId && participantId !== selfParticipantId;
 }
 
 /**
@@ -2142,6 +2195,9 @@ function dispatchMessage(raw: unknown): void {
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
         state.chatMessages = state.chatMessages.slice(-MAX_CHAT_MESSAGES);
+      }
+      if (shouldPlayChatNotification(chatMsg.participantId, state.selfParticipantId)) {
+        void playNotificationSound('chat');
       }
       notify();
       break;
