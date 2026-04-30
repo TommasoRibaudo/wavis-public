@@ -47,6 +47,7 @@ import {
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
+  buildChatDisplayItems,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
@@ -2388,16 +2389,16 @@ export default function ActiveRoom() {
         {roomState.chatMessages.length === 0 && (
           <div className="text-wavis-text-secondary">No messages yet</div>
         )}
-        {roomState.chatMessages.map((msg) =>
-          msg.isDivider ? (
-            <div key={msg.id} className="text-wavis-text-secondary text-xs py-1 text-center">
-              {'─'.repeat(12)} Earlier messages {'─'.repeat(12)}
+        {buildChatDisplayItems(roomState.chatMessages).map((item) =>
+          item.type === 'date-divider' ? (
+            <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
+              {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
             </div>
           ) : (
-            <div key={msg.id} className="break-all">
-              <span className="text-wavis-text-secondary">[{formatTime(msg.timestamp)}]</span>{' '}
-              <span style={{ color: msg.color }}>{msg.displayName}</span>
-              <span>: {msg.text}</span>
+            <div key={item.message.id} className="break-all">
+              <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
+              <span style={{ color: item.message.color }}>{item.message.displayName}</span>
+              <span>: {item.message.text}</span>
             </div>
           )
         )}
