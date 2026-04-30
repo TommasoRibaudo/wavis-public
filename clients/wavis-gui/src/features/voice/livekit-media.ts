@@ -83,6 +83,11 @@ function isMac(): boolean {
   return /Macintosh/i.test(navigator.userAgent);
 }
 
+/** Returns true when running inside a Linux Tauri webview. */
+function isLinux(): boolean {
+  return /Linux/i.test(navigator.userAgent) && !/Android/i.test(navigator.userAgent);
+}
+
 /** Windows and macOS use the native Rust PCM bridge for screen-share audio. */
 function usesNativeScreenShareAudio(): boolean {
   return isWindows() || isMac();
@@ -2748,7 +2753,30 @@ export class LiveKitModule {
       }
     }
 
-    // ── macOS / Linux fallback ────────────────────────────────────────────────
+    // Linux: audio is captured by the Rust pipeline (PulseAudio → Rust LiveKit
+    // SDK via conn.feed_screen_audio); the JS SDK never publishes the
+    // ScreenShareAudio track, so the macOS-style mute/unmute and the
+    // getDisplayMedia({audio:true}) restart below both miss. Drive the Rust
+    // audio_share_start / audio_share_stop IPC directly instead.
+    if (isLinux()) {
+      try {
+        if (withAudio) {
+          const sourceId = await invoke<string>('get_default_audio_monitor_fast');
+          await invoke<AudioShareStartResult>('audio_share_start', { sourceId });
+        } else {
+          await invoke('audio_share_stop');
+        }
+        this.callbacks.onSystemEvent(`screen share audio: ${withAudio ? 'on' : 'off'}`);
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(LOG, 'restartScreenShareWithAudio (Linux) failed:', msg);
+        this.callbacks.onSystemEvent(`screen share audio toggle failed: ${msg}`);
+        return false;
+      }
+    }
+
+    // ── macOS fallback ────────────────────────────────────────────────────────
     //
     // Preferred path: mute/unmute the existing ScreenShareAudio track.
     // This never calls getDisplayMedia and works from any call context

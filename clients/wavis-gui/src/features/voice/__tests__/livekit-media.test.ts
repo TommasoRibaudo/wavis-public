@@ -4825,13 +4825,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
   });
 
   /**
-   * Validates: Requirements 3.3
-   *
-   * Preservation Property 3: For non-Windows platforms with restartScreenShareWithAudio(true),
-   * setScreenShareEnabled(false) IS called followed by setScreenShareEnabled(true).
-   * Full getDisplayMedia restart preserved on macOS.
+   * Linux: restartScreenShareWithAudio(true) drives the Rust audio_share_start
+   * IPC and leaves the video track untouched. Audio is captured by the Rust
+   * pipeline (PulseAudio → Rust LiveKit SDK), so the JS SDK never runs a
+   * getDisplayMedia restart and setScreenShareEnabled is not called.
    */
-  it('non-Windows + restartScreenShareWithAudio(true) → full getDisplayMedia restart (PBT)', async () => {
+  it('Linux + restartScreenShareWithAudio(true) → audio_share_start IPC, no video restart (PBT)', async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constant('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'),
@@ -4849,29 +4848,20 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
           const mod = new LiveKitModule(cbs);
           await driveToConnected(mod);
 
-          // Start screen share first
           await mod.startScreenShare();
 
-          // Clear SDK calls to isolate the restart
           sdkCalls.length = 0;
+          tauriInvokeCalls = [];
 
           await mod.restartScreenShareWithAudio(true);
 
-          // setScreenShareEnabled(false) should be called (stop video)
-          const stopCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === false,
+          const videoRestartCalls = sdkCalls.filter(
+            c => c.method === 'setScreenShareEnabled',
           );
-          expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+          expect(videoRestartCalls).toHaveLength(0);
 
-          // setScreenShareEnabled(true, captureOpts) should be called (restart video)
-          const startCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === true,
-          );
-          expect(startCalls.length).toBeGreaterThanOrEqual(1);
-
-          // The restart captureOpts should have audio: true
-          const captureOpts = startCalls[0].args[1] as Record<string, unknown>;
-          expect(captureOpts.audio).toBe(true);
+          const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+          expect(audioStartCalls).toHaveLength(1);
 
           mod.disconnect();
           vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
