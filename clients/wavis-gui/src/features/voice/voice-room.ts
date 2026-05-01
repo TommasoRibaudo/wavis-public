@@ -101,6 +101,10 @@ export interface ChatMessage {
   isDivider?: boolean;
 }
 
+export type ChatDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'message'; message: ChatMessage };
+
 
 export interface RoomEvent {
   id: string;
@@ -437,6 +441,55 @@ export function computeSinceCursor(messages: ChatMessage[]): string | undefined 
   const d = new Date(earliest);
   d.setTime(d.getTime() - 1000);
   return d.toISOString();
+}
+
+export function getLocalChatDateKey(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function formatChatDateLabel(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[] {
+  const items: ChatDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const message of messages) {
+    if (message.isDivider) continue;
+
+    const dateKey = getLocalChatDateKey(message.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${message.id}`,
+        label: formatChatDateLabel(message.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function shouldPlayChatNotification(
+  participantId: string,
+  selfParticipantId: string | null,
+): boolean {
+  return !!selfParticipantId && participantId !== selfParticipantId;
 }
 
 /**
@@ -1894,6 +1947,52 @@ function dispatchMessage(raw: unknown): void {
       break;
     }
 
+    case 'participant_self_muted': {
+      const selfMutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
+      const smp = state.participants.find((pp) => pp.id === selfMutedId);
+      if (smp) {
+        smp.isMuted = true;
+        smp.rmsLevel = 0;
+        smp.isSpeaking = false;
+      }
+      if (selfMutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (smp) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'muted',
+          message: `${smp.displayName} muted microphone`,
+          participantId: selfMutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
+    case 'participant_self_unmuted': {
+      const selfUnmutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
+      const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
+      if (sup) {
+        sup.isMuted = false;
+      }
+      if (selfUnmutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (sup) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'unmuted',
+          message: `${sup.displayName} unmuted microphone`,
+          participantId: selfUnmutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
     case 'participant_deafened': {
       const deafId = msg.participantId as string;
       const dp = state.participants.find((pp) => pp.id === deafId);
@@ -2142,6 +2241,9 @@ function dispatchMessage(raw: unknown): void {
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
         state.chatMessages = state.chatMessages.slice(-MAX_CHAT_MESSAGES);
+      }
+      if (shouldPlayChatNotification(chatMsg.participantId, state.selfParticipantId)) {
+        void playNotificationSound('chat');
       }
       notify();
       break;
@@ -2533,6 +2635,8 @@ export function toggleSelfMute(): void {
     self.isSpeaking = false;
   }
   lkModule?.setMicEnabled(!self.isMuted);
+  console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
+  client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
     id: makeEventId(),
     timestamp: timestamp(),
