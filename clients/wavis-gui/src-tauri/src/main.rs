@@ -293,6 +293,16 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     }
 
+    // WebKitGTK 2.40+ ships a DMA-BUF renderer that is the most common cause
+    // of silent WebProcess crashes on Linux (NVIDIA proprietary, hybrid GPUs,
+    // older Mesa). Symptom: the window vanishes with no error during heavy
+    // GPU/compositing work — e.g. watching multiple screen shares or moving
+    // windows around. Disabling it falls back to a stable shared-memory path.
+    #[cfg(target_os = "linux")]
+    if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Create the shared Rust log buffer for bug report diagnostics.
     let log_buffer = bug_report::new_shared_buffer(200);
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
@@ -337,6 +347,10 @@ fn main() {
                     eprintln!("wavis: tray unavailable: {err}");
                 }
             }
+
+            #[cfg(target_os = "linux")]
+            install_web_process_crash_logger(app);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -437,6 +451,42 @@ fn main() {
                 }
             }
         });
+}
+
+/// Connect a `web-process-terminated` handler on the main window's WebKitGTK
+/// WebView so that a renderer crash leaves a log entry instead of the parent
+/// process exiting silently. WebKitGTK terminates the WebProcess for several
+/// reasons (Crashed, ExceededMemoryLimit, LoadFailed, etc.) — in all cases the
+/// Tauri parent has historically just disappeared, which made these crashes
+/// nearly impossible to diagnose from user reports.
+#[cfg(target_os = "linux")]
+fn install_web_process_crash_logger(app: &mut tauri::App) {
+    use tauri::Manager;
+
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("wavis: web-process crash logger: main window not found");
+        return;
+    };
+
+    let result = window.with_webview(|webview| {
+        use webkit2gtk::WebViewExt;
+        let inner = webview.inner();
+        inner.connect_web_process_terminated(|_view, reason| {
+            let msg = format!(
+                "wavis: WebKitGTK WebProcess terminated (reason={reason:?}) — \
+                 the window will close. Common causes: GPU driver crash in the \
+                 DMA-BUF renderer, OOM under heavy screen-share decode, or a \
+                 compositor protocol error. Check the surrounding stderr for \
+                 GL/Wayland diagnostics."
+            );
+            eprintln!("{msg}");
+            log::error!("{msg}");
+        });
+    });
+
+    if let Err(err) = result {
+        eprintln!("wavis: failed to install web-process crash logger: {err}");
+    }
 }
 
 // ─── IPC Commands ──────────────────────────────────────────────────
