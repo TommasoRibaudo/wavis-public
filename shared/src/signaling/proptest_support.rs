@@ -279,6 +279,28 @@ impl Arbitrary for ParticipantUnmutedPayload {
     }
 }
 
+impl Arbitrary for ParticipantSelfMutedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|participant_id| ParticipantSelfMutedPayload { participant_id })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ParticipantSelfUnmutedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|participant_id| ParticipantSelfUnmutedPayload { participant_id })
+            .boxed()
+    }
+}
+
 impl Arbitrary for ParticipantDeafenedPayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -923,6 +945,12 @@ impl Arbitrary for SignalingMessage {
             any::<ParticipantKickedPayload>().prop_map(SignalingMessage::ParticipantKicked),
             any::<ParticipantMutedPayload>().prop_map(SignalingMessage::ParticipantMuted),
             any::<ParticipantUnmutedPayload>().prop_map(SignalingMessage::ParticipantUnmuted),
+            // Self-mute
+            Just(SignalingMessage::SelfMute),
+            Just(SignalingMessage::SelfUnmute),
+            any::<ParticipantSelfMutedPayload>().prop_map(SignalingMessage::ParticipantSelfMuted),
+            any::<ParticipantSelfUnmutedPayload>()
+                .prop_map(SignalingMessage::ParticipantSelfUnmuted),
             // Self-deafen
             Just(SignalingMessage::SelfDeafen),
             Just(SignalingMessage::SelfUndeafen),

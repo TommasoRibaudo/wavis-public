@@ -172,6 +172,14 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
         SignalingMessage::ParticipantUnmuted(p) => {
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
         }
+        SignalingMessage::SelfMute => {}
+        SignalingMessage::SelfUnmute => {}
+        SignalingMessage::ParticipantSelfMuted(p) => {
+            check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
+        }
+        SignalingMessage::ParticipantSelfUnmuted(p) => {
+            check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
+        }
         SignalingMessage::SelfDeafen => {}
         SignalingMessage::SelfUndeafen => {}
         SignalingMessage::ParticipantDeafened(p) => {

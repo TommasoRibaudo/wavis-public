@@ -1894,6 +1894,52 @@ function dispatchMessage(raw: unknown): void {
       break;
     }
 
+    case 'participant_self_muted': {
+      const selfMutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
+      const smp = state.participants.find((pp) => pp.id === selfMutedId);
+      if (smp) {
+        smp.isMuted = true;
+        smp.rmsLevel = 0;
+        smp.isSpeaking = false;
+      }
+      if (selfMutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (smp) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'muted',
+          message: `${smp.displayName} muted microphone`,
+          participantId: selfMutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
+    case 'participant_self_unmuted': {
+      const selfUnmutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
+      const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
+      if (sup) {
+        sup.isMuted = false;
+      }
+      if (selfUnmutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (sup) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'unmuted',
+          message: `${sup.displayName} unmuted microphone`,
+          participantId: selfUnmutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
     case 'participant_deafened': {
       const deafId = msg.participantId as string;
       const dp = state.participants.find((pp) => pp.id === deafId);
@@ -2533,6 +2579,8 @@ export function toggleSelfMute(): void {
     self.isSpeaking = false;
   }
   lkModule?.setMicEnabled(!self.isMuted);
+  console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
+  client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
     id: makeEventId(),
     timestamp: timestamp(),

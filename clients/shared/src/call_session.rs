@@ -222,6 +222,10 @@ impl<
                 | SignalingMessage::ChatMessage(_)
                 | SignalingMessage::ChatHistoryRequest(_)
                 | SignalingMessage::ChatHistoryResponse(_)
+                | SignalingMessage::SelfMute
+                | SignalingMessage::SelfUnmute
+                | SignalingMessage::ParticipantSelfMuted(_)
+                | SignalingMessage::ParticipantSelfUnmuted(_)
                 | SignalingMessage::SelfDeafen
                 | SignalingMessage::SelfUndeafen
                 | SignalingMessage::ParticipantDeafened(_)
