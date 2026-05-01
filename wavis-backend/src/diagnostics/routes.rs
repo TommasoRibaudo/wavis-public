@@ -30,13 +30,15 @@ use crate::error::ErrorResponse;
 use crate::ip::extract_client_ip;
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
+
+type DiagnosticsErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,7 +89,7 @@ struct AuthUser {
 async fn try_extract_auth(
     headers: &HeaderMap,
     state: &AppState,
-) -> Result<Option<AuthUser>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Option<AuthUser>, DiagnosticsErrorResponse> {
     let header_value = match headers.get("authorization").and_then(|v| v.to_str().ok()) {
         Some(v) => v,
         None => return Ok(None), // No header → anonymous
@@ -128,13 +130,32 @@ async fn try_extract_auth(
     Ok(Some(AuthUser { user_id, device_id }))
 }
 
-fn auth_reject() -> (StatusCode, Json<ErrorResponse>) {
+fn error_response(status: StatusCode, error: &str) -> DiagnosticsErrorResponse {
     (
-        StatusCode::UNAUTHORIZED,
+        status,
+        HeaderMap::new(),
         Json(ErrorResponse {
-            error: "authentication failed".to_string(),
+            error: error.to_string(),
         }),
     )
+}
+
+fn rate_limited_response(retry_after_secs: u64) -> DiagnosticsErrorResponse {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+        headers.insert(RETRY_AFTER, value);
+    }
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        headers,
+        Json(ErrorResponse {
+            error: format!("rate limit exceeded, retry after {}s", retry_after_secs),
+        }),
+    )
+}
+
+fn auth_reject() -> DiagnosticsErrorResponse {
+    error_response(StatusCode::UNAUTHORIZED, "authentication failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +185,7 @@ pub async fn submit_bug_report(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<BugReportRequest>,
-) -> Result<(StatusCode, Json<BugReportResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<BugReportResponse>), DiagnosticsErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &state.ip_config);
     let now = Instant::now();
 
@@ -178,12 +199,7 @@ pub async fn submit_bug_report(
         .seconds_until_retry_ip(client_ip, now)
     {
         warn!(ip = %client_ip, retry_after = retry_secs, "bug report rate limit exceeded (IP)");
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: format!("rate limit exceeded, retry after {}s", retry_secs),
-            }),
-        ));
+        return Err(rate_limited_response(retry_secs));
     }
 
     // --- Rate limit: per-user_id (if authenticated) ---
@@ -197,12 +213,7 @@ pub async fn submit_bug_report(
             retry_after = retry_secs,
             "bug report rate limit exceeded (user)"
         );
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: format!("rate limit exceeded, retry after {}s", retry_secs),
-            }),
-        ));
+        return Err(rate_limited_response(retry_secs));
     }
 
     // --- Validate payload size (decoded) ---
@@ -213,22 +224,12 @@ pub async fn submit_bug_report(
         decoded_size += estimated_decoded;
     }
     if decoded_size > MAX_DECODED_PAYLOAD_SIZE {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ErrorResponse {
-                error: "payload too large".to_string(),
-            }),
-        ));
+        return Err(error_response(StatusCode::PAYLOAD_TOO_LARGE, "payload too large"));
     }
 
     // --- Validate field lengths ---
     if let Some(err_msg) = validate_bug_report_fields(&payload) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: err_msg.to_string(),
-            }),
-        ));
+        return Err(error_response(StatusCode::BAD_REQUEST, err_msg));
     }
 
     // --- Decode base64 screenshot if present ---
@@ -236,12 +237,7 @@ pub async fn submit_bug_report(
         Some(ref b64) => match base64::engine::general_purpose::STANDARD.decode(b64) {
             Ok(bytes) => Some(bytes),
             Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "invalid screenshot encoding".to_string(),
-                    }),
-                ));
+                return Err(error_response(StatusCode::BAD_REQUEST, "invalid screenshot encoding"));
             }
         },
         None => None,
@@ -283,7 +279,7 @@ pub async fn submit_bug_report(
         Err(e) => {
             let (status, msg) = map_bug_report_error(&e);
             warn!(error = %e, "bug report submission failed");
-            Err((status, Json(ErrorResponse { error: msg })))
+            Err(error_response(status, &msg))
         }
     }
 }
@@ -329,7 +325,7 @@ pub async fn analyze_bug_report(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<AnalyzeRequest>,
-) -> Result<Json<AnalyzeResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<AnalyzeResponse>, DiagnosticsErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &state.ip_config);
     let now = Instant::now();
 
@@ -339,30 +335,15 @@ pub async fn analyze_bug_report(
         .seconds_until_retry_ip(client_ip, now)
     {
         warn!(ip = %client_ip, retry_after = retry_secs, "bug report analyze rate limit exceeded (IP)");
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: format!("rate limit exceeded, retry after {}s", retry_secs),
-            }),
-        ));
+        return Err(rate_limited_response(retry_secs));
     }
 
     // Validate description length
     if payload.description.len() < 10 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "description too short".to_string(),
-            }),
-        ));
+        return Err(error_response(StatusCode::BAD_REQUEST, "description too short"));
     }
     if payload.description.len() > MAX_BODY_LEN {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "description too long".to_string(),
-            }),
-        ));
+        return Err(error_response(StatusCode::BAD_REQUEST, "description too long"));
     }
 
     let previous = payload.previous_answers.as_deref();
@@ -380,7 +361,7 @@ pub async fn analyze_bug_report(
         Err(e) => {
             warn!(error = %e, "LLM analyze failed");
             let (status, msg) = map_llm_error(&e);
-            Err((status, Json(ErrorResponse { error: msg })))
+            Err(error_response(status, &msg))
         }
     }
 }
@@ -394,7 +375,7 @@ pub async fn generate_bug_report_body(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<GenerateBodyRequest>,
-) -> Result<Json<GenerateBodyResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<GenerateBodyResponse>, DiagnosticsErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &state.ip_config);
     let now = Instant::now();
 
@@ -403,21 +384,11 @@ pub async fn generate_bug_report_body(
         .bug_report_rate_limiter
         .seconds_until_retry_ip(client_ip, now)
     {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: format!("rate limit exceeded, retry after {}s", retry_secs),
-            }),
-        ));
+        return Err(rate_limited_response(retry_secs));
     }
 
     if payload.description.len() < 10 || payload.description.len() > MAX_BODY_LEN {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "invalid description length".to_string(),
-            }),
-        ));
+        return Err(error_response(StatusCode::BAD_REQUEST, "invalid description length"));
     }
 
     match state
@@ -437,7 +408,7 @@ pub async fn generate_bug_report_body(
         Err(e) => {
             warn!(error = %e, "LLM generate body failed");
             let (status, msg) = map_llm_error(&e);
-            Err((status, Json(ErrorResponse { error: msg })))
+            Err(error_response(status, &msg))
         }
     }
 }

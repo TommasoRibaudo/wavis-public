@@ -81,14 +81,22 @@ function mockOkResponse(body: string) {
   return {
     status: 200,
     ok: true,
+    headers: { get: () => null },
     text: () => Promise.resolve(body),
   };
 }
 
-function mockErrorResponse(status: number, body: string) {
+function mockErrorResponse(
+  status: number,
+  body: string,
+  headers: Record<string, string> = {},
+) {
   return {
     status,
     ok: false,
+    headers: {
+      get: (key: string) => headers[key] ?? headers[key.toLowerCase()] ?? null,
+    },
     text: () => Promise.resolve(body),
   };
 }
@@ -185,6 +193,19 @@ describe('apiFetch — server error message surfacing', () => {
 
     await expect(apiFetch('/test', {})).rejects.toMatchObject({
       message: 'too many requests — try again later',
+      kind: 'RateLimited',
+    });
+  });
+
+  it('includes Retry-After seconds in the 429 message when present', async () => {
+    tauriFetchMock.mockResolvedValue(
+      mockErrorResponse(429, JSON.stringify({ error: 'custom rate limit message' }), {
+        'Retry-After': '7',
+      }),
+    );
+
+    await expect(apiFetch('/test', {})).rejects.toMatchObject({
+      message: 'too many requests — try again in 7 seconds',
       kind: 'RateLimited',
     });
   });

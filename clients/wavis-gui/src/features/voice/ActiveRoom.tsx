@@ -166,13 +166,20 @@ interface ShareViewerWindow {
 
 /* ─── Sub-components ────────────────────────────────────────────── */
 
-function signalingIndicator(state: VoiceRoomMachineState): { color: string; label: string } {
+function signalingIndicator(
+  state: VoiceRoomMachineState,
+  lastRateLimitError: string | null,
+): { color: string; label: string } {
   switch (state) {
     case 'active': return { color: 'var(--wavis-accent)', label: 'Signaling: connected' };
     case 'connecting':
     case 'authenticated':
     case 'joining': return { color: 'var(--wavis-warn)', label: 'Signaling: connecting...' };
-    case 'reconnecting': return { color: 'var(--wavis-warn)', label: 'Signaling: reconnecting...' };
+    case 'reconnecting':
+      return {
+        color: 'var(--wavis-warn)',
+        label: lastRateLimitError ? 'Signaling: reconnecting after rate limit...' : 'Signaling: reconnecting...',
+      };
     case 'idle':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Signaling: disconnected' };
   }
@@ -1881,7 +1888,7 @@ export default function ActiveRoom() {
 
   /* ── Reusable panel fragments ── */
 
-  const sigDot = signalingIndicator(roomState.machineState);
+  const sigDot = signalingIndicator(roomState.machineState, roomState.lastRateLimitError);
   const mediaDot = mediaIndicator(roomState.mediaState, roomState.mediaError);
   const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
@@ -1917,6 +1924,16 @@ export default function ActiveRoom() {
       >
         /retry
       </button>
+    </div>
+  ) : null;
+
+  const reconnectBanner = roomState.lastRateLimitError && (
+    roomState.machineState === 'reconnecting' ||
+    roomState.machineState === 'authenticated' ||
+    roomState.machineState === 'joining'
+  ) ? (
+    <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
+      {roomState.lastRateLimitError}
     </div>
   ) : null;
 
@@ -2508,6 +2525,7 @@ export default function ActiveRoom() {
         </div>
 
         {mediaRetryBanner}
+        {reconnectBanner}
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
@@ -2545,6 +2563,7 @@ export default function ActiveRoom() {
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
           {mediaRetryBanner}
+          {reconnectBanner}
           {participantsSections}
           {youBar}
         </div>

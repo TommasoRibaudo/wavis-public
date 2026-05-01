@@ -156,15 +156,23 @@ export async function submitBugReport(
   const token = await getAccessToken();
   const body = JSON.stringify(payload);
 
-  if (token) {
-    return apiFetch<BugReportResponse>('/bug-report', {
+  try {
+    if (token) {
+      return await apiFetch<BugReportResponse>('/bug-report', {
+        method: 'POST',
+        body,
+      });
+    }
+
+    return await apiPublicFetch<BugReportResponse>('/bug-report', {
       method: 'POST',
       body,
     });
+  } catch (err) {
+    if (err instanceof Error && 'kind' in err && (err as { kind?: string }).kind === 'RateLimited') {
+      const message = err.message.replace(/^too many requests — /i, 'please ');
+      throw new Error(message);
+    }
+    throw err;
   }
-
-  return apiPublicFetch<BugReportResponse>('/bug-report', {
-    method: 'POST',
-    body,
-  });
 }
