@@ -45,6 +45,11 @@
       "minimumSystemVersion": "11.6",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["pulseaudio-utils", "pipewire", "xdg-desktop-portal"]
+      }
     }
   },
   "plugins": {

@@ -407,6 +407,10 @@ mod tests {
                         SignalingMessage::ParticipantKicked(_) |
                         SignalingMessage::ParticipantMuted(_) |
                         SignalingMessage::ParticipantUnmuted(_) |
+                        SignalingMessage::SelfMute |
+                        SignalingMessage::SelfUnmute |
+                        SignalingMessage::ParticipantSelfMuted(_) |
+                        SignalingMessage::ParticipantSelfUnmuted(_) |
                         SignalingMessage::SelfDeafen |
                         SignalingMessage::SelfUndeafen |
                         SignalingMessage::ParticipantDeafened(_) |

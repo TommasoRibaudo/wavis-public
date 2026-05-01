@@ -143,6 +143,11 @@ pub enum SignalingMessage {
     MuteParticipant(MuteParticipantPayload),
     /// Client -> server moderation request to release a host mute.
     UnmuteParticipant(UnmuteParticipantPayload),
+    // Self-mute (client → server, any participant)
+    /// Client -> server notification that the sender muted their own microphone.
+    SelfMute,
+    /// Client -> server notification that the sender unmuted their own microphone.
+    SelfUnmute,
     // Self-deafen (client → server, any participant)
     /// Client -> server notification that the sender deafened themselves.
     SelfDeafen,
@@ -155,6 +160,10 @@ pub enum SignalingMessage {
     ParticipantMuted(ParticipantMutedPayload),
     /// Server -> all participants broadcast that a participant was unmuted.
     ParticipantUnmuted(ParticipantUnmutedPayload),
+    /// Server -> all participants broadcast that a participant muted themselves.
+    ParticipantSelfMuted(ParticipantSelfMutedPayload),
+    /// Server -> all participants broadcast that a participant unmuted themselves.
+    ParticipantSelfUnmuted(ParticipantSelfUnmutedPayload),
     /// Server -> all participants broadcast that a participant deafened themselves.
     ParticipantDeafened(ParticipantDeafenedPayload),
     /// Server -> all participants broadcast that a participant undeafened themselves.
@@ -557,6 +566,22 @@ pub struct ParticipantMutedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParticipantUnmutedPayload {
     /// Participant identifier for the participant whose mute was released.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+}
+
+/// Broadcast to all participants when a participant mutes themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantSelfMutedPayload {
+    /// Participant identifier for the participant who muted themselves.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+}
+
+/// Broadcast to all participants when a participant unmutes themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantSelfUnmutedPayload {
+    /// Participant identifier for the participant who unmuted themselves.
     #[serde(rename = "participantId")]
     pub participant_id: String,
 }
