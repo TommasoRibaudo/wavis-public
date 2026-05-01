@@ -31,9 +31,17 @@ use crate::channel::channel;
 use crate::channel::channel_models::{ChannelError, ChannelRole};
 use crate::error::ErrorResponse;
 use crate::voice::voice_orchestrator;
+use axum::response::{IntoResponse, Response};
 use crate::ws::ws_dispatch::{dispatch_signals, schedule_sub_room_expiry};
 
-type ChannelErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
+pub struct ChannelErrorResponse(Box<(StatusCode, HeaderMap, Json<ErrorResponse>)>);
+
+impl IntoResponse for ChannelErrorResponse {
+    fn into_response(self) -> Response {
+        let (status, headers, body) = *self.0;
+        (status, headers, body).into_response()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -231,13 +239,13 @@ fn map_channel_error(
         ChannelError::DatabaseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     };
 
-    (
+    ChannelErrorResponse(Box::new((
         status,
         HeaderMap::new(),
         Json(ErrorResponse {
             error: message.to_string(),
         }),
-    )
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +273,13 @@ fn rate_limited_response(retry_after_secs: Option<u64>) -> ChannelErrorResponse 
     {
         headers.insert(RETRY_AFTER, value);
     }
-    (
+    ChannelErrorResponse(Box::new((
         StatusCode::TOO_MANY_REQUESTS,
         headers,
         Json(ErrorResponse {
             error: "too many requests".to_string(),
         }),
-    )
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -582,35 +590,35 @@ pub async fn get_voice_status(
             error = %e,
             "voice status DB error"
         );
-        (
+        ChannelErrorResponse(Box::new((
             StatusCode::INTERNAL_SERVER_ERROR,
             HeaderMap::new(),
             Json(ErrorResponse {
                 error: "internal error".to_string(),
             }),
-        )
+        )))
     })?;
 
     match membership {
         // Not found → 403 opaque (indistinguishable from banned)
         None => {
-            return Err((
+            return Err(ChannelErrorResponse(Box::new((
                 StatusCode::FORBIDDEN,
                 HeaderMap::new(),
                 Json(ErrorResponse {
                     error: "forbidden".to_string(),
                 }),
-            ));
+            ))));
         }
         // Banned → 403 opaque (indistinguishable from not found)
         Some((_, Some(_))) => {
-            return Err((
+            return Err(ChannelErrorResponse(Box::new((
                 StatusCode::FORBIDDEN,
                 HeaderMap::new(),
                 Json(ErrorResponse {
                     error: "forbidden".to_string(),
                 }),
-            ));
+            ))));
         }
         // Non-banned member → proceed
         Some((_, None)) => {}
