@@ -101,6 +101,10 @@ export interface ChatMessage {
   isDivider?: boolean;
 }
 
+export type ChatDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'message'; message: ChatMessage };
+
 
 export interface RoomEvent {
   id: string;
@@ -162,6 +166,8 @@ export interface VoiceRoomState {
   activeAudioShare: { sourceId: string; sourceName: string } | null;
   /** Transient error from the last `error` signaling message (for chat panel display). */
   lastChatError: string | null;
+  /** Friendly reconnect notice persisted across a WS rate-limit disconnect cycle. */
+  lastRateLimitError: string | null;
   historyLoaded: boolean;
   /** Whether the local user is deafened (muted + volume 0). */
   isDeafened: boolean;
@@ -192,6 +198,8 @@ export const RMS_STOP_THRESHOLD = 0.03;
 export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 export const MAX_CHAT_MESSAGES = 200;
+const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
+const RATE_LIMIT_RECONNECT_MESSAGE = "Connection closed — you're sending messages too fast. Reconnecting";
 
 /**
  * EMA smoothing factor for RMS levels. Lower = smoother but more latent.
@@ -437,6 +445,55 @@ export function computeSinceCursor(messages: ChatMessage[]): string | undefined 
   const d = new Date(earliest);
   d.setTime(d.getTime() - 1000);
   return d.toISOString();
+}
+
+export function getLocalChatDateKey(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function formatChatDateLabel(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[] {
+  const items: ChatDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const message of messages) {
+    if (message.isDivider) continue;
+
+    const dateKey = getLocalChatDateKey(message.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${message.id}`,
+        label: formatChatDateLabel(message.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function shouldPlayChatNotification(
+  participantId: string,
+  selfParticipantId: string | null,
+): boolean {
+  return !!selfParticipantId && participantId !== selfParticipantId;
 }
 
 /**
@@ -765,6 +822,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   activeVideoShare: null,
   activeAudioShare: null,
   lastChatError: null,
+  lastRateLimitError: null,
   historyLoaded: false,
   isDeafened: false,
   latestClosedShareLeakSummary: null,
@@ -976,6 +1034,10 @@ function appendEvent(event: RoomEvent): void {
   if (state.events.length > MAX_EVENTS) {
     state.events = state.events.slice(state.events.length - MAX_EVENTS);
   }
+}
+
+function isWsRateLimitError(message: string): boolean {
+  return message.trim().toLowerCase() === WS_RATE_LIMIT_ERROR_MESSAGE;
 }
 
 function deriveParticipantSubRoomById(subRooms: VoiceSubRoom[]): Record<string, string> {
@@ -1442,6 +1504,7 @@ function dispatchMessage(raw: unknown): void {
     case 'joined': {
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
+      state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
       syncDerivedSubRoomState();
@@ -1537,6 +1600,7 @@ function dispatchMessage(raw: unknown): void {
         invite_required: 'An invite code is required to join.',
         invite_exhausted: 'The invite code has been fully used.',
         invite_expired: 'The invite code has expired.',
+        rate_limited: 'Too many join attempts — please wait a moment before retrying.',
       };
       state.rejectionReason = friendlyMessages[rawReason] || `Join rejected: ${rawReason}`;
       if (client) {
@@ -2096,6 +2160,9 @@ function dispatchMessage(raw: unknown): void {
         message: errorMessage,
       });
       state.lastChatError = errorMessage;
+      state.lastRateLimitError = isWsRateLimitError(errorMessage)
+        ? RATE_LIMIT_RECONNECT_MESSAGE
+        : null;
       notify();
       break;
     }
@@ -2188,6 +2255,9 @@ function dispatchMessage(raw: unknown): void {
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
         state.chatMessages = state.chatMessages.slice(-MAX_CHAT_MESSAGES);
+      }
+      if (shouldPlayChatNotification(chatMsg.participantId, state.selfParticipantId)) {
+        void playNotificationSound('chat');
       }
       notify();
       break;
@@ -2289,7 +2359,12 @@ export function initSession(
         // unnecessary audio/screenshare interruption during WS reconnects
         // (e.g. CloudFront idle timeout drops the WS every ~10 min).
         state.machineState = 'reconnecting';
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling connection lost — reconnecting' });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'system',
+          message: state.lastRateLimitError ?? 'signaling connection lost — reconnecting',
+        });
         notify();
       } else if (state.machineState === 'reconnecting') {
         // Already reconnecting and got another disconnect.
@@ -2303,6 +2378,7 @@ export function initSession(
           }
           appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling reconnect failed — session lost' });
           state.error = 'Connection lost';
+          state.lastRateLimitError = null;
           state.machineState = 'idle';
           notify();
         }

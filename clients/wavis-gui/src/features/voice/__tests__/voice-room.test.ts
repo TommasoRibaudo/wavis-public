@@ -431,7 +431,14 @@ describe('Property 15: Hotkey not registered when no voice session', () => {
 });
 
 
-import { sendChatMessage, MAX_CHAT_MESSAGES, leaveRoom, computeSinceCursor } from '../voice-room';
+import {
+  sendChatMessage,
+  MAX_CHAT_MESSAGES,
+  leaveRoom,
+  computeSinceCursor,
+  buildChatDisplayItems,
+  shouldPlayChatNotification,
+} from '../voice-room';
 import type { ChatMessage } from '../voice-room';
 
 /* ═══ Ephemeral Room Chat — Client Property Tests ═══════════════════ */
@@ -663,6 +670,83 @@ describe('Property 12: Client rejects oversized messages before send', () => {
       ),
       { numRuns: 100 },
     );
+  });
+});
+
+
+describe('Chat date dividers', () => {
+  function localIso(year: number, month: number, day: number, hour = 10): string {
+    return new Date(year, month - 1, day, hour).toISOString();
+  }
+
+  function chatMessage(id: string, timestamp: string): ChatMessage {
+    return {
+      id,
+      timestamp,
+      participantId: `peer-${id}`,
+      displayName: `User ${id}`,
+      color: '#E06C75',
+      text: `message ${id}`,
+    };
+  }
+
+  it('inserts one local date divider before messages from the same date', () => {
+    const items = buildChatDisplayItems([
+      chatMessage('1', localIso(2026, 4, 30, 10)),
+      chatMessage('2', localIso(2026, 4, 30, 12)),
+    ]);
+
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({ type: 'date-divider', label: 'April 30, 2026' });
+    expect(items.filter((item) => item.type === 'date-divider')).toHaveLength(1);
+  });
+
+  it('inserts a new divider when the local date changes', () => {
+    const items = buildChatDisplayItems([
+      chatMessage('1', localIso(2026, 4, 30)),
+      chatMessage('2', localIso(2026, 5, 1)),
+    ]);
+
+    const labels = items.flatMap((item) => item.type === 'date-divider' ? [item.label] : []);
+    expect(labels).toEqual([
+      'April 30, 2026',
+      'May 1, 2026',
+    ]);
+  });
+
+  it('ignores legacy history divider entries when building display rows', () => {
+    const legacyDivider: ChatMessage = {
+      id: 'history-divider',
+      timestamp: '',
+      participantId: '',
+      displayName: '',
+      color: '',
+      text: '',
+      isDivider: true,
+    };
+
+    const items = buildChatDisplayItems([
+      chatMessage('1', localIso(2026, 4, 30, 10)),
+      legacyDivider,
+      chatMessage('2', localIso(2026, 4, 30, 12)),
+    ]);
+
+    expect(items.some((item) => item.type === 'message' && item.message.id === 'history-divider')).toBe(false);
+    expect(items.filter((item) => item.type === 'date-divider')).toHaveLength(1);
+  });
+});
+
+describe('Chat notification sound sender exclusion', () => {
+  it('plays for messages from another participant', () => {
+    expect(shouldPlayChatNotification('peer-2', 'peer-1')).toBe(true);
+  });
+
+  it('does not play for the local sender echo', () => {
+    expect(shouldPlayChatNotification('peer-1', 'peer-1')).toBe(false);
+  });
+
+  it('does not play before the local participant id is known', () => {
+    expect(shouldPlayChatNotification('peer-2', null)).toBe(false);
   });
 });
 

@@ -47,6 +47,7 @@ import {
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
+  buildChatDisplayItems,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
@@ -165,13 +166,20 @@ interface ShareViewerWindow {
 
 /* ─── Sub-components ────────────────────────────────────────────── */
 
-function signalingIndicator(state: VoiceRoomMachineState): { color: string; label: string } {
+function signalingIndicator(
+  state: VoiceRoomMachineState,
+  lastRateLimitError: string | null,
+): { color: string; label: string } {
   switch (state) {
     case 'active': return { color: 'var(--wavis-accent)', label: 'Signaling: connected' };
     case 'connecting':
     case 'authenticated':
     case 'joining': return { color: 'var(--wavis-warn)', label: 'Signaling: connecting...' };
-    case 'reconnecting': return { color: 'var(--wavis-warn)', label: 'Signaling: reconnecting...' };
+    case 'reconnecting':
+      return {
+        color: 'var(--wavis-warn)',
+        label: lastRateLimitError ? 'Signaling: reconnecting after rate limit...' : 'Signaling: reconnecting...',
+      };
     case 'idle':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Signaling: disconnected' };
   }
@@ -1880,7 +1888,7 @@ export default function ActiveRoom() {
 
   /* ── Reusable panel fragments ── */
 
-  const sigDot = signalingIndicator(roomState.machineState);
+  const sigDot = signalingIndicator(roomState.machineState, roomState.lastRateLimitError);
   const mediaDot = mediaIndicator(roomState.mediaState, roomState.mediaError);
   const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
@@ -1916,6 +1924,16 @@ export default function ActiveRoom() {
       >
         /retry
       </button>
+    </div>
+  ) : null;
+
+  const reconnectBanner = roomState.lastRateLimitError && (
+    roomState.machineState === 'reconnecting' ||
+    roomState.machineState === 'authenticated' ||
+    roomState.machineState === 'joining'
+  ) ? (
+    <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
+      {roomState.lastRateLimitError}
     </div>
   ) : null;
 
@@ -2388,16 +2406,16 @@ export default function ActiveRoom() {
         {roomState.chatMessages.length === 0 && (
           <div className="text-wavis-text-secondary">No messages yet</div>
         )}
-        {roomState.chatMessages.map((msg) =>
-          msg.isDivider ? (
-            <div key={msg.id} className="text-wavis-text-secondary text-xs py-1 text-center">
-              {'─'.repeat(12)} Earlier messages {'─'.repeat(12)}
+        {buildChatDisplayItems(roomState.chatMessages).map((item) =>
+          item.type === 'date-divider' ? (
+            <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
+              {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
             </div>
           ) : (
-            <div key={msg.id} className="break-all">
-              <span className="text-wavis-text-secondary">[{formatTime(msg.timestamp)}]</span>{' '}
-              <span style={{ color: msg.color }}>{msg.displayName}</span>
-              <span>: {msg.text}</span>
+            <div key={item.message.id} className="break-all">
+              <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
+              <span style={{ color: item.message.color }}>{item.message.displayName}</span>
+              <span>: {item.message.text}</span>
             </div>
           )
         )}
@@ -2507,6 +2525,7 @@ export default function ActiveRoom() {
         </div>
 
         {mediaRetryBanner}
+        {reconnectBanner}
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
@@ -2544,6 +2563,7 @@ export default function ActiveRoom() {
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
           {mediaRetryBanner}
+          {reconnectBanner}
           {participantsSections}
           {youBar}
         </div>

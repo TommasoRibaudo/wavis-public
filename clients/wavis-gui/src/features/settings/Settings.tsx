@@ -96,6 +96,7 @@ const DIVIDER = '─'.repeat(48);
 const SOUND_LABELS: { key: string; label: string }[] = [
   { key: 'join',          label: 'Participant joined' },
   { key: 'leave',         label: 'Participant left' },
+  { key: 'chat',          label: 'Chat message' },
   { key: 'share-start',   label: 'Screen share started' },
   { key: 'share-stop',    label: 'Screen share stopped' },
   { key: 'viewer-joined', label: 'Someone joined your stream' },
@@ -807,7 +808,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
                 <span className="text-wavis-text-secondary">sounds: </span>
-                <span>Universfield, floraphonic, humordome, pixabay</span>
+                <span>Universfield, floraphonic, humordome, pixabay, SoundReality</span>
               </div>
               <div>
                 <span className="text-wavis-text-secondary">source: </span>
