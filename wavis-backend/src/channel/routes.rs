@@ -20,7 +20,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
@@ -32,6 +32,8 @@ use crate::channel::channel_models::{ChannelError, ChannelRole};
 use crate::error::ErrorResponse;
 use crate::voice::voice_orchestrator;
 use crate::ws::ws_dispatch::{dispatch_signals, schedule_sub_room_expiry};
+
+type ChannelErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -164,7 +166,7 @@ fn map_channel_error(
     err: &ChannelError,
     user_id: Uuid,
     channel_id: Option<Uuid>,
-) -> (StatusCode, Json<ErrorResponse>) {
+) -> ChannelErrorResponse {
     // Log at error level for internal failures, warn for everything else
     match err {
         ChannelError::DatabaseError(_) | ChannelError::OwnerConsistencyViolation => {
@@ -231,6 +233,7 @@ fn map_channel_error(
 
     (
         status,
+        HeaderMap::new(),
         Json(ErrorResponse {
             error: message.to_string(),
         }),
@@ -244,19 +247,31 @@ fn map_channel_error(
 fn check_rate_limit(
     state: &AppState,
     user_id: Uuid,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(), ChannelErrorResponse> {
     let now = Instant::now();
-    if !state.channel_rate_limiter.check(user_id, now) {
-        tracing::warn!(user_id = %user_id, "channel rate limit exceeded");
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: "too many requests".to_string(),
-            }),
-        ));
+    let retry_after_secs = state.channel_rate_limiter.seconds_until_retry(user_id, now);
+    if retry_after_secs.is_some() {
+        tracing::warn!(user_id = %user_id, retry_after = retry_after_secs, "channel rate limit exceeded");
+        return Err(rate_limited_response(retry_after_secs));
     }
     state.channel_rate_limiter.record(user_id, now);
     Ok(())
+}
+
+fn rate_limited_response(retry_after_secs: Option<u64>) -> ChannelErrorResponse {
+    let mut headers = HeaderMap::new();
+    if let Some(secs) = retry_after_secs
+        && let Ok(value) = HeaderValue::from_str(&secs.to_string())
+    {
+        headers.insert(RETRY_AFTER, value);
+    }
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        headers,
+        Json(ErrorResponse {
+            error: "too many requests".to_string(),
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +283,7 @@ pub async fn create_channel(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Json(body): Json<CreateChannelRequest>,
-) -> Result<(StatusCode, Json<CreateChannelResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<CreateChannelResponse>), ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     let ch = channel::create_channel(&state.db_pool, user.user_id, &body.name)
@@ -290,7 +305,7 @@ pub async fn create_channel(
 pub async fn list_channels(
     State(state): State<AppState>,
     user: AuthenticatedUser,
-) -> Result<Json<Vec<ChannelListItemResponse>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<ChannelListItemResponse>>, ChannelErrorResponse> {
     let items = channel::list_channels(&state.db_pool, user.user_id)
         .await
         .map_err(|e| map_channel_error(&e, user.user_id, None))?;
@@ -314,7 +329,7 @@ pub async fn get_channel(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<ChannelDetailResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ChannelDetailResponse>, ChannelErrorResponse> {
     let detail = channel::get_channel_detail(&state.db_pool, channel_id, user.user_id)
         .await
         .map_err(|e| map_channel_error(&e, user.user_id, Some(channel_id)))?;
@@ -345,7 +360,7 @@ pub async fn delete_channel(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     channel::delete_channel(&state.db_pool, channel_id, user.user_id)
@@ -361,7 +376,7 @@ pub async fn create_invite(
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
     Json(body): Json<CreateInviteRequest>,
-) -> Result<(StatusCode, Json<InviteResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<InviteResponse>), ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     let invite = channel::create_invite(
@@ -391,7 +406,7 @@ pub async fn join_channel(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Json(body): Json<JoinChannelRequest>,
-) -> Result<Json<JoinChannelResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<JoinChannelResponse>, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     let result = channel::join_channel_by_invite(&state.db_pool, user.user_id, &body.code)
@@ -410,7 +425,7 @@ pub async fn leave_channel(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     channel::leave_channel(&state.db_pool, channel_id, user.user_id)
@@ -425,7 +440,7 @@ pub async fn revoke_invite(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path((channel_id, code)): Path<(Uuid, String)>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     channel::revoke_invite(&state.db_pool, channel_id, user.user_id, &code)
@@ -440,7 +455,7 @@ pub async fn ban_member(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path((channel_id, target_user_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<BanResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<BanResponse>, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     let result = channel::ban_member(&state.db_pool, channel_id, user.user_id, target_user_id)
@@ -507,7 +522,7 @@ pub async fn unban_member(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path((channel_id, target_user_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     channel::unban_member(&state.db_pool, channel_id, user.user_id, target_user_id)
@@ -523,7 +538,7 @@ pub async fn change_role(
     user: AuthenticatedUser,
     Path((channel_id, target_user_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<ChangeRoleRequest>,
-) -> Result<Json<ChangeRoleResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ChangeRoleResponse>, ChannelErrorResponse> {
     check_rate_limit(&state, user.user_id)?;
 
     let result = channel::change_role(
@@ -551,7 +566,7 @@ pub async fn get_voice_status(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<VoiceStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<VoiceStatusResponse>, ChannelErrorResponse> {
     // 1. Verify non-banned membership
     let membership = sqlx::query_as::<_, (String, Option<chrono::DateTime<chrono::Utc>>)>(
         "SELECT role, banned_at FROM channel_memberships WHERE channel_id = $1 AND user_id = $2",
@@ -569,6 +584,7 @@ pub async fn get_voice_status(
         );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
+            HeaderMap::new(),
             Json(ErrorResponse {
                 error: "internal error".to_string(),
             }),
@@ -580,6 +596,7 @@ pub async fn get_voice_status(
         None => {
             return Err((
                 StatusCode::FORBIDDEN,
+                HeaderMap::new(),
                 Json(ErrorResponse {
                     error: "forbidden".to_string(),
                 }),
@@ -589,6 +606,7 @@ pub async fn get_voice_status(
         Some((_, Some(_))) => {
             return Err((
                 StatusCode::FORBIDDEN,
+                HeaderMap::new(),
                 Json(ErrorResponse {
                     error: "forbidden".to_string(),
                 }),
@@ -647,7 +665,7 @@ pub async fn list_bans(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<BanListResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<BanListResponse>, ChannelErrorResponse> {
     let bans = channel::list_bans(&state.db_pool, channel_id, user.user_id)
         .await
         .map_err(|e| map_channel_error(&e, user.user_id, Some(channel_id)))?;
@@ -667,7 +685,7 @@ pub async fn list_invites(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(channel_id): Path<Uuid>,
-) -> Result<Json<Vec<InviteResponse>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<InviteResponse>>, ChannelErrorResponse> {
     let invites = channel::list_invites(&state.db_pool, channel_id, user.user_id)
         .await
         .map_err(|e| map_channel_error(&e, user.user_id, Some(channel_id)))?;

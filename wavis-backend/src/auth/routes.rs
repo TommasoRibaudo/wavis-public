@@ -30,7 +30,7 @@ use crate::ip::extract_client_ip;
 use crate::redaction::redact_token;
 use axum::Json;
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -38,6 +38,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::error::ErrorResponse;
+
+type AuthErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -141,147 +143,88 @@ pub struct ListDevicesResponse {
 // Error mapping
 // ---------------------------------------------------------------------------
 
-fn map_register_error(err: &AuthError) -> (StatusCode, Json<ErrorResponse>) {
+fn error_response(status: StatusCode, error: &str) -> AuthErrorResponse {
+    (
+        status,
+        HeaderMap::new(),
+        Json(ErrorResponse {
+            error: error.to_string(),
+        }),
+    )
+}
+
+fn map_register_error(err: &AuthError) -> AuthErrorResponse {
     match err {
-        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
+        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+        _ => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 
-fn map_recover_error(err: &AuthError) -> (StatusCode, Json<ErrorResponse>) {
+fn map_recover_error(err: &AuthError) -> AuthErrorResponse {
     match err {
-        AuthError::PhraseVerificationFailed | AuthError::RecoveryIdNotFound => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "authentication failed".to_string(),
-            }),
-        ),
-        AuthError::DeviceRevoked => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "authentication failed".to_string(),
-            }),
-        ),
-        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
+        AuthError::PhraseVerificationFailed | AuthError::RecoveryIdNotFound => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
+        AuthError::DeviceRevoked => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+        _ => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 
-fn map_refresh_error(err: &AuthError) -> (StatusCode, Json<ErrorResponse>) {
+fn map_refresh_error(err: &AuthError) -> AuthErrorResponse {
     match err {
         AuthError::RefreshTokenInvalid
         | AuthError::TokenReuseDetected
         | AuthError::ValidationFailed
         | AuthError::TokenExpired
         | AuthError::InvalidToken
-        | AuthError::EpochMismatch => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "authentication failed".to_string(),
-            }),
-        ),
-        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
+        | AuthError::EpochMismatch => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+        _ => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 
-fn map_pairing_error(err: &PairingError) -> (StatusCode, Json<ErrorResponse>) {
+fn map_pairing_error(err: &PairingError) -> AuthErrorResponse {
     match err {
-        PairingError::NotFound => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "not found".to_string(),
-            }),
-        ),
-        PairingError::Expired | PairingError::CodeMismatch => (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "authentication failed".to_string(),
-            }),
-        ),
-        PairingError::AlreadyUsed | PairingError::AlreadyApproved => (
-            StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: "conflict".to_string(),
-            }),
-        ),
-        PairingError::NotApproved => (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "forbidden".to_string(),
-            }),
-        ),
-        PairingError::LockedOut => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse {
-                error: "too many requests".to_string(),
-            }),
-        ),
-        PairingError::DatabaseError(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
+        PairingError::NotFound => error_response(StatusCode::NOT_FOUND, "not found"),
+        PairingError::Expired | PairingError::CodeMismatch => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
+        PairingError::AlreadyUsed | PairingError::AlreadyApproved => {
+            error_response(StatusCode::CONFLICT, "conflict")
+        }
+        PairingError::NotApproved => error_response(StatusCode::FORBIDDEN, "forbidden"),
+        PairingError::LockedOut => error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+        PairingError::DatabaseError(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
     }
 }
 
-fn map_device_error(err: &DeviceError) -> (StatusCode, Json<ErrorResponse>) {
+fn map_device_error(err: &DeviceError) -> AuthErrorResponse {
     match err {
-        DeviceError::NotFound => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "not found".to_string(),
-            }),
-        ),
-        DeviceError::NotOwned => (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "forbidden".to_string(),
-            }),
-        ),
-        DeviceError::DatabaseError(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "internal error".to_string(),
-            }),
-        ),
+        DeviceError::NotFound => error_response(StatusCode::NOT_FOUND, "not found"),
+        DeviceError::NotOwned => error_response(StatusCode::FORBIDDEN, "forbidden"),
+        DeviceError::DatabaseError(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 
-fn rate_limited_response() -> (StatusCode, Json<ErrorResponse>) {
+fn rate_limited_response(retry_after_secs: Option<u64>) -> AuthErrorResponse {
+    let mut headers = HeaderMap::new();
+    if let Some(secs) = retry_after_secs
+        && let Ok(value) = HeaderValue::from_str(&secs.to_string())
+    {
+        headers.insert(RETRY_AFTER, value);
+    }
     (
         StatusCode::TOO_MANY_REQUESTS,
+        headers,
         Json(ErrorResponse {
             error: "too many requests".to_string(),
         }),
@@ -296,13 +239,14 @@ pub async fn register_device(
     State(app_state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<(StatusCode, Json<RegisterResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<RegisterResponse>), AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    if !app_state.auth_rate_limiter.check_register(client_ip, now) {
-        warn!(ip = %client_ip, "register_device rate-limited");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "register_device rate-limited");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
 
@@ -342,13 +286,14 @@ pub async fn register(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<RegisterResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<RegisterResponse>), AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    if !app_state.auth_rate_limiter.check_register(client_ip, now) {
-        warn!(ip = %client_ip, "register rate-limited");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "register rate-limited");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
 
@@ -392,25 +337,31 @@ pub async fn recover(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<RecoverRequest>,
-) -> Result<Json<RecoverResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<RecoverResponse>, AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
     // Per-IP rate limit BEFORE any DB lookup; always count the attempt.
-    if !app_state.recovery_rate_limiter.check_ip(client_ip, now) {
-        warn!(ip = %client_ip, "recover rate-limited (IP)");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.recovery_rate_limiter.seconds_until_ip(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "recover rate-limited (IP)");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.recovery_rate_limiter.record_ip(client_ip, now);
 
     // Per-recovery_id rate limit check (pre-check only; record AFTER DB lookup
     // confirms the recovery_id exists — avoids creating a rate-limiter oracle).
-    if !app_state
+    let retry_after_secs = app_state
         .recovery_rate_limiter
-        .check_recovery_id(&body.recovery_id, now)
-    {
-        warn!(ip = %client_ip, recovery_id = %body.recovery_id, "recover rate-limited (recovery_id)");
-        return Err(rate_limited_response());
+        .seconds_until_recovery_id(&body.recovery_id, now);
+    if retry_after_secs.is_some() {
+        warn!(
+            ip = %client_ip,
+            recovery_id = %body.recovery_id,
+            retry_after = retry_after_secs,
+            "recover rate-limited (recovery_id)"
+        );
+        return Err(rate_limited_response(retry_after_secs));
     }
 
     let result = auth::recover_account(
@@ -480,14 +431,15 @@ pub async fn pair_start(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<PairStartRequest>,
-) -> Result<(StatusCode, Json<PairStartResponse>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<PairStartResponse>), AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour (reuse register limiter slot for pairing start).
-    if !app_state.auth_rate_limiter.check_register(client_ip, now) {
-        warn!(ip = %client_ip, "pair_start rate-limited");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_start rate-limited");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
 
@@ -521,7 +473,7 @@ pub async fn pair_approve(
     State(app_state): State<AppState>,
     user: AuthenticatedUser,
     Json(body): Json<PairApproveRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, AuthErrorResponse> {
     // Rate-limit: 10 per user per hour (reuse refresh limiter keyed by user IP
     // — for MVP, we approximate per-user with the auth_rate_limiter).
     // The actual per-user enforcement is approximated since AuthRateLimiter is per-IP.
@@ -568,14 +520,15 @@ pub async fn pair_finish(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<PairFinishRequest>,
-) -> Result<Json<PairFinishResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<PairFinishResponse>, AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour.
-    if !app_state.auth_rate_limiter.check_register(client_ip, now) {
-        warn!(ip = %client_ip, "pair_finish rate-limited");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_finish rate-limited");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
 
@@ -612,7 +565,7 @@ pub async fn pair_finish(
 pub async fn logout_all(
     State(app_state): State<AppState>,
     user: AuthenticatedUser,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, AuthErrorResponse> {
     let result = device::logout_all(&app_state.db_pool, user.user_id).await;
 
     match result {
@@ -638,7 +591,7 @@ pub async fn logout_all(
 pub async fn list_devices(
     State(app_state): State<AppState>,
     user: AuthenticatedUser,
-) -> Result<Json<ListDevicesResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ListDevicesResponse>, AuthErrorResponse> {
     let result = device::list_devices(&app_state.db_pool, user.user_id).await;
 
     match result {
@@ -672,7 +625,7 @@ pub async fn revoke_device(
     State(app_state): State<AppState>,
     user: AuthenticatedUser,
     Path(target_device_id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, AuthErrorResponse> {
     let result = device::revoke_device(&app_state.db_pool, user.user_id, target_device_id).await;
 
     match result {
@@ -705,7 +658,7 @@ pub async fn rotate_phrase(
     State(app_state): State<AppState>,
     user: AuthenticatedUser,
     Json(body): Json<RotatePhraseRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, AuthErrorResponse> {
     let result = auth::rotate_phrase(
         &app_state.db_pool,
         user.user_id,
@@ -718,20 +671,12 @@ pub async fn rotate_phrase(
 
     match result {
         Ok(()) => Ok(StatusCode::OK),
-        Err(AuthError::PhraseVerificationFailed) => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "authentication failed".to_string(),
-            }),
-        )),
+        Err(AuthError::PhraseVerificationFailed) => {
+            Err(error_response(StatusCode::UNAUTHORIZED, "authentication failed"))
+        }
         Err(err) => {
             warn!(user_id = %user.user_id, error = %err, "rotate_phrase failed");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "internal error".to_string(),
-                }),
-            ))
+            Err(error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
         }
     }
 }
@@ -745,13 +690,14 @@ pub async fn refresh_token(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<RefreshRequest>,
-) -> Result<Json<RefreshResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<RefreshResponse>, AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    if !app_state.auth_rate_limiter.check_refresh(client_ip, now) {
-        warn!(ip = %client_ip, "refresh_token rate-limited");
-        return Err(rate_limited_response());
+    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_refresh(client_ip, now);
+    if retry_after_secs.is_some() {
+        warn!(ip = %client_ip, retry_after = retry_after_secs, "refresh_token rate-limited");
+        return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_refresh(client_ip, now);
 

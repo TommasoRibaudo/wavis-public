@@ -166,6 +166,8 @@ export interface VoiceRoomState {
   activeAudioShare: { sourceId: string; sourceName: string } | null;
   /** Transient error from the last `error` signaling message (for chat panel display). */
   lastChatError: string | null;
+  /** Friendly reconnect notice persisted across a WS rate-limit disconnect cycle. */
+  lastRateLimitError: string | null;
   historyLoaded: boolean;
   /** Whether the local user is deafened (muted + volume 0). */
   isDeafened: boolean;
@@ -196,6 +198,8 @@ export const RMS_STOP_THRESHOLD = 0.03;
 export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 export const MAX_CHAT_MESSAGES = 200;
+const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
+const RATE_LIMIT_RECONNECT_MESSAGE = "Connection closed — you're sending messages too fast. Reconnecting";
 
 /**
  * EMA smoothing factor for RMS levels. Lower = smoother but more latent.
@@ -818,6 +822,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   activeVideoShare: null,
   activeAudioShare: null,
   lastChatError: null,
+  lastRateLimitError: null,
   historyLoaded: false,
   isDeafened: false,
   latestClosedShareLeakSummary: null,
@@ -1029,6 +1034,10 @@ function appendEvent(event: RoomEvent): void {
   if (state.events.length > MAX_EVENTS) {
     state.events = state.events.slice(state.events.length - MAX_EVENTS);
   }
+}
+
+function isWsRateLimitError(message: string): boolean {
+  return message.trim().toLowerCase() === WS_RATE_LIMIT_ERROR_MESSAGE;
 }
 
 function deriveParticipantSubRoomById(subRooms: VoiceSubRoom[]): Record<string, string> {
@@ -1495,6 +1504,7 @@ function dispatchMessage(raw: unknown): void {
     case 'joined': {
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
+      state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
       syncDerivedSubRoomState();
@@ -1590,6 +1600,7 @@ function dispatchMessage(raw: unknown): void {
         invite_required: 'An invite code is required to join.',
         invite_exhausted: 'The invite code has been fully used.',
         invite_expired: 'The invite code has expired.',
+        rate_limited: 'Too many join attempts — please wait a moment before retrying.',
       };
       state.rejectionReason = friendlyMessages[rawReason] || `Join rejected: ${rawReason}`;
       if (client) {
@@ -2103,6 +2114,9 @@ function dispatchMessage(raw: unknown): void {
         message: errorMessage,
       });
       state.lastChatError = errorMessage;
+      state.lastRateLimitError = isWsRateLimitError(errorMessage)
+        ? RATE_LIMIT_RECONNECT_MESSAGE
+        : null;
       notify();
       break;
     }
@@ -2299,7 +2313,12 @@ export function initSession(
         // unnecessary audio/screenshare interruption during WS reconnects
         // (e.g. CloudFront idle timeout drops the WS every ~10 min).
         state.machineState = 'reconnecting';
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling connection lost — reconnecting' });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'system',
+          message: state.lastRateLimitError ?? 'signaling connection lost — reconnecting',
+        });
         notify();
       } else if (state.machineState === 'reconnecting') {
         // Already reconnecting and got another disconnect.
@@ -2313,6 +2332,7 @@ export function initSession(
           }
           appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling reconnect failed — session lost' });
           state.error = 'Connection lost';
+          state.lastRateLimitError = null;
           state.machineState = 'idle';
           notify();
         }

@@ -1,67 +1,51 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+use crate::abuse::SlidingWindow;
 use shared::signaling::JoinRejectionReason;
 
 // ---------------------------------------------------------------------------
-// SlidingWindow
+// JoinWindow
 // ---------------------------------------------------------------------------
 
-pub struct SlidingWindow {
-    timestamps: VecDeque<Instant>,
+struct JoinWindow {
+    attempts: SlidingWindow,
     cooldown_until: Option<Instant>,
 }
 
-impl SlidingWindow {
-    fn new() -> Self {
+impl JoinWindow {
+    fn new(window: Duration) -> Self {
         Self {
-            timestamps: VecDeque::new(),
+            attempts: SlidingWindow::new(window),
             cooldown_until: None,
         }
     }
 
-    /// Evict timestamps older than `window`.
-    fn evict_old(&mut self, window: Duration, now: Instant) {
-        let cutoff = now.checked_sub(window).unwrap_or(now);
-        while let Some(&front) = self.timestamps.front() {
-            if front < cutoff {
-                self.timestamps.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// Returns true if currently in cooldown.
     fn in_cooldown(&self, now: Instant) -> bool {
         self.cooldown_until.is_some_and(|until| now < until)
     }
 
-    /// Check whether recording one more attempt would exceed `threshold`.
     /// Returns true if the attempt is allowed (count after recording <= threshold).
-    fn check(&mut self, threshold: u32, window: Duration, now: Instant) -> bool {
+    fn check(&mut self, threshold: u32, now: Instant) -> bool {
         if self.in_cooldown(now) {
             return false;
         }
-        self.evict_old(window, now);
-        // current count + 1 (the attempt being checked) must be <= threshold
-        (self.timestamps.len() as u32) < threshold
+        self.attempts.count(now) < threshold as usize
     }
 
     /// Record an attempt. If the count now exceeds `threshold`, set cooldown.
-    fn record(&mut self, threshold: u32, window: Duration, cooldown: Duration, now: Instant) {
-        self.evict_old(window, now);
-        self.timestamps.push_back(now);
-        if self.timestamps.len() as u32 > threshold {
+    fn record(&mut self, threshold: u32, cooldown: Duration, now: Instant) {
+        self.attempts.add(now);
+        if self.attempts.count(now) > threshold as usize {
             self.cooldown_until = Some(now + cooldown);
         }
     }
 
-    /// True if this window has no timestamps and no active cooldown — safe to prune.
-    fn is_stale(&self, now: Instant) -> bool {
-        self.timestamps.is_empty() && !self.in_cooldown(now)
+    /// True if this window has no timestamps and no active cooldown - safe to prune.
+    fn is_stale(&mut self, now: Instant) -> bool {
+        self.attempts.count(now) == 0 && !self.in_cooldown(now)
     }
 }
 
@@ -107,11 +91,11 @@ impl Default for JoinRateLimiterConfig {
 // ---------------------------------------------------------------------------
 
 pub struct JoinRateLimiter {
-    ip_total: RwLock<HashMap<IpAddr, SlidingWindow>>,
-    ip_failed: RwLock<HashMap<IpAddr, SlidingWindow>>,
-    code_attempts: RwLock<HashMap<String, SlidingWindow>>,
-    room_attempts: RwLock<HashMap<String, SlidingWindow>>,
-    connection_attempts: RwLock<HashMap<String, SlidingWindow>>,
+    ip_total: RwLock<HashMap<IpAddr, JoinWindow>>,
+    ip_failed: RwLock<HashMap<IpAddr, JoinWindow>>,
+    code_attempts: RwLock<HashMap<String, JoinWindow>>,
+    room_attempts: RwLock<HashMap<String, JoinWindow>>,
+    connection_attempts: RwLock<HashMap<String, JoinWindow>>,
     config: RwLock<JoinRateLimiterConfig>,
 }
 
@@ -140,7 +124,7 @@ impl JoinRateLimiter {
     }
 
     /// Check all rate limit dimensions. Returns Ok(()) or Err(RateLimited).
-    /// Does NOT record the attempt — call `record_attempt` after the outcome is known.
+    /// Does NOT record the attempt - call `record_attempt` after the outcome is known.
     pub fn check_join(
         &self,
         ip: IpAddr,
@@ -153,16 +137,20 @@ impl JoinRateLimiter {
         // ip_total
         {
             let mut map = self.ip_total.write().unwrap();
-            let w = map.entry(ip).or_insert_with(SlidingWindow::new);
-            if !w.check(cfg.ip_total_threshold, cfg.ip_total_window, now) {
+            let w = map
+                .entry(ip)
+                .or_insert_with(|| JoinWindow::new(cfg.ip_total_window));
+            if !w.check(cfg.ip_total_threshold, now) {
                 return Err(JoinRejectionReason::RateLimited);
             }
         }
         // ip_failed
         {
             let mut map = self.ip_failed.write().unwrap();
-            let w = map.entry(ip).or_insert_with(SlidingWindow::new);
-            if !w.check(cfg.ip_failed_threshold, cfg.ip_failed_window, now) {
+            let w = map
+                .entry(ip)
+                .or_insert_with(|| JoinWindow::new(cfg.ip_failed_window));
+            if !w.check(cfg.ip_failed_threshold, now) {
                 return Err(JoinRejectionReason::RateLimited);
             }
         }
@@ -171,8 +159,8 @@ impl JoinRateLimiter {
             let mut map = self.code_attempts.write().unwrap();
             let w = map
                 .entry(code.to_string())
-                .or_insert_with(SlidingWindow::new);
-            if !w.check(cfg.code_threshold, cfg.code_window, now) {
+                .or_insert_with(|| JoinWindow::new(cfg.code_window));
+            if !w.check(cfg.code_threshold, now) {
                 return Err(JoinRejectionReason::RateLimited);
             }
         }
@@ -181,8 +169,8 @@ impl JoinRateLimiter {
             let mut map = self.room_attempts.write().unwrap();
             let w = map
                 .entry(room_id.to_string())
-                .or_insert_with(SlidingWindow::new);
-            if !w.check(cfg.room_threshold, cfg.room_window, now) {
+                .or_insert_with(|| JoinWindow::new(cfg.room_window));
+            if !w.check(cfg.room_threshold, now) {
                 return Err(JoinRejectionReason::RateLimited);
             }
         }
@@ -191,8 +179,8 @@ impl JoinRateLimiter {
             let mut map = self.connection_attempts.write().unwrap();
             let w = map
                 .entry(connection_id.to_string())
-                .or_insert_with(SlidingWindow::new);
-            if !w.check(cfg.connection_threshold, cfg.connection_window, now) {
+                .or_insert_with(|| JoinWindow::new(cfg.connection_window));
+            if !w.check(cfg.connection_threshold, now) {
                 return Err(JoinRejectionReason::RateLimited);
             }
         }
@@ -214,49 +202,38 @@ impl JoinRateLimiter {
 
         {
             let mut map = self.ip_total.write().unwrap();
-            let w = map.entry(ip).or_insert_with(SlidingWindow::new);
-            w.record(
-                cfg.ip_total_threshold,
-                cfg.ip_total_window,
-                cfg.cooldown,
-                now,
-            );
+            let w = map
+                .entry(ip)
+                .or_insert_with(|| JoinWindow::new(cfg.ip_total_window));
+            w.record(cfg.ip_total_threshold, cfg.cooldown, now);
         }
         if failed {
             let mut map = self.ip_failed.write().unwrap();
-            let w = map.entry(ip).or_insert_with(SlidingWindow::new);
-            w.record(
-                cfg.ip_failed_threshold,
-                cfg.ip_failed_window,
-                cfg.cooldown,
-                now,
-            );
+            let w = map
+                .entry(ip)
+                .or_insert_with(|| JoinWindow::new(cfg.ip_failed_window));
+            w.record(cfg.ip_failed_threshold, cfg.cooldown, now);
         }
         if let Some(code) = code {
             let mut map = self.code_attempts.write().unwrap();
             let w = map
                 .entry(code.to_string())
-                .or_insert_with(SlidingWindow::new);
-            w.record(cfg.code_threshold, cfg.code_window, cfg.cooldown, now);
+                .or_insert_with(|| JoinWindow::new(cfg.code_window));
+            w.record(cfg.code_threshold, cfg.cooldown, now);
         }
         {
             let mut map = self.room_attempts.write().unwrap();
             let w = map
                 .entry(room_id.to_string())
-                .or_insert_with(SlidingWindow::new);
-            w.record(cfg.room_threshold, cfg.room_window, cfg.cooldown, now);
+                .or_insert_with(|| JoinWindow::new(cfg.room_window));
+            w.record(cfg.room_threshold, cfg.cooldown, now);
         }
         {
             let mut map = self.connection_attempts.write().unwrap();
             let w = map
                 .entry(connection_id.to_string())
-                .or_insert_with(SlidingWindow::new);
-            w.record(
-                cfg.connection_threshold,
-                cfg.connection_window,
-                cfg.cooldown,
-                now,
-            );
+                .or_insert_with(|| JoinWindow::new(cfg.connection_window));
+            w.record(cfg.connection_threshold, cfg.cooldown, now);
         }
 
         self.prune_stale_entries(now);
@@ -266,9 +243,10 @@ impl JoinRateLimiter {
     fn prune_stale_entries(&self, now: Instant) -> usize {
         macro_rules! prune {
             ($field:expr) => {{
-                let before = $field.read().unwrap().len();
-                $field.write().unwrap().retain(|_, w| !w.is_stale(now));
-                let after = $field.read().unwrap().len();
+                let mut map = $field.write().unwrap();
+                let before = map.len();
+                map.retain(|_, w| !w.is_stale(now));
+                let after = map.len();
                 before.saturating_sub(after)
             }};
         }
@@ -354,7 +332,7 @@ mod tests {
             let test_ip = ip(1);
             let now = Instant::now();
 
-            // Record exactly `threshold` attempts — each check before recording should pass
+            // Record exactly `threshold` attempts - each check before recording should pass
             for i in 0..threshold {
                 let result = rl.check_join(test_ip, Some("code"), "room1", "conn1", now);
                 prop_assert!(result.is_ok(), "attempt {} of {} should be allowed", i + 1, threshold);
