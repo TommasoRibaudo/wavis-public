@@ -2218,25 +2218,25 @@ export default function ActiveRoom() {
             <button
               onClick={toggleSelfMute}
               disabled={!!selfP?.isHostMuted}
-              className="px-1.5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
+              className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: selfP?.isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={selfP?.isMuted ? '/unmute' : '/mute'}
-            >○</button>
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">○</span></button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={toggleSelfDeafen}
-              className="px-1.5 flex items-center justify-center hover:opacity-70 transition-opacity"
+              className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity"
               style={{ color: roomState.isDeafened ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={roomState.isDeafened ? '/undeafen' : '/deafen'}
-            ><span style={{ display: 'inline-block', transform: 'scale(1.25) translateY(8%)' }}>¤</span></button>
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none" style={{ fontSize: '1.1em' }}>¤</span></button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={selfSharing ? stopShareAction : handleStartShare}
               disabled={!selfSharing && (!shareEnabled || sharePickerLoading)}
-              className="px-1.5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
+              className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: selfSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={selfSharing ? '/stopshare' : '/share'}
-            ><span style={{ display: 'inline-block', transform: 'translateY(8%)' }}>◉</span></button>
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">◉</span></button>
           </div>
         )}
       </div>
