@@ -23,6 +23,10 @@ import { usePolling } from '@shared/hooks/usePolling';
 const POLL_MS = 15_000;
 const DIVIDER = '─'.repeat(48);
 
+function apiErrorMessage(err: ApiError): string {
+  return err.kind === 'RateLimited' ? err.message : errorMessage(err.kind);
+}
+
 /* Component */
 export default function ChannelsList() {
   const navigate = useNavigate();
@@ -67,7 +71,7 @@ export default function ChannelsList() {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.kind === 'RateLimited') skipTicksRef.current = 2;
-        setError(errorMessage(err.kind));
+        setError(apiErrorMessage(err));
       } else {
         setError('something went wrong — try again');
       }
@@ -143,7 +147,7 @@ export default function ChannelsList() {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.kind === 'RateLimited') skipTicksRef.current = 2;
-        setCreateError(errorMessage(err.kind));
+        setCreateError(apiErrorMessage(err));
       } else {
         setCreateError('something went wrong — try again');
       }
@@ -176,7 +180,7 @@ export default function ChannelsList() {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.kind === 'RateLimited') skipTicksRef.current = 2;
-        setJoinError(errorMessage(err.kind));
+        setJoinError(apiErrorMessage(err));
       } else {
         setJoinError('something went wrong — try again');
       }

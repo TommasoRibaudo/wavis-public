@@ -25,7 +25,7 @@ pub struct WsRateLimitConfig {
     pub max_messages: u32,       // WS_RATE_LIMIT_MAX_MESSAGES, default: 60
     pub burst_max: u32,          // WS_RATE_LIMIT_BURST, default: 15
     pub burst_window: Duration,  // always 1 second
-    pub action_max: u32,         // ACTION_RATE_LIMIT_MAX, default: 5
+    pub action_max: u32,         // ACTION_RATE_LIMIT_MAX, default: 15
     pub action_window: Duration, // ACTION_RATE_LIMIT_WINDOW_SECS, default: 60
     pub deafen_max: u32,         // DEAFEN_RATE_LIMIT_MAX, default: 20
     pub deafen_window: Duration, // DEAFEN_RATE_LIMIT_WINDOW_SECS, default: 60
@@ -49,7 +49,7 @@ impl WsRateLimitConfig {
         let action_max = env::var("ACTION_RATE_LIMIT_MAX")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(5);
+            .unwrap_or(15);
         let action_window_secs = env::var("ACTION_RATE_LIMIT_WINDOW_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -220,6 +220,21 @@ pub(crate) fn check_json_depth(text: &str, max_depth: u32) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn test_from_env_uses_updated_action_default() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+
+        unsafe {
+            std::env::remove_var("ACTION_RATE_LIMIT_MAX");
+        }
+
+        let config = WsRateLimitConfig::from_env();
+        assert_eq!(config.action_max, 15);
+    }
 
     // Test: both KickParticipant and MuteParticipant count toward action limit (Req 3.3)
     #[test]

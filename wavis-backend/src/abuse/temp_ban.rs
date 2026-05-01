@@ -15,7 +15,7 @@ impl TempBanConfig {
         let threshold = std::env::var("TEMP_BAN_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(3);
+            .unwrap_or(5);
         let window_secs = std::env::var("TEMP_BAN_WINDOW_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -169,7 +169,10 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::net::Ipv4Addr;
+    use std::sync::{LazyLock, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn test_ip(n: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, n))
@@ -177,11 +180,23 @@ mod tests {
 
     fn default_config() -> TempBanConfig {
         TempBanConfig {
-            threshold: 3,
+            threshold: 5,
             window: Duration::from_secs(300),
             ban_duration: Duration::from_secs(600),
             max_entries: 10,
         }
+    }
+
+    #[test]
+    fn from_env_uses_updated_threshold_default() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+
+        unsafe {
+            std::env::remove_var("TEMP_BAN_THRESHOLD");
+        }
+
+        let config = TempBanConfig::from_env();
+        assert_eq!(config.threshold, 5);
     }
 
     #[test]
@@ -194,7 +209,7 @@ mod tests {
     fn ban_triggers_after_threshold() {
         let list = TempBanList::new(default_config());
         let ip = test_ip(1);
-        for _ in 0..3 {
+        for _ in 0..5 {
             list.record_violation(ip);
         }
         assert!(list.is_banned(ip));
@@ -204,7 +219,7 @@ mod tests {
     fn no_ban_below_threshold() {
         let list = TempBanList::new(default_config());
         let ip = test_ip(1);
-        for _ in 0..2 {
+        for _ in 0..4 {
             list.record_violation(ip);
         }
         assert!(!list.is_banned(ip));
