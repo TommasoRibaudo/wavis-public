@@ -240,6 +240,9 @@ fn audio_share_start_linux(
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
+    // -- Preflight: required CLI tools ------------------------------
+    ensure_pactl_available()?;
+
     // -- Double-start guard -----------------------------------------
     {
         let guard = audio_capture
@@ -1162,6 +1165,23 @@ fn cleanup_stale_wavis_modules() {
         let _ = std::process::Command::new("pactl")
             .args(["unload-module", idx])
             .output();
+    }
+}
+
+/// Preflight: confirm the `pactl` CLI is on PATH. The capture pipeline shells
+/// out to it for sink-input enumeration, null-sink creation, and routing —
+/// without it `audio_share_start` would fail mid-setup with an opaque error.
+/// On Debian/Ubuntu this lives in the `pulseaudio-utils` package and is not
+/// pulled in automatically by `pipewire-pulse`.
+#[cfg(target_os = "linux")]
+fn ensure_pactl_available() -> Result<(), String> {
+    match std::process::Command::new("pactl").arg("--version").output() {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => Err(
+            "system audio sharing requires `pactl` — install it with: \
+             sudo apt install pulseaudio-utils"
+                .to_string(),
+        ),
     }
 }
 
