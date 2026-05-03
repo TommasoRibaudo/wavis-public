@@ -30,7 +30,7 @@ resource "aws_instance" "wavis" {
   })
 
   lifecycle {
-    prevent_destroy = true
+    # prevent_destroy removed for teardown
 
     # Don't replace the instance if AMI or user_data changes —
     # we handle OS updates in-place via SSH/SSM.

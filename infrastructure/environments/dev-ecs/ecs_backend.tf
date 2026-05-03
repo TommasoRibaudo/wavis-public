@@ -158,7 +158,7 @@ resource "aws_ecs_task_definition" "backend" {
         ]
       )
       secrets = [
-        for key, parameter in data.aws_ssm_parameter.secrets : {
+        for key, parameter in aws_ssm_parameter.secrets : {
           name      = key
           valueFrom = parameter.arn
         }

@@ -2173,7 +2173,16 @@ pub(crate) async fn dispatch_message(
 
                             Some(COLD_START_ESTIMATED_WAIT_SECS)
                         } else {
-                            None
+                            // No EC2 controller — SFU is down and we cannot start it.
+                            // Drop the lock before sending so we don't hold it across I/O.
+                            drop(health_w);
+                            ctx.app_state.connections.send_to(
+                                ctx.peer_id,
+                                &SignalingMessage::Error(ErrorPayload {
+                                    message: "SFU unavailable".to_string(),
+                                }),
+                            );
+                            return DispatchOutcome::Continue;
                         }
                     }
                 }
