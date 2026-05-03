@@ -46,7 +46,7 @@ locals {
     SFU_JWT_ISSUER                    = "wavis-backend"
     SFU_TOKEN_TTL_SECS                = "600"
     REFRESH_TOKEN_TTL_DAYS            = "180"
-    GITHUB_BUG_REPORT_REPO            = "example/wavis"
+    GITHUB_BUG_REPORT_REPO            = "Davalf99/wavis"
     BUG_REPORT_RATE_LIMIT_MAX         = "5"
     BUG_REPORT_RATE_LIMIT_WINDOW_SECS = "3600"
     BUG_REPORT_LLM_MODEL              = "claude-sonnet-4-20250514"

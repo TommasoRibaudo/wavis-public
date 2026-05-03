@@ -211,10 +211,15 @@ async def livekit_connect_probe(sfu_url: str, token: str, expected_room_id: str)
 
 
 async def run_smoke():
+    sfu_available = True
+
     try:
         r = httpx.get(f"{BACKEND_URL}/health", timeout=TIMEOUT)
         assert r.status_code == 200, f"HTTP {r.status_code}"
+        sfu_available = r.json().get("sfu", {}).get("available", True)
         ok("1_https_health")
+        if not sfu_available:
+            warn("1_https_health_sfu", f"SFU unavailable per /health: {r.json().get('sfu', {}).get('reason', 'unknown')} — voice tests will be warnings")
     except Exception as e:
         fail("1_https_health", str(e))
         return
@@ -416,7 +421,20 @@ async def run_smoke():
     member_media_token = None
     cleanup_leave_sent = False
 
-    if access_token and second_access_token and channel_id:
+    VOICE_TESTS = [
+        "15_owner_join_voice", "16_member_join_voice", "17_participant_joined",
+        "18_voice_status_active", "19_channel_token_structure", "21_leave_disconnect",
+    ]
+
+    if not (access_token and second_access_token and channel_id):
+        for name in VOICE_TESTS:
+            fail(name, "skipped - missing channel voice prerequisites")
+        warn("20_livekit_connect", "skipped - missing channel voice prerequisites")
+    elif not sfu_available:
+        for name in VOICE_TESTS:
+            warn(name, "SFU unavailable - skipped")
+        warn("20_livekit_connect", "SFU unavailable - skipped")
+    else:
         try:
             async with (
                 websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws1,
@@ -582,16 +600,10 @@ async def run_smoke():
             fail("19_channel_token_structure", f"websocket setup failed: {reason}")
             fail("21_leave_disconnect", f"websocket setup failed: {reason}")
             warn("20_livekit_connect", f"skipped - websocket setup failed before LiveKit probe: {reason}")
-    else:
-        fail("15_owner_join_voice", "skipped - missing channel voice prerequisites")
-        fail("16_member_join_voice", "skipped - missing channel voice prerequisites")
-        fail("17_participant_joined", "skipped - missing channel voice prerequisites")
-        fail("18_voice_status_active", "skipped - missing channel voice prerequisites")
-        fail("19_channel_token_structure", "skipped - missing channel voice prerequisites")
-        fail("21_leave_disconnect", "skipped - missing channel voice prerequisites")
-        warn("20_livekit_connect", "skipped - missing channel voice prerequisites")
 
-    if access_token and channel_id and cleanup_leave_sent:
+    if not sfu_available:
+        warn("22_voice_status_inactive", "SFU unavailable - skipped")
+    elif access_token and channel_id and cleanup_leave_sent:
         try:
             await asyncio.sleep(0.2)
             r = httpx.get(
@@ -616,7 +628,7 @@ async def run_smoke():
     else:
         fail("22_voice_status_inactive", "skipped - leave/disconnect cleanup preconditions failed")
 
-    # Tests 23-26: isolated ban-eject scenario using fresh WS connections.
+    # Tests 23–26: isolated ban-eject scenario using fresh WS connections.
     ban_channel_id = None
     ban_invite_code = None
 
@@ -662,7 +674,11 @@ async def run_smoke():
     else:
         fail("23_ban_eject_setup", "skipped - missing owner access token")
 
-    if access_token and second_access_token and second_user_id and ban_channel_id:
+    if access_token and second_access_token and second_user_id and ban_channel_id and not sfu_available:
+        warn("24_ban_eject_join_voice", "SFU unavailable - skipped")
+        warn("25_ban_eject", "SFU unavailable - skipped")
+        warn("26_banned_rejoin_rejected", "SFU unavailable - skipped")
+    elif access_token and second_access_token and second_user_id and ban_channel_id:
         ban_owner_joined = None
         ban_member_joined = None
         try:

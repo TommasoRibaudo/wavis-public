@@ -97,6 +97,14 @@ pub fn handle_start_share(
             }));
         }
 
+        if let Some(sub_rooms) = members.info.sub_room_state.as_ref()
+            && !sub_rooms.participant_assignments.contains_key(sender_id)
+        {
+            return ShareResult::Error(SignalingMessage::Error(ErrorPayload {
+                message: "not in room".to_string(),
+            }));
+        }
+
         // Check sender not already sharing
         if members.info.active_shares.contains(sender_id) {
             return ShareResult::Noop;
@@ -459,6 +467,45 @@ mod tests {
 
         let result = handle_start_share(&state, "room-1", "outsider", ParticipantRole::Guest);
         assert!(matches!(result, ShareResult::Error(_)));
+    }
+
+    #[test]
+    fn start_share_fails_when_sender_has_no_sub_room_assignment() {
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["peer-a"]);
+        state
+            .with_room_write("room-1", |members| {
+                members.info.sub_room_state = Some(crate::state::SubRoomState::new("room-one"));
+            })
+            .unwrap();
+
+        let result = handle_start_share(&state, "room-1", "peer-a", ParticipantRole::Guest);
+
+        assert!(matches!(result, ShareResult::Error(_)));
+        assert!(!get_active_shares(&state, "room-1").contains("peer-a"));
+    }
+
+    #[test]
+    fn start_share_succeeds_when_sender_has_sub_room_assignment() {
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["peer-a"]);
+        state
+            .with_room_write("room-1", |members| {
+                let mut sub_rooms = crate::state::SubRoomState::new("room-one");
+                sub_rooms
+                    .participant_assignments
+                    .insert("peer-a".to_string(), "room-one".to_string());
+                sub_rooms.rooms[0]
+                    .participant_ids
+                    .push("peer-a".to_string());
+                members.info.sub_room_state = Some(sub_rooms);
+            })
+            .unwrap();
+
+        let result = handle_start_share(&state, "room-1", "peer-a", ParticipantRole::Guest);
+
+        assert!(matches!(result, ShareResult::Ok(_)));
+        assert!(get_active_shares(&state, "room-1").contains("peer-a"));
     }
 
     #[test]

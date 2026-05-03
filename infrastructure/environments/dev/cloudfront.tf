@@ -190,7 +190,7 @@ resource "aws_cloudfront_distribution" "wavis" {
   }
 
   lifecycle {
-    prevent_destroy = true
+    # prevent_destroy removed for teardown
     ignore_changes  = [origin]
   }
 }

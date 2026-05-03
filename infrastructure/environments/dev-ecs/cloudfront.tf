@@ -35,7 +35,7 @@ resource "aws_cloudfront_distribution" "backend" {
 
     custom_header {
       name  = "X-Origin-Verify"
-      value = data.aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
+      value = aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
     }
   }
 
@@ -54,7 +54,7 @@ resource "aws_cloudfront_distribution" "backend" {
 
     custom_header {
       name  = "X-Origin-Verify"
-      value = data.aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
+      value = aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
     }
   }
 
