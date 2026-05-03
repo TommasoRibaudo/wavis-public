@@ -733,6 +733,10 @@ export class LiveKitModule {
   private localMicTrack: LocalAudioTrack | null = null;
   /** Whether the JS-side noise suppression processor should be active on this session's mic. */
   private jsDenoise = false;
+  /** Session preference used when voice-room later opts the microphone into publishing. */
+  private sessionDenoiseEnabled = false;
+  /** True when mic publishing should use the native Rust mic bridge for this session. */
+  private useNativeMicBridgeForMic = false;
   /** True only when the JS noise suppression processor is confirmed attached to the live mic track. */
   private jsDenoiseProcessorActive = false;
   /** Active native mic bridge instance (Windows + denoiseEnabled only). */
@@ -1595,12 +1599,14 @@ export class LiveKitModule {
     this.deviceChangeListener = null;
   }
 
-  /** Connect to LiveKit SFU. Creates Room, connects, publishes mic. */
+  /** Connect to LiveKit SFU. Creates Room in listen-only mode. */
   async connect(sfuUrl: string, token: string): Promise<void> {
     try {
       // 0. Read denoise preference for this session.
       const denoiseEnabled = await getDenoiseEnabled();
       const useNativeBridge = this.shouldUseNativeMicBridge(denoiseEnabled);
+      this.sessionDenoiseEnabled = denoiseEnabled;
+      this.useNativeMicBridgeForMic = useNativeBridge;
       this.jsDenoise = this.shouldUseJsNoiseSuppression(denoiseEnabled);
       this.setNoiseSuppressionActive(false);
       console.log(
@@ -1654,45 +1660,10 @@ export class LiveKitModule {
       addListener(RoomEvent.Connected, () => {
         if (this.disposed) return;
         lkConnected = true;
+        listenOnly = true;
         // Watch for OS device changes so the routing survives plug/unplug events.
-        // Output device routing itself is applied in checkReady() after getUserMedia.
         this.startDeviceChangeWatcher();
-        if (useNativeBridge) {
-          // Windows + denoiseEnabled: capture mic in Rust through DenoiseFilter,
-          // then publish the denoised MediaStreamTrack via LiveKit.
-          this.startNativeMicBridge(denoiseEnabled)
-            .catch((err: unknown) => {
-              // Bridge failed — fall back to browser mic without denoise.
-              console.warn(LOG, 'native mic bridge failed, falling back to browser mic:', err);
-              this.callbacks.onSystemEvent(
-                `native mic bridge failed — falling back to browser mic (no denoise)`,
-              );
-              return this.room?.localParticipant.setMicrophoneEnabled(true, {
-                noiseSuppression: false,
-              });
-            })
-            .catch((err: unknown) => {
-              listenOnly = true;
-              this.callbacks.onSystemEvent(
-                `mic failed: ${err instanceof Error ? err.message : String(err)} — listen-only mode`,
-              );
-              if (DEBUG_AUDIO_OUTPUT) console.log(LOG, '[audio-output] listen-only mode — applying output device (best-effort)');
-              this.applyAudioOutputDevice();
-              checkReady();
-            });
-        } else {
-          this.room!.localParticipant.setMicrophoneEnabled(true, {
-            noiseSuppression: false,
-          }).catch((err: unknown) => {
-            listenOnly = true;
-            this.callbacks.onSystemEvent(
-              `mic permission denied: ${err instanceof Error ? err.message : String(err)} — listen-only mode`,
-            );
-            if (DEBUG_AUDIO_OUTPUT) console.log(LOG, '[audio-output] listen-only mode — applying output device (best-effort)');
-            this.applyAudioOutputDevice();
-            checkReady();
-          });
-        }
+        checkReady();
       });
 
       // b. Disconnected
@@ -2295,7 +2266,28 @@ export class LiveKitModule {
       this.localMicTrack.mediaStreamTrack.enabled = enabled;
       return;
     }
-    await this.room.localParticipant.setMicrophoneEnabled(enabled);
+    if (enabled && this.useNativeMicBridgeForMic && !this.localMicTrack) {
+      try {
+        await this.startNativeMicBridge(this.sessionDenoiseEnabled);
+        return;
+      } catch (err) {
+        console.warn(LOG, 'native mic bridge failed, falling back to browser mic:', err);
+        this.callbacks.onSystemEvent(
+          `native mic bridge failed - falling back to browser mic (no denoise)`,
+        );
+      }
+    }
+    try {
+      await this.room.localParticipant.setMicrophoneEnabled(enabled, {
+        noiseSuppression: false,
+      });
+    } catch (err) {
+      if (enabled) {
+        this.callbacks.onSystemEvent(
+          `mic permission denied: ${err instanceof Error ? err.message : String(err)} - listen-only mode`,
+        );
+      }
+    }
   }
 
   /** Set per-participant volume (0–100 → perceptual gain curve). */
@@ -4007,7 +3999,7 @@ export class LiveKitModule {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     const gain = ctx.createGain();
-    const desiredVol = this.desiredParticipantVolumes.get(identity) ?? 70;
+    const desiredVol = this.desiredParticipantVolumes.get(identity) ?? 0;
     gain.gain.setValueAtTime(perceptualGain(desiredVol), ctx.currentTime);
     source.connect(analyser);
     analyser.connect(gain);

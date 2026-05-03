@@ -1411,7 +1411,13 @@ export default function ActiveRoom() {
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
   const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
-    ? isShareEnabled(roomState.sharePermission, isHost, roomState.machineState, roomState.mediaState)
+    ? isShareEnabled(
+        roomState.sharePermission,
+        isHost,
+        roomState.machineState,
+        roomState.mediaState,
+        roomState.joinedSubRoomId,
+      )
     : false;
   const currentShareType = roomState
     ? activeShareType(roomState.activeVideoShare, roomState.activeAudioShare)
@@ -1467,6 +1473,7 @@ export default function ActiveRoom() {
 
   /** Open custom share picker or invoke getDisplayMedia fallback based on platform. */
   const handleStartShare = async () => {
+    if (!shareEnabled) return;
     if (shareEnumerating.current) return;
     shareEnumerating.current = true;
     if (!isLinuxPlatform) setSharePickerLoading(true);

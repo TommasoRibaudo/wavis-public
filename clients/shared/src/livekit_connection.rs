@@ -151,7 +151,7 @@ impl RealLiveKitConnection {
             connected: Arc::new(AtomicBool::new(false)),
             room: Arc::new(Mutex::new(None)),
             published_track: Arc::new(Mutex::new(None)),
-            mic_enabled: Arc::new(AtomicBool::new(true)),
+            mic_enabled: Arc::new(AtomicBool::new(false)),
             audio_cb: Arc::new(Mutex::new(None)),
             event_task: Arc::new(Mutex::new(None)),
             capture_task: Arc::new(Mutex::new(None)),

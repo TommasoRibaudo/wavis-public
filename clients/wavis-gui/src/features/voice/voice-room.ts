@@ -333,11 +333,22 @@ export function computeSpeaking(
 
 /**
  * Pure function: determine if screen sharing is enabled for the current user.
- * Requires all three conditions: permission allows it (anyone OR host),
- * room is active, and LiveKit media connection is established.
+ * Requires all four conditions: permission allows it (anyone OR host),
+ * room is active, media is connected, and the user is in a synchronized room.
  */
-export function isShareEnabled(sharePermission: 'anyone' | 'host_only', selfIsHost: boolean, machineState: VoiceRoomMachineState, mediaState: MediaState): boolean {
-  return (sharePermission === 'anyone' || selfIsHost) && machineState === 'active' && mediaState === 'connected'
+export function isShareEnabled(
+  sharePermission: 'anyone' | 'host_only',
+  selfIsHost: boolean,
+  machineState: VoiceRoomMachineState,
+  mediaState: MediaState,
+  joinedSubRoomId: string | null,
+): boolean {
+  return (
+    joinedSubRoomId !== null
+    && (sharePermission === 'anyone' || selfIsHost)
+    && machineState === 'active'
+    && mediaState === 'connected'
+  );
 }
 
 /**
@@ -425,6 +436,54 @@ function applyEffectiveParticipantVolumes(): void {
   for (const participant of state.participants) {
     applyEffectiveParticipantVolume(participant);
   }
+}
+
+function selfParticipant(): RoomParticipant | undefined {
+  return state.participants.find((p) => p.id === state.selfParticipantId);
+}
+
+function silenceSelfParticipant(self: RoomParticipant): void {
+  self.isMuted = true;
+  self.isSpeaking = false;
+  self.rmsLevel = 0;
+}
+
+function setLocalMicPublishing(enabled: boolean): void {
+  lkModule?.setMicEnabled(enabled);
+}
+
+function shouldPublishLocalMic(self: RoomParticipant | undefined): boolean {
+  return (
+    state.joinedSubRoomId !== null
+    && self !== undefined
+    && !self.isMuted
+    && !self.isHostMuted
+    && !state.isDeafened
+  );
+}
+
+function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | null): void {
+  const currentJoinedSubRoomId = state.joinedSubRoomId;
+  const self = selfParticipant();
+
+  if (currentJoinedSubRoomId === null) {
+    if (self) {
+      silenceSelfParticipant(self);
+    }
+    setLocalMicPublishing(false);
+    return;
+  }
+
+  if (previousJoinedSubRoomId !== null) return;
+  if (!self || self.isHostMuted || state.isDeafened) {
+    setLocalMicPublishing(false);
+    return;
+  }
+
+  self.isMuted = false;
+  self.isSpeaking = false;
+  self.rmsLevel = 0;
+  setLocalMicPublishing(true);
 }
 
 /**
@@ -696,6 +755,7 @@ export function computeLeaveShareCleanup(
  * a helpful OS-level message. The only other throw here is when lkModule is null.
  */
 export async function startFallbackShare(): Promise<{ started: boolean; withAudio: boolean }> {
+  ensureInSubRoomForShare();
   console.log(LOG, `startFallbackShare: lkModule=${lkModule ? lkModule.constructor.name : 'null'}, mediaState=${state.mediaState}, machineState=${state.machineState}`);
   if (!lkModule) {
     throw new Error(`Screen sharing is not available (media module not initialized, mediaState=${state.mediaState})`);
@@ -944,6 +1004,10 @@ function setupExternalShareHelperListeners(): void {
   if (unlistenExternalShareStarted || unlistenExternalShareStopped || unlistenExternalShareError) return;
 
   listen<{ sessionId: string }>('external-share-started', () => {
+    if (state.joinedSubRoomId === null) {
+      invoke('external_share_stop').catch(() => { });
+      return;
+    }
     externalShareHelperActive = true;
     localStopShareSent = false;
     const self = state.participants.find((p) => p.id === state.selfParticipantId);
@@ -1057,6 +1121,28 @@ function syncDerivedSubRoomState(): void {
     return;
   }
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
+}
+
+function ensureInSubRoomForShare(): void {
+  if (state.joinedSubRoomId !== null) return;
+  throw new Error('Join a room before sharing.');
+}
+
+function stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId: string | null): void {
+  if (!previousJoinedSubRoomId || state.joinedSubRoomId !== null) return;
+  const self = state.participants.find((p) => p.id === state.selfParticipantId);
+  const hasCustomShare = state.activeVideoShare !== null || state.activeAudioShare !== null;
+  const hasFallbackShare =
+    self?.isSharing === true
+    || externalShareHelperActive
+    || state.shareQualityInfo !== null
+    || state.shareStats !== null;
+
+  if (hasCustomShare) {
+    void stopCustomShare('all');
+  } else if (hasFallbackShare) {
+    void stopShare();
+  }
 }
 
 function syncDesiredSubRoomPreference(): void {
@@ -1241,10 +1327,8 @@ function connectMedia(sfuUrl: string, token: string): void {
       stopPeriodicMediaRetry();
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
-      const self = state.participants.find((p) => p.id === state.selfParticipantId);
-      if (self && self.isMuted && lkModule) {
-        lkModule.setMicEnabled(false);
-      }
+      const self = selfParticipant();
+      setLocalMicPublishing(shouldPublishLocalMic(self));
       // Apply persisted master volume to the media layer
       if (lkModule) {
         lkModule.setMasterVolume(state.masterVolume);
@@ -1349,6 +1433,12 @@ function connectMedia(sfuUrl: string, token: string): void {
       if (!p) return;
 
       if (identity === state.selfParticipantId) {
+        if (!isMuted && state.joinedSubRoomId === null) {
+          silenceSelfParticipant(p);
+          lkModule?.setMicEnabled(false);
+          notify();
+          return;
+        }
         // Local participant mute state changed externally (e.g. LiveKit reconnect,
         // OS-level mute). Sync UI state to match actual mic state.
         if (p.isMuted !== isMuted) {
@@ -1661,6 +1751,7 @@ function dispatchMessage(raw: unknown): void {
             : room
         ));
         syncDerivedSubRoomState();
+        reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
         playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
       }
@@ -1702,6 +1793,8 @@ function dispatchMessage(raw: unknown): void {
           }
         : null;
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
@@ -1747,6 +1840,8 @@ function dispatchMessage(raw: unknown): void {
           : room;
       });
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       void source;
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
@@ -1766,6 +1861,8 @@ function dispatchMessage(raw: unknown): void {
           : room
       ));
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
@@ -1774,9 +1871,12 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'sub_room_deleted': {
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const subRoomId = msg.subRoomId as string;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       if (desiredSubRoomIntent === subRoomId) {
         desiredSubRoomIntent = undefined;
       }
@@ -2642,6 +2742,19 @@ export function toggleSelfMute(): void {
     notify();
     return;
   }
+  if (state.joinedSubRoomId === null) {
+    silenceSelfParticipant(self);
+    lkModule?.setMicEnabled(false);
+    appendEvent({
+      id: makeEventId(),
+      timestamp: timestamp(),
+      type: 'system',
+      message: 'mute toggle ignored: join a room before using the microphone',
+      participantId: self.id,
+    });
+    notify();
+    return;
+  }
 
   // If deafened and trying to unmute, cancel deafen entirely
   if (state.isDeafened && self.isMuted) {
@@ -2680,9 +2793,12 @@ export function toggleSelfDeafen(): void {
     preDeafenVolume = null;
     state.masterVolume = restored;
     lkModule?.setMasterVolume(restored);
-    if (!self.isHostMuted) {
+    if (!self.isHostMuted && state.joinedSubRoomId !== null) {
       self.isMuted = false;
       lkModule?.setMicEnabled(true);
+    } else {
+      silenceSelfParticipant(self);
+      lkModule?.setMicEnabled(false);
     }
     client?.send({ type: 'self_undeafen' });
     appendEvent({
@@ -2726,6 +2842,7 @@ export function toggleSelfDeafen(): void {
 // post-share audio prompt) or startCustomShare() instead.
 
 export async function startExternalBrowserShare(): Promise<void> {
+  ensureInSubRoomForShare();
   await invoke('external_share_start');
 }
 
@@ -2736,6 +2853,7 @@ export async function startExternalBrowserShare(): Promise<void> {
  * This is the primary path for Wayland compositors (Hyprland, GNOME, KDE).
  */
 export async function startPortalShare(): Promise<boolean> {
+  ensureInSubRoomForShare();
   const result = await invoke<boolean>('screen_share_start');
   if (result) {
     // Mark self as sharing and notify peers (same as other share paths).
@@ -2768,6 +2886,7 @@ export async function startPortalShare(): Promise<boolean> {
  * rollback on partial failure, sends signaling, and opens the indicator.
  */
 export async function startCustomShare(selection: ShareSelection): Promise<void> {
+  ensureInSubRoomForShare();
   // 1. Check if the requested slot is available
   const check = canStartShare(selection, state.activeVideoShare, state.activeAudioShare);
   if (!check.allowed) {

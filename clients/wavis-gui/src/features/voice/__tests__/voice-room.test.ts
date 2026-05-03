@@ -269,40 +269,40 @@ describe('Property 2: Share button enabled iff permission allows and media ready
   it('share enabled when permission is "anyone" regardless of host status (media ready)', () => {
     fc.assert(
       fc.property(fc.boolean(), (selfIsHost) => {
-        expect(isShareEnabled('anyone', selfIsHost, 'active', 'connected')).toBe(true);
+        expect(isShareEnabled('anyone', selfIsHost, 'active', 'connected', 'room-1')).toBe(true);
       }),
       { numRuns: 100 },
     );
   });
 
   it('share enabled when host_only AND selfIsHost is true (media ready)', () => {
-    expect(isShareEnabled('host_only', true, 'active', 'connected')).toBe(true);
+    expect(isShareEnabled('host_only', true, 'active', 'connected', 'room-1')).toBe(true);
   });
 
   it('share disabled when host_only AND selfIsHost is false (media ready)', () => {
-    expect(isShareEnabled('host_only', false, 'active', 'connected')).toBe(false);
+    expect(isShareEnabled('host_only', false, 'active', 'connected', 'room-1')).toBe(false);
   });
 
   it('share disabled when media is not connected, even with permission', () => {
-    expect(isShareEnabled('anyone', true, 'active', 'disconnected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'active', 'connecting')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'active', 'failed')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'disconnected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'connecting', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'failed', 'room-1')).toBe(false);
   });
 
   it('share disabled when machine is not active, even with permission', () => {
-    expect(isShareEnabled('anyone', true, 'idle', 'connected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'connecting', 'connected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'joining', 'connected')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'idle', 'connected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'connecting', 'connected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'joining', 'connected', 'room-1')).toBe(false);
   });
 
   it('for any permission and host status, enabled iff (anyone OR selfIsHost) AND active AND connected', () => {
     fc.assert(
       fc.property(arbSharePermission, fc.boolean(), (perm, selfIsHost) => {
         const expected = (perm === 'anyone' || selfIsHost);
-        expect(isShareEnabled(perm, selfIsHost, 'active', 'connected')).toBe(expected);
+        expect(isShareEnabled(perm, selfIsHost, 'active', 'connected', 'room-1')).toBe(expected);
         // Always false when media not ready, regardless of permission
-        expect(isShareEnabled(perm, selfIsHost, 'active', 'disconnected')).toBe(false);
-        expect(isShareEnabled(perm, selfIsHost, 'idle', 'connected')).toBe(false);
+        expect(isShareEnabled(perm, selfIsHost, 'active', 'disconnected', 'room-1')).toBe(false);
+        expect(isShareEnabled(perm, selfIsHost, 'idle', 'connected', 'room-1')).toBe(false);
       }),
       { numRuns: 100 },
     );

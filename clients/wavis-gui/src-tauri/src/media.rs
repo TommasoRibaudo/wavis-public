@@ -652,6 +652,8 @@ pub fn media_connect(
 
     match state.runtime.block_on(async { conn.connect(&url, &token) }) {
         Ok(()) => {
+            conn.set_mic_enabled(false)
+                .map_err(|err| format!("failed to disable mic before publish: {err}"))?;
             if let Err(err) = conn.publish_audio(&AudioTrack {
                 id: "native-mic".to_string(),
             }) {

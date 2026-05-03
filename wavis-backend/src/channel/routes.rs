@@ -637,17 +637,35 @@ pub async fn get_voice_status(
             // inactive (active: false) rather than returning stale data.
             match state.room_state.get_room_info(&room_id) {
                 Some(room_info) => {
-                    let participants: Vec<VoiceParticipantInfo> = room_info
-                        .participants
-                        .iter()
-                        .map(|p| VoiceParticipantInfo {
-                            display_name: p.display_name.clone(),
-                        })
-                        .collect();
+                    // Only count participants who are actually in a sub-room
+                    // (not just connected to signaling in the lobby).
+                    // For legacy rooms without sub-room state, count all participants.
+                    let participants: Vec<VoiceParticipantInfo> = match &room_info.sub_room_state {
+                        Some(sub_room_state) => room_info
+                            .participants
+                            .iter()
+                            .filter(|p| {
+                                sub_room_state
+                                    .participant_assignments
+                                    .contains_key(&p.participant_id)
+                            })
+                            .map(|p| VoiceParticipantInfo {
+                                display_name: p.display_name.clone(),
+                            })
+                            .collect(),
+                        None => room_info
+                            .participants
+                            .iter()
+                            .map(|p| VoiceParticipantInfo {
+                                display_name: p.display_name.clone(),
+                            })
+                            .collect(),
+                    };
+                    let active = !participants.is_empty();
                     Ok(Json(VoiceStatusResponse {
-                        active: true,
-                        participant_count: Some(participants.len() as u32),
-                        participants: Some(participants),
+                        active,
+                        participant_count: if active { Some(participants.len() as u32) } else { None },
+                        participants: if active { Some(participants) } else { None },
                     }))
                 }
                 None => Ok(Json(VoiceStatusResponse {
