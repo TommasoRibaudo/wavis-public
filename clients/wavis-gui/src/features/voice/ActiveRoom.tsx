@@ -1983,7 +1983,7 @@ export default function ActiveRoom() {
             return badge ? <span className="text-[0.625rem] text-wavis-purple">[{badge}]</span> : null;
           })()}
           <span className="text-sm" style={{ color: statusBadge.color }}>{statusBadge.text}</span>
-          <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.participants.length}/6</span>
+          <span className="text-[0.625rem] text-wavis-text-secondary">{Object.keys(roomState.participantSubRoomById).length}/6</span>
           <span className="text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
           <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.networkStats.packetLossPercent.toFixed(1)}% loss</span>
         </div>
@@ -2598,7 +2598,7 @@ export default function ActiveRoom() {
             <StatusDot color={sigDot.color} label={sigDot.label} />
             <StatusDot color={mediaDot.color} label={mediaDot.label} />
             <span className="truncate text-sm">{roomState.channelName}</span>
-            <span className="shrink-0 text-[0.625rem] text-wavis-text-secondary">{roomState.participants.length}/6</span>
+            <span className="shrink-0 text-[0.625rem] text-wavis-text-secondary">{Object.keys(roomState.participantSubRoomById).length}/6</span>
             <span className="shrink-0 text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
           </div>
         </div>
@@ -2618,7 +2618,7 @@ export default function ActiveRoom() {
                 backgroundColor: mobileTab === tab ? 'rgba(46,160,67,0.08)' : 'transparent',
               }}
             >
-              {tab === 'participants' ? `VOICE (${roomState.participants.length})` : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})` : `LOG (${roomState.events.length})`}
+              {tab === 'participants' ? `VOICE (${Object.keys(roomState.participantSubRoomById).length})` : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})` : `LOG (${roomState.events.length})`}
             </button>
           ))}
         </div>
