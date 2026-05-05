@@ -617,6 +617,7 @@ impl LiveKitConnection for RealLiveKitConnection {
             if let Some(track) = guard.as_ref() {
                 let enabled = self.mic_enabled.load(SeqCst);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _enter = self.rt_handle.enter();
                     if enabled {
                         track.enable();
                         track.unmute();
@@ -816,6 +817,7 @@ impl LiveKitConnection for RealLiveKitConnection {
         if let Ok(guard) = self.published_track.lock() {
             if let Some(track) = guard.as_ref() {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _enter = self.rt_handle.enter();
                     if enabled {
                         track.enable();
                         track.unmute();

@@ -24,9 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 fern = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 cpal = "0.15"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.22"
 # Process memory / child process enumeration for diagnostics window (env-gated).
