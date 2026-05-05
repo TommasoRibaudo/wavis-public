@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { useBlocker, useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
@@ -50,12 +50,14 @@ import {
   startPortalShare,
   setPendingSharePickerData,
   buildChatDisplayItems,
+  resolveChatMessageDisplayColor,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
+import { open } from '@tauri-apps/plugin-shell';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
@@ -142,6 +144,54 @@ function formatTime(isoString: string): string {
   } catch {
     return '??:??:??';
   }
+}
+
+const CHAT_LINK_RE = /(https?:\/\/[^\s<]+|www\.[^\s<]+)/gi;
+const TRAILING_LINK_PUNCTUATION_RE = /[.,!?;:)\]]+$/;
+
+function normalizeChatLink(raw: string): string {
+  return raw.toLowerCase().startsWith('www.') ? `https://${raw}` : raw;
+}
+
+function splitChatLink(raw: string): { hrefText: string; trailingText: string } {
+  const trailingText = raw.match(TRAILING_LINK_PUNCTUATION_RE)?.[0] ?? '';
+  return trailingText
+    ? { hrefText: raw.slice(0, -trailingText.length), trailingText }
+    : { hrefText: raw, trailingText: '' };
+}
+
+function renderChatText(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(CHAT_LINK_RE)) {
+    const raw = match[0];
+    const index = match.index ?? 0;
+    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
+
+    const { hrefText, trailingText } = splitChatLink(raw);
+    const href = normalizeChatLink(hrefText);
+    nodes.push(
+      <a
+        key={`link-${index}-${hrefText}`}
+        href={href}
+        className="text-wavis-accent underline underline-offset-2 break-all hover:opacity-80"
+        onClick={(event) => {
+          event.preventDefault();
+          void open(href);
+        }}
+        rel="noreferrer"
+        title={href}
+      >
+        {hrefText}
+      </a>,
+    );
+    if (trailingText) nodes.push(trailingText);
+    lastIndex = index + raw.length;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
 }
 
 function getUserColor(participants: RoomParticipant[], participantId?: string): string {
@@ -1993,7 +2043,6 @@ export default function ActiveRoom() {
           style={{ cursor: isSelf ? 'default' : 'pointer' }}
         >
           {isSelf ? <span className="text-xs text-wavis-accent inline-block w-6 text-center flex-none">&gt;</span> : <span className="text-[0.625rem] text-wavis-text-secondary inline-block w-6 text-center flex-none">{expandedUser === p.id ? '[-]' : '[+]'}</span>}
-          {p.role === 'host' && <span className="text-xs text-wavis-text-secondary">[HOST]</span>}
           <span style={{
             color: p.color,
             animation: p.isSpeaking && !p.isMuted ? 'pulse 3s ease-in-out infinite' : 'none',
@@ -2057,14 +2106,14 @@ export default function ActiveRoom() {
               </div>
             )}
             {isHost && (
-              <>
-                <button onClick={() => kickParticipant(p.id)} className="block w-full text-left border border-wavis-danger text-wavis-danger px-3 py-2 transition-colors hover:opacity-70">/kick {p.displayName}</button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button onClick={() => kickParticipant(p.id)} className="text-xs text-center border border-wavis-danger text-wavis-danger px-1 py-0.5 transition-colors hover:opacity-70">/kick</button>
                 {p.isHostMuted
-                  ? <button onClick={() => unmuteParticipant(p.id)} className="block w-full text-left border border-wavis-accent text-wavis-accent px-3 py-2 transition-colors hover:opacity-70">/unmute {p.displayName}</button>
-                  : !p.isMuted && <button onClick={() => muteParticipant(p.id)} className="block w-full text-left border px-3 py-2 transition-colors hover:opacity-70" style={{ color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }}>/mute {p.displayName}</button>
+                  ? <button onClick={() => unmuteParticipant(p.id)} className="text-xs text-center border border-wavis-accent text-wavis-accent px-1 py-0.5 transition-colors hover:opacity-70">/unmute</button>
+                  : !p.isMuted && <button onClick={() => muteParticipant(p.id)} className="text-xs text-center border px-1 py-0.5 transition-colors hover:opacity-70" style={{ color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }}>/mute</button>
                 }
-                {p.isSharing && <button onClick={() => stopParticipantShare(p.id)} className="block w-full text-left border border-wavis-danger text-wavis-danger px-3 py-2 transition-colors hover:opacity-70">/revoke {p.displayName}</button>}
-              </>
+                {p.isSharing && <button onClick={() => stopParticipantShare(p.id)} className="text-xs text-center border border-wavis-danger text-wavis-danger px-1 py-0.5 transition-colors hover:opacity-70">/revoke</button>}
+              </div>
             )}
           </div>
         )}
@@ -2270,7 +2319,6 @@ export default function ActiveRoom() {
         </button>
         <button onClick={() => toggleSection('you')} className="bg-transparent outline-none py-1 px-1 text-left flex items-center gap-2 hover:opacity-80">
           <span style={{ color: selfP?.color }}>{selfP?.displayName}</span>
-          {selfP?.role === 'host' && <span className="text-[0.625rem] text-wavis-text-secondary">[HOST]</span>}
         </button>
         {!expandedSections.you && (
           <div className="ml-auto flex items-center leading-none text-xs">
@@ -2454,8 +2502,8 @@ export default function ActiveRoom() {
           ) : (
             <div key={item.message.id} className="break-all">
               <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
-              <span style={{ color: item.message.color }}>{item.message.displayName}</span>
-              <span>: {item.message.text}</span>
+              <span style={{ color: resolveChatMessageDisplayColor(item.message, roomState.participants) }}>{item.message.displayName}</span>
+              <span>: {renderChatText(item.message.text)}</span>
             </div>
           )
         )}
@@ -2545,30 +2593,13 @@ export default function ActiveRoom() {
       {/* ═══ MOBILE LAYOUT (< md) ═══ */}
       <div className="flex flex-col flex-1 overflow-hidden md:hidden">
         {/* Compact header */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
+        <div className="flex items-center px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
           <div className="flex items-center gap-2 min-w-0">
             <StatusDot color={sigDot.color} label={sigDot.label} />
             <StatusDot color={mediaDot.color} label={mediaDot.label} />
             <span className="truncate text-sm">{roomState.channelName}</span>
             <span className="shrink-0 text-[0.625rem] text-wavis-text-secondary">{roomState.participants.length}/6</span>
             <span className="shrink-0 text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setChannelSwitcherOpen((v) => !v)}
-              className={`px-2 py-1.5 border text-[0.625rem] transition-colors ${
-                channelSwitcherOpen
-                  ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-                  : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
-              }`}
-              title="Change channel"
-            >{channelSwitcherOpen ? '<' : '>'}</button>
-            <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} className={`px-2 py-1.5 border text-[0.625rem] transition-colors text-center disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>
-              {selfP?.isMuted ? '/unmute' : '/mute'}
-            </button>
-            <button onClick={toggleSelfDeafen} className={`px-2 py-1.5 border text-[0.625rem] transition-colors text-center ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>
-              {roomState.isDeafened ? '/undeafen' : '/deafen'}
-            </button>
           </div>
         </div>
 

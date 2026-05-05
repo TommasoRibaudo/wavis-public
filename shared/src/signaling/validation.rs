@@ -259,7 +259,11 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
         }
         SignalingMessage::LeaveSubRoom(_) => {}
         SignalingMessage::SetPassthrough(p) => {
-            check("targetSubRoomId", &p.target_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
+            check(
+                "targetSubRoomId",
+                &p.target_sub_room_id,
+                MAX_SUB_ROOM_ID_LEN,
+            )?;
         }
         SignalingMessage::ClearPassthrough(_) => {}
         SignalingMessage::SubRoomState(p) => {
@@ -270,8 +274,16 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
                 }
             }
             if let Some(passthrough) = &p.passthrough {
-                check("sourceSubRoomId", &passthrough.source_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
-                check("targetSubRoomId", &passthrough.target_sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
+                check(
+                    "sourceSubRoomId",
+                    &passthrough.source_sub_room_id,
+                    MAX_SUB_ROOM_ID_LEN,
+                )?;
+                check(
+                    "targetSubRoomId",
+                    &passthrough.target_sub_room_id,
+                    MAX_SUB_ROOM_ID_LEN,
+                )?;
             }
         }
         SignalingMessage::SubRoomCreated(p) => {
@@ -828,6 +840,7 @@ mod tests {
                 .map(|i| ChatHistoryMessagePayload {
                     message_id: format!("msg-{}", i),
                     participant_id: format!("peer-{}", i),
+                    user_id: None,
                     display_name: format!("user-{}", i),
                     text: long_str(text_len),
                     timestamp: "2025-01-15T10:00:00Z".to_string(),
