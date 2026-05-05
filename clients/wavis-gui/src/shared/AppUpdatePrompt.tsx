@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { getState } from '@features/voice/voice-room';
+import { getState, leaveRoom } from '@features/voice/voice-room';
 import {
   checkForUpdate,
   installUpdateAndRelaunch,
@@ -11,7 +11,6 @@ type PromptState =
   | { kind: 'idle' }
   | { kind: 'available'; update: Update }
   | { kind: 'installing'; update: Update; progress: UpdateProgress }
-  | { kind: 'deferred'; update: Update }
   | { kind: 'error'; message: string };
 
 function isVoiceRoomActive(): boolean {
@@ -64,8 +63,7 @@ export default function AppUpdatePrompt() {
   const install = () => {
     if (!update) return;
     if (isVoiceRoomActive()) {
-      setPromptState({ kind: 'deferred', update });
-      return;
+      leaveRoom();
     }
 
     setPromptState({
@@ -87,15 +85,12 @@ export default function AppUpdatePrompt() {
   const body =
     promptState.kind === 'installing'
       ? progressLabel(promptState.progress)
-      : promptState.kind === 'deferred'
-        ? 'Leave the active room before installing the update.'
-        : promptState.kind === 'error'
-          ? promptState.message
-          : 'Install when you are ready to restart.';
+      : promptState.kind === 'error'
+        ? promptState.message
+        : 'Install when you are ready to restart.';
 
   const isError = promptState.kind === 'error';
   const isInstalling = promptState.kind === 'installing';
-  const isDeferred = promptState.kind === 'deferred';
 
   return (
     <div className="fixed right-4 bottom-4 z-50 w-[min(360px,calc(100vw-2rem))] border border-wavis-text-secondary/30 bg-wavis-panel p-4 font-mono text-sm text-wavis-text shadow-2xl">
@@ -126,7 +121,7 @@ export default function AppUpdatePrompt() {
             /later
           </button>
         )}
-        {(promptState.kind === 'available' || isDeferred) && (
+        {promptState.kind === 'available' && (
           <button
             type="button"
             className="border border-wavis-accent px-2 py-0.5 text-xs text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
