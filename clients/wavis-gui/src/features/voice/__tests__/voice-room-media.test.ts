@@ -29,6 +29,9 @@ let messageHandler: ((msg: unknown) => void) | null;
 /** The status change handler registered via client.onStatusChange(). */
 let statusChangeHandler: ((status: string) => void) | null;
 
+/** The most recently created mock SignalingClient instance. */
+let lastSignalingClient: Record<string, unknown> | null;
+
 /** Whether connectWithAuth should reject. */
 let connectShouldFail: boolean;
 let playNotificationSoundCalls: string[];
@@ -110,6 +113,7 @@ vi.mock('../livekit-media', () => ({
 
 vi.mock('@shared/websocket', () => ({
   SignalingClient: vi.fn(function (this: Record<string, unknown>) {
+    lastSignalingClient = this;
     this.status = 'disconnected';
     this.send = vi.fn((msg: Record<string, unknown>) => { sentMessages.push(msg); });
     this.onMessage = vi.fn((handler: (msg: unknown) => void) => {
@@ -239,6 +243,7 @@ function resetAll() {
   sentMessages = [];
   messageHandler = null;
   statusChangeHandler = null;
+  lastSignalingClient = null;
   connectShouldFail = false;
   mockMaxRetries = 10;
   playNotificationSoundCalls = [];
@@ -876,7 +881,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
-  it('does not play leave sound for explicit whole-session leave', async () => {
+  it('plays leave sound for explicit whole-session leave', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
 
     messageHandler!({
@@ -890,8 +895,73 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
 
     leaveRoom();
 
-    expect(playNotificationSoundCalls).toEqual([]);
+    expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(sentMessages).toContainEqual({ type: 'leave' });
+  });
+
+  it('plays one leave sound when the local participant is kicked', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'participant_kicked',
+      participantId: 'self-peer',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when the local session is displaced', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'session_displaced' });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when signaling reconnect exhaustion ends an active session', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    statusChangeHandler!('disconnected');
+    await tick();
+    expect(getState().machineState).toBe('reconnecting');
+
+    if (lastSignalingClient) {
+      lastSignalingClient.status = 'disconnected';
+      lastSignalingClient.reconnectTimer = null;
+      lastSignalingClient.periodicRetryTimer = null;
+    }
+    statusChangeHandler!('disconnected');
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('does not play leave sound for initial connection failure before room membership', async () => {
+    connectShouldFail = true;
+    initSession('ch-sounds', 'room-sounds', 'owner', (s) => { latestState = s; });
+    await tick();
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when duplicate terminal paths arrive for the same session', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'participant_kicked',
+      participantId: 'self-peer',
+    });
+    messageHandler!({ type: 'session_displaced' });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
   });
 });
 
