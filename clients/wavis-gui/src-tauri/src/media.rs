@@ -305,6 +305,11 @@ impl MediaState {
             .lock()
             .map_err(|err| format!("livekit lock: {err}"))?;
         if let Some(conn) = lk_guard.as_ref() {
+            // LiveKit SDK setters internally call `tokio::task::spawn`, which
+            // panics if invoked outside a Tokio runtime context. This method
+            // is reached from sync Tauri commands on the main thread, which
+            // doesn't have one in TLS — enter the media runtime first.
+            let _enter = self.runtime.enter();
             conn.set_capture_buffer(self.audio.capture_buffer.clone());
             conn.set_playback_buffer(self.audio.playback_buffer.clone());
             conn.set_peer_volumes(self.peer_volumes.clone());
@@ -596,12 +601,42 @@ pub fn media_connect(
     // Only compiled on Linux where the image + base64 crates are available.
     #[cfg(target_os = "linux")]
     {
+        // Per-identity emit-rate cap. The Linux pipeline JPEG-encodes + base64s
+        // every remote screen-share frame, then ships it to the webview as a
+        // JSON Tauri event. Under load (multiple shares, large resolutions)
+        // this saturates CPU and lets libwebrtc's native frame queue grow
+        // unbounded — eventually segfaulting. Capping the visible refresh at
+        // 15 fps keeps the screen share visually fluid while preventing the
+        // overload regime that triggered the crashes we observed.
+        const VIEWER_MIN_FRAME_INTERVAL: std::time::Duration =
+            std::time::Duration::from_millis(66); // ≈ 15 fps
+        let last_emit_per_identity: Arc<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
+
         let app_video = app.clone();
         let viewer_config = state.screen_share_config.clone();
+        let throttle_state = Arc::clone(&last_emit_per_identity);
         conn.on_video_frame(Box::new(move |identity, rgba_data, width, height| {
             use base64::Engine;
             use image::codecs::jpeg::JpegEncoder;
             use std::io::Cursor;
+
+            // Drop the frame if we emitted one for this identity too recently.
+            // Cheap path: lock, look up, compare, update — no allocations on
+            // the throttled path.
+            {
+                let now = std::time::Instant::now();
+                let mut map = match throttle_state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return, // poisoned: bail rather than panic in callback
+                };
+                if let Some(last) = map.get(identity) {
+                    if now.duration_since(*last) < VIEWER_MIN_FRAME_INTERVAL {
+                        return;
+                    }
+                }
+                map.insert(identity.to_string(), now);
+            }
 
             // Read JPEG quality from the shared config (runtime-adjustable).
             let jpeg_quality = viewer_config.jpeg_quality();
@@ -634,8 +669,14 @@ pub fn media_connect(
         }));
 
         let app_ended = app.clone();
+        let throttle_state_cleanup = Arc::clone(&last_emit_per_identity);
         conn.on_video_track_ended(Box::new(move |identity| {
             log::info!("{LOG} remote screen share ended: {identity}");
+            // Drop this identity's throttle entry so the map doesn't grow
+            // unbounded as participants come and go.
+            if let Ok(mut map) = throttle_state_cleanup.lock() {
+                map.remove(identity);
+            }
             let _ = app_ended.emit_to(
                 "main",
                 "screen_share_ended",
@@ -740,28 +781,15 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
 /// published (mute = stop pumping frames).
 #[tauri::command]
 pub fn media_set_mic_enabled(enabled: bool, state: State<'_, MediaState>) -> Result<(), String> {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        log::info!("{LOG} set mic enabled: {enabled}");
-        let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
-        if let Some(conn) = lk_guard.as_ref() {
-            conn.set_mic_enabled(enabled)
-                .map_err(|e| format!("failed to set mic enabled: {e}"))?;
-        }
-        Ok::<(), String>(())
-    }));
-
-    match result {
-        Ok(inner) => inner?,
-        Err(payload) => {
-            let panic_msg = if let Some(msg) = payload.downcast_ref::<&str>() {
-                (*msg).to_string()
-            } else if let Some(msg) = payload.downcast_ref::<String>() {
-                msg.clone()
-            } else {
-                "unknown panic payload".to_string()
-            };
-            return Err(format!("media_set_mic_enabled panicked: {panic_msg}"));
-        }
+    log::info!("{LOG} set mic enabled: {enabled}");
+    // LiveKit SDK setters internally `tokio::task::spawn`, which panics when
+    // called from a thread without a Tokio runtime in TLS. Enter the media
+    // runtime for the duration of the call.
+    let _enter = state.runtime.enter();
+    let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
+    if let Some(conn) = lk_guard.as_ref() {
+        conn.set_mic_enabled(enabled)
+            .map_err(|e| format!("failed to set mic enabled: {e}"))?;
     }
     Ok(())
 }
@@ -810,6 +838,10 @@ pub fn media_attach_screen_share_audio(
     id: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
+    // LiveKit SDK setters internally `tokio::task::spawn`, which panics when
+    // called from a thread without a Tokio runtime in TLS. This was the
+    // root cause of "watch another stream → app freezes → crash" on Linux.
+    let _enter = state.runtime.enter();
     let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
     if let Some(conn) = lk_guard.as_ref() {
         conn.set_screen_share_audio_enabled(&id, true);
@@ -823,6 +855,7 @@ pub fn media_detach_screen_share_audio(
     id: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
+    let _enter = state.runtime.enter();
     let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
     if let Some(conn) = lk_guard.as_ref() {
         conn.set_screen_share_audio_enabled(&id, false);
