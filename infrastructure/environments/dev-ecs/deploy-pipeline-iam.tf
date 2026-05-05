@@ -18,7 +18,7 @@ resource "aws_iam_role" "github_livekit_deploy" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:example/wavis:*"
+          "token.actions.githubusercontent.com:sub" = "repo:Davalf99/wavis:*"
         }
       }
     }]
@@ -69,7 +69,7 @@ resource "aws_iam_role" "github_backend_deploy" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:example/wavis:*"
+          "token.actions.githubusercontent.com:sub" = "repo:TommasoRibaudo/wavis-public:*"
         }
       }
     }]
