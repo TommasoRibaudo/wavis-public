@@ -221,6 +221,17 @@ async function driveToActive() {
   // Establish media so lkModule exists
   if (messageHandler) {
     messageHandler({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    messageHandler({
+      type: 'sub_room_state',
+      rooms: [
+        {
+          subRoomId: 'room-1',
+          roomNumber: 1,
+          isDefault: true,
+          participantIds: ['self-peer'],
+        },
+      ],
+    });
   }
   await tick();
 }

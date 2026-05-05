@@ -35,6 +35,10 @@ import {
 } from '@shared/helpers';
 import { ChannelRoleBadge } from './ChannelRoleBadge';
 
+function apiErrorMessage(err: ApiError): string {
+  return err.kind === 'RateLimited' ? err.message : errorMessage(err.kind);
+}
+
 /* ─── Constants ─────────────────────────────────────────────────── */
 const DETAIL_POLL_MS = 15_000;
 const VOICE_POLL_MS = 5_000;
@@ -199,7 +203,7 @@ function InvitePanel({
       }
     } catch (err) {
       if (err instanceof ApiError) {
-        onError(errorMessage(err.kind));
+        onError(apiErrorMessage(err));
       } else {
         onError('something went wrong — try again');
       }
@@ -274,7 +278,7 @@ function RevokePanel({
         if (!cancelled) setInvites(list);
       } catch (err) {
         if (!cancelled) {
-          setLoadError(err instanceof ApiError ? errorMessage(err.kind) : 'failed to load invites');
+          setLoadError(err instanceof ApiError ? apiErrorMessage(err) : 'failed to load invites');
         }
       }
     })();
@@ -409,7 +413,7 @@ function UnbanPanel({
         if (!cancelled) setBanned(list);
       } catch (err) {
         if (!cancelled) {
-          setLoadError(err instanceof ApiError ? errorMessage(err.kind) : 'failed to load bans');
+          setLoadError(err instanceof ApiError ? apiErrorMessage(err) : 'failed to load bans');
         }
       }
     })();
@@ -539,7 +543,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         }
         if (!silent) {
           if (err instanceof ApiError) {
-            setError(errorMessage(err.kind));
+            setError(apiErrorMessage(err));
           } else {
             setError('something went wrong — try again');
           }
@@ -613,7 +617,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
             }
             setSuccessMsg('state has changed — refreshed');
           } else {
-            setMutationError(errorMessage(err.kind));
+            setMutationError(apiErrorMessage(err));
           }
         } else {
           setMutationError('something went wrong — try again');
@@ -652,7 +656,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
       navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
-        setMutationError(errorMessage(err.kind));
+        setMutationError(apiErrorMessage(err));
       } else {
         setMutationError('something went wrong — try again');
       }
@@ -670,7 +674,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
       navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
-        setMutationError(errorMessage(err.kind));
+        setMutationError(apiErrorMessage(err));
       } else {
         setMutationError('something went wrong — try again');
       }

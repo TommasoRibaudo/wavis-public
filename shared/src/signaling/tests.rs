@@ -1,6 +1,49 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn chat_payloads_serialize_optional_user_id_as_user_id() {
+    let chat = SignalingMessage::ChatMessage(ChatMessagePayload {
+        participant_id: "peer-1".to_string(),
+        user_id: Some("user-1".to_string()),
+        display_name: "Alice".to_string(),
+        text: "hello".to_string(),
+        timestamp: "2026-05-05T00:00:00Z".to_string(),
+        message_id: Some("message-1".to_string()),
+    });
+    let json = to_json(&chat).unwrap();
+    assert!(json.contains(r#""userId":"user-1""#));
+    assert!(!json.contains("user_id"));
+
+    let history = SignalingMessage::ChatHistoryResponse(ChatHistoryResponsePayload {
+        messages: vec![ChatHistoryMessagePayload {
+            message_id: "message-1".to_string(),
+            participant_id: "peer-1".to_string(),
+            user_id: Some("user-1".to_string()),
+            display_name: "Alice".to_string(),
+            text: "hello".to_string(),
+            timestamp: "2026-05-05T00:00:00Z".to_string(),
+        }],
+    });
+    let history_json = to_json(&history).unwrap();
+    assert!(history_json.contains(r#""userId":"user-1""#));
+    assert!(!history_json.contains("user_id"));
+}
+
+#[test]
+fn chat_payloads_omit_absent_user_id() {
+    let chat = SignalingMessage::ChatMessage(ChatMessagePayload {
+        participant_id: "peer-1".to_string(),
+        user_id: None,
+        display_name: "Alice".to_string(),
+        text: "hello".to_string(),
+        timestamp: "2026-05-05T00:00:00Z".to_string(),
+        message_id: Some("message-1".to_string()),
+    });
+    let json = to_json(&chat).unwrap();
+    assert!(!json.contains("userId"));
+}
+
 // --- Unit tests for invite lifecycle messages ---
 
 #[test]
@@ -248,6 +291,7 @@ proptest! {
         );
         let original = SignalingMessage::ChatMessage(ChatMessagePayload {
             participant_id,
+            user_id: Some("user-123".to_string()),
             display_name,
             text,
             timestamp,

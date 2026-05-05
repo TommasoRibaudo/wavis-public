@@ -279,6 +279,28 @@ impl Arbitrary for ParticipantUnmutedPayload {
     }
 }
 
+impl Arbitrary for ParticipantSelfMutedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|participant_id| ParticipantSelfMutedPayload { participant_id })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ParticipantSelfUnmutedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|participant_id| ParticipantSelfUnmutedPayload { participant_id })
+            .boxed()
+    }
+}
+
 impl Arbitrary for ParticipantDeafenedPayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -687,11 +709,13 @@ impl Arbitrary for PassthroughStatePayload {
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (any::<String>(), any::<String>(), any::<String>())
-            .prop_map(|(source_sub_room_id, target_sub_room_id, label)| PassthroughStatePayload {
-                source_sub_room_id,
-                target_sub_room_id,
-                label,
-            })
+            .prop_map(
+                |(source_sub_room_id, target_sub_room_id, label)| PassthroughStatePayload {
+                    source_sub_room_id,
+                    target_sub_room_id,
+                    label,
+                },
+            )
             .boxed()
     }
 }
@@ -726,12 +750,18 @@ impl Arbitrary for SubRoomJoinedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>(), any::<WireSubRoomMembershipSource>())
-            .prop_map(|(participant_id, sub_room_id, source)| SubRoomJoinedPayload {
-                participant_id,
-                sub_room_id,
-                source,
-            })
+        (
+            any::<String>(),
+            any::<String>(),
+            any::<WireSubRoomMembershipSource>(),
+        )
+            .prop_map(
+                |(participant_id, sub_room_id, source)| SubRoomJoinedPayload {
+                    participant_id,
+                    sub_room_id,
+                    source,
+                },
+            )
             .boxed()
     }
 }
@@ -790,18 +820,22 @@ impl Arbitrary for ChatMessagePayload {
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (
             any::<String>(),
+            prop::option::of(any::<String>()),
             any::<String>(),
             any::<String>(),
             any::<String>(),
             prop::option::of(any::<String>()),
         )
             .prop_map(
-                |(participant_id, display_name, text, timestamp, message_id)| ChatMessagePayload {
-                    participant_id,
-                    display_name,
-                    text,
-                    timestamp,
-                    message_id,
+                |(participant_id, user_id, display_name, text, timestamp, message_id)| {
+                    ChatMessagePayload {
+                        participant_id,
+                        user_id,
+                        display_name,
+                        text,
+                        timestamp,
+                        message_id,
+                    }
                 },
             )
             .boxed()
@@ -826,15 +860,17 @@ impl Arbitrary for ChatHistoryMessagePayload {
         (
             any::<String>(),
             any::<String>(),
+            prop::option::of(any::<String>()),
             any::<String>(),
             any::<String>(),
             any::<String>(),
         )
             .prop_map(
-                |(message_id, participant_id, display_name, text, timestamp)| {
+                |(message_id, participant_id, user_id, display_name, text, timestamp)| {
                     ChatHistoryMessagePayload {
                         message_id,
                         participant_id,
+                        user_id,
                         display_name,
                         text,
                         timestamp,
@@ -923,6 +959,12 @@ impl Arbitrary for SignalingMessage {
             any::<ParticipantKickedPayload>().prop_map(SignalingMessage::ParticipantKicked),
             any::<ParticipantMutedPayload>().prop_map(SignalingMessage::ParticipantMuted),
             any::<ParticipantUnmutedPayload>().prop_map(SignalingMessage::ParticipantUnmuted),
+            // Self-mute
+            Just(SignalingMessage::SelfMute),
+            Just(SignalingMessage::SelfUnmute),
+            any::<ParticipantSelfMutedPayload>().prop_map(SignalingMessage::ParticipantSelfMuted),
+            any::<ParticipantSelfUnmutedPayload>()
+                .prop_map(SignalingMessage::ParticipantSelfUnmuted),
             // Self-deafen
             Just(SignalingMessage::SelfDeafen),
             Just(SignalingMessage::SelfUndeafen),

@@ -39,8 +39,9 @@ use crate::ws::ws_session::{SignalingSession, close_socket};
 use axum::extract::ws::WebSocket;
 use shared::signaling::{
     self, AnswerPayload, ErrorPayload, IceCandidatePayload, JoinRejectedPayload,
-    ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantUndeafenedPayload,
-    SessionDescription, SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
+    ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantSelfMutedPayload,
+    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, SessionDescription,
+    SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
 };
 use std::env;
 use std::net::IpAddr;
@@ -1606,6 +1607,94 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
+        SignalingMessage::SelfMute => {
+            let session_ref = ctx.session.as_ref().unwrap();
+            let sender_id = session_ref.participant_id.as_str();
+
+            if !ctx.rate_limiter.deafen_allow() {
+                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfMute");
+                ctx.app_state
+                    .abuse_metrics
+                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+                ctx.app_state.connections.send_to(
+                    sender_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+
+            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
+            let room_id = match room_id_opt {
+                Some(ref r) => r.clone(),
+                None => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "not in a room".to_string(),
+                        }),
+                    );
+                    return DispatchOutcome::Continue;
+                }
+            };
+
+            dispatch_signals(
+                vec![OutboundSignal::broadcast_all(
+                    SignalingMessage::ParticipantSelfMuted(ParticipantSelfMutedPayload {
+                        participant_id: sender_id.to_string(),
+                    }),
+                )],
+                &room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::SelfUnmute => {
+            let session_ref = ctx.session.as_ref().unwrap();
+            let sender_id = session_ref.participant_id.as_str();
+
+            if !ctx.rate_limiter.deafen_allow() {
+                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfUnmute");
+                ctx.app_state
+                    .abuse_metrics
+                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+                ctx.app_state.connections.send_to(
+                    sender_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+
+            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
+            let room_id = match room_id_opt {
+                Some(ref r) => r.clone(),
+                None => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "not in a room".to_string(),
+                        }),
+                    );
+                    return DispatchOutcome::Continue;
+                }
+            };
+
+            dispatch_signals(
+                vec![OutboundSignal::broadcast_all(
+                    SignalingMessage::ParticipantSelfUnmuted(ParticipantSelfUnmutedPayload {
+                        participant_id: sender_id.to_string(),
+                    }),
+                )],
+                &room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
         SignalingMessage::SelfDeafen => {
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
@@ -2084,7 +2173,16 @@ pub(crate) async fn dispatch_message(
 
                             Some(COLD_START_ESTIMATED_WAIT_SECS)
                         } else {
-                            None
+                            // No EC2 controller — SFU is down and we cannot start it.
+                            // Drop the lock before sending so we don't hold it across I/O.
+                            drop(health_w);
+                            ctx.app_state.connections.send_to(
+                                ctx.peer_id,
+                                &SignalingMessage::Error(ErrorPayload {
+                                    message: "SFU unavailable".to_string(),
+                                }),
+                            );
+                            return DispatchOutcome::Continue;
                         }
                     }
                 }
@@ -2653,6 +2751,7 @@ pub(crate) async fn dispatch_message(
             let signals = chat::handle_chat_send(
                 &payload.text,
                 &session_ref.participant_id,
+                session_ref.user_id.as_deref(),
                 &display_name,
                 &timestamp,
                 &message_id.to_string(),
@@ -2672,17 +2771,21 @@ pub(crate) async fn dispatch_message(
                 .and_then(|cid| cid.parse::<Uuid>().ok());
             let room_id_clone = session_ref.room_id.clone();
             let participant_id_clone = session_ref.participant_id.clone();
+            let user_id_clone = session_ref.user_id.clone();
             let display_name_clone = display_name.clone();
             let text_clone = payload.text.clone();
             tokio::spawn(async move {
                 if let Err(e) = chat_persistence::insert_chat_message(
                     &db_pool,
-                    message_id,
-                    channel_id_uuid,
-                    &room_id_clone,
-                    &participant_id_clone,
-                    &display_name_clone,
-                    &text_clone,
+                    chat_persistence::InsertChatMessageParams {
+                        message_id,
+                        channel_id: channel_id_uuid,
+                        room_id: &room_id_clone,
+                        participant_id: &participant_id_clone,
+                        user_id: user_id_clone.as_deref(),
+                        display_name: &display_name_clone,
+                        text: &text_clone,
+                    },
                 )
                 .await
                 {
@@ -2875,6 +2978,10 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::ParticipantKicked(_)
         | SignalingMessage::ParticipantMuted(_)
         | SignalingMessage::ParticipantUnmuted(_)
+        | SignalingMessage::SelfMute
+        | SignalingMessage::SelfUnmute
+        | SignalingMessage::ParticipantSelfMuted(_)
+        | SignalingMessage::ParticipantSelfUnmuted(_)
         | SignalingMessage::SelfDeafen
         | SignalingMessage::SelfUndeafen
         | SignalingMessage::ParticipantDeafened(_)

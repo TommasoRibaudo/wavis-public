@@ -7,8 +7,12 @@ resource "aws_cloudfront_distribution" "backend" {
   enabled         = true
   is_ipv6_enabled = true
   comment         = "Wavis ${local.env} ECS backend + LiveKit signaling"
-  price_class     = "PriceClass_100"
   tags            = local.tags
+
+  # WAF is managed by CloudFront's bundled security plan — can't be removed via API
+  lifecycle {
+    ignore_changes = [web_acl_id, price_class]
+  }
 
   origin {
     domain_name = aws_lb.backend.dns_name
@@ -35,7 +39,7 @@ resource "aws_cloudfront_distribution" "backend" {
 
     custom_header {
       name  = "X-Origin-Verify"
-      value = data.aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
+      value = aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
     }
   }
 
@@ -54,7 +58,7 @@ resource "aws_cloudfront_distribution" "backend" {
 
     custom_header {
       name  = "X-Origin-Verify"
-      value = data.aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
+      value = aws_ssm_parameter.secrets["CF_ORIGIN_SECRET"].value
     }
   }
 

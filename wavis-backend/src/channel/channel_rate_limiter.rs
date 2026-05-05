@@ -3,6 +3,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::abuse::SlidingWindow;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -20,41 +22,6 @@ impl Default for ChannelRateLimiterConfig {
             max_per_user: 30,
             window_secs: 60,
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SlidingWindow (private)
-// ---------------------------------------------------------------------------
-
-struct SlidingWindow {
-    timestamps: Vec<Instant>,
-}
-
-impl SlidingWindow {
-    fn new() -> Self {
-        Self {
-            timestamps: Vec::new(),
-        }
-    }
-
-    fn evict_old(&mut self, window: Duration, now: Instant) {
-        self.timestamps.retain(|t| now.duration_since(*t) < window);
-    }
-
-    fn count(&mut self, window: Duration, now: Instant) -> u32 {
-        self.evict_old(window, now);
-        self.timestamps.len() as u32
-    }
-
-    fn record(&mut self, now: Instant) {
-        self.timestamps.push(now);
-    }
-
-    fn is_stale(&self, max_window: Duration, now: Instant) -> bool {
-        self.timestamps
-            .iter()
-            .all(|t| now.duration_since(*t) >= max_window)
     }
 }
 
@@ -78,16 +45,25 @@ impl ChannelRateLimiter {
     /// Returns true if the request is allowed (under limit).
     pub fn check(&self, user_id: Uuid, now: Instant) -> bool {
         let mut map = self.windows.lock().unwrap();
-        let window = map.entry(user_id).or_insert_with(SlidingWindow::new);
         let dur = Duration::from_secs(self.config.window_secs);
-        window.count(dur, now) < self.config.max_per_user
+        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        window.count(now) < self.config.max_per_user as usize
+    }
+
+    /// Returns seconds until the user can retry, or `None` if under the limit.
+    pub fn seconds_until_retry(&self, user_id: Uuid, now: Instant) -> Option<u64> {
+        let mut map = self.windows.lock().unwrap();
+        let dur = Duration::from_secs(self.config.window_secs);
+        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        window.seconds_until_retry(self.config.max_per_user as usize, now)
     }
 
     /// Record a request.
     pub fn record(&self, user_id: Uuid, now: Instant) {
         let mut map = self.windows.lock().unwrap();
-        let window = map.entry(user_id).or_insert_with(SlidingWindow::new);
-        window.record(now);
+        let dur = Duration::from_secs(self.config.window_secs);
+        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        window.add(now);
     }
 
     /// Clear all tracked state. Used by test harnesses so rate-limit
@@ -98,10 +74,9 @@ impl ChannelRateLimiter {
 
     /// Prune stale entries. Returns number of entries removed.
     pub fn prune_stale(&self, now: Instant) -> usize {
-        let dur = Duration::from_secs(self.config.window_secs);
         let mut map = self.windows.lock().unwrap();
         let before = map.len();
-        map.retain(|_, w| !w.is_stale(dur, now));
+        map.retain(|_, w| w.count(now) > 0);
         before - map.len()
     }
 }
@@ -110,6 +85,19 @@ impl ChannelRateLimiter {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn seconds_until_retry_returns_some_at_limit() {
+        let limiter = ChannelRateLimiter::new(ChannelRateLimiterConfig::default());
+        let user_id = Uuid::new_v4();
+        let now = Instant::now();
+
+        for _ in 0..30 {
+            limiter.record(user_id, now);
+        }
+
+        assert!(limiter.seconds_until_retry(user_id, now).is_some());
+    }
 
     fn arb_uuid() -> impl Strategy<Value = Uuid> {
         any::<[u8; 16]>().prop_map(Uuid::from_bytes)

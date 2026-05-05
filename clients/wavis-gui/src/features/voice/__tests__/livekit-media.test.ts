@@ -787,9 +787,9 @@ async function driveToConnected(mod: LiveKitModule, url = 'wss://sfu.test', toke
 
 describe('LiveKitModule lifecycle', () => {
 
-  // Feature: gui-livekit-media, Property 4: Media connected requires Room connected AND mic published
-  describe('P4: Media connected requires Room connected AND mic published', () => {
-    it('onMediaConnected fires only after BOTH Connected and LocalTrackPublished', async () => {
+  // Feature: gui-livekit-media, Property 4: Media connects listen-only before mic publication
+  describe('P4: Media connects listen-only before mic publication', () => {
+    it('onMediaConnected fires after Room connected without requiring mic publication', async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.boolean(), // true = Connected first (normal), false = LocalTrackPublished first
@@ -808,13 +808,13 @@ describe('LiveKitModule lifecycle', () => {
               // Normal flow: Connected → setMicrophoneEnabled → LocalTrackPublished
               emitRoomEvent('connected');
               await tick(); // let setMicrophoneEnabled resolve
-              expect(countConnected()).toBe(0); // Connected alone is not enough
+              expect(countConnected()).toBe(1);
               emitRoomEvent('localTrackPublished', AUDIO_PUB, mockRoom.localParticipant);
               expect(countConnected()).toBe(1);
             } else {
               // Unusual: LocalTrackPublished arrives before Connected
               emitRoomEvent('localTrackPublished', AUDIO_PUB, mockRoom.localParticipant);
-              expect(countConnected()).toBe(0); // mic ready but not connected
+              expect(countConnected()).toBe(0);
               emitRoomEvent('connected');
               await tick(); // let setMicrophoneEnabled resolve
               // After Connected, lkConnected=true. micReady was already true.
@@ -837,20 +837,21 @@ describe('LiveKitModule lifecycle', () => {
     /**
      * Validates: Requirements 3.2, 4.1
      */
-    it('Connected event alone does NOT trigger onMediaConnected', async () => {
+    it('Connected event alone triggers listen-only onMediaConnected', async () => {
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
       await mod.connect('wss://sfu.test', 'tok-alone');
       emitRoomEvent('connected');
       await tick();
-      expect(cbs.calls.filter(c => c.method === 'onMediaConnected')).toHaveLength(0);
+      expect(cbs.calls.filter(c => c.method === 'onMediaConnected')).toHaveLength(1);
+      expect(sdkCalls.filter(c => c.method === 'setMicrophoneEnabled')).toHaveLength(0);
       mod.disconnect();
     });
   });
 
-  // Feature: gui-livekit-media, Property 5: Mic permission denied results in listen-only mode
-  describe('P5: Mic permission denied results in listen-only mode', () => {
-    it('onMediaConnected fires in listen-only when mic is denied', async () => {
+  // Feature: gui-livekit-media, Property 5: Mic permission denied is handled when publishing is requested
+  describe('P5: Mic permission denied is handled when publishing is requested', () => {
+    it('connect stays listen-only and setMicEnabled reports mic denial', async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.string({ minLength: 1, maxLength: 50 }).filter(s => s.trim().length > 0),
@@ -867,7 +868,8 @@ describe('LiveKitModule lifecycle', () => {
 
             // Connected → setMicrophoneEnabled rejects → listen-only → checkReady
             emitRoomEvent('connected');
-            await tick(); // let the rejection propagate
+            await mod.setMicEnabled(true);
+            await tick();
 
             // onMediaConnected should fire (listen-only)
             expect(cbs.calls.filter(c => c.method === 'onMediaConnected')).toHaveLength(1);
@@ -4825,13 +4827,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
   });
 
   /**
-   * Validates: Requirements 3.3
-   *
-   * Preservation Property 3: For non-Windows platforms with restartScreenShareWithAudio(true),
-   * setScreenShareEnabled(false) IS called followed by setScreenShareEnabled(true).
-   * Full getDisplayMedia restart preserved on macOS.
+   * Linux: restartScreenShareWithAudio(true) drives the Rust audio_share_start
+   * IPC and leaves the video track untouched. Audio is captured by the Rust
+   * pipeline (PulseAudio → Rust LiveKit SDK), so the JS SDK never runs a
+   * getDisplayMedia restart and setScreenShareEnabled is not called.
    */
-  it('non-Windows + restartScreenShareWithAudio(true) → full getDisplayMedia restart (PBT)', async () => {
+  it('Linux + restartScreenShareWithAudio(true) → audio_share_start IPC, no video restart (PBT)', async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constant('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'),
@@ -4849,29 +4850,20 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
           const mod = new LiveKitModule(cbs);
           await driveToConnected(mod);
 
-          // Start screen share first
           await mod.startScreenShare();
 
-          // Clear SDK calls to isolate the restart
           sdkCalls.length = 0;
+          tauriInvokeCalls = [];
 
           await mod.restartScreenShareWithAudio(true);
 
-          // setScreenShareEnabled(false) should be called (stop video)
-          const stopCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === false,
+          const videoRestartCalls = sdkCalls.filter(
+            c => c.method === 'setScreenShareEnabled',
           );
-          expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+          expect(videoRestartCalls).toHaveLength(0);
 
-          // setScreenShareEnabled(true, captureOpts) should be called (restart video)
-          const startCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === true,
-          );
-          expect(startCalls.length).toBeGreaterThanOrEqual(1);
-
-          // The restart captureOpts should have audio: true
-          const captureOpts = startCalls[0].args[1] as Record<string, unknown>;
-          expect(captureOpts.audio).toBe(true);
+          const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+          expect(audioStartCalls).toHaveLength(1);
 
           mod.disconnect();
           vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
@@ -5166,6 +5158,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     const { pub, mediaStreamTrack, track } = createAudioPubWithMst();
     await mod.connect('wss://sfu.test', 'tok');
     emitRoomEvent('connected');
+    await mod.setMicEnabled(true);
     await tick();
     emitRoomEvent('localTrackPublished', pub, mockRoom.localParticipant);
     await tick();
@@ -5182,6 +5175,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     const mod = new LiveKitModule(createMockCallbacks());
     await mod.connect('wss://sfu.test', 'tok');
     emitRoomEvent('connected');
+    await mod.setMicEnabled(true);
     await tick();
 
     const publishCall = sdkCalls.find(c => c.method === 'publishTrack');
@@ -5203,6 +5197,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     const mod = new LiveKitModule(createMockCallbacks());
     await mod.connect('wss://sfu.test', 'tok');
     emitRoomEvent('connected');
+    await mod.setMicEnabled(true);
     await tick();
 
     const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
@@ -5221,6 +5216,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     const mod = new LiveKitModule(createMockCallbacks());
     await mod.connect('wss://sfu.test', 'tok');
     emitRoomEvent('connected');
+    await mod.setMicEnabled(true);
     await tick();
 
     const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
@@ -5239,6 +5235,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     const mod = new LiveKitModule(createMockCallbacks());
     await mod.connect('wss://sfu.test', 'tok');
     emitRoomEvent('connected');
+    await mod.setMicEnabled(true);
     await tick();
 
     const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');

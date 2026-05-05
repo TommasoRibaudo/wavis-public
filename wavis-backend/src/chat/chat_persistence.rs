@@ -28,32 +28,39 @@ use uuid::Uuid;
 pub struct ChatMessageRow {
     pub message_id: Uuid,
     pub participant_id: String,
+    pub user_id: Option<String>,
     pub display_name: String,
     pub text: String,
     pub created_at: DateTime<Utc>,
 }
 
+pub struct InsertChatMessageParams<'a> {
+    pub message_id: Uuid,
+    pub channel_id: Option<Uuid>,
+    pub room_id: &'a str,
+    pub participant_id: &'a str,
+    pub user_id: Option<&'a str>,
+    pub display_name: &'a str,
+    pub text: &'a str,
+}
+
 /// Insert a chat message into Postgres. Best-effort — caller handles errors.
 pub async fn insert_chat_message(
     pool: &PgPool,
-    message_id: Uuid,
-    channel_id: Option<Uuid>,
-    room_id: &str,
-    participant_id: &str,
-    display_name: &str,
-    text: &str,
+    params: InsertChatMessageParams<'_>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO chat_messages (message_id, channel_id, room_id, \
-         participant_id, display_name, text) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         participant_id, user_id, display_name, text) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(message_id)
-    .bind(channel_id)
-    .bind(room_id)
-    .bind(participant_id)
-    .bind(display_name)
-    .bind(text)
+    .bind(params.message_id)
+    .bind(params.channel_id)
+    .bind(params.room_id)
+    .bind(params.participant_id)
+    .bind(params.user_id)
+    .bind(params.display_name)
+    .bind(params.text)
     .execute(pool)
     .await?;
     Ok(())
@@ -69,7 +76,7 @@ pub async fn fetch_history_by_channel(
     limit: i64,
 ) -> Result<Vec<ChatMessageRow>, sqlx::Error> {
     sqlx::query_as::<_, ChatMessageRow>(
-        "SELECT message_id, participant_id, display_name, text, created_at \
+        "SELECT message_id, participant_id, user_id, display_name, text, created_at \
          FROM chat_messages \
          WHERE channel_id = $1 AND ($2::timestamptz IS NULL OR created_at > $2) \
          ORDER BY created_at ASC \
@@ -92,7 +99,7 @@ pub async fn fetch_history_by_room(
     limit: i64,
 ) -> Result<Vec<ChatMessageRow>, sqlx::Error> {
     sqlx::query_as::<_, ChatMessageRow>(
-        "SELECT message_id, participant_id, display_name, text, created_at \
+        "SELECT message_id, participant_id, user_id, display_name, text, created_at \
          FROM chat_messages \
          WHERE room_id = $1 AND ($2::timestamptz IS NULL OR created_at > $2) \
          ORDER BY created_at ASC \
@@ -122,7 +129,7 @@ pub async fn purge_expired_messages(
           WHERE created_at < now() - make_interval(hours => $1) \
           LIMIT $2)",
     )
-    .bind(retention_hours as f64)
+    .bind(retention_hours as i64)
     .bind(batch_size)
     .execute(pool)
     .await?;
@@ -178,6 +185,7 @@ mod tests {
             arb_optional_channel_id(),                                      // channel_id
             arb_nonempty_string(100),                                       // room_id
             arb_nonempty_string(50),                                        // participant_id
+            prop::option::of(arb_nonempty_string(50)),                      // user_id
             arb_nonempty_string(50),                                        // display_name
             arb_chat_text(),                                                // text
         );
@@ -186,7 +194,7 @@ mod tests {
         runner
             .run(
                 &strategy,
-                |(message_id, channel_id, room_id, participant_id, display_name, text)| {
+                |(message_id, channel_id, room_id, participant_id, user_id, display_name, text)| {
                     let rt = tokio::runtime::Handle::current();
                     let pool = pool.clone();
                     rt.block_on(async {
@@ -194,12 +202,15 @@ mod tests {
 
                         insert_chat_message(
                             &pool,
-                            message_id,
-                            channel_id,
-                            &room_id,
-                            &participant_id,
-                            &display_name,
-                            &text,
+                            InsertChatMessageParams {
+                                message_id,
+                                channel_id,
+                                room_id: &room_id,
+                                participant_id: &participant_id,
+                                user_id: user_id.as_deref(),
+                                display_name: &display_name,
+                                text: &text,
+                            },
                         )
                         .await
                         .expect("insert should succeed");
@@ -225,6 +236,7 @@ mod tests {
 
                         // Verify all fields match
                         prop_assert_eq!(&row.participant_id, &participant_id);
+                        prop_assert_eq!(&row.user_id, &user_id);
                         prop_assert_eq!(&row.display_name, &display_name);
                         prop_assert_eq!(&row.text, &text);
 
@@ -315,12 +327,15 @@ mod tests {
                                 all_message_ids.push(mid);
                                 insert_chat_message(
                                     &pool,
-                                    mid,
-                                    Some(channel_id),
-                                    room_id,
-                                    participant_id,
-                                    display_name,
-                                    text,
+                                    InsertChatMessageParams {
+                                        message_id: mid,
+                                        channel_id: Some(channel_id),
+                                        room_id,
+                                        participant_id,
+                                        user_id: None,
+                                        display_name,
+                                        text,
+                                    },
                                 )
                                 .await
                                 .expect("insert should succeed");
@@ -366,12 +381,15 @@ mod tests {
                                     .push(mid);
                                 insert_chat_message(
                                     &pool,
-                                    mid,
-                                    None, // null channel_id
-                                    room_id,
-                                    participant_id,
-                                    display_name,
-                                    text,
+                                    InsertChatMessageParams {
+                                        message_id: mid,
+                                        channel_id: None,
+                                        room_id,
+                                        participant_id,
+                                        user_id: None,
+                                        display_name,
+                                        text,
+                                    },
                                 )
                                 .await
                                 .expect("insert should succeed");
@@ -472,12 +490,15 @@ mod tests {
                             let text = format!("msg-{}", i);
                             insert_chat_message(
                                 &pool,
-                                mid,
-                                channel_id,
-                                &room_id,
-                                &participant_id,
-                                &display_name,
-                                &text,
+                                InsertChatMessageParams {
+                                    message_id: mid,
+                                    channel_id,
+                                    room_id: &room_id,
+                                    participant_id: &participant_id,
+                                    user_id: None,
+                                    display_name: &display_name,
+                                    text: &text,
+                                },
                             )
                             .await
                             .expect("insert should succeed");
@@ -589,12 +610,15 @@ mod tests {
                             let text = format!("msg-{}", i);
                             insert_chat_message(
                                 &pool,
-                                mid,
-                                channel_id,
-                                &room_id,
-                                &participant_id,
-                                &display_name,
-                                &text,
+                                InsertChatMessageParams {
+                                    message_id: mid,
+                                    channel_id,
+                                    room_id: &room_id,
+                                    participant_id: &participant_id,
+                                    user_id: None,
+                                    display_name: &display_name,
+                                    text: &text,
+                                },
                             )
                             .await
                             .expect("insert should succeed");
@@ -714,12 +738,15 @@ mod tests {
                             let text = format!("msg-{}", i);
                             insert_chat_message(
                                 &pool,
-                                mid,
-                                None, // legacy room for simplicity
-                                &room_id,
-                                &participant_id,
-                                &display_name,
-                                &text,
+                                InsertChatMessageParams {
+                                    message_id: mid,
+                                    channel_id: None,
+                                    room_id: &room_id,
+                                    participant_id: &participant_id,
+                                    user_id: None,
+                                    display_name: &display_name,
+                                    text: &text,
+                                },
                             )
                             .await
                             .expect("insert should succeed");

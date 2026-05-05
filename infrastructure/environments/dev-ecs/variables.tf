@@ -271,3 +271,9 @@ variable "rds_connections_alarm_threshold" {
   type        = number
   default     = 40
 }
+
+variable "cloudfront_web_acl_id" {
+  description = "WAF WebACL ARN attached to the CloudFront distribution (required by CF Security Bundle pricing plan)"
+  type        = string
+  default     = ""
+}

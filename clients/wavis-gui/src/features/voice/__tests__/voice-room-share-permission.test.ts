@@ -3,32 +3,37 @@ import { isShareEnabled, shareButtonLabel } from '../voice-room';
 
 describe('isShareEnabled', () => {
   it('returns true for non-host when permission is anyone, room active, media connected', () => {
-    expect(isShareEnabled('anyone', false, 'active', 'connected')).toBe(true);
+    expect(isShareEnabled('anyone', false, 'active', 'connected', 'room-1')).toBe(true);
   });
 
   it('returns false for non-host when permission is host_only', () => {
-    expect(isShareEnabled('host_only', false, 'active', 'connected')).toBe(false);
+    expect(isShareEnabled('host_only', false, 'active', 'connected', 'room-1')).toBe(false);
   });
 
   it('returns true for host even when permission is host_only', () => {
-    expect(isShareEnabled('host_only', true, 'active', 'connected')).toBe(true);
+    expect(isShareEnabled('host_only', true, 'active', 'connected', 'room-1')).toBe(true);
+  });
+
+  it('returns false when the user has not joined a synchronized room', () => {
+    expect(isShareEnabled('anyone', false, 'active', 'connected', null)).toBe(false);
+    expect(isShareEnabled('host_only', true, 'active', 'connected', null)).toBe(false);
   });
 
   it('returns false when machineState is reconnecting, even with anyone permission', () => {
-    expect(isShareEnabled('anyone', false, 'reconnecting', 'connected')).toBe(false);
+    expect(isShareEnabled('anyone', false, 'reconnecting', 'connected', 'room-1')).toBe(false);
   });
 
   it('returns false when machineState is connecting', () => {
-    expect(isShareEnabled('anyone', false, 'connecting', 'connected')).toBe(false);
+    expect(isShareEnabled('anyone', false, 'connecting', 'connected', 'room-1')).toBe(false);
   });
 
   it('returns false when mediaState is not connected', () => {
-    expect(isShareEnabled('anyone', false, 'active', 'connecting')).toBe(false);
-    expect(isShareEnabled('anyone', false, 'active', 'disconnected')).toBe(false);
+    expect(isShareEnabled('anyone', false, 'active', 'connecting', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', false, 'active', 'disconnected', 'room-1')).toBe(false);
   });
 
   it('returns false for host when machineState is not active', () => {
-    expect(isShareEnabled('anyone', true, 'reconnecting', 'connected')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'reconnecting', 'connected', 'room-1')).toBe(false);
   });
 });
 

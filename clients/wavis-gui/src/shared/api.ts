@@ -2,7 +2,7 @@
  * Wavis API Client (Tauri)
  *
  * Authenticated fetch wrapper using tauri-plugin-http.
- * Auto-attaches Bearer token, handles 401 → silent refresh → retry.
+ * Auto-attaches Bearer token, handles 401 -> silent refresh -> retry.
  * Classifies errors into typed ApiErrorKind for component-level handling.
  */
 
@@ -15,7 +15,7 @@ import {
   refreshTokens,
 } from '@features/auth/auth';
 
-// ─── Error Classification ──────────────────────────────────────────
+// Error Classification
 
 export type ApiErrorKind =
   | 'RateLimited'
@@ -39,7 +39,7 @@ export class ApiError extends Error {
   }
 }
 
-// ─── Helpers (private) ─────────────────────────────────────────────
+// Helpers (private)
 
 export function classifyError(status: number, body: string): ApiErrorKind {
   if (status === 429) return 'RateLimited';
@@ -52,6 +52,18 @@ export function classifyError(status: number, body: string): ApiErrorKind {
   if (status === 409 && bodyLower.includes('already a member')) return 'AlreadyMember';
   if (status === 0) return 'Network';
   return 'Unknown';
+}
+
+function rateLimitedMessage(headers: Headers): string {
+  const retryAfter = headers.get('Retry-After');
+  if (!retryAfter) return 'too many requests — try again later';
+
+  const secs = Number.parseInt(retryAfter, 10);
+  if (!Number.isFinite(secs) || secs <= 0) {
+    return 'too many requests — try again later';
+  }
+
+  return `too many requests — try again in ${secs} second${secs === 1 ? '' : 's'}`;
 }
 
 async function doFetch(
@@ -75,7 +87,7 @@ async function doFetch(
   return tauriFetch(endpoint, fetchOpts);
 }
 
-// ─── API Functions (exported) ──────────────────────────────────────
+// API Functions (exported)
 
 /**
  * Authenticated fetch wrapper.
@@ -150,7 +162,7 @@ export async function apiFetch<T = unknown>(
     }
     const message =
       kind === 'RateLimited'
-        ? 'too many requests — try again later'
+        ? rateLimitedMessage(res.headers)
         : kind === 'Forbidden'
           ? "you don't have permission"
           : kind === 'NotFound'
@@ -165,7 +177,7 @@ export async function apiFetch<T = unknown>(
     throw new ApiError(res.status, message, kind);
   }
 
-  // Some endpoints (DELETE, POST 204) return no body — avoid JSON parse errors.
+  // Some endpoints (DELETE, POST 204) return no body - avoid JSON parse errors.
   const text = await res.text();
   if (!text) return undefined as T;
   return JSON.parse(text) as T;
@@ -214,7 +226,7 @@ export async function apiPublicFetch<T = unknown>(
     }
     const message =
       kind === 'RateLimited'
-        ? 'too many requests — try again later'
+        ? rateLimitedMessage(res.headers)
         : kind === 'Forbidden'
           ? "you don't have permission"
           : kind === 'NotFound'

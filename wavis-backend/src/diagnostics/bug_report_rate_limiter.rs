@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::abuse::SlidingWindow;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -40,58 +42,6 @@ impl BugReportRateLimiterConfig {
 }
 
 // ---------------------------------------------------------------------------
-// SlidingWindow (private)
-// ---------------------------------------------------------------------------
-
-struct SlidingWindow {
-    timestamps: Vec<Instant>,
-}
-
-impl SlidingWindow {
-    fn new() -> Self {
-        Self {
-            timestamps: Vec::new(),
-        }
-    }
-
-    fn evict_old(&mut self, window: Duration, now: Instant) {
-        self.timestamps.retain(|t| now.duration_since(*t) < window);
-    }
-
-    fn count(&mut self, window: Duration, now: Instant) -> u32 {
-        self.evict_old(window, now);
-        self.timestamps.len() as u32
-    }
-
-    fn record(&mut self, now: Instant) {
-        self.timestamps.push(now);
-    }
-
-    fn is_stale(&self, max_window: Duration, now: Instant) -> bool {
-        self.timestamps
-            .iter()
-            .all(|t| now.duration_since(*t) >= max_window)
-    }
-
-    /// Returns the duration until the oldest entry expires, or `None` if under the limit.
-    fn seconds_until_retry(&mut self, window: Duration, now: Instant, max: u32) -> Option<u64> {
-        self.evict_old(window, now);
-        if (self.timestamps.len() as u32) < max {
-            return None;
-        }
-        // Find the oldest timestamp — that's the one that will expire first.
-        self.timestamps.iter().min().map(|oldest| {
-            let elapsed = now.duration_since(*oldest);
-            if elapsed >= window {
-                1 // Already expired on next tick
-            } else {
-                (window - elapsed).as_secs().max(1)
-            }
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // BugReportRateLimiter
 // ---------------------------------------------------------------------------
 
@@ -113,43 +63,55 @@ impl BugReportRateLimiter {
     /// Returns true if the IP has fewer than `max_requests` submissions in the window.
     pub fn check_ip(&self, ip: IpAddr, now: Instant) -> bool {
         let mut map = self.ip_windows.lock().unwrap();
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
-        window.count(self.config.window, now) < self.config.max_requests
+        let window = map
+            .entry(ip)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.count(now) < self.config.max_requests as usize
     }
 
     /// Record a bug report submission for the given IP.
     pub fn record_ip(&self, ip: IpAddr, now: Instant) {
         let mut map = self.ip_windows.lock().unwrap();
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
-        window.record(now);
+        let window = map
+            .entry(ip)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.add(now);
     }
 
     /// Returns true if the user has fewer than `max_requests` submissions in the window.
     pub fn check_user(&self, user_id: Uuid, now: Instant) -> bool {
         let mut map = self.user_windows.lock().unwrap();
-        let window = map.entry(user_id).or_insert_with(SlidingWindow::new);
-        window.count(self.config.window, now) < self.config.max_requests
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.count(now) < self.config.max_requests as usize
     }
 
     /// Record a bug report submission for the given user.
     pub fn record_user(&self, user_id: Uuid, now: Instant) {
         let mut map = self.user_windows.lock().unwrap();
-        let window = map.entry(user_id).or_insert_with(SlidingWindow::new);
-        window.record(now);
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.add(now);
     }
 
     /// Returns seconds until the IP can retry, or `None` if under the limit.
     pub fn seconds_until_retry_ip(&self, ip: IpAddr, now: Instant) -> Option<u64> {
         let mut map = self.ip_windows.lock().unwrap();
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
-        window.seconds_until_retry(self.config.window, now, self.config.max_requests)
+        let window = map
+            .entry(ip)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.seconds_until_retry(self.config.max_requests as usize, now)
     }
 
     /// Returns seconds until the user can retry, or `None` if under the limit.
     pub fn seconds_until_retry_user(&self, user_id: Uuid, now: Instant) -> Option<u64> {
         let mut map = self.user_windows.lock().unwrap();
-        let window = map.entry(user_id).or_insert_with(SlidingWindow::new);
-        window.seconds_until_retry(self.config.window, now, self.config.max_requests)
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(self.config.window));
+        window.seconds_until_retry(self.config.max_requests as usize, now)
     }
 
     /// Prune stale entries from both maps. Returns total entries removed.
@@ -158,13 +120,13 @@ impl BugReportRateLimiter {
         {
             let mut map = self.ip_windows.lock().unwrap();
             let before = map.len();
-            map.retain(|_, w| !w.is_stale(self.config.window, now));
+            map.retain(|_, w| w.count(now) > 0);
             count += before - map.len();
         }
         {
             let mut map = self.user_windows.lock().unwrap();
             let before = map.len();
-            map.retain(|_, w| !w.is_stale(self.config.window, now));
+            map.retain(|_, w| w.count(now) > 0);
             count += before - map.len();
         }
         count
@@ -358,21 +320,21 @@ mod tests {
                         i + 1,
                         max,
                     );
-                    // Under the limit → no retry needed
+                    // Under the limit -> no retry needed
                     prop_assert!(
                         limiter.seconds_until_retry_ip(ip, now).is_none(),
                         "seconds_until_retry_ip should be None when under limit (submission {})",
                         i + 1,
                     );
                 } else {
-                    // Beyond max → must be rejected
+                    // Beyond max -> must be rejected
                     prop_assert!(
                         !limiter.check_ip(ip, now),
                         "Submission {} should be rejected (over limit {})",
                         i + 1,
                         max,
                     );
-                    // At the limit → retry info must be present
+                    // At the limit -> retry info must be present
                     let retry = limiter.seconds_until_retry_ip(ip, now);
                     prop_assert!(
                         retry.is_some(),

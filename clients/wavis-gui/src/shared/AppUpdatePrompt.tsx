@@ -93,27 +93,46 @@ export default function AppUpdatePrompt() {
           ? promptState.message
           : 'Install when you are ready to restart.';
 
+  const isError = promptState.kind === 'error';
+  const isInstalling = promptState.kind === 'installing';
+  const isDeferred = promptState.kind === 'deferred';
+
   return (
-    <div className="fixed right-4 bottom-4 z-50 w-[min(360px,calc(100vw-2rem))] rounded-xl border border-white/10 bg-[#111814] p-4 text-sm text-white shadow-2xl">
-      <div className="font-semibold">{versionText}</div>
-      <div className="mt-1 text-white/70">{body}</div>
-      <div className="mt-4 flex justify-end gap-2">
-        {promptState.kind !== 'installing' && (
+    <div className="fixed right-4 bottom-4 z-50 w-[min(360px,calc(100vw-2rem))] border border-wavis-text-secondary/30 bg-wavis-panel p-4 font-mono text-sm text-wavis-text shadow-2xl">
+      <div className="flex items-center gap-2">
+        <span className={isError ? 'text-wavis-danger' : 'text-wavis-accent'}>▸</span>
+        <span className="font-semibold">{versionText}</span>
+      </div>
+      <div className="mt-1 pl-5 text-wavis-text-secondary">
+        {body}
+      </div>
+      {isInstalling && promptState.progress.totalBytes != null && (
+        <div className="mt-2 ml-5 h-1 overflow-hidden bg-wavis-text-secondary/20">
+          <div
+            className="h-full bg-wavis-accent transition-all duration-300"
+            style={{
+              width: `${Math.min(100, Math.round((promptState.progress.downloadedBytes / promptState.progress.totalBytes) * 100))}%`,
+            }}
+          />
+        </div>
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        {!isInstalling && (
           <button
             type="button"
-            className="rounded-md px-3 py-2 text-white/70 hover:bg-white/10 hover:text-white"
+            className="border border-wavis-text-secondary px-2 py-0.5 text-xs text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
             onClick={() => setPromptState({ kind: 'idle' })}
           >
-            Later
+            /later
           </button>
         )}
-        {(promptState.kind === 'available' || promptState.kind === 'deferred') && (
+        {(promptState.kind === 'available' || isDeferred) && (
           <button
             type="button"
-            className="rounded-md bg-[#d7ff73] px-3 py-2 font-semibold text-[#132016] hover:bg-[#c7ee64]"
+            className="border border-wavis-accent px-2 py-0.5 text-xs text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
             onClick={install}
           >
-            Restart to update
+            /update
           </button>
         )}
       </div>

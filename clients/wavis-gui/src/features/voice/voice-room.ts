@@ -94,12 +94,17 @@ export interface ChatMessage {
   messageId?: string;
   timestamp: string;
   participantId: string;
+  userId?: string;
   displayName: string;
   color: string;
   text: string;
   isHistory?: boolean;
   isDivider?: boolean;
 }
+
+export type ChatDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'message'; message: ChatMessage };
 
 
 export interface RoomEvent {
@@ -162,6 +167,8 @@ export interface VoiceRoomState {
   activeAudioShare: { sourceId: string; sourceName: string } | null;
   /** Transient error from the last `error` signaling message (for chat panel display). */
   lastChatError: string | null;
+  /** Friendly reconnect notice persisted across a WS rate-limit disconnect cycle. */
+  lastRateLimitError: string | null;
   historyLoaded: boolean;
   /** Whether the local user is deafened (muted + volume 0). */
   isDeafened: boolean;
@@ -192,6 +199,8 @@ export const RMS_STOP_THRESHOLD = 0.03;
 export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 export const MAX_CHAT_MESSAGES = 200;
+const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
+const RATE_LIMIT_RECONNECT_MESSAGE = "Connection closed — you're sending messages too fast. Reconnecting";
 
 /**
  * EMA smoothing factor for RMS levels. Lower = smoother but more latent.
@@ -308,6 +317,21 @@ export function colorFor(participant: { userId?: string; id: string }): string {
   return TERMINAL_COLORS[Math.abs(h) % TERMINAL_COLORS.length];
 }
 
+export function resolveChatMessageDisplayColor(
+  message: Pick<ChatMessage, 'participantId' | 'userId' | 'color'>,
+  participants: Array<Pick<RoomParticipant, 'id' | 'userId' | 'color'>>,
+): string {
+  if (message.userId) {
+    const userMatch = participants.find((p) => p.userId === message.userId);
+    if (userMatch?.color) return userMatch.color;
+  }
+
+  const participantMatch = participants.find((p) => p.id === message.participantId);
+  if (participantMatch?.color) return participantMatch.color;
+
+  return message.color || colorFor({ userId: message.userId, id: message.participantId });
+}
+
 /**
  * Pure function: compute next speaking state given current state and new RMS level.
  * Uses hysteresis — start threshold (0.06) is higher than stop threshold (0.03)
@@ -325,11 +349,22 @@ export function computeSpeaking(
 
 /**
  * Pure function: determine if screen sharing is enabled for the current user.
- * Requires all three conditions: permission allows it (anyone OR host),
- * room is active, and LiveKit media connection is established.
+ * Requires all four conditions: permission allows it (anyone OR host),
+ * room is active, media is connected, and the user is in a synchronized room.
  */
-export function isShareEnabled(sharePermission: 'anyone' | 'host_only', selfIsHost: boolean, machineState: VoiceRoomMachineState, mediaState: MediaState): boolean {
-  return (sharePermission === 'anyone' || selfIsHost) && machineState === 'active' && mediaState === 'connected'
+export function isShareEnabled(
+  sharePermission: 'anyone' | 'host_only',
+  selfIsHost: boolean,
+  machineState: VoiceRoomMachineState,
+  mediaState: MediaState,
+  joinedSubRoomId: string | null,
+): boolean {
+  return (
+    joinedSubRoomId !== null
+    && (sharePermission === 'anyone' || selfIsHost)
+    && machineState === 'active'
+    && mediaState === 'connected'
+  );
 }
 
 /**
@@ -419,6 +454,54 @@ function applyEffectiveParticipantVolumes(): void {
   }
 }
 
+function selfParticipant(): RoomParticipant | undefined {
+  return state.participants.find((p) => p.id === state.selfParticipantId);
+}
+
+function silenceSelfParticipant(self: RoomParticipant): void {
+  self.isMuted = true;
+  self.isSpeaking = false;
+  self.rmsLevel = 0;
+}
+
+function setLocalMicPublishing(enabled: boolean): void {
+  lkModule?.setMicEnabled(enabled);
+}
+
+function shouldPublishLocalMic(self: RoomParticipant | undefined): boolean {
+  return (
+    state.joinedSubRoomId !== null
+    && self !== undefined
+    && !self.isMuted
+    && !self.isHostMuted
+    && !state.isDeafened
+  );
+}
+
+function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | null): void {
+  const currentJoinedSubRoomId = state.joinedSubRoomId;
+  const self = selfParticipant();
+
+  if (currentJoinedSubRoomId === null) {
+    if (self) {
+      silenceSelfParticipant(self);
+    }
+    setLocalMicPublishing(false);
+    return;
+  }
+
+  if (previousJoinedSubRoomId !== null) return;
+  if (!self || self.isHostMuted || state.isDeafened) {
+    setLocalMicPublishing(false);
+    return;
+  }
+
+  self.isMuted = false;
+  self.isSpeaking = false;
+  self.rmsLevel = 0;
+  setLocalMicPublishing(true);
+}
+
 /**
  * Pure function: compute the `since` cursor for a ChatHistoryRequest.
  * Filters to non-history (real-time) messages, finds the earliest timestamp,
@@ -439,13 +522,62 @@ export function computeSinceCursor(messages: ChatMessage[]): string | undefined 
   return d.toISOString();
 }
 
+export function getLocalChatDateKey(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function formatChatDateLabel(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[] {
+  const items: ChatDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const message of messages) {
+    if (message.isDivider) continue;
+
+    const dateKey = getLocalChatDateKey(message.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${message.id}`,
+        label: formatChatDateLabel(message.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function shouldPlayChatNotification(
+  participantId: string,
+  selfParticipantId: string | null,
+): boolean {
+  return !!selfParticipantId && participantId !== selfParticipantId;
+}
+
 /**
  * Pure function: merge history messages with existing real-time messages.
  * Deduplicates by messageId, prepends history, inserts divider, enforces cap.
  * Exported for property testing.
  */
 export function mergeHistoryMessages(
-  historyPayload: Array<{ messageId: string; participantId: string; displayName: string; text: string; timestamp: string }>,
+  historyPayload: Array<{ messageId: string; participantId: string; userId?: string; displayName: string; text: string; timestamp: string }>,
   existingMessages: ChatMessage[],
 ): ChatMessage[] {
   // Build set of existing messageIds for dedup (skip entries without messageId)
@@ -462,8 +594,9 @@ export function mergeHistoryMessages(
       messageId: h.messageId,
       timestamp: h.timestamp,
       participantId: h.participantId,
+      userId: h.userId,
       displayName: h.displayName,
-      color: colorFor({ id: h.participantId }),
+      color: colorFor({ userId: h.userId, id: h.participantId }),
       text: h.text,
       isHistory: true,
     }));
@@ -639,6 +772,7 @@ export function computeLeaveShareCleanup(
  * a helpful OS-level message. The only other throw here is when lkModule is null.
  */
 export async function startFallbackShare(): Promise<{ started: boolean; withAudio: boolean }> {
+  ensureInSubRoomForShare();
   console.log(LOG, `startFallbackShare: lkModule=${lkModule ? lkModule.constructor.name : 'null'}, mediaState=${state.mediaState}, machineState=${state.machineState}`);
   if (!lkModule) {
     throw new Error(`Screen sharing is not available (media module not initialized, mediaState=${state.mediaState})`);
@@ -765,6 +899,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   activeVideoShare: null,
   activeAudioShare: null,
   lastChatError: null,
+  lastRateLimitError: null,
   historyLoaded: false,
   isDeafened: false,
   latestClosedShareLeakSummary: null,
@@ -831,6 +966,8 @@ const MAX_AUTH_REFRESH_RETRIES = 2;
 let authRefreshRetries = 0;
 let wasReconnecting = false;
 let unsubTokenRefresh: (() => void) | null = null;
+let localSessionJoined = false;
+let localDisconnectSoundPlayed = false;
 // TODO: proactiveReconnecting flag — wire into onStatusChange to suppress
 // the "already reconnecting → connection lost" path during token-refresh reconnects.
 
@@ -839,6 +976,19 @@ let unsubTokenRefresh: (() => void) | null = null;
  * late-arriving events (share_stopped, etc.) can still resolve display names.
  */
 const displayNameCache = new Map<string, string>();
+
+function playLocalDisconnectSoundOnce(): void {
+  const wasInLocalSession =
+    localSessionJoined ||
+    !!state.selfParticipantId ||
+    !!state.roomId ||
+    state.machineState === 'active' ||
+    state.machineState === 'reconnecting';
+
+  if (!wasInLocalSession || localDisconnectSoundPlayed) return;
+  localDisconnectSoundPlayed = true;
+  void playNotificationSound('leave');
+}
 
 /* ─── Share Picker Data (Tauri event handshake) ─────────────────── */
 
@@ -886,6 +1036,10 @@ function setupExternalShareHelperListeners(): void {
   if (unlistenExternalShareStarted || unlistenExternalShareStopped || unlistenExternalShareError) return;
 
   listen<{ sessionId: string }>('external-share-started', () => {
+    if (state.joinedSubRoomId === null) {
+      invoke('external_share_stop').catch(() => { });
+      return;
+    }
     externalShareHelperActive = true;
     localStopShareSent = false;
     const self = state.participants.find((p) => p.id === state.selfParticipantId);
@@ -978,6 +1132,10 @@ function appendEvent(event: RoomEvent): void {
   }
 }
 
+function isWsRateLimitError(message: string): boolean {
+  return message.trim().toLowerCase() === WS_RATE_LIMIT_ERROR_MESSAGE;
+}
+
 function deriveParticipantSubRoomById(subRooms: VoiceSubRoom[]): Record<string, string> {
   const assignments: Record<string, string> = {};
   for (const room of subRooms) {
@@ -995,6 +1153,28 @@ function syncDerivedSubRoomState(): void {
     return;
   }
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
+}
+
+function ensureInSubRoomForShare(): void {
+  if (state.joinedSubRoomId !== null) return;
+  throw new Error('Join a room before sharing.');
+}
+
+function stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId: string | null): void {
+  if (!previousJoinedSubRoomId || state.joinedSubRoomId !== null) return;
+  const self = state.participants.find((p) => p.id === state.selfParticipantId);
+  const hasCustomShare = state.activeVideoShare !== null || state.activeAudioShare !== null;
+  const hasFallbackShare =
+    self?.isSharing === true
+    || externalShareHelperActive
+    || state.shareQualityInfo !== null
+    || state.shareStats !== null;
+
+  if (hasCustomShare) {
+    void stopCustomShare('all');
+  } else if (hasFallbackShare) {
+    void stopShare();
+  }
 }
 
 function syncDesiredSubRoomPreference(): void {
@@ -1179,10 +1359,8 @@ function connectMedia(sfuUrl: string, token: string): void {
       stopPeriodicMediaRetry();
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
-      const self = state.participants.find((p) => p.id === state.selfParticipantId);
-      if (self && self.isMuted && lkModule) {
-        lkModule.setMicEnabled(false);
-      }
+      const self = selfParticipant();
+      setLocalMicPublishing(shouldPublishLocalMic(self));
       // Apply persisted master volume to the media layer
       if (lkModule) {
         lkModule.setMasterVolume(state.masterVolume);
@@ -1287,6 +1465,12 @@ function connectMedia(sfuUrl: string, token: string): void {
       if (!p) return;
 
       if (identity === state.selfParticipantId) {
+        if (!isMuted && state.joinedSubRoomId === null) {
+          silenceSelfParticipant(p);
+          lkModule?.setMicEnabled(false);
+          notify();
+          return;
+        }
         // Local participant mute state changed externally (e.g. LiveKit reconnect,
         // OS-level mute). Sync UI state to match actual mic state.
         if (p.isMuted !== isMuted) {
@@ -1413,6 +1597,7 @@ function dispatchMessage(raw: unknown): void {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
             state.error = (msg.reason as string) || 'Authentication failed';
+            playLocalDisconnectSoundOnce();
             state.machineState = 'idle';
             notify();
             return;
@@ -1422,6 +1607,7 @@ function dispatchMessage(raw: unknown): void {
             client.reconnectWithNewToken(toWsUrl(serverUrl)).catch((err) => {
               console.error(LOG, 'reconnect after refresh failed:', err);
               state.error = 'Authentication failed';
+              playLocalDisconnectSoundOnce();
               state.machineState = 'idle';
               notify();
             });
@@ -1434,16 +1620,23 @@ function dispatchMessage(raw: unknown): void {
       if (client) {
         client.disconnect();
       }
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       notify();
       break;
     }
 
     case 'joined': {
+      const joinedActiveSession = state.machineState !== 'idle';
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
+      state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
+      if (joinedActiveSession) {
+        localSessionJoined = true;
+        localDisconnectSoundPlayed = false;
+      }
       syncDerivedSubRoomState();
       syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
@@ -1524,6 +1717,7 @@ function dispatchMessage(raw: unknown): void {
       console.warn(LOG, `join_rejected reason=${rawReason} channelId=${state.channelId}`);
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
         state.rejectionReason = (msg.reason as string) || 'Server failed to start';
@@ -1537,12 +1731,14 @@ function dispatchMessage(raw: unknown): void {
         invite_required: 'An invite code is required to join.',
         invite_exhausted: 'The invite code has been fully used.',
         invite_expired: 'The invite code has expired.',
+        rate_limited: 'Too many join attempts — please wait a moment before retrying.',
       };
       state.rejectionReason = friendlyMessages[rawReason] || `Join rejected: ${rawReason}`;
       if (client) {
         client.disconnect();
       }
       client = null;
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       notify();
       break;
@@ -1597,6 +1793,7 @@ function dispatchMessage(raw: unknown): void {
             : room
         ));
         syncDerivedSubRoomState();
+        reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
         playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
       }
@@ -1638,6 +1835,8 @@ function dispatchMessage(raw: unknown): void {
           }
         : null;
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
@@ -1683,6 +1882,8 @@ function dispatchMessage(raw: unknown): void {
           : room;
       });
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       void source;
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
@@ -1702,6 +1903,8 @@ function dispatchMessage(raw: unknown): void {
           : room
       ));
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
@@ -1710,9 +1913,12 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'sub_room_deleted': {
+      const previousJoinedSubRoomId = state.joinedSubRoomId;
       const subRoomId = msg.subRoomId as string;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
+      stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       if (desiredSubRoomIntent === subRoomId) {
         desiredSubRoomIntent = undefined;
       }
@@ -1799,6 +2005,7 @@ function dispatchMessage(raw: unknown): void {
           client.disconnect();
         }
         client = null;
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
       }
       notify();
@@ -1826,6 +2033,7 @@ function dispatchMessage(raw: unknown): void {
         client.disconnect();
       }
       client = null;
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       stopColdStartRetry();
       stopPeriodicMediaRetry();
@@ -1888,6 +2096,52 @@ function dispatchMessage(raw: unknown): void {
           type: 'host-unmute',
           message: `${up.displayName} was unmuted by host`,
           participantId: unmutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
+    case 'participant_self_muted': {
+      const selfMutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
+      const smp = state.participants.find((pp) => pp.id === selfMutedId);
+      if (smp) {
+        smp.isMuted = true;
+        smp.rmsLevel = 0;
+        smp.isSpeaking = false;
+      }
+      if (selfMutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (smp) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'muted',
+          message: `${smp.displayName} muted microphone`,
+          participantId: selfMutedId,
+        });
+      }
+      notify();
+      break;
+    }
+
+    case 'participant_self_unmuted': {
+      const selfUnmutedId = msg.participantId as string;
+      console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
+      const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
+      if (sup) {
+        sup.isMuted = false;
+      }
+      if (selfUnmutedId === state.selfParticipantId) {
+        // Server echo — local state already set by toggleSelfMute
+      } else if (sup) {
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'unmuted',
+          message: `${sup.displayName} unmuted microphone`,
+          participantId: selfUnmutedId,
         });
       }
       notify();
@@ -2050,6 +2304,9 @@ function dispatchMessage(raw: unknown): void {
         message: errorMessage,
       });
       state.lastChatError = errorMessage;
+      state.lastRateLimitError = isWsRateLimitError(errorMessage)
+        ? RATE_LIMIT_RECONNECT_MESSAGE
+        : null;
       notify();
       break;
     }
@@ -2135,6 +2392,7 @@ function dispatchMessage(raw: unknown): void {
         messageId: (msg.messageId as string) || undefined,
         timestamp: msg.timestamp as string,
         participantId: msg.participantId as string,
+        userId: (msg.userId as string) || undefined,
         displayName: msg.displayName as string,
         color: participant?.color ?? '',
         text: msg.text as string,
@@ -2142,6 +2400,9 @@ function dispatchMessage(raw: unknown): void {
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
         state.chatMessages = state.chatMessages.slice(-MAX_CHAT_MESSAGES);
+      }
+      if (shouldPlayChatNotification(chatMsg.participantId, state.selfParticipantId)) {
+        void playNotificationSound('chat');
       }
       notify();
       break;
@@ -2152,6 +2413,7 @@ function dispatchMessage(raw: unknown): void {
       const historyPayload = messages.map((m) => ({
         messageId: m.messageId as string,
         participantId: m.participantId as string,
+        userId: (m.userId as string) || undefined,
         displayName: m.displayName as string,
         text: m.text as string,
         timestamp: m.timestamp as string,
@@ -2207,6 +2469,8 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  localSessionJoined = false;
+  localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
 
   // Push initial state to the component
@@ -2236,14 +2500,19 @@ export function initSession(
   client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
-      if (state.machineState === 'active') {
-        // Connection dropped during active session — start reconnecting.
+      if (state.machineState === 'active' || state.machineState === 'joining') {
+        // Connection dropped during active session or mid-join — start reconnecting.
         // Do NOT tear down LiveKit media — it connects directly to the SFU,
         // independent of the signaling WS. Tearing it down causes an
         // unnecessary audio/screenshare interruption during WS reconnects
         // (e.g. CloudFront idle timeout drops the WS every ~10 min).
         state.machineState = 'reconnecting';
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling connection lost — reconnecting' });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'system',
+          message: state.lastRateLimitError ?? 'signaling connection lost — reconnecting',
+        });
         notify();
       } else if (state.machineState === 'reconnecting') {
         // Already reconnecting and got another disconnect.
@@ -2257,6 +2526,8 @@ export function initSession(
           }
           appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling reconnect failed — session lost' });
           state.error = 'Connection lost';
+          state.lastRateLimitError = null;
+          playLocalDisconnectSoundOnce();
           state.machineState = 'idle';
           notify();
         }
@@ -2291,6 +2562,7 @@ export function initSession(
         console.error(LOG, 'connect failed:', err);
         if (client !== thisClient) return;
         state.error = 'Connection failed';
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
         notify();
       });
@@ -2299,6 +2571,8 @@ export function initSession(
 }
 
 export function leaveRoom(): void {
+  playLocalDisconnectSoundOnce();
+
   // Clean up custom share captures (best-effort, fire-and-forget)
   if (state.activeVideoShare || state.activeAudioShare) {
     if (lkModule && lkModule instanceof LiveKitModule) {
@@ -2520,6 +2794,19 @@ export function toggleSelfMute(): void {
     notify();
     return;
   }
+  if (state.joinedSubRoomId === null) {
+    silenceSelfParticipant(self);
+    lkModule?.setMicEnabled(false);
+    appendEvent({
+      id: makeEventId(),
+      timestamp: timestamp(),
+      type: 'system',
+      message: 'mute toggle ignored: join a room before using the microphone',
+      participantId: self.id,
+    });
+    notify();
+    return;
+  }
 
   // If deafened and trying to unmute, cancel deafen entirely
   if (state.isDeafened && self.isMuted) {
@@ -2533,6 +2820,8 @@ export function toggleSelfMute(): void {
     self.isSpeaking = false;
   }
   lkModule?.setMicEnabled(!self.isMuted);
+  console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
+  client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
     id: makeEventId(),
     timestamp: timestamp(),
@@ -2556,9 +2845,12 @@ export function toggleSelfDeafen(): void {
     preDeafenVolume = null;
     state.masterVolume = restored;
     lkModule?.setMasterVolume(restored);
-    if (!self.isHostMuted) {
+    if (!self.isHostMuted && state.joinedSubRoomId !== null) {
       self.isMuted = false;
       lkModule?.setMicEnabled(true);
+    } else {
+      silenceSelfParticipant(self);
+      lkModule?.setMicEnabled(false);
     }
     client?.send({ type: 'self_undeafen' });
     appendEvent({
@@ -2602,6 +2894,7 @@ export function toggleSelfDeafen(): void {
 // post-share audio prompt) or startCustomShare() instead.
 
 export async function startExternalBrowserShare(): Promise<void> {
+  ensureInSubRoomForShare();
   await invoke('external_share_start');
 }
 
@@ -2612,6 +2905,7 @@ export async function startExternalBrowserShare(): Promise<void> {
  * This is the primary path for Wayland compositors (Hyprland, GNOME, KDE).
  */
 export async function startPortalShare(): Promise<boolean> {
+  ensureInSubRoomForShare();
   const result = await invoke<boolean>('screen_share_start');
   if (result) {
     // Mark self as sharing and notify peers (same as other share paths).
@@ -2644,6 +2938,7 @@ export async function startPortalShare(): Promise<boolean> {
  * rollback on partial failure, sends signaling, and opens the indicator.
  */
 export async function startCustomShare(selection: ShareSelection): Promise<void> {
+  ensureInSubRoomForShare();
   // 1. Check if the requested slot is available
   const check = canStartShare(selection, state.activeVideoShare, state.activeAudioShare);
   if (!check.allowed) {

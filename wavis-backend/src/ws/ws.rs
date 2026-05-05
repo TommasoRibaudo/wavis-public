@@ -42,7 +42,7 @@ use axum::response::{IntoResponse, Response};
 use shared::signaling::{self, ErrorPayload, SignalingMessage};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -74,6 +74,9 @@ fn error_text(message: &str) -> String {
 
 async fn send_error_and_close(socket: &mut WebSocket, message: &str) {
     let _ = socket.send(Message::Text(error_text(message).into())).await;
+    if message == MSG_RATE_LIMIT_EXCEEDED {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     let _ = socket.send(Message::Close(None)).await;
 }
 
@@ -404,6 +407,10 @@ mod tests {
                         SignalingMessage::ParticipantKicked(_) |
                         SignalingMessage::ParticipantMuted(_) |
                         SignalingMessage::ParticipantUnmuted(_) |
+                        SignalingMessage::SelfMute |
+                        SignalingMessage::SelfUnmute |
+                        SignalingMessage::ParticipantSelfMuted(_) |
+                        SignalingMessage::ParticipantSelfUnmuted(_) |
                         SignalingMessage::SelfDeafen |
                         SignalingMessage::SelfUndeafen |
                         SignalingMessage::ParticipantDeafened(_) |

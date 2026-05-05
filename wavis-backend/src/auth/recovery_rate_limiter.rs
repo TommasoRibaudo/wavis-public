@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::abuse::SlidingWindow;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -22,41 +24,6 @@ impl Default for RecoveryRateLimiterConfig {
             per_rid_max: 3,
             per_rid_window_secs: 3600,
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SlidingWindow (private)
-// ---------------------------------------------------------------------------
-
-struct SlidingWindow {
-    timestamps: Vec<Instant>,
-}
-
-impl SlidingWindow {
-    fn new() -> Self {
-        Self {
-            timestamps: Vec::new(),
-        }
-    }
-
-    fn evict_old(&mut self, window: Duration, now: Instant) {
-        self.timestamps.retain(|t| now.duration_since(*t) < window);
-    }
-
-    fn count(&mut self, window: Duration, now: Instant) -> u32 {
-        self.evict_old(window, now);
-        self.timestamps.len() as u32
-    }
-
-    fn record(&mut self, now: Instant) {
-        self.timestamps.push(now);
-    }
-
-    fn is_stale(&self, max_window: Duration, now: Instant) -> bool {
-        self.timestamps
-            .iter()
-            .all(|t| now.duration_since(*t) >= max_window)
     }
 }
 
@@ -82,35 +49,55 @@ impl RecoveryRateLimiter {
     /// Returns true if the IP has fewer than `per_ip_max` attempts in the window.
     pub fn check_ip(&self, ip: IpAddr, now: Instant) -> bool {
         let mut map = self.ip_windows.lock().unwrap();
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let dur = Duration::from_secs(self.config.per_ip_window_secs);
-        window.count(dur, now) < self.config.per_ip_max
+        let window = map.entry(ip).or_insert_with(|| SlidingWindow::new(dur));
+        window.count(now) < self.config.per_ip_max as usize
     }
 
     /// Record a recovery attempt for the given IP.
     pub fn record_ip(&self, ip: IpAddr, now: Instant) {
         let mut map = self.ip_windows.lock().unwrap();
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
-        window.record(now);
+        let dur = Duration::from_secs(self.config.per_ip_window_secs);
+        let window = map.entry(ip).or_insert_with(|| SlidingWindow::new(dur));
+        window.add(now);
     }
 
     /// Returns true if the recovery_id has fewer than `per_rid_max` attempts in the window.
     pub fn check_recovery_id(&self, rid: &str, now: Instant) -> bool {
         let mut map = self.rid_windows.lock().unwrap();
+        let dur = Duration::from_secs(self.config.per_rid_window_secs);
         let window = map
             .entry(rid.to_string())
-            .or_insert_with(SlidingWindow::new);
+            .or_insert_with(|| SlidingWindow::new(dur));
+        window.count(now) < self.config.per_rid_max as usize
+    }
+
+    /// Returns seconds until the IP can retry, or `None` if under the limit.
+    pub fn seconds_until_ip(&self, ip: IpAddr, now: Instant) -> Option<u64> {
+        let mut map = self.ip_windows.lock().unwrap();
+        let dur = Duration::from_secs(self.config.per_ip_window_secs);
+        let window = map.entry(ip).or_insert_with(|| SlidingWindow::new(dur));
+        window.seconds_until_retry(self.config.per_ip_max as usize, now)
+    }
+
+    /// Returns seconds until the recovery_id can retry, or `None` if under the limit.
+    pub fn seconds_until_recovery_id(&self, rid: &str, now: Instant) -> Option<u64> {
+        let mut map = self.rid_windows.lock().unwrap();
         let dur = Duration::from_secs(self.config.per_rid_window_secs);
-        window.count(dur, now) < self.config.per_rid_max
+        let window = map
+            .entry(rid.to_string())
+            .or_insert_with(|| SlidingWindow::new(dur));
+        window.seconds_until_retry(self.config.per_rid_max as usize, now)
     }
 
     /// Record a recovery attempt for the given recovery_id.
     pub fn record_recovery_id(&self, rid: &str, now: Instant) {
         let mut map = self.rid_windows.lock().unwrap();
+        let dur = Duration::from_secs(self.config.per_rid_window_secs);
         let window = map
             .entry(rid.to_string())
-            .or_insert_with(SlidingWindow::new);
-        window.record(now);
+            .or_insert_with(|| SlidingWindow::new(dur));
+        window.add(now);
     }
 
     /// Clear all tracked state. Used by test-metrics reset endpoint.
@@ -121,20 +108,17 @@ impl RecoveryRateLimiter {
 
     /// Prune stale entries from both maps. Returns total entries removed.
     pub fn prune_stale(&self, now: Instant) -> usize {
-        let ip_dur = Duration::from_secs(self.config.per_ip_window_secs);
-        let rid_dur = Duration::from_secs(self.config.per_rid_window_secs);
-
         let mut count = 0;
         {
             let mut map = self.ip_windows.lock().unwrap();
             let before = map.len();
-            map.retain(|_, w| !w.is_stale(ip_dur, now));
+            map.retain(|_, w| w.count(now) > 0);
             count += before - map.len();
         }
         {
             let mut map = self.rid_windows.lock().unwrap();
             let before = map.len();
-            map.retain(|_, w| !w.is_stale(rid_dur, now));
+            map.retain(|_, w| w.count(now) > 0);
             count += before - map.len();
         }
         count
@@ -241,6 +225,31 @@ mod tests {
         assert_eq!(pruned, 2);
     }
 
+    #[test]
+    fn seconds_until_ip_returns_some_at_limit() {
+        let limiter = RecoveryRateLimiter::new(RecoveryRateLimiterConfig::default());
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let now = Instant::now();
+
+        for _ in 0..5 {
+            limiter.record_ip(ip, now);
+        }
+
+        assert!(limiter.seconds_until_ip(ip, now).is_some());
+    }
+
+    #[test]
+    fn seconds_until_recovery_id_returns_some_at_limit() {
+        let limiter = RecoveryRateLimiter::new(RecoveryRateLimiterConfig::default());
+        let now = Instant::now();
+
+        for _ in 0..3 {
+            limiter.record_recovery_id("wvs-ABCD-EFGH", now);
+        }
+
+        assert!(limiter.seconds_until_recovery_id("wvs-ABCD-EFGH", now).is_some());
+    }
+
     // Feature: user-identity-recovery, Property 10: Recovery rate limiter ceiling
     // **Validates: Requirements 6.1, 6.2**
     proptest! {
@@ -263,7 +272,7 @@ mod tests {
             let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
             let now = Instant::now();
 
-            // Record exactly per_ip_max attempts — all should be allowed
+            // Record exactly per_ip_max attempts - all should be allowed
             for _ in 0..per_ip_max {
                 prop_assert!(limiter.check_ip(ip, now));
                 limiter.record_ip(ip, now);
@@ -293,7 +302,7 @@ mod tests {
             let rid = format!("wvs-{rid_suffix}");
             let now = Instant::now();
 
-            // Record exactly per_rid_max attempts — all should be allowed
+            // Record exactly per_rid_max attempts - all should be allowed
             for _ in 0..per_rid_max {
                 prop_assert!(limiter.check_recovery_id(&rid, now));
                 limiter.record_recovery_id(&rid, now);

@@ -143,6 +143,11 @@ pub enum SignalingMessage {
     MuteParticipant(MuteParticipantPayload),
     /// Client -> server moderation request to release a host mute.
     UnmuteParticipant(UnmuteParticipantPayload),
+    // Self-mute (client → server, any participant)
+    /// Client -> server notification that the sender muted their own microphone.
+    SelfMute,
+    /// Client -> server notification that the sender unmuted their own microphone.
+    SelfUnmute,
     // Self-deafen (client → server, any participant)
     /// Client -> server notification that the sender deafened themselves.
     SelfDeafen,
@@ -155,6 +160,10 @@ pub enum SignalingMessage {
     ParticipantMuted(ParticipantMutedPayload),
     /// Server -> all participants broadcast that a participant was unmuted.
     ParticipantUnmuted(ParticipantUnmutedPayload),
+    /// Server -> all participants broadcast that a participant muted themselves.
+    ParticipantSelfMuted(ParticipantSelfMutedPayload),
+    /// Server -> all participants broadcast that a participant unmuted themselves.
+    ParticipantSelfUnmuted(ParticipantSelfUnmutedPayload),
     /// Server -> all participants broadcast that a participant deafened themselves.
     ParticipantDeafened(ParticipantDeafenedPayload),
     /// Server -> all participants broadcast that a participant undeafened themselves.
@@ -561,6 +570,22 @@ pub struct ParticipantUnmutedPayload {
     pub participant_id: String,
 }
 
+/// Broadcast to all participants when a participant mutes themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantSelfMutedPayload {
+    /// Participant identifier for the participant who muted themselves.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+}
+
+/// Broadcast to all participants when a participant unmutes themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantSelfUnmutedPayload {
+    /// Participant identifier for the participant who unmuted themselves.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+}
+
 /// Broadcast to all participants when a participant deafens themselves.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParticipantDeafenedPayload {
@@ -732,7 +757,11 @@ pub struct SubRoomInfoPayload {
     pub participant_ids: Vec<String>,
     /// When the room is scheduled for auto-deletion, expressed as epoch milliseconds.
     /// Absent for ROOM 1 and any non-empty room.
-    #[serde(rename = "deleteAtMs", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deleteAtMs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub delete_at_ms: Option<u64>,
 }
 
@@ -842,6 +871,9 @@ pub struct ChatMessagePayload {
     /// Participant identifier for the sender.
     #[serde(rename = "participantId")]
     pub participant_id: String,
+    /// Stable authenticated user identifier for the sender, when available.
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Display name for the sender at the time the message was emitted.
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -873,6 +905,9 @@ pub struct ChatHistoryMessagePayload {
     /// Participant identifier for the original sender.
     #[serde(rename = "participantId")]
     pub participant_id: String,
+    /// Stable authenticated user identifier for the original sender, when available.
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Display name captured with the historical message.
     #[serde(rename = "displayName")]
     pub display_name: String,
