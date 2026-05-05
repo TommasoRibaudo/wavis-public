@@ -50,6 +50,7 @@ import {
   startPortalShare,
   setPendingSharePickerData,
   buildChatDisplayItems,
+  resolveChatMessageDisplayColor,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
@@ -2501,7 +2502,7 @@ export default function ActiveRoom() {
           ) : (
             <div key={item.message.id} className="break-all">
               <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
-              <span style={{ color: item.message.color }}>{item.message.displayName}</span>
+              <span style={{ color: resolveChatMessageDisplayColor(item.message, roomState.participants) }}>{item.message.displayName}</span>
               <span>: {renderChatText(item.message.text)}</span>
             </div>
           )

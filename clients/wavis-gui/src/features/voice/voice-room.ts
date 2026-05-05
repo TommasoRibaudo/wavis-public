@@ -94,6 +94,7 @@ export interface ChatMessage {
   messageId?: string;
   timestamp: string;
   participantId: string;
+  userId?: string;
   displayName: string;
   color: string;
   text: string;
@@ -314,6 +315,21 @@ export function colorFor(participant: { userId?: string; id: string }): string {
     h = Math.imul(h, 16777619);
   }
   return TERMINAL_COLORS[Math.abs(h) % TERMINAL_COLORS.length];
+}
+
+export function resolveChatMessageDisplayColor(
+  message: Pick<ChatMessage, 'participantId' | 'userId' | 'color'>,
+  participants: Array<Pick<RoomParticipant, 'id' | 'userId' | 'color'>>,
+): string {
+  if (message.userId) {
+    const userMatch = participants.find((p) => p.userId === message.userId);
+    if (userMatch?.color) return userMatch.color;
+  }
+
+  const participantMatch = participants.find((p) => p.id === message.participantId);
+  if (participantMatch?.color) return participantMatch.color;
+
+  return message.color || colorFor({ userId: message.userId, id: message.participantId });
 }
 
 /**
@@ -561,7 +577,7 @@ export function shouldPlayChatNotification(
  * Exported for property testing.
  */
 export function mergeHistoryMessages(
-  historyPayload: Array<{ messageId: string; participantId: string; displayName: string; text: string; timestamp: string }>,
+  historyPayload: Array<{ messageId: string; participantId: string; userId?: string; displayName: string; text: string; timestamp: string }>,
   existingMessages: ChatMessage[],
 ): ChatMessage[] {
   // Build set of existing messageIds for dedup (skip entries without messageId)
@@ -578,8 +594,9 @@ export function mergeHistoryMessages(
       messageId: h.messageId,
       timestamp: h.timestamp,
       participantId: h.participantId,
+      userId: h.userId,
       displayName: h.displayName,
-      color: colorFor({ id: h.participantId }),
+      color: colorFor({ userId: h.userId, id: h.participantId }),
       text: h.text,
       isHistory: true,
     }));
@@ -2375,6 +2392,7 @@ function dispatchMessage(raw: unknown): void {
         messageId: (msg.messageId as string) || undefined,
         timestamp: msg.timestamp as string,
         participantId: msg.participantId as string,
+        userId: (msg.userId as string) || undefined,
         displayName: msg.displayName as string,
         color: participant?.color ?? '',
         text: msg.text as string,
@@ -2395,6 +2413,7 @@ function dispatchMessage(raw: unknown): void {
       const historyPayload = messages.map((m) => ({
         messageId: m.messageId as string,
         participantId: m.participantId as string,
+        userId: (m.userId as string) || undefined,
         displayName: m.displayName as string,
         text: m.text as string,
         timestamp: m.timestamp as string,

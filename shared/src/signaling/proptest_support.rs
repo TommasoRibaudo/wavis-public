@@ -709,11 +709,13 @@ impl Arbitrary for PassthroughStatePayload {
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (any::<String>(), any::<String>(), any::<String>())
-            .prop_map(|(source_sub_room_id, target_sub_room_id, label)| PassthroughStatePayload {
-                source_sub_room_id,
-                target_sub_room_id,
-                label,
-            })
+            .prop_map(
+                |(source_sub_room_id, target_sub_room_id, label)| PassthroughStatePayload {
+                    source_sub_room_id,
+                    target_sub_room_id,
+                    label,
+                },
+            )
             .boxed()
     }
 }
@@ -748,12 +750,18 @@ impl Arbitrary for SubRoomJoinedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>(), any::<WireSubRoomMembershipSource>())
-            .prop_map(|(participant_id, sub_room_id, source)| SubRoomJoinedPayload {
-                participant_id,
-                sub_room_id,
-                source,
-            })
+        (
+            any::<String>(),
+            any::<String>(),
+            any::<WireSubRoomMembershipSource>(),
+        )
+            .prop_map(
+                |(participant_id, sub_room_id, source)| SubRoomJoinedPayload {
+                    participant_id,
+                    sub_room_id,
+                    source,
+                },
+            )
             .boxed()
     }
 }
@@ -812,18 +820,22 @@ impl Arbitrary for ChatMessagePayload {
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (
             any::<String>(),
+            prop::option::of(any::<String>()),
             any::<String>(),
             any::<String>(),
             any::<String>(),
             prop::option::of(any::<String>()),
         )
             .prop_map(
-                |(participant_id, display_name, text, timestamp, message_id)| ChatMessagePayload {
-                    participant_id,
-                    display_name,
-                    text,
-                    timestamp,
-                    message_id,
+                |(participant_id, user_id, display_name, text, timestamp, message_id)| {
+                    ChatMessagePayload {
+                        participant_id,
+                        user_id,
+                        display_name,
+                        text,
+                        timestamp,
+                        message_id,
+                    }
                 },
             )
             .boxed()
@@ -848,15 +860,17 @@ impl Arbitrary for ChatHistoryMessagePayload {
         (
             any::<String>(),
             any::<String>(),
+            prop::option::of(any::<String>()),
             any::<String>(),
             any::<String>(),
             any::<String>(),
         )
             .prop_map(
-                |(message_id, participant_id, display_name, text, timestamp)| {
+                |(message_id, participant_id, user_id, display_name, text, timestamp)| {
                     ChatHistoryMessagePayload {
                         message_id,
                         participant_id,
+                        user_id,
                         display_name,
                         text,
                         timestamp,
