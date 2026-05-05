@@ -8,6 +8,7 @@
 
 import { load } from '@tauri-apps/plugin-store';
 import { PROFILE_COLORS } from '@shared/colors';
+import type { ChannelRole } from '@features/channels/channels';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -57,6 +58,9 @@ export const STORE_KEYS = {
   notificationVolume: 'wavis_notification_volume',
   soundVolumes: 'wavis_notification_sound_volumes',
   inputVolume: 'wavis_input_volume',
+  lastChannelId: 'wavis_last_channel_id',
+  lastChannelName: 'wavis_last_channel_name',
+  lastChannelRole: 'wavis_last_channel_role',
 } as const;
 
 export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
@@ -288,4 +292,32 @@ export async function setChannelVolumes(channelId: string, prefs: ChannelVolumeP
   const all = await getStoreValue<Record<string, ChannelVolumePrefs>>(STORE_KEYS.channelVolumes, {});
   all[channelId] = prefs;
   return setStoreValue(STORE_KEYS.channelVolumes, all);
+}
+
+// ─── Last Channel (hub redirect) ───────────────────────────────────
+
+export async function getLastChannel(): Promise<{ id: string; name: string; role: ChannelRole } | null> {
+  const [id, name, role] = await Promise.all([
+    getStoreValue<string | null>(STORE_KEYS.lastChannelId, null),
+    getStoreValue<string | null>(STORE_KEYS.lastChannelName, null),
+    getStoreValue<string | null>(STORE_KEYS.lastChannelRole, null),
+  ]);
+  if (!id || !name || !role) return null;
+  return { id, name, role: role as ChannelRole };
+}
+
+export async function setLastChannel(id: string, name: string, role: ChannelRole): Promise<void> {
+  await Promise.all([
+    setStoreValue(STORE_KEYS.lastChannelId, id),
+    setStoreValue(STORE_KEYS.lastChannelName, name),
+    setStoreValue(STORE_KEYS.lastChannelRole, role),
+  ]);
+}
+
+export async function clearLastChannel(): Promise<void> {
+  await Promise.all([
+    setStoreValue(STORE_KEYS.lastChannelId, null),
+    setStoreValue(STORE_KEYS.lastChannelName, null),
+    setStoreValue(STORE_KEYS.lastChannelRole, null),
+  ]);
 }

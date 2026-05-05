@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { useBlocker, useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
+import type { Channel } from '@features/channels/channels';
+import { ChannelSwitcherPanel } from '@features/channels/ChannelSwitcherPanel';
 import type {
   VoiceRoomState,
   VoiceRoomMachineState,
@@ -59,6 +61,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startSending, stopSending, stopSendingForWindow, stopAllSending, resendStream } from '@features/screen-share/screen-share-viewer';
 import { getWatchAllHotkey } from '@features/settings/settings-store';
+import { setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
@@ -273,7 +276,7 @@ export default function ActiveRoom() {
   const [roomState, setRoomState] = useState<VoiceRoomState | null>(null);
   const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
 
-  const [leaving, setLeaving] = useState(false);
+  const [, setLeaving] = useState(false);
   const [cliInput, setCliInput] = useState('');
   const [chatInput, setChatInput] = useState('');
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -311,6 +314,7 @@ export default function ActiveRoom() {
   const cliDraftRef = useRef('');
 
   const [showSettings, setShowSettings] = useState(false);
+  const [channelSwitcherOpen, setChannelSwitcherOpen] = useState(false);
 
   // Transient chat error display (auto-dismiss after 5s)
   const [chatError, setChatError] = useState<string | null>(null);
@@ -457,6 +461,13 @@ export default function ActiveRoom() {
       if (chatErrorTimerRef.current) clearTimeout(chatErrorTimerRef.current);
     };
   }, []);
+
+  // Clear persisted last channel when kicked (so next launch falls back to ChannelsList)
+  useEffect(() => {
+    if (roomState?.error === 'You were kicked') {
+      void clearLastChannel();
+    }
+  }, [roomState?.error]);
 
   // Tray event wiring: dispatch tray menu actions to voice room
   useEffect(() => {
@@ -1717,7 +1728,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.error}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => navigateAwayFromRoom('/', true)}>/leave</button>
+              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', true); }}>/leave</button>
             </div>
           </div>
         </div>
@@ -1728,8 +1739,12 @@ export default function ActiveRoom() {
   // Kicked state
   if (roomState.error === 'You were kicked') {
     return (
-      <div className="h-full flex items-center justify-center bg-wavis-bg font-mono text-wavis-danger">
-        you were kicked from the room
+      <div className="h-full flex flex-col items-center justify-center bg-wavis-bg font-mono text-wavis-danger gap-4">
+        <span>you were kicked from the room</span>
+        <button
+          className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+          onClick={() => navigateAwayFromRoom('/', false)}
+        >/back</button>
       </div>
     );
   }
@@ -1738,6 +1753,14 @@ export default function ActiveRoom() {
   const handleLeave = () => {
     setLeaving(true);
     navigateAwayFromRoom('/', true);
+  };
+
+  const handleChannelSwitch = async (ch: Channel) => {
+    await setLastChannel(ch.id, ch.name, ch.role);
+    setChannelSwitcherOpen(false);
+    allowNavigationRef.current = true;
+    leaveRoom();
+    navigate('/room', { state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role } });
   };
 
   const handleSendChat = () => {
@@ -1900,25 +1923,36 @@ export default function ActiveRoom() {
   const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
   const roomHeader = (
-    <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex flex-col justify-center gap-0.5 overflow-hidden">
-      <div className="flex items-center gap-2">
-        <StatusDot color={sigDot.color} label={sigDot.label} />
-        <StatusDot color={mediaDot.color} label={mediaDot.label} />
-        {(() => {
-          const badge = connectionModeBadgeText(showSecrets, roomState.connectionMode);
-          return badge ? <span className="text-[0.625rem] text-wavis-purple">[{badge}]</span> : null;
-        })()}
-        <span className="text-sm" style={{ color: statusBadge.color }}>{statusBadge.text}</span>
-        <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.participants.length}/6</span>
-        <span className="text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
-        <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.networkStats.packetLossPercent.toFixed(1)}% loss</span>
+    <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex items-center gap-3 overflow-hidden">
+      <div className="flex-1 flex flex-col justify-center gap-0.5 min-w-0">
+        <div className="flex items-center gap-2">
+          <StatusDot color={sigDot.color} label={sigDot.label} />
+          <StatusDot color={mediaDot.color} label={mediaDot.label} />
+          {(() => {
+            const badge = connectionModeBadgeText(showSecrets, roomState.connectionMode);
+            return badge ? <span className="text-[0.625rem] text-wavis-purple">[{badge}]</span> : null;
+          })()}
+          <span className="text-sm" style={{ color: statusBadge.color }}>{statusBadge.text}</span>
+          <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.participants.length}/6</span>
+          <span className="text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
+          <span className="text-[0.625rem] text-wavis-text-secondary">{roomState.networkStats.packetLossPercent.toFixed(1)}% loss</span>
+        </div>
+        <div
+          className={`font-bold truncate min-w-0${roomState.channelName.length > 20 ? ' text-xs' : ' text-sm'}`}
+          title={roomState.channelName}
+        >
+          {roomState.channelName}
+        </div>
       </div>
-      <div
-        className={`font-bold truncate min-w-0${roomState.channelName.length > 20 ? ' text-xs' : ' text-sm'}`}
-        title={roomState.channelName}
-      >
-        {roomState.channelName}
-      </div>
+      <button
+        onClick={() => setChannelSwitcherOpen((v) => !v)}
+        className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
+          channelSwitcherOpen
+            ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+            : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
+        }`}
+        title="Change channel"
+      >{channelSwitcherOpen ? '<' : '>'}</button>
     </div>
   );
 
@@ -2360,7 +2394,6 @@ export default function ActiveRoom() {
             })()}
             <div className="mt-4 flex flex-col gap-1">
               <button onClick={() => setShowSettings(true)} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
-              <button onClick={handleLeave} disabled={leaving} className="w-full text-wavis-danger border border-wavis-danger py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg disabled:opacity-40 disabled:cursor-not-allowed">{leaving ? 'leaving...' : '/leave'}</button>
             </div>
           </div>
         </div>
@@ -2521,13 +2554,21 @@ export default function ActiveRoom() {
             <span className="shrink-0 text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setChannelSwitcherOpen((v) => !v)}
+              className={`px-2 py-1.5 border text-[0.625rem] transition-colors ${
+                channelSwitcherOpen
+                  ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+                  : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
+              }`}
+              title="Change channel"
+            >{channelSwitcherOpen ? '<' : '>'}</button>
             <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} className={`px-2 py-1.5 border text-[0.625rem] transition-colors text-center disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>
               {selfP?.isMuted ? '/unmute' : '/mute'}
             </button>
             <button onClick={toggleSelfDeafen} className={`px-2 py-1.5 border text-[0.625rem] transition-colors text-center ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>
               {roomState.isDeafened ? '/undeafen' : '/deafen'}
             </button>
-            <button onClick={handleLeave} className="px-2 py-1.5 border border-wavis-danger text-wavis-danger text-[0.625rem] transition-colors text-center hover:bg-wavis-danger hover:text-wavis-bg">/leave</button>
           </div>
         </div>
 
@@ -2555,6 +2596,12 @@ export default function ActiveRoom() {
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {showSettings ? (
             <Settings onClose={() => setShowSettings(false)} onNavigateAway={navigateAwayFromRoom} channelId={channelId} />
+          ) : channelSwitcherOpen ? (
+            <ChannelSwitcherPanel
+              onChannelSelect={handleChannelSwitch}
+              onClose={() => setChannelSwitcherOpen(false)}
+              currentChannelId={channelId}
+            />
           ) : (
             <>
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
@@ -2575,7 +2622,13 @@ export default function ActiveRoom() {
           {youBar}
         </div>
         <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
-          {showSettings ? <Settings onClose={() => setShowSettings(false)} onNavigateAway={navigateAwayFromRoom} channelId={channelId} /> : chatPanel}
+          {showSettings ? <Settings onClose={() => setShowSettings(false)} onNavigateAway={navigateAwayFromRoom} channelId={channelId} /> : channelSwitcherOpen ? (
+            <ChannelSwitcherPanel
+              onChannelSelect={handleChannelSwitch}
+              onClose={() => setChannelSwitcherOpen(false)}
+              currentChannelId={channelId}
+            />
+          ) : chatPanel}
         </div>
         <div className="w-80 border-l border-wavis-text-secondary flex flex-col">
           {logPanel}

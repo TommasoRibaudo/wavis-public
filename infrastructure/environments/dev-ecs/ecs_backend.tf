@@ -18,6 +18,7 @@ resource "aws_ecr_repository" "backend" {
 resource "aws_cloudwatch_log_group" "backend" {
   name              = "/aws/ecs/${local.project}-${local.env}-backend"
   retention_in_days = var.backend_log_retention_days
+  log_group_class   = "INFREQUENT_ACCESS"
   tags              = local.tags
 }
 
@@ -30,6 +31,18 @@ resource "aws_ecs_cluster" "backend" {
   }
 
   tags = local.tags
+}
+
+resource "aws_ecs_cluster_capacity_providers" "backend" {
+  cluster_name = aws_ecs_cluster.backend.name
+
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+    base              = 0
+  }
 }
 
 resource "aws_lb" "backend" {
@@ -190,10 +203,15 @@ resource "aws_ecs_service" "backend" {
   cluster                           = aws_ecs_cluster.backend.id
   task_definition                   = aws_ecs_task_definition.backend.arn
   desired_count                     = var.backend_desired_count
-  launch_type                       = "FARGATE"
   health_check_grace_period_seconds = var.backend_health_check_grace_period_seconds
   enable_execute_command            = true
   wait_for_steady_state             = false
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+    base              = 0
+  }
 
   deployment_circuit_breaker {
     enable   = true
