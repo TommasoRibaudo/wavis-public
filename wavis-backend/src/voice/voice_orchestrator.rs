@@ -35,10 +35,9 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use shared::signaling::{
     MediaTokenPayload, ParticipantInfo, ParticipantJoinedPayload, ParticipantLeftPayload,
-    PassthroughStatePayload,
-    RoomStatePayload, SignalingMessage, SubRoomCreatedPayload, SubRoomDeletedPayload,
-    SubRoomInfoPayload, SubRoomJoinedPayload, SubRoomLeftPayload, SubRoomStatePayload,
-    WireSubRoomMembershipSource,
+    PassthroughStatePayload, RoomStatePayload, ShareStoppedPayload, SignalingMessage,
+    SubRoomCreatedPayload, SubRoomDeletedPayload, SubRoomInfoPayload, SubRoomJoinedPayload,
+    SubRoomLeftPayload, SubRoomStatePayload, WireSubRoomMembershipSource,
 };
 use sqlx::PgPool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -234,6 +233,14 @@ fn sub_room_state_signals(room_state: &InMemoryRoomState, room_id: &str) -> Vec<
         .and_then(|info| info.sub_room_state.as_ref().map(sub_room_state_payload))
         .map(|payload| vec![OutboundSignal::broadcast_all(SignalingMessage::SubRoomState(payload))])
         .unwrap_or_default()
+}
+
+fn participant_display_name(participants: &[ParticipantInfo], participant_id: &str) -> String {
+    participants
+        .iter()
+        .find(|p| p.participant_id == participant_id)
+        .map(|p| p.display_name.clone())
+        .unwrap_or_else(|| participant_id.to_string())
 }
 
 fn ensure_room_sub_rooms(info: &mut RoomInfo) {
@@ -616,6 +623,7 @@ pub fn leave_sub_room(
 ) -> Result<SubRoomActionResult, String> {
     let mut left_sub_room_id = None;
     let mut expiry = None;
+    let mut share_stopped = None;
 
     room_state
         .with_room_write(room_id, |members| {
@@ -638,6 +646,15 @@ pub fn leave_sub_room(
             }
             expiry = schedule_empty_room_if_needed(sub_rooms, &current_room_id);
             left_sub_room_id = Some(current_room_id);
+            if members.info.active_shares.remove(participant_id) {
+                share_stopped = Some(SignalingMessage::ShareStopped(ShareStoppedPayload {
+                    participant_id: participant_id.to_string(),
+                    display_name: participant_display_name(
+                        &members.info.participants,
+                        participant_id,
+                    ),
+                }));
+            }
             Ok::<(), String>(())
         })
         .map_err(|_| "voice session not found".to_string())??;
@@ -650,6 +667,9 @@ pub fn leave_sub_room(
                 sub_room_id,
             },
         )));
+    }
+    if let Some(event) = share_stopped {
+        signals.push(OutboundSignal::broadcast_all(event));
     }
     signals.extend(sub_room_state_signals(room_state, room_id));
     Ok(SubRoomActionResult { signals, expiry })
@@ -1288,6 +1308,55 @@ mod tests {
             .find(|room| room.sub_room_id == "room-2")
             .expect("room-2 exists");
         assert!(room.delete_at.is_some());
+    }
+
+    #[test]
+    fn leaving_sub_room_clears_active_share() {
+        let state = sub_room_test_state();
+        let _ = create_sub_room(&state, "voice-room").expect("create sub room");
+        let _ = join_sub_room(&state, "voice-room", "room-2", "peer-a");
+        state
+            .with_room_write("voice-room", |members| {
+                members.info.active_shares.insert("peer-a".to_string());
+            })
+            .unwrap();
+
+        let result = leave_sub_room(&state, "voice-room", "peer-a").expect("leave sub room");
+
+        let info = state.get_room_info("voice-room").expect("room exists");
+        assert!(!info.active_shares.contains("peer-a"));
+        assert!(result.signals.iter().any(|signal| {
+            matches!(
+                &signal.msg,
+                SignalingMessage::ShareStopped(payload)
+                    if payload.participant_id == "peer-a"
+                        && payload.display_name == "Peer A"
+            )
+        }));
+    }
+
+    #[test]
+    fn joining_another_sub_room_preserves_active_share() {
+        let state = sub_room_test_state();
+        let _ = create_sub_room(&state, "voice-room").expect("create room-2");
+        let _ = create_sub_room(&state, "voice-room").expect("create room-3");
+        let _ = join_sub_room(&state, "voice-room", "room-2", "peer-a");
+        state
+            .with_room_write("voice-room", |members| {
+                members.info.active_shares.insert("peer-a".to_string());
+            })
+            .unwrap();
+
+        let result = join_sub_room(&state, "voice-room", "room-3", "peer-a").expect("move rooms");
+
+        let info = state.get_room_info("voice-room").expect("room exists");
+        assert!(info.active_shares.contains("peer-a"));
+        assert!(
+            !result
+                .signals
+                .iter()
+                .any(|signal| matches!(signal.msg, SignalingMessage::ShareStopped(_)))
+        );
     }
 
     fn arb_channel_role() -> impl Strategy<Value = ChannelRole> {

@@ -757,7 +757,11 @@ pub struct SubRoomInfoPayload {
     pub participant_ids: Vec<String>,
     /// When the room is scheduled for auto-deletion, expressed as epoch milliseconds.
     /// Absent for ROOM 1 and any non-empty room.
-    #[serde(rename = "deleteAtMs", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deleteAtMs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub delete_at_ms: Option<u64>,
 }
 
@@ -867,6 +871,9 @@ pub struct ChatMessagePayload {
     /// Participant identifier for the sender.
     #[serde(rename = "participantId")]
     pub participant_id: String,
+    /// Stable authenticated user identifier for the sender, when available.
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Display name for the sender at the time the message was emitted.
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -898,6 +905,9 @@ pub struct ChatHistoryMessagePayload {
     /// Participant identifier for the original sender.
     #[serde(rename = "participantId")]
     pub participant_id: String,
+    /// Stable authenticated user identifier for the original sender, when available.
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Display name captured with the historical message.
     #[serde(rename = "displayName")]
     pub display_name: String,

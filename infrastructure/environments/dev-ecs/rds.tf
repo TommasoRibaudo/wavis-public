@@ -18,7 +18,7 @@ resource "aws_db_instance" "postgres" {
   storage_encrypted         = true
   db_name                   = var.rds_db_name
   username                  = var.rds_master_username
-  password                  = data.aws_ssm_parameter.secrets["RDS_MASTER_PASSWORD"].value
+  password                  = aws_ssm_parameter.secrets["RDS_MASTER_PASSWORD"].value
   port                      = 5432
   multi_az                  = var.rds_multi_az
   publicly_accessible       = false

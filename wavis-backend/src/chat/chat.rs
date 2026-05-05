@@ -7,12 +7,14 @@ use shared::signaling::{
 pub fn handle_chat_send(
     text: &str,
     participant_id: &str,
+    user_id: Option<&str>,
     display_name: &str,
     timestamp: &str,
     message_id: &str,
 ) -> Vec<OutboundSignal> {
     let msg = SignalingMessage::ChatMessage(ChatMessagePayload {
         participant_id: participant_id.to_string(),
+        user_id: user_id.map(ToString::to_string),
         display_name: display_name.to_string(),
         text: text.to_string(),
         timestamp: timestamp.to_string(),
@@ -28,6 +30,7 @@ pub fn build_history_response(rows: Vec<ChatMessageRow>) -> SignalingMessage {
         .map(|row| ChatHistoryMessagePayload {
             message_id: row.message_id.to_string(),
             participant_id: row.participant_id,
+            user_id: row.user_id,
             display_name: row.display_name,
             text: row.text,
             timestamp: row.created_at.to_rfc3339(),
@@ -69,7 +72,14 @@ mod tests {
     /// perform fallback — that responsibility belongs to the handler (ws.rs).
     #[test]
     fn empty_display_name_passed_through() {
-        let signals = handle_chat_send("hello", "peer-abc", "", "2025-01-15T10:30:00Z", "msg-001");
+        let signals = handle_chat_send(
+            "hello",
+            "peer-abc",
+            None,
+            "",
+            "2025-01-15T10:30:00Z",
+            "msg-001",
+        );
         assert_eq!(signals.len(), 1);
         match &signals[0].msg {
             SignalingMessage::ChatMessage(p) => {
@@ -80,6 +90,42 @@ mod tests {
                 assert_eq!(p.participant_id, "peer-abc");
             }
             other => panic!("expected ChatMessage, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn history_response_preserves_nullable_user_id() {
+        let created_at = chrono::DateTime::parse_from_rfc3339("2026-05-05T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let with_user = uuid::Uuid::new_v4();
+        let without_user = uuid::Uuid::new_v4();
+
+        let response = build_history_response(vec![
+            ChatMessageRow {
+                message_id: with_user,
+                participant_id: "peer-1".to_string(),
+                user_id: Some("user-1".to_string()),
+                display_name: "Alice".to_string(),
+                text: "hello".to_string(),
+                created_at,
+            },
+            ChatMessageRow {
+                message_id: without_user,
+                participant_id: "peer-2".to_string(),
+                user_id: None,
+                display_name: "Bob".to_string(),
+                text: "hi".to_string(),
+                created_at,
+            },
+        ]);
+
+        match response {
+            SignalingMessage::ChatHistoryResponse(payload) => {
+                assert_eq!(payload.messages[0].user_id.as_deref(), Some("user-1"));
+                assert_eq!(payload.messages[1].user_id, None);
+            }
+            other => panic!("expected ChatHistoryResponse, got {:?}", other),
         }
     }
 
@@ -95,7 +141,8 @@ mod tests {
             timestamp in arb_timestamp(),
             message_id in arb_nonempty_string(64),
         ) {
-            let signals = handle_chat_send(&text, &participant_id, &display_name, &timestamp, &message_id);
+            let user_id = Some("user-abc");
+            let signals = handle_chat_send(&text, &participant_id, user_id, &display_name, &timestamp, &message_id);
 
             // Exactly one signal returned.
             prop_assert_eq!(signals.len(), 1, "expected exactly 1 signal, got {}", signals.len());
@@ -112,6 +159,7 @@ mod tests {
             match &signal.msg {
                 SignalingMessage::ChatMessage(payload) => {
                     prop_assert_eq!(&payload.participant_id, &participant_id);
+                    prop_assert_eq!(payload.user_id.as_deref(), user_id);
                     prop_assert_eq!(&payload.display_name, &display_name);
                     prop_assert_eq!(&payload.text, &text);
                     prop_assert_eq!(&payload.timestamp, &timestamp);

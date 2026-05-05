@@ -1,7 +1,7 @@
 import { createBrowserRouter } from 'react-router';
 import DeviceSetup from '@features/auth/DeviceSetup';
 import AuthGate from '@features/auth/AuthGate';
-import ChannelsList from '@features/channels/ChannelsList';
+import InitialRedirect from '@features/channels/InitialRedirect';
 
 /** Helper to add HydrateFallback to lazy-loaded routes. In React Router v7 with CSR,
  * lazy routes briefly enter a "hydrating" state while the dynamic import resolves.
@@ -80,7 +80,7 @@ export const router = createBrowserRouter([
     path: '/',
     Component: AuthGate,
     children: [
-      { index: true, Component: ChannelsList },
+      { index: true, Component: InitialRedirect },
       {
         path: 'channel/:channelId',
         lazy: async () => {

@@ -269,40 +269,40 @@ describe('Property 2: Share button enabled iff permission allows and media ready
   it('share enabled when permission is "anyone" regardless of host status (media ready)', () => {
     fc.assert(
       fc.property(fc.boolean(), (selfIsHost) => {
-        expect(isShareEnabled('anyone', selfIsHost, 'active', 'connected')).toBe(true);
+        expect(isShareEnabled('anyone', selfIsHost, 'active', 'connected', 'room-1')).toBe(true);
       }),
       { numRuns: 100 },
     );
   });
 
   it('share enabled when host_only AND selfIsHost is true (media ready)', () => {
-    expect(isShareEnabled('host_only', true, 'active', 'connected')).toBe(true);
+    expect(isShareEnabled('host_only', true, 'active', 'connected', 'room-1')).toBe(true);
   });
 
   it('share disabled when host_only AND selfIsHost is false (media ready)', () => {
-    expect(isShareEnabled('host_only', false, 'active', 'connected')).toBe(false);
+    expect(isShareEnabled('host_only', false, 'active', 'connected', 'room-1')).toBe(false);
   });
 
   it('share disabled when media is not connected, even with permission', () => {
-    expect(isShareEnabled('anyone', true, 'active', 'disconnected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'active', 'connecting')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'active', 'failed')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'disconnected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'connecting', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'active', 'failed', 'room-1')).toBe(false);
   });
 
   it('share disabled when machine is not active, even with permission', () => {
-    expect(isShareEnabled('anyone', true, 'idle', 'connected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'connecting', 'connected')).toBe(false);
-    expect(isShareEnabled('anyone', true, 'joining', 'connected')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'idle', 'connected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'connecting', 'connected', 'room-1')).toBe(false);
+    expect(isShareEnabled('anyone', true, 'joining', 'connected', 'room-1')).toBe(false);
   });
 
   it('for any permission and host status, enabled iff (anyone OR selfIsHost) AND active AND connected', () => {
     fc.assert(
       fc.property(arbSharePermission, fc.boolean(), (perm, selfIsHost) => {
         const expected = (perm === 'anyone' || selfIsHost);
-        expect(isShareEnabled(perm, selfIsHost, 'active', 'connected')).toBe(expected);
+        expect(isShareEnabled(perm, selfIsHost, 'active', 'connected', 'room-1')).toBe(expected);
         // Always false when media not ready, regardless of permission
-        expect(isShareEnabled(perm, selfIsHost, 'active', 'disconnected')).toBe(false);
-        expect(isShareEnabled(perm, selfIsHost, 'idle', 'connected')).toBe(false);
+        expect(isShareEnabled(perm, selfIsHost, 'active', 'disconnected', 'room-1')).toBe(false);
+        expect(isShareEnabled(perm, selfIsHost, 'idle', 'connected', 'room-1')).toBe(false);
       }),
       { numRuns: 100 },
     );
@@ -438,6 +438,7 @@ import {
   computeSinceCursor,
   buildChatDisplayItems,
   shouldPlayChatNotification,
+  resolveChatMessageDisplayColor,
 } from '../voice-room';
 import type { ChatMessage } from '../voice-room';
 
@@ -559,6 +560,18 @@ describe('Property 6: Receive appends with 200-message cap', () => {
 // **Validates: Requirements 3.2**
 
 describe('Property 7: Color resolution from participant list', () => {
+  const message = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({
+    id: 'msg-1',
+    messageId: 'message-1',
+    timestamp: '2026-05-05T00:00:00Z',
+    participantId: 'peer-1',
+    userId: undefined,
+    displayName: 'Alice',
+    color: '#123456',
+    text: 'hello',
+    ...overrides,
+  });
+
   it('when participantId matches a participant, color equals that participant color', () => {
     fc.assert(
       fc.property(
@@ -580,9 +593,10 @@ describe('Property 7: Color resolution from participant list', () => {
               volume: 70,
             },
           ];
-          // Simulate the color resolution logic from dispatchMessage
-          const participant = participants.find((p) => p.id === peerId);
-          const resolvedColor = participant?.color ?? '';
+          const resolvedColor = resolveChatMessageDisplayColor(
+            message({ participantId: peerId, color: TERMINAL_COLORS[0] }),
+            participants,
+          );
           expect(resolvedColor).toBe(TERMINAL_COLORS[colorIdx]);
         },
       ),
@@ -590,7 +604,7 @@ describe('Property 7: Color resolution from participant list', () => {
     );
   });
 
-  it('when participantId not found, color is empty string', () => {
+  it('uses stored message color when no current participant matches', () => {
     fc.assert(
       fc.property(
         fc.string({ minLength: 1, maxLength: 20 }),
@@ -612,12 +626,102 @@ describe('Property 7: Color resolution from participant list', () => {
           ];
           // Only test when unknownId differs from the known peer
           if (unknownId === 'known-peer') return;
-          const participant = participants.find((p) => p.id === unknownId);
-          const resolvedColor = participant?.color ?? '';
-          expect(resolvedColor).toBe('');
+          const resolvedColor = resolveChatMessageDisplayColor(
+            message({ participantId: unknownId, color: '#ABCDEF' }),
+            participants,
+          );
+          expect(resolvedColor).toBe('#ABCDEF');
         },
       ),
       { numRuns: 100 },
+    );
+  });
+
+  it('messages recolor when a matching participant color changes', () => {
+    const chatMessage = message({ participantId: 'peer-1', color: '#111111' });
+    const before: RoomParticipant[] = [{
+      id: 'peer-1',
+      displayName: 'Alice',
+      color: '#222222',
+      role: 'guest',
+      isSpeaking: false,
+      isMuted: false,
+      isHostMuted: false,
+      isDeafened: false,
+      isSharing: false,
+      rmsLevel: 0,
+      volume: 70,
+    }];
+    const after = before.map((p) => ({ ...p, color: '#333333' }));
+
+    expect(resolveChatMessageDisplayColor(chatMessage, before)).toBe('#222222');
+    expect(resolveChatMessageDisplayColor(chatMessage, after)).toBe('#333333');
+  });
+
+  it('userId match takes precedence over stale participantId', () => {
+    const participants: RoomParticipant[] = [
+      {
+        id: 'old-peer',
+        userId: 'someone-else',
+        displayName: 'Stale',
+        color: '#111111',
+        role: 'guest',
+        isSpeaking: false,
+        isMuted: false,
+        isHostMuted: false,
+        isDeafened: false,
+        isSharing: false,
+        rmsLevel: 0,
+        volume: 70,
+      },
+      {
+        id: 'new-peer',
+        userId: 'user-1',
+        displayName: 'Alice',
+        color: '#44AA88',
+        role: 'guest',
+        isSpeaking: false,
+        isMuted: false,
+        isHostMuted: false,
+        isDeafened: false,
+        isSharing: false,
+        rmsLevel: 0,
+        volume: 70,
+      },
+    ];
+
+    expect(resolveChatMessageDisplayColor(
+      message({ participantId: 'old-peer', userId: 'user-1', color: '#999999' }),
+      participants,
+    )).toBe('#44AA88');
+  });
+
+  it('legacy messages without userId still recolor by participantId', () => {
+    const participants: RoomParticipant[] = [{
+      id: 'legacy-peer',
+      displayName: 'Legacy',
+      color: '#AA7744',
+      role: 'guest',
+      isSpeaking: false,
+      isMuted: false,
+      isHostMuted: false,
+      isDeafened: false,
+      isSharing: false,
+      rmsLevel: 0,
+      volume: 70,
+    }];
+
+    expect(resolveChatMessageDisplayColor(
+      message({ participantId: 'legacy-peer', userId: undefined, color: '#999999' }),
+      participants,
+    )).toBe('#AA7744');
+  });
+
+  it('hash fallback is stable when no participant and no stored color match', () => {
+    const chatMessage = message({ participantId: 'peer-fallback', userId: 'user-fallback', color: '' });
+
+    expect(resolveChatMessageDisplayColor(chatMessage, [])).toBe(
+      colorFor({ userId: 'user-fallback', id: 'peer-fallback' }),
     );
   });
 });
@@ -1018,6 +1122,23 @@ describe('Property 6: Client merge, dedup, and cap', () => {
       }),
       { numRuns: 100 },
     );
+  });
+
+  it('history merge preserves optional userId', () => {
+    const merged = mergeHistoryMessages(
+      [{
+        messageId: 'history-1',
+        participantId: 'old-peer',
+        userId: 'user-1',
+        displayName: 'Alice',
+        text: 'from history',
+        timestamp: '2026-05-05T00:00:00Z',
+      }],
+      [],
+    );
+
+    expect(merged[0].userId).toBe('user-1');
+    expect(merged[0].color).toBe(colorFor({ userId: 'user-1', id: 'old-peer' }));
   });
 });
 

@@ -29,6 +29,9 @@ let messageHandler: ((msg: unknown) => void) | null;
 /** The status change handler registered via client.onStatusChange(). */
 let statusChangeHandler: ((status: string) => void) | null;
 
+/** The most recently created mock SignalingClient instance. */
+let lastSignalingClient: Record<string, unknown> | null;
+
 /** Whether connectWithAuth should reject. */
 let connectShouldFail: boolean;
 let playNotificationSoundCalls: string[];
@@ -110,6 +113,7 @@ vi.mock('../livekit-media', () => ({
 
 vi.mock('@shared/websocket', () => ({
   SignalingClient: vi.fn(function (this: Record<string, unknown>) {
+    lastSignalingClient = this;
     this.status = 'disconnected';
     this.send = vi.fn((msg: Record<string, unknown>) => { sentMessages.push(msg); });
     this.onMessage = vi.fn((handler: (msg: unknown) => void) => {
@@ -239,6 +243,7 @@ function resetAll() {
   sentMessages = [];
   messageHandler = null;
   statusChangeHandler = null;
+  lastSignalingClient = null;
   connectShouldFail = false;
   mockMaxRetries = 10;
   playNotificationSoundCalls = [];
@@ -268,6 +273,16 @@ async function driveToActive(channelId = 'ch-1', channelName = 'test-room') {
       ],
     });
   }
+  await tick();
+}
+
+async function assignSelfToSubRoom(subRoomId = 'room-1') {
+  messageHandler!({
+    type: 'sub_room_state',
+    rooms: [
+      { subRoomId, roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+    ],
+  });
   await tick();
 }
 
@@ -489,6 +504,142 @@ describe('VoiceRoom sub-room state', () => {
 });
 
 describe('VoiceRoom room-based effective volume isolation', () => {
+  it('disables local mic publishing and incoming audio when a snapshot moves self out of all rooms', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+    const volumeCallsBefore = lastLkModule!.setParticipantVolumeCalls.length;
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')).toMatchObject({
+      isMuted: true,
+      isSpeaking: false,
+      rmsLevel: 0,
+    });
+    expect(lastLkModule!.setParticipantVolumeCalls.slice(volumeCallsBefore)).toContainEqual({ id: 'peer-2', vol: 0 });
+  });
+
+  it('enables local mic publishing by default when a snapshot assigns self to a room', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+      ],
+    });
+    await tick();
+
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([true]);
+    expect(getState().joinedSubRoomId).toBe('room-1');
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
+  });
+
+  it('does not reset mic publishing when self moves directly between rooms', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-2');
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([]);
+  });
+
+  it('disables local mic publishing when sub_room_left confirms self left the room', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_left',
+      participantId: 'self-peer',
+      subRoomId: 'room-1',
+    });
+    await tick();
+
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+  });
+
+  it('keeps mic publishing disabled when mute is toggled outside a room', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
+    toggleSelfMute();
+    await tick();
+    toggleSelfMute();
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false, false]);
+  });
+
   it('mutes participants outside the local joined room while preserving manual volume', async () => {
     await driveToActive('ch-subrooms', 'subroom-test');
 
@@ -730,7 +881,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
-  it('does not play leave sound for explicit whole-session leave', async () => {
+  it('plays leave sound for explicit whole-session leave', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
 
     messageHandler!({
@@ -744,8 +895,73 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
 
     leaveRoom();
 
-    expect(playNotificationSoundCalls).toEqual([]);
+    expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(sentMessages).toContainEqual({ type: 'leave' });
+  });
+
+  it('plays one leave sound when the local participant is kicked', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'participant_kicked',
+      participantId: 'self-peer',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when the local session is displaced', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'session_displaced' });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when signaling reconnect exhaustion ends an active session', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    statusChangeHandler!('disconnected');
+    await tick();
+    expect(getState().machineState).toBe('reconnecting');
+
+    if (lastSignalingClient) {
+      lastSignalingClient.status = 'disconnected';
+      lastSignalingClient.reconnectTimer = null;
+      lastSignalingClient.periodicRetryTimer = null;
+    }
+    statusChangeHandler!('disconnected');
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('does not play leave sound for initial connection failure before room membership', async () => {
+    connectShouldFail = true;
+    initSession('ch-sounds', 'room-sounds', 'owner', (s) => { latestState = s; });
+    await tick();
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+    expect(getState().machineState).toBe('idle');
+  });
+
+  it('plays one leave sound when duplicate terminal paths arrive for the same session', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'participant_kicked',
+      participantId: 'self-peer',
+    });
+    messageHandler!({ type: 'session_displaced' });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual(['leave']);
   });
 });
 
@@ -993,6 +1209,7 @@ describe('Voice-room media wiring', () => {
       // Send media_token so lkModule exists
       messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
       await tick();
+      await assignSelfToSubRoom();
 
       // Host-mute self
       messageHandler!({ type: 'participant_muted', participantId: 'self-peer' });
@@ -1067,7 +1284,7 @@ describe('Voice-room media wiring', () => {
       expect(self).toBeTruthy();
       expect(self!.isMuted).toBe(true);
       expect(lastLkModule!.setMicEnabledCalls[lastLkModule!.setMicEnabledCalls.length - 1]).toBe(false);
-      expect(latestState!.events.some((e) => e.message === 'you muted microphone')).toBe(true);
+      expect(latestState!.events.some((e) => e.message === 'mute toggle ignored: join a room before using the microphone')).toBe(true);
 
       leaveRoom();
     });
@@ -1450,6 +1667,7 @@ describe('Edge case unit tests', () => {
     it('screen picker cancelled does not send StartShare', async () => {
       resetAll();
       await driveToActive();
+      await assignSelfToSubRoom();
 
       messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
       await tick();
@@ -1469,9 +1687,91 @@ describe('Edge case unit tests', () => {
       leaveRoom();
     });
 
+    it('startFallbackShare rejects when self is not in a synchronized room', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      const { startFallbackShare } = await import('../voice-room');
+      await expect(startFallbackShare()).rejects.toThrow('Join a room before sharing.');
+      expect(lastLkModule!.startScreenShareCalls).toBe(0);
+      expect(sentMessages.filter(m => m.type === 'start_share')).toHaveLength(0);
+
+      leaveRoom();
+    });
+
+    it('leaving the current sub-room stops local fallback share and uses share_stopped echo for sound', async () => {
+      resetAll();
+      await driveToActive();
+      await assignSelfToSubRoom('room-1');
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      vi.mocked(lastLkModule!.startScreenShare).mockResolvedValue(true);
+
+      const { startFallbackShare } = await import('../voice-room');
+      await startFallbackShare();
+      messageHandler!({ type: 'share_started', participantId: 'self-peer', displayName: 'TestUser' });
+      await tick();
+      sentMessages.length = 0;
+      playNotificationSoundCalls = [];
+
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [
+          { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] },
+        ],
+      });
+      await tick();
+
+      expect(lastLkModule!.stopScreenShareCalls).toBe(1);
+      expect(sentMessages).toContainEqual({ type: 'stop_share' });
+      expect(playNotificationSoundCalls).not.toContain('share-stop');
+
+      messageHandler!({ type: 'share_stopped', participantId: 'self-peer', displayName: 'TestUser' });
+      await tick();
+      expect(playNotificationSoundCalls).toContain('share-stop');
+      lastLkModule!.callbacks.onLocalScreenShareEnded();
+
+      leaveRoom();
+    });
+
+    it('switching directly between sub-rooms does not stop local fallback share', async () => {
+      resetAll();
+      await driveToActive();
+      await assignSelfToSubRoom('room-1');
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      vi.mocked(lastLkModule!.startScreenShare).mockResolvedValue(true);
+
+      const { startFallbackShare } = await import('../voice-room');
+      await startFallbackShare();
+      messageHandler!({ type: 'share_started', participantId: 'self-peer', displayName: 'TestUser' });
+      await tick();
+      sentMessages.length = 0;
+
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [
+          { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] },
+          { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['self-peer'] },
+        ],
+      });
+      await tick();
+
+      expect(lastLkModule!.stopScreenShareCalls).toBe(0);
+      expect(sentMessages.filter(m => m.type === 'stop_share')).toHaveLength(0);
+
+      leaveRoom();
+    });
+
     it('external screen share end sends StopShare signaling', async () => {
       resetAll();
       await driveToActive();
+      await assignSelfToSubRoom();
 
       messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
       await tick();
@@ -1669,6 +1969,7 @@ describe('Feature: screen-share-quality, Property 11: Signaling message preserva
             });
           }
           await tick();
+          await assignSelfToSubRoom();
 
           // Establish media so lkModule exists
           messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
@@ -1718,6 +2019,7 @@ describe('VoiceRoom delegates startScreenShare to LiveKitModule', () => {
   it('startFallbackShare() calls startScreenShare on the LiveKitModule', async () => {
     resetAll();
     await driveToActive();
+    await assignSelfToSubRoom();
 
     // Establish media so lkModule exists
     messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });

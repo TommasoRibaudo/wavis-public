@@ -484,6 +484,38 @@
       }
     },
 
+    // ─── CI Legs (used by "Full CI Check" compound) ───────────
+    // These are shell-based launch configs so they appear in Run & Debug.
+    // Each runs one verification step; the compound above runs all three.
+
+    // Leg 1: Clippy lint — workspace-wide, all targets, deny warnings.
+    // Catches lint violations, unused imports, and clippy-level issues.
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "CI: Clippy (workspace)",
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "cwd": "${workspaceFolder}"
+    },
+    // Leg 2: Cargo test — workspace-wide, all features.
+    // Runs every Rust unit + integration test across all crates.
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "CI: Cargo Test (workspace)",
+      "command": "cargo test --workspace --all-features",
+      "cwd": "${workspaceFolder}"
+    },
+    // Leg 3: npm test — GUI client Vitest suite.
+    // Runs the TypeScript/React test suite for wavis-gui.
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "CI: npm Test (GUI)",
+      "command": "npm test",
+      "cwd": "${workspaceFolder}/clients/wavis-gui"
+    },
+
     // ─── Workspace-Wide ─────────────────────────────────────────
     // NOTE: "Test Entire Workspace" is a Task, not a launch config,
     //       because --workspace produces binaries for every crate.
@@ -492,6 +524,25 @@
 
   // ─── Compound Launch Configurations ─────────────────────────
   "compounds": [
+    // ── Full CI Check ───────────────────────────────────────
+    // Runs Clippy, Cargo Test, and npm Test in parallel.
+    // Appears in the Run & Debug dropdown as "▶ Full CI Check".
+    // Each leg opens its own integrated terminal so output is separate.
+    // Equivalent to the one-liner:
+    //   clippy --workspace | cargo test --workspace | npm test (parallel)
+    {
+      "name": "Full CI Check",
+      "configurations": [
+        "CI: Clippy (workspace)",
+        "CI: Cargo Test (workspace)",
+        "CI: npm Test (GUI)"
+      ],
+      "stopAll": false,
+      "presentation": {
+        "group": "ci",
+        "order": 0
+      }
+    },
     {
       "name": "Backend + CLI Client (P2P)",
       "configurations": ["Run Backend", "Run CLI Test Client (server)"],
