@@ -2751,6 +2751,7 @@ pub(crate) async fn dispatch_message(
             let signals = chat::handle_chat_send(
                 &payload.text,
                 &session_ref.participant_id,
+                session_ref.user_id.as_deref(),
                 &display_name,
                 &timestamp,
                 &message_id.to_string(),
@@ -2770,17 +2771,21 @@ pub(crate) async fn dispatch_message(
                 .and_then(|cid| cid.parse::<Uuid>().ok());
             let room_id_clone = session_ref.room_id.clone();
             let participant_id_clone = session_ref.participant_id.clone();
+            let user_id_clone = session_ref.user_id.clone();
             let display_name_clone = display_name.clone();
             let text_clone = payload.text.clone();
             tokio::spawn(async move {
                 if let Err(e) = chat_persistence::insert_chat_message(
                     &db_pool,
-                    message_id,
-                    channel_id_uuid,
-                    &room_id_clone,
-                    &participant_id_clone,
-                    &display_name_clone,
-                    &text_clone,
+                    chat_persistence::InsertChatMessageParams {
+                        message_id,
+                        channel_id: channel_id_uuid,
+                        room_id: &room_id_clone,
+                        participant_id: &participant_id_clone,
+                        user_id: user_id_clone.as_deref(),
+                        display_name: &display_name_clone,
+                        text: &text_clone,
+                    },
                 )
                 .await
                 {

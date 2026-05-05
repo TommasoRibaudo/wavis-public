@@ -94,6 +94,7 @@ export interface ChatMessage {
   messageId?: string;
   timestamp: string;
   participantId: string;
+  userId?: string;
   displayName: string;
   color: string;
   text: string;
@@ -314,6 +315,21 @@ export function colorFor(participant: { userId?: string; id: string }): string {
     h = Math.imul(h, 16777619);
   }
   return TERMINAL_COLORS[Math.abs(h) % TERMINAL_COLORS.length];
+}
+
+export function resolveChatMessageDisplayColor(
+  message: Pick<ChatMessage, 'participantId' | 'userId' | 'color'>,
+  participants: Array<Pick<RoomParticipant, 'id' | 'userId' | 'color'>>,
+): string {
+  if (message.userId) {
+    const userMatch = participants.find((p) => p.userId === message.userId);
+    if (userMatch?.color) return userMatch.color;
+  }
+
+  const participantMatch = participants.find((p) => p.id === message.participantId);
+  if (participantMatch?.color) return participantMatch.color;
+
+  return message.color || colorFor({ userId: message.userId, id: message.participantId });
 }
 
 /**
@@ -561,7 +577,7 @@ export function shouldPlayChatNotification(
  * Exported for property testing.
  */
 export function mergeHistoryMessages(
-  historyPayload: Array<{ messageId: string; participantId: string; displayName: string; text: string; timestamp: string }>,
+  historyPayload: Array<{ messageId: string; participantId: string; userId?: string; displayName: string; text: string; timestamp: string }>,
   existingMessages: ChatMessage[],
 ): ChatMessage[] {
   // Build set of existing messageIds for dedup (skip entries without messageId)
@@ -578,8 +594,9 @@ export function mergeHistoryMessages(
       messageId: h.messageId,
       timestamp: h.timestamp,
       participantId: h.participantId,
+      userId: h.userId,
       displayName: h.displayName,
-      color: colorFor({ id: h.participantId }),
+      color: colorFor({ userId: h.userId, id: h.participantId }),
       text: h.text,
       isHistory: true,
     }));
@@ -949,6 +966,8 @@ const MAX_AUTH_REFRESH_RETRIES = 2;
 let authRefreshRetries = 0;
 let wasReconnecting = false;
 let unsubTokenRefresh: (() => void) | null = null;
+let localSessionJoined = false;
+let localDisconnectSoundPlayed = false;
 // TODO: proactiveReconnecting flag — wire into onStatusChange to suppress
 // the "already reconnecting → connection lost" path during token-refresh reconnects.
 
@@ -957,6 +976,19 @@ let unsubTokenRefresh: (() => void) | null = null;
  * late-arriving events (share_stopped, etc.) can still resolve display names.
  */
 const displayNameCache = new Map<string, string>();
+
+function playLocalDisconnectSoundOnce(): void {
+  const wasInLocalSession =
+    localSessionJoined ||
+    !!state.selfParticipantId ||
+    !!state.roomId ||
+    state.machineState === 'active' ||
+    state.machineState === 'reconnecting';
+
+  if (!wasInLocalSession || localDisconnectSoundPlayed) return;
+  localDisconnectSoundPlayed = true;
+  void playNotificationSound('leave');
+}
 
 /* ─── Share Picker Data (Tauri event handshake) ─────────────────── */
 
@@ -1565,6 +1597,7 @@ function dispatchMessage(raw: unknown): void {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
             state.error = (msg.reason as string) || 'Authentication failed';
+            playLocalDisconnectSoundOnce();
             state.machineState = 'idle';
             notify();
             return;
@@ -1574,6 +1607,7 @@ function dispatchMessage(raw: unknown): void {
             client.reconnectWithNewToken(toWsUrl(serverUrl)).catch((err) => {
               console.error(LOG, 'reconnect after refresh failed:', err);
               state.error = 'Authentication failed';
+              playLocalDisconnectSoundOnce();
               state.machineState = 'idle';
               notify();
             });
@@ -1586,17 +1620,23 @@ function dispatchMessage(raw: unknown): void {
       if (client) {
         client.disconnect();
       }
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       notify();
       break;
     }
 
     case 'joined': {
+      const joinedActiveSession = state.machineState !== 'idle';
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
       state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
+      if (joinedActiveSession) {
+        localSessionJoined = true;
+        localDisconnectSoundPlayed = false;
+      }
       syncDerivedSubRoomState();
       syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
@@ -1677,6 +1717,7 @@ function dispatchMessage(raw: unknown): void {
       console.warn(LOG, `join_rejected reason=${rawReason} channelId=${state.channelId}`);
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
         state.rejectionReason = (msg.reason as string) || 'Server failed to start';
@@ -1697,6 +1738,7 @@ function dispatchMessage(raw: unknown): void {
         client.disconnect();
       }
       client = null;
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       notify();
       break;
@@ -1963,6 +2005,7 @@ function dispatchMessage(raw: unknown): void {
           client.disconnect();
         }
         client = null;
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
       }
       notify();
@@ -1990,6 +2033,7 @@ function dispatchMessage(raw: unknown): void {
         client.disconnect();
       }
       client = null;
+      playLocalDisconnectSoundOnce();
       state.machineState = 'idle';
       stopColdStartRetry();
       stopPeriodicMediaRetry();
@@ -2348,6 +2392,7 @@ function dispatchMessage(raw: unknown): void {
         messageId: (msg.messageId as string) || undefined,
         timestamp: msg.timestamp as string,
         participantId: msg.participantId as string,
+        userId: (msg.userId as string) || undefined,
         displayName: msg.displayName as string,
         color: participant?.color ?? '',
         text: msg.text as string,
@@ -2368,6 +2413,7 @@ function dispatchMessage(raw: unknown): void {
       const historyPayload = messages.map((m) => ({
         messageId: m.messageId as string,
         participantId: m.participantId as string,
+        userId: (m.userId as string) || undefined,
         displayName: m.displayName as string,
         text: m.text as string,
         timestamp: m.timestamp as string,
@@ -2423,6 +2469,8 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  localSessionJoined = false;
+  localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
 
   // Push initial state to the component
@@ -2479,6 +2527,7 @@ export function initSession(
           appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'signaling reconnect failed — session lost' });
           state.error = 'Connection lost';
           state.lastRateLimitError = null;
+          playLocalDisconnectSoundOnce();
           state.machineState = 'idle';
           notify();
         }
@@ -2513,6 +2562,7 @@ export function initSession(
         console.error(LOG, 'connect failed:', err);
         if (client !== thisClient) return;
         state.error = 'Connection failed';
+        playLocalDisconnectSoundOnce();
         state.machineState = 'idle';
         notify();
       });
@@ -2521,6 +2571,8 @@ export function initSession(
 }
 
 export function leaveRoom(): void {
+  playLocalDisconnectSoundOnce();
+
   // Clean up custom share captures (best-effort, fire-and-forget)
   if (state.activeVideoShare || state.activeAudioShare) {
     if (lkModule && lkModule instanceof LiveKitModule) {

@@ -18,6 +18,7 @@ import { ErrorPanel } from '@shared/ErrorPanel';
 import { EmptyState } from '@shared/EmptyState';
 import { LoadingBlock } from '@shared/LoadingBlock';
 import { usePolling } from '@shared/hooks/usePolling';
+import { setLastChannel } from '@features/settings/settings-store';
 
 /* Constants */
 const POLL_MS = 15_000;
@@ -233,7 +234,10 @@ export default function ChannelsList() {
               {channels.map((ch) => (
                 <div
                   key={ch.id}
-                  onClick={() => navigate('/room', { state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role } })}
+                  onClick={() => {
+                    void setLastChannel(ch.id, ch.name, ch.role);
+                    navigate('/room', { state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role } });
+                  }}
                   className="flex items-center justify-between gap-4 px-3 sm:px-4 py-3 bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors text-left mb-1 cursor-pointer"
                 >
                   <span className="min-w-0 truncate">{ch.name}</span>
