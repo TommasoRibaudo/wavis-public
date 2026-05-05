@@ -293,6 +293,16 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     }
 
+    // WebKitGTK 2.40+ ships a DMA-BUF renderer that is the most common cause
+    // of silent WebProcess crashes on Linux (NVIDIA proprietary, hybrid GPUs,
+    // older Mesa). Symptom: the window vanishes with no error during heavy
+    // GPU/compositing work — e.g. watching multiple screen shares or moving
+    // windows around. Disabling it falls back to a stable shared-memory path.
+    #[cfg(target_os = "linux")]
+    if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Create the shared Rust log buffer for bug report diagnostics.
     let log_buffer = bug_report::new_shared_buffer(200);
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
@@ -337,6 +347,10 @@ fn main() {
                     eprintln!("wavis: tray unavailable: {err}");
                 }
             }
+
+            #[cfg(target_os = "linux")]
+            install_web_process_crash_logger(app);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -437,6 +451,42 @@ fn main() {
                 }
             }
         });
+}
+
+/// Connect a `web-process-terminated` handler on the main window's WebKitGTK
+/// WebView so that a renderer crash leaves a log entry instead of the parent
+/// process exiting silently. WebKitGTK terminates the WebProcess for several
+/// reasons (Crashed, ExceededMemoryLimit, LoadFailed, etc.) — in all cases the
+/// Tauri parent has historically just disappeared, which made these crashes
+/// nearly impossible to diagnose from user reports.
+#[cfg(target_os = "linux")]
+fn install_web_process_crash_logger(app: &mut tauri::App) {
+    use tauri::Manager;
+
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("wavis: web-process crash logger: main window not found");
+        return;
+    };
+
+    let result = window.with_webview(|webview| {
+        use webkit2gtk::WebViewExt;
+        let inner = webview.inner();
+        inner.connect_web_process_terminated(|_view, reason| {
+            let msg = format!(
+                "wavis: WebKitGTK WebProcess terminated (reason={reason:?}) — \
+                 the window will close. Common causes: GPU driver crash in the \
+                 DMA-BUF renderer, OOM under heavy screen-share decode, or a \
+                 compositor protocol error. Check the surrounding stderr for \
+                 GL/Wayland diagnostics."
+            );
+            eprintln!("{msg}");
+            log::error!("{msg}");
+        });
+    });
+
+    if let Err(err) = result {
+        eprintln!("wavis: failed to install web-process crash logger: {err}");
+    }
 }
 
 // ─── IPC Commands ──────────────────────────────────────────────────
@@ -610,21 +660,52 @@ impl KeyringCache {
     }
 }
 
+/// Upper bound on a single keyring round-trip. The keyring crate uses
+/// blocking D-Bus on Linux (sync-secret-service); if no Secret Service is
+/// running, or the keyring is locked and waiting on a prompt that never
+/// arrives, the call would otherwise hang indefinitely.
+const KEYRING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn run_keyring_blocking<T, F>(op: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let handle = tokio::task::spawn_blocking(op);
+    match tokio::time::timeout(KEYRING_TIMEOUT, handle).await {
+        Ok(Ok(res)) => res,
+        Ok(Err(join_err)) => Err(format!("keyring task panicked: {join_err}")),
+        Err(_) => Err(
+            "keyring timed out — is a Secret Service (gnome-keyring / kwalletd / keepassxc) running and unlocked?"
+                .to_string(),
+        ),
+    }
+}
+
 #[tauri::command]
-fn store_token(
+async fn store_token(
     key: String,
     value: String,
     cache: tauri::State<'_, KeyringCache>,
 ) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    entry.set_password(&value).map_err(|e| e.to_string())?;
+    let key_for_keyring = key.clone();
+    let value_for_keyring = value.clone();
+    run_keyring_blocking(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        entry.set_password(&value_for_keyring).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await?;
     // Keep cache in sync so the next get_token is served from memory.
     cache.0.lock().unwrap().insert(key, value);
     Ok(())
 }
 
 #[tauri::command]
-fn get_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<Option<String>, String> {
+async fn get_token(
+    key: String,
+    cache: tauri::State<'_, KeyringCache>,
+) -> Result<Option<String>, String> {
     {
         let map = cache.0.lock().unwrap();
         if let Some(cached) = map.get(&key) {
@@ -632,26 +713,38 @@ fn get_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<Optio
         }
     }
     // Cache miss — read from keychain once and populate the cache.
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(val) => {
-            cache.0.lock().unwrap().insert(key, val.clone());
-            Ok(Some(val))
+    let key_for_keyring = key.clone();
+    let result = run_keyring_blocking(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        match entry.get_password() {
+            Ok(val) => Ok(Some(val)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+    })
+    .await?;
+    if let Some(val) = &result {
+        cache.0.lock().unwrap().insert(key, val.clone());
     }
+    Ok(result)
 }
 
 #[tauri::command]
-fn delete_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<(), String> {
+async fn delete_token(
+    key: String,
+    cache: tauri::State<'_, KeyringCache>,
+) -> Result<(), String> {
     cache.0.lock().unwrap().remove(&key);
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent
-        Err(e) => Err(e.to_string()),
-    }
+    let key_for_keyring = key.clone();
+    run_keyring_blocking(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
