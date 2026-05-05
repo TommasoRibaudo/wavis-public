@@ -9,3 +9,6 @@ crash.log
 # Don't commit actual secrets in tfvars
 # (terraform.tfvars is committed with placeholders — override locally)
 *.auto.tfvars
+
+# Backend config contains real S3 bucket name — keep local only
+**/backend.tf
