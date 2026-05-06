@@ -524,6 +524,8 @@ function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
   return {
     calls,
     onMediaConnected: () => calls.push({ method: 'onMediaConnected', args: [] }),
+    onMediaReconnecting: () => calls.push({ method: 'onMediaReconnecting', args: [] }),
+    onMediaReconnected: () => calls.push({ method: 'onMediaReconnected', args: [] }),
     onMediaFailed: (reason) => calls.push({ method: 'onMediaFailed', args: [reason] }),
     onMediaDisconnected: () => calls.push({ method: 'onMediaDisconnected', args: [] }),
     onAudioLevels: (levels) => calls.push({ method: 'onAudioLevels', args: [levels] }),
@@ -4677,6 +4679,23 @@ describe('Connection quality polling', () => {
 });
 
 describe('Reconnect screen share cleanup', () => {
+  it('emits typed media reconnect callbacks on LiveKit reconnect transitions', async () => {
+    resetAll();
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    emitRoomEvent('reconnecting');
+    emitRoomEvent('reconnected');
+    await tick();
+
+    expect(cbs.calls.some((call) => call.method === 'onMediaReconnecting')).toBe(true);
+    expect(cbs.calls.some((call) => call.method === 'onMediaReconnected')).toBe(true);
+
+    mod.disconnect();
+  });
+
   it('stops an active screen share when LiveKit starts reconnecting', async () => {
     resetAll();
     tauriInvokeCalls = [];

@@ -242,6 +242,7 @@ function mediaIndicator(state: MediaState, error: string | null): { color: strin
   switch (state) {
     case 'connected': return { color: 'var(--wavis-accent)', label: 'Media: connected' };
     case 'connecting': return { color: 'var(--wavis-warn)', label: 'Media: connecting...' };
+    case 'reconnecting': return { color: 'var(--wavis-warn)', label: 'Media: reconnecting...' };
     case 'failed': return { color: 'var(--wavis-danger)', label: `Media: failed${error ? ` — ${error}` : ''}` };
     case 'disconnected':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Media: disconnected' };
@@ -254,6 +255,8 @@ function combinedStatusBadge(
 ): { text: string; color: string } {
   // Failed media takes priority
   if (media === 'failed') return { text: 'FAILED', color: 'var(--wavis-danger)' };
+  // Media reconnecting takes priority over live/connected state
+  if (media === 'reconnecting') return { text: 'RECONNECTING', color: 'var(--wavis-warn)' };
   // Both fully connected = live
   if (machine === 'active' && media === 'connected') return { text: 'LIVE', color: 'var(--wavis-accent)' };
   // Reconnecting signaling
@@ -2018,6 +2021,12 @@ export default function ActiveRoom() {
     </div>
   ) : null;
 
+  const mediaReconnectingBanner = roomState.mediaState === 'reconnecting' ? (
+    <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
+      Audio reconnecting... still in room
+    </div>
+  ) : null;
+
   const reconnectBanner = roomState.lastRateLimitError && (
     roomState.machineState === 'reconnecting' ||
     roomState.machineState === 'authenticated' ||
@@ -2603,6 +2612,7 @@ export default function ActiveRoom() {
           </div>
         </div>
 
+        {mediaReconnectingBanner}
         {mediaRetryBanner}
         {reconnectBanner}
 
@@ -2647,6 +2657,7 @@ export default function ActiveRoom() {
       <div className="hidden md:flex flex-1 overflow-hidden">
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
+          {mediaReconnectingBanner}
           {mediaRetryBanner}
           {reconnectBanner}
           {participantsSections}

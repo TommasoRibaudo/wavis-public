@@ -1348,34 +1348,49 @@ function connectMedia(sfuUrl: string, token: string): void {
   }
 
   state.mediaState = 'connecting';
+  state.mediaError = null;
   state.nativeMicBridgeActive = false;
   state.noiseSuppressionActive = false;
   notify();
 
+  const restoreConnectedMediaState = (): void => {
+    state.mediaState = 'connected';
+    state.mediaError = null;
+    state.mediaReconnectFailures = 0;
+    stopPeriodicMediaRetry();
+    const self = selfParticipant();
+    setLocalMicPublishing(shouldPublishLocalMic(self));
+    // Apply persisted master volume to the media layer
+    if (lkModule) {
+      lkModule.setMasterVolume(state.masterVolume);
+      // Apply effective participant volumes after reconnect.
+      applyEffectiveParticipantVolumes();
+    }
+    // Register global mute hotkey on media connect success (R22.1)
+    getMuteHotkey().then((hotkey) => {
+      registerMuteHotkey(hotkey, toggleSelfMute)
+        .then(() => { registeredHotkey = hotkey; })
+        .catch((err) => {
+          console.warn(LOG, 'hotkey registration failed:', err);
+        });
+    }).catch(() => { });
+    notify();
+  };
+
   const callbacks: MediaCallbacks = {
     onMediaConnected: () => {
-      state.mediaState = 'connected';
-      state.mediaReconnectFailures = 0;
-      stopPeriodicMediaRetry();
+      restoreConnectedMediaState();
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
-      const self = selfParticipant();
-      setLocalMicPublishing(shouldPublishLocalMic(self));
-      // Apply persisted master volume to the media layer
-      if (lkModule) {
-        lkModule.setMasterVolume(state.masterVolume);
-        // Apply effective participant volumes after reconnect.
-        applyEffectiveParticipantVolumes();
-      }
-      // Register global mute hotkey on media connect success (R22.1)
-      getMuteHotkey().then((hotkey) => {
-        registerMuteHotkey(hotkey, toggleSelfMute)
-          .then(() => { registeredHotkey = hotkey; })
-          .catch((err) => {
-            console.warn(LOG, 'hotkey registration failed:', err);
-          });
-      }).catch(() => { });
+    },
+    onMediaReconnecting: () => {
+      if (state.mediaState === 'failed' || state.mediaState === 'disconnected') return;
+      state.mediaState = 'reconnecting';
+      state.mediaError = null;
       notify();
+    },
+    onMediaReconnected: () => {
+      restoreConnectedMediaState();
     },
     onMediaFailed: (reason) => {
       state.mediaReconnectFailures += 1;
@@ -2357,7 +2372,11 @@ function dispatchMessage(raw: unknown): void {
       // Media already connected — this is a proactive refresh from the backend.
       // LiveKit SDK handles its own reconnection internally; tearing down and
       // rebuilding the Room would cause a visible audio/screenshare hiccup.
-      if (state.mediaState === 'connected' || state.mediaState === 'connecting') {
+      if (
+        state.mediaState === 'connected'
+        || state.mediaState === 'connecting'
+        || state.mediaState === 'reconnecting'
+      ) {
         console.log(LOG, `media_token received while media ${state.mediaState} — ignoring (no reconnect needed)`);
         break;
       }
@@ -2715,7 +2734,11 @@ function startPeriodicMediaRetry(): void {
       stopPeriodicMediaRetry();
       return;
     }
-    if (state.mediaState === 'connected' || state.mediaState === 'connecting') {
+    if (
+      state.mediaState === 'connected'
+      || state.mediaState === 'connecting'
+      || state.mediaState === 'reconnecting'
+    ) {
       stopPeriodicMediaRetry();
       return;
     }

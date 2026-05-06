@@ -1407,8 +1407,8 @@ describe('Voice-room media wiring', () => {
             // These fire through the onSystemEvent callback — they should NOT create new modules
             if (lastLkModule) {
               for (let i = 0; i < reconnectEvents; i++) {
-                lastLkModule.callbacks.onSystemEvent('LiveKit reconnecting…');
-                lastLkModule.callbacks.onSystemEvent('LiveKit reconnected');
+                lastLkModule.callbacks.onMediaReconnecting?.();
+                lastLkModule.callbacks.onMediaReconnected?.();
               }
             }
             await tick();
@@ -1892,10 +1892,14 @@ describe('Edge case unit tests', () => {
 
       const moduleCount = lkConstructorCalls.length;
 
-      lastLkModule!.callbacks.onSystemEvent('LiveKit reconnecting…');
-      lastLkModule!.callbacks.onSystemEvent('LiveKit reconnected');
+      lastLkModule!.callbacks.onMediaReconnecting?.();
+      await tick();
+      expect(latestState!.mediaState).toBe('reconnecting');
+
+      lastLkModule!.callbacks.onMediaReconnected?.();
       await tick();
 
+      expect(latestState!.mediaState).toBe('connected');
       expect(lkConstructorCalls.length).toBe(moduleCount);
 
       leaveRoom();

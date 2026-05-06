@@ -95,7 +95,7 @@ function usesNativeScreenShareAudio(): boolean {
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
-export type MediaState = 'disconnected' | 'connecting' | 'connected' | 'failed';
+export type MediaState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 /** Quality tier for screen share — matches the export in voice-room.ts. */
 export type ShareQuality = 'low' | 'high' | 'max';
@@ -278,6 +278,10 @@ const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
 export interface MediaCallbacks {
   /** Called when media transitions to connected (mic published or listen-only). */
   onMediaConnected: () => void;
+  /** Called when LiveKit reports that media is reconnecting in place. */
+  onMediaReconnecting?: () => void;
+  /** Called when an in-place LiveKit media reconnect completes. */
+  onMediaReconnected?: () => void;
   /** Called when media connection fails. */
   onMediaFailed: (reason: string) => void;
   /** Called when media disconnects (cleanup complete). */
@@ -1675,6 +1679,7 @@ export class LiveKitModule {
       // c. Reconnecting
       addListener(RoomEvent.Reconnecting, () => {
         if (this.disposed) return;
+        this.callbacks.onMediaReconnecting?.();
         this.callbacks.onSystemEvent('LiveKit reconnecting…');
       });
 
@@ -1691,6 +1696,7 @@ export class LiveKitModule {
       // d. Reconnected
       addListener(RoomEvent.Reconnected, () => {
         if (this.disposed) return;
+        this.callbacks.onMediaReconnected?.();
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
         // audio elements are recreated and lose the previous sinkId.
