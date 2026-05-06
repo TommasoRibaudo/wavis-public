@@ -252,6 +252,10 @@ pub struct AudioShareStartResult {
     /// The JS side must mute local LiveKit playback to prevent the viewer from
     /// hearing their own voice in loopback.
     pub requires_mute_for_echo_prevention: bool,
+    /// Backend-selected capture path for this audio-share session.
+    pub capture_path: Option<String>,
+    /// Human-readable reason when a weaker fallback path was selected.
+    pub fallback_reason: Option<String>,
 }
 
 /// A single sink-input that was moved to the null sink for loopback exclusion.

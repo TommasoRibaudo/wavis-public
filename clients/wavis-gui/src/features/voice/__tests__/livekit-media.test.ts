@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fc from 'fast-check';
+import { clearTelemetrySnapshot, getTelemetrySnapshot } from '../telemetry';
 
 // ─── Mock @tauri-apps/plugin-store ─────────────────────────────────
 
@@ -329,6 +330,7 @@ describe('macOS share-audio routing', () => {
     audioShareStartResult = {
       loopback_exclusion_available: true,
       real_output_device_id: 'coreaudio-real-output',
+      capture_path: 'process_tap',
     };
     (navigator.mediaDevices.enumerateDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
       {
@@ -365,6 +367,46 @@ describe('macOS share-audio routing', () => {
     expect(bridge.audioContext!.setSinkId).toHaveBeenCalledWith('webkit-device-123');
     expect(bridge.audioContext!.setSinkId).not.toHaveBeenCalledWith('coreaudio-real-output');
     expect(bridge.startWasapiAudioBridge).toHaveBeenCalledWith(true);
+
+    mod.disconnect();
+  });
+
+  it('emits macOS ScreenCaptureKit fallback telemetry when process-tap isolation is unavailable', async () => {
+    audioShareStartResult = {
+      loopback_exclusion_available: false,
+      real_output_device_id: null,
+      capture_path: 'screen_capture_kit',
+      fallback_reason: 'process tap isolation was unavailable',
+    };
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const bridge = mod as unknown as {
+      startWasapiAudioBridge: ReturnType<typeof vi.fn>;
+      startWasapiScreenShareAudio: () => Promise<void>;
+    };
+    bridge.startWasapiAudioBridge = vi.fn(async () => {});
+
+    await bridge.startWasapiScreenShareAudio();
+
+    expect(getTelemetrySnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'capture.path.selected',
+          os: 'macos',
+          path: 'screen_capture_kit',
+        }),
+        expect.objectContaining({
+          name: 'capture.fallback.activated',
+          os: 'macos',
+          from: 'process_tap',
+          to: 'sck',
+          reason: 'process tap isolation was unavailable',
+        }),
+      ]),
+    );
 
     mod.disconnect();
   });
@@ -561,6 +603,7 @@ function resetAll() {
   docListeners = new Map();
   mockRoom = createMockRoom();
   audioShareStartResult = { loopback_exclusion_available: true, real_output_device_id: null };
+  clearTelemetrySnapshot();
   (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData = new WeakMap();
 }
 
@@ -2212,6 +2255,53 @@ describe('Screen share and device selection', () => {
 
       mod.disconnect();
     });
+
+    it('mic gain node and sys-audio gain node are independent (mute parity)', async () => {
+      // Validates: A2 — local-listener mute for mic must not affect sys-audio and vice versa.
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      // Subscribe alice's mic track
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'mic-alice' }, sid: 'sid-mic-alice' },
+        { source: 'microphone' },
+        { identity: 'alice' },
+      );
+
+      // Subscribe alice's sys-audio track and attach it (simulates viewer clicking Watch)
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-alice' } },
+        { source: 'screen_share_audio' },
+        { identity: 'alice' },
+      );
+      mod.attachScreenShareAudio('alice');
+
+      const gains = (mod as unknown as {
+        participantGains: Map<string, { gain: { value: number; setValueAtTime: ReturnType<typeof vi.fn> } }>;
+      }).participantGains;
+
+      const micGain = gains.get('alice');
+      const sysGain = gains.get('alice:screen-share');
+      expect(micGain).toBeDefined();
+      expect(sysGain).toBeDefined();
+
+      // Mute mic (local) — sys-audio gain must be unaffected
+      mod.setParticipantVolume('alice', 0);
+      expect(micGain!.gain.value).toBeCloseTo(0);
+      expect(sysGain!.gain.value).not.toBeCloseTo(0);
+
+      // Restore mic, mute sys-audio (local) — mic gain must be unaffected
+      mod.setParticipantVolume('alice', 70);
+      mod.setScreenShareAudioVolume('alice', 0);
+      expect(sysGain!.gain.value).toBeCloseTo(0);
+      expect(micGain!.gain.value).toBeCloseTo(expectedPerceptualGain(70));
+
+      mod.disconnect();
+    });
   });
 
   // Feature: gui-livekit-media, Property 19: Most recent screen share displayed
@@ -2668,10 +2758,10 @@ describe('Screen share quality optimization', () => {
             // degradationPreference: 'maintain-resolution'
             expect(publishOpts.degradationPreference).toBe('maintain-resolution');
 
-            // screenShareEncoding: maxBitrate 6_000_000, maxFramerate 30 (high preset)
+            // screenShareEncoding: maxBitrate 8_000_000, maxFramerate 30 (high/detail preset, W5 §R1.2)
             const encoding = publishOpts.screenShareEncoding as Record<string, unknown>;
             expect(encoding).toBeDefined();
-            expect(encoding.maxBitrate).toBe(6_000_000);
+            expect(encoding.maxBitrate).toBe(8_000_000);
             expect(encoding.maxFramerate).toBe(30);
 
             // screenShareSimulcastLayers: 2 entries at 360p and 720p heights
@@ -2693,6 +2783,48 @@ describe('Screen share quality optimization', () => {
         ),
         { numRuns: 100 },
       );
+    });
+
+    it('startScreenShare honors the saved AV1 override with VP9 backup', async () => {
+      mockSettingsStorage.set('wavis_screen_share_codec', 'av1');
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const callsBefore = sdkCalls.length;
+      await mod.startScreenShare();
+
+      const shareCalls = sdkCalls.slice(callsBefore).filter((call) => call.method === 'setScreenShareEnabled');
+      expect(shareCalls).toHaveLength(1);
+
+      const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
+      expect(publishOpts.videoCodec).toBe('av1');
+      expect(publishOpts.simulcast).toBe(false);
+      expect(publishOpts.backupCodec).toEqual({ codec: 'vp9' });
+
+      mod.disconnect();
+    });
+
+    it('startScreenShare honors the saved VP8 override with simulcast and no backup codec', async () => {
+      mockSettingsStorage.set('wavis_screen_share_codec', 'vp8');
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const callsBefore = sdkCalls.length;
+      await mod.startScreenShare();
+
+      const shareCalls = sdkCalls.slice(callsBefore).filter((call) => call.method === 'setScreenShareEnabled');
+      expect(shareCalls).toHaveLength(1);
+
+      const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
+      expect(publishOpts.videoCodec).toBe('vp8');
+      expect(publishOpts.simulcast).toBe(true);
+      expect(publishOpts.backupCodec).toBe(false);
+
+      mod.disconnect();
     });
   });
 
@@ -4099,7 +4231,12 @@ describe('Adaptive quality', () => {
 
 /** Invoke calls recorded by the @tauri-apps/api/core mock. */
 let tauriInvokeCalls: Array<{ cmd: string; args?: unknown }>;
-let audioShareStartResult: { loopback_exclusion_available: boolean; real_output_device_id?: string | null };
+let audioShareStartResult: {
+  loopback_exclusion_available: boolean;
+  real_output_device_id?: string | null;
+  capture_path?: 'wasapi' | 'pulse_audio' | 'process_tap' | 'virtual_device' | 'screen_capture_kit' | null;
+  fallback_reason?: string | null;
+};
 
 // Mock @tauri-apps/api/core — intercept invoke('audio_share_start') / invoke('audio_share_stop')
 vi.mock('@tauri-apps/api/core', () => ({

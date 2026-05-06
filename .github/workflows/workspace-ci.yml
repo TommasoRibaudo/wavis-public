@@ -264,6 +264,26 @@ jobs:
         run: npm install --no-audit --no-fund
         working-directory: clients/wavis-gui
 
+      - name: GUI release config check
+        run: npm run check:release-config
+        working-directory: clients/wavis-gui
+
+      - name: GUI LiveKit patch verification
+        run: npm run verify:livekit-patch
+        working-directory: clients/wavis-gui
+
+      - name: GUI mic bitrate lint
+        run: npm run lint:mic-bitrate
+        working-directory: clients/wavis-gui
+
+      - name: GUI forbidden macOS path lint
+        run: npm run lint:forbidden-macos-paths
+        working-directory: clients/wavis-gui
+
+      - name: GUI Linux matrix codegen check
+        run: npm run check:linux-matrix
+        working-directory: clients/wavis-gui
+
       - name: GUI TypeScript type check
         run: npx tsc --noEmit
         working-directory: clients/wavis-gui

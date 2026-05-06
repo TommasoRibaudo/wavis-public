@@ -36,6 +36,7 @@ const arbVideoShare: fc.Arbitrary<VoiceRoomState['activeVideoShare']> = fc.oneof
     mode: fc.constantFrom('screen_audio' as const, 'window' as const),
     sourceName: fc.string({ minLength: 1, maxLength: 64 }),
     withAudio: fc.boolean(),
+    audioSourceId: fc.option(fc.string({ minLength: 1, maxLength: 64 }), { nil: null }),
   }),
 );
 
@@ -263,6 +264,7 @@ describe('Property 10: Atomic share failure rollback', () => {
         mode: selection.mode as 'screen_audio' | 'window',
         sourceName: selection.sourceName,
         withAudio: selection.withAudio,
+        audioSourceId: selection.withAudio ? selection.sourceId : null,
       };
     } else {
       activeAudioShare = {
@@ -478,7 +480,12 @@ describe('Property 18: canStartShare slot conflict detection', () => {
       fc.property(arbShareSelection, arbAudioShare, (sel, audio) => {
         const videoMode = fc.sample(fc.constantFrom('screen_audio' as const, 'window' as const), 1)[0];
         const s = { ...sel, mode: videoMode };
-        const existingVideo = { mode: 'screen_audio' as const, sourceName: 'Existing', withAudio: false };
+        const existingVideo = {
+          mode: 'screen_audio' as const,
+          sourceName: 'Existing',
+          withAudio: false,
+          audioSourceId: null,
+        };
         const result = canStartShare(s, existingVideo, audio);
         expect(result.allowed).toBe(false);
       }),

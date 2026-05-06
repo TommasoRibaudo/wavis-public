@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fc from 'fast-check';
+import { clearTelemetrySnapshot, getTelemetrySnapshot } from '../telemetry';
 
 // ─── Mock State ────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ let lastSignalingClient: Record<string, unknown> | null;
 /** Whether connectWithAuth should reject. */
 let connectShouldFail: boolean;
 let playNotificationSoundCalls: string[];
+let invokeCalls: Array<{ command: string; args?: Record<string, unknown> }>;
 
 // ─── Mock LiveKitModule ────────────────────────────────────────────
 
@@ -48,6 +50,8 @@ interface MockLiveKitModule {
   setScreenShareAudioVolumeCalls: Array<{ id: string; vol: number }>;
   attachScreenShareAudioCalls: string[];
   detachScreenShareAudioCalls: string[];
+  startWasapiAudioBridgeCalls: Array<boolean>;
+  stopWasapiAudioBridgeCalls: number;
   startScreenShareCalls: number;
   stopScreenShareCalls: number;
   activeScreenShares: Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
@@ -59,6 +63,8 @@ interface MockLiveKitModule {
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
+  startWasapiAudioBridge: (loopbackExclusionAvailable: boolean) => Promise<void>;
+  stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
   getActiveScreenShares: () => Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
@@ -75,6 +81,8 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     setScreenShareAudioVolumeCalls: [],
     attachScreenShareAudioCalls: [],
     detachScreenShareAudioCalls: [],
+    startWasapiAudioBridgeCalls: [],
+    stopWasapiAudioBridgeCalls: 0,
     startScreenShareCalls: 0,
     stopScreenShareCalls: 0,
     activeScreenShares: [],
@@ -88,6 +96,12 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     setScreenShareAudioVolume: vi.fn((id: string, vol: number) => { mod.setScreenShareAudioVolumeCalls.push({ id, vol }); }),
     attachScreenShareAudio: vi.fn((id: string) => { mod.attachScreenShareAudioCalls.push(id); }),
     detachScreenShareAudio: vi.fn((id: string) => { mod.detachScreenShareAudioCalls.push(id); }),
+    startWasapiAudioBridge: vi.fn(async (loopbackExclusionAvailable: boolean) => {
+      mod.startWasapiAudioBridgeCalls.push(loopbackExclusionAvailable);
+    }),
+    stopWasapiAudioBridge: vi.fn(async () => {
+      mod.stopWasapiAudioBridgeCalls += 1;
+    }),
     startScreenShare: vi.fn(async () => { mod.startScreenShareCalls++; return true; }),
     stopScreenShare: vi.fn(async () => { mod.stopScreenShareCalls++; }),
     getActiveScreenShares: vi.fn(() => mod.activeScreenShares),
@@ -173,6 +187,7 @@ vi.mock('@features/settings/settings-store', () => ({
   getMuteHotkey: vi.fn(async () => 'Ctrl+Shift+M'),
   getProfileColor: vi.fn(async () => '#E06C75'),
   getChannelVolumes: vi.fn(async () => null),
+  getWindowsSharePath: vi.fn(async () => 'browser'),
   getNotificationVolume: vi.fn(async () => 100),
   getSoundVolumes: vi.fn(async () => ({})),
 }));
@@ -194,7 +209,13 @@ vi.mock('../notification-sounds', () => ({
 // doesn't exist in Node.js.
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async () => {}),
+  invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
+    invokeCalls.push({ command, args });
+    if (command === 'audio_share_start') {
+      return { loopback_exclusion_available: true };
+    }
+    return {};
+  }),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -203,7 +224,9 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  WebviewWindow: vi.fn(),
+  WebviewWindow: Object.assign(vi.fn(), {
+    getByLabel: vi.fn(async () => null),
+  }),
 }));
 
 // native-media.ts also imports from @tauri-apps/api and screen-share-viewer
@@ -230,6 +253,7 @@ import {
   setScreenShareAudioVolume,
   attachScreenShareAudio,
   detachScreenShareAudio,
+  startCustomShare,
   getState,
 } from '../voice-room';
 import type { VoiceRoomState } from '../voice-room';
@@ -247,6 +271,9 @@ function resetAll() {
   connectShouldFail = false;
   mockMaxRetries = 10;
   playNotificationSoundCalls = [];
+  invokeCalls = [];
+  clearTelemetrySnapshot();
+  (globalThis as { __wavisSenderData?: unknown }).__wavisSenderData = {};
 }
 
 /** Flush microtask queue. */
@@ -1702,6 +1729,74 @@ describe('Edge case unit tests', () => {
       leaveRoom();
     });
 
+    it('loads the persisted Windows share-path preference into room state', async () => {
+      resetAll();
+      vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+      vi.mocked(settingsStore.getWindowsSharePath).mockResolvedValue('native');
+
+      await driveToActive();
+      await tick();
+
+      expect(getState().windowsSharePath).toBe('native');
+
+      vi.unstubAllGlobals();
+      leaveRoom();
+    });
+
+    it('startFallbackShare refuses to publish when the LiveKit reuse patch marker is missing', async () => {
+      resetAll();
+      vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+      vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        mediaDevices: {
+          getUserMedia: vi.fn(),
+          getDisplayMedia: vi.fn(),
+        },
+      });
+      await driveToActive();
+      await assignSelfToSubRoom();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      delete (globalThis as { __wavisSenderData?: unknown }).__wavisSenderData;
+
+      const { startFallbackShare } = await import('../voice-room');
+      await expect(startFallbackShare()).rejects.toThrow('transceiver reuse patch is missing');
+      expect(lastLkModule!.startScreenShareCalls).toBe(0);
+
+      expect(getTelemetrySnapshot()).toContainEqual(
+        expect.objectContaining({ name: 'share.reuse_patch.missing' }),
+      );
+
+      vi.unstubAllGlobals();
+      leaveRoom();
+    });
+
+    it('startFallbackShare emits share.path.selected telemetry for the browser path on Windows', async () => {
+      resetAll();
+      vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+      await driveToActive();
+      await assignSelfToSubRoom();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      const { startFallbackShare } = await import('../voice-room');
+      await startFallbackShare();
+
+      expect(getTelemetrySnapshot()).toContainEqual(
+        expect.objectContaining({
+          name: 'share.path.selected',
+          path: 'browser',
+          reason: 'browser_display_media',
+        }),
+      );
+
+      vi.unstubAllGlobals();
+      leaveRoom();
+    });
+
     it('leaving the current sub-room stops local fallback share and uses share_stopped echo for sound', async () => {
       resetAll();
       await driveToActive();
@@ -1865,6 +1960,52 @@ describe('Edge case unit tests', () => {
       expect(cooldownEvents.length).toBeGreaterThanOrEqual(1);
 
       vi.spyOn(Date, 'now').mockRestore();
+      leaveRoom();
+    });
+
+    it('restarts Windows WASAPI audio after reconnect when an audio-only share is active', async () => {
+      resetAll();
+      vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+      vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        mediaDevices: {
+          getUserMedia: vi.fn(),
+          getDisplayMedia: vi.fn(),
+        },
+      });
+
+      await driveToActive();
+      await assignSelfToSubRoom();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      await startCustomShare({
+        mode: 'audio_only',
+        sourceId: 'default-monitor',
+        sourceName: 'System Audio',
+        withAudio: false,
+      });
+      await tick();
+
+      invokeCalls = [];
+
+      await reconnectMedia();
+      await tick();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok-2' });
+      await tick();
+
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      expect(invokeCalls).toContainEqual({
+        command: 'audio_share_start',
+        args: { sourceId: 'default-monitor' },
+      });
+      expect(lastLkModule!.startWasapiAudioBridgeCalls).toContain(true);
+
+      vi.unstubAllGlobals();
       leaveRoom();
     });
 

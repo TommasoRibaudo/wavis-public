@@ -22,8 +22,9 @@ use super::super::audio_capture_state::{
     TapCaptureHandle, VirtualDeviceCaptureHandle, VirtualDeviceRoutingState,
 };
 use super::macos_routing::{
-    bare_sck_fallback_result, plan_virtual_device_teardown, select_macos_audio_share_decision,
-    MacAudioShareDecision, VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot,
+    bare_sck_fallback_result, plan_virtual_device_teardown, select_default_path,
+    select_macos_audio_share_decision, MacAudioShareDecision, MacosAudioCapturePath,
+    VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot,
     VirtualDeviceTeardownTrigger,
 };
 use super::macos_virtual_device::{
@@ -824,44 +825,6 @@ fn sck_process_audio_buffer(
     }
 }
 
-// ── collect_child_pids ────────────────────────────────────────────────────
-
-/// Enumerate all direct child processes of `parent_pid` using `pgrep`.
-///
-/// Shells out to `pgrep -P <parent_pid>` which returns one PID per line.
-/// On any failure (pgrep not found, no children, etc.), logs a warning and
-/// returns an empty vec so the caller can proceed without child exclusion.
-///
-/// NOTE: This function is retained for potential future use but the SCK path
-/// now uses `enumerate_wavis_pids()` instead, which catches WKWebView helpers
-/// reparented to launchd (PPID=1) that `pgrep -P` misses.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn collect_child_pids(parent_pid: u32) -> Vec<i32> {
-    use std::process::Command;
-
-    let output = match Command::new("pgrep")
-        .arg("-P")
-        .arg(parent_pid.to_string())
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("[audio_capture] sck: pgrep failed: {e}; child process exclusion skipped");
-            return Vec::new();
-        }
-    };
-
-    // pgrep exits 1 when no processes match — not an error for us.
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<i32>().ok())
-        .collect()
-}
 
 // ── enumerate_wavis_pids ──────────────────────────────────────────────────
 
@@ -1378,6 +1341,8 @@ fn audio_share_start_tap(
         real_output_device_id: None,
         real_output_device_name: None,
         requires_mute_for_echo_prevention: false,
+        capture_path: Some("process_tap".to_string()),
+        fallback_reason: None,
     })
 }
 
@@ -1871,6 +1836,8 @@ fn audio_share_start_virtual_device(
         // WebKit's AudioContext.setSinkId is unavailable, so we cannot redirect
         // room audio away from the bridge. The JS side must mute local playback.
         requires_mute_for_echo_prevention: true,
+        capture_path: Some("virtual_device".to_string()),
+        fallback_reason: None,
     }))
 }
 
@@ -1967,6 +1934,7 @@ fn audio_share_start_macos(
         );
     }
 
+    let selected_path = select_default_path(version, tap_result.is_some(), virtual_device_result.is_some());
     let (decision, selected_result) =
         select_macos_audio_share_decision(tap_result, virtual_device_result);
     match decision {
@@ -2040,6 +2008,7 @@ fn audio_share_start_macos(
         unsafe { objc2::msg_send![&*displays, objectAtIndex: 0usize] };
 
     // ── Find the Wavis process + WebKit helpers to exclude ────────
+    // wavis-lint-allow-sck-fallback-start
     let my_pid = std::process::id() as i32;
     let apps: Retained<NSArray<objc2_screen_capture_kit::SCRunningApplication>> =
         unsafe { objc2::msg_send![&*content, applications] };
@@ -2136,6 +2105,7 @@ fn audio_share_start_macos(
             exceptingWindows: &*excepting
         ]
     };
+    // wavis-lint-allow-sck-fallback-end
 
     // ── Configure SCStream (audio-only, 48 kHz mono) ───────────────
     let config: Retained<SCStreamConfiguration> =
@@ -2229,7 +2199,17 @@ fn audio_share_start_macos(
          (final fallback path without routing isolation)"
     );
 
-    Ok(bare_sck_fallback_result())
+    let fallback_reason = match selected_path {
+        MacosAudioCapturePath::ScreenCaptureKit if !version.supports_process_tap() => {
+            "process tap is unavailable before macOS 14.2 and no virtual audio device was available".to_string()
+        }
+        _ => "process tap isolation was unavailable, so ScreenCaptureKit audio is running with weaker isolation".to_string(),
+    };
+
+    Ok(AudioShareStartResult {
+        fallback_reason: Some(fallback_reason),
+        ..bare_sck_fallback_result()
+    })
 }
 
 // ── audio_share_stop_macos ────────────────────────────────────────────────

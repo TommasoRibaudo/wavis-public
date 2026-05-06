@@ -392,6 +392,7 @@ fn main() {
             set_master_volume,
             set_audio_device,
             set_input_gain,
+            get_linux_desktop_context,
             bug_report::get_rust_log_buffer,
             bug_report::capture_window_screenshot,
             media::media_connect,
@@ -427,6 +428,8 @@ fn main() {
             audio_capture::install_audio_driver,
             diagnostics::get_diagnostics_config,
             diagnostics::get_diagnostics_snapshot,
+            diagnostics::get_shootout_env,
+            diagnostics::write_shootout_sample,
             native_mic::native_mic_start,
             native_mic::native_mic_stop,
             native_mic::native_mic_set_denoise_enabled,
@@ -497,6 +500,32 @@ struct AudioDevice {
     name: String,
     kind: String, // "input" | "output"
     is_default: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinuxDesktopContext {
+    desktop_env: String,
+    session_type: String,
+}
+
+#[tauri::command]
+fn get_linux_desktop_context() -> LinuxDesktopContext {
+    #[cfg(target_os = "linux")]
+    {
+        LinuxDesktopContext {
+            desktop_env: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+            session_type: std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        LinuxDesktopContext {
+            desktop_env: String::new(),
+            session_type: String::new(),
+        }
+    }
 }
 
 #[tauri::command]
