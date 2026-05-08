@@ -1834,7 +1834,7 @@ export class LiveKitModule {
   }
 
   /** Connect to LiveKit SFU. Creates Room in listen-only mode. */
-  async connect(sfuUrl: string, token: string): Promise<void> {
+  async connect(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): Promise<void> {
     try {
       // 0. Read denoise preference for this session.
       const denoiseEnabled = await getDenoiseEnabled();
@@ -1848,7 +1848,53 @@ export class LiveKitModule {
         `session start platform=${isWindows() ? 'windows' : isMac() ? 'mac' : 'other'} denoise_pref=${denoiseEnabled} native_bridge_bypassed=${!useNativeBridge} js_processor_enabled=${this.jsDenoise}`,
       );
 
-      // 1. Create Room
+      // 1. Build ICE configuration
+      console.log(LOG, 'Building ICE configuration:', iceConfig);
+      const rtcConfig: RTCConfiguration = {};
+      
+      if (iceConfig) {
+        const iceServers: RTCIceServer[] = [];
+        
+        // Add STUN servers
+        if (iceConfig.stunUrls && iceConfig.stunUrls.length > 0) {
+          iceServers.push({ urls: iceConfig.stunUrls });
+          console.log(LOG, 'ICE config: added STUN servers:', iceConfig.stunUrls);
+        }
+        
+        // Add TURN servers with credentials
+        if (iceConfig.turnUrls && iceConfig.turnUrls.length > 0 && iceConfig.turnUsername && iceConfig.turnCredential) {
+          iceServers.push({
+            urls: iceConfig.turnUrls,
+            username: iceConfig.turnUsername,
+            credential: iceConfig.turnCredential,
+          });
+          console.log(LOG, 'ICE config: added TURN servers:', iceConfig.turnUrls, 'with credentials');
+        }
+        
+        if (iceServers.length > 0) {
+          rtcConfig.iceServers = iceServers;
+        }
+      }
+      
+      // Fallback: if no ICE servers configured, use Google's public STUN servers
+      if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
+        console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
+        rtcConfig.iceServers = [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ];
+      }
+      
+      console.log(LOG, 'creating LiveKit Room with config:', {
+        adaptiveStream: true,
+        dynacast: false,
+        platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
+        hasIceServers: !!rtcConfig.iceServers,
+        iceServerCount: rtcConfig.iceServers?.length ?? 0,
+        iceServers: rtcConfig.iceServers,
+      });
+      
+      // 2. Create Room
       this.room = new Room({
         adaptiveStream: true,
         dynacast: false,          // Disable dynacast — with ≤6 participants it aggressively
@@ -2325,8 +2371,35 @@ export class LiveKitModule {
       }, 10_000);
 
       // 7. Connect to SFU
-      await this.room.connect(sfuUrl, token, { autoSubscribe: true });
+      const finalSfuUrl = sfuUrl.trim();
+      console.log(LOG, `attempting to connect to SFU: ${finalSfuUrl}`);
+      console.log(LOG, `platform: ${isMac() ? 'mac (WKWebView)' : isWindows() ? 'windows (WebView2)' : 'other'}`);
+      console.log(LOG, `user agent: ${navigator.userAgent}`);
+      console.log(LOG, `WebSocket available: ${typeof WebSocket !== 'undefined'}`);
+      console.log(LOG, `RTCPeerConnection available: ${typeof RTCPeerConnection !== 'undefined'}`);
+      
+      // Mac-specific: Try to work around WKWebView WebSocket issues
+      const connectOptions: any = { 
+        autoSubscribe: true,
+        rtcConfig: Object.keys(rtcConfig).length > 0 ? rtcConfig : undefined,
+      };
+      
+      console.log(LOG, 'connect options:', JSON.stringify({
+        autoSubscribe: connectOptions.autoSubscribe,
+        hasRtcConfig: !!connectOptions.rtcConfig,
+        iceServerCount: connectOptions.rtcConfig?.iceServers?.length ?? 0,
+      }));
+      
+      await this.room.connect(finalSfuUrl, token, connectOptions);
+      console.log(LOG, 'SFU connection successful');
     } catch (err) {
+      console.error(LOG, 'SFU connection failed:', err);
+      // Log more details about the error
+      if (err instanceof Error) {
+        console.error(LOG, 'Error name:', err.name);
+        console.error(LOG, 'Error message:', err.message);
+        console.error(LOG, 'Error stack:', err.stack);
+      }
       this.callbacks.onMediaFailed(err instanceof Error ? err.message : String(err));
     }
   }

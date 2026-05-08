@@ -932,10 +932,6 @@ export default function ActiveRoom() {
             userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } }).userActivation?.isActive,
           });
         }
-        if (isMacPlatform && event.payload.withAudio) {
-          setShareAudioOn(false);
-          return;
-        }
         setShareAudioOn(event.payload.withAudio);
         toggleShareAudio(event.payload.withAudio);
       }),
@@ -1621,14 +1617,6 @@ export default function ActiveRoom() {
           await withPickerResize(isMacPlatform, async () => {
             const result = await startFallbackShare();
             if (result.started) {
-              if (isMacPlatform) {
-                if (result.withAudio) {
-                  void toggleShareAudio(false);
-                }
-                setShareAudioOn(false);
-                setShowPostShareAudioPrompt(true);
-                return;
-              }
               if (result.withAudio) {
                 setShareAudioOn(true);
               } else {
@@ -2462,15 +2450,12 @@ export default function ActiveRoom() {
                         </button>
                         <button
                           onClick={() => {
-                            if (isMacPlatform) return;
                             const next = !shareAudioOn;
                             setShareAudioOn(next);
                             void toggleShareAudio(next);
                           }}
-                          disabled={isMacPlatform}
-                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${isMacPlatform
-                            ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
-                            : shareAudioOn
+                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${
+                            shareAudioOn
                               ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
                               : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
                             }`}
@@ -2772,34 +2757,16 @@ export default function ActiveRoom() {
               >
                 No
               </button>
-              <div
-                className="relative"
-                onMouseEnter={() => {
-                  if (isMacPlatform) setShowMacAudioHoverMessage(true);
+              <button
+                onClick={() => {
+                  setShowPostShareAudioPrompt(false);
+                  setShareAudioOn(true);
+                  void toggleShareAudio(true);
                 }}
-                onMouseLeave={() => setShowMacAudioHoverMessage(false)}
+                className="border px-4 py-1 text-xs transition-colors border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg"
               >
-                <button
-                  onClick={() => {
-                    if (isMacPlatform) return;
-                    setShowPostShareAudioPrompt(false);
-                    setShareAudioOn(true);
-                    void toggleShareAudio(true);
-                  }}
-                  disabled={isMacPlatform}
-                  className={`border px-4 py-1 text-xs transition-colors ${isMacPlatform
-                    ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
-                    : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-                    }`}
-                >
-                  Yes
-                </button>
-                {isMacPlatform && showMacAudioHoverMessage && (
-                  <span className="absolute bottom-full right-0 mb-2 whitespace-nowrap border border-wavis-text-secondary bg-wavis-panel px-2 py-1 text-[10px] text-wavis-text shadow-lg">
-                    {macShareAudioDisabledMessage}
-                  </span>
-                )}
-              </div>
+                Yes
+              </button>
             </div>
           </div>
         </div>

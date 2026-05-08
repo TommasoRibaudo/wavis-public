@@ -1310,7 +1310,7 @@ async function resumePendingWasapiCapture(): Promise<void> {
   }
 }
 
-let bufferedMediaToken: { sfuUrl: string; token: string } | null = null;
+let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 /** Currently registered hotkey string (null when no hotkey is active). */
@@ -1728,7 +1728,7 @@ function scheduleColdStartRetry(): void {
   }, COLD_START_RETRY_MS);
 }
 
-function connectMedia(sfuUrl: string, token: string): void {
+function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): void {
   // Tear down previous instance if any
   if (lkModule) {
     lkModule.disconnect();
@@ -1943,7 +1943,7 @@ function connectMedia(sfuUrl: string, token: string): void {
     lkModule = new LiveKitModule(callbacks);
   }
 
-  lkModule.connect(sfuUrl, token).catch((err) => {
+  lkModule.connect(sfuUrl, token, iceConfig).catch((err) => {
     state.mediaState = 'failed';
     state.mediaError = err instanceof Error ? err.message : 'Connection failed';
     notify();
@@ -2085,9 +2085,9 @@ function dispatchMessage(raw: unknown): void {
 
       // Flush buffered media token if present
       if (bufferedMediaToken) {
-        const { sfuUrl, token } = bufferedMediaToken;
+        const { sfuUrl, token, iceConfig } = bufferedMediaToken;
         bufferedMediaToken = null;
-        connectMedia(sfuUrl, token);
+        connectMedia(sfuUrl, token, iceConfig);
       }
 
       // Request chat history after successful join
@@ -2744,6 +2744,18 @@ function dispatchMessage(raw: unknown): void {
     case 'media_token': {
       const token = msg.token as string;
       const sfuUrl = msg.sfuUrl as string;
+      const iceConfig = msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined;
+
+      console.log(LOG, 'media_token received:', { 
+        hasToken: !!token, 
+        hasSfuUrl: !!sfuUrl, 
+        hasIceConfig: !!iceConfig,
+        iceConfig: iceConfig ? {
+          stunUrls: iceConfig.stunUrls,
+          turnUrls: iceConfig.turnUrls,
+          hasTurnCredentials: !!(iceConfig.turnUsername && iceConfig.turnCredential),
+        } : null,
+      });
 
       if (!token || !sfuUrl) {
         appendEvent({
@@ -2755,7 +2767,7 @@ function dispatchMessage(raw: unknown): void {
       }
 
       if (state.machineState !== 'active') {
-        bufferedMediaToken = { sfuUrl, token };
+        bufferedMediaToken = { sfuUrl, token, iceConfig };
         break;
       }
 
@@ -2775,7 +2787,7 @@ function dispatchMessage(raw: unknown): void {
       if (state.mediaState === 'failed') {
         getReconnectConfig().then((config) => {
           if (state.mediaReconnectFailures < config.maxRetries) {
-            connectMedia(sfuUrl, token);
+            connectMedia(sfuUrl, token, iceConfig);
           } else {
             startPeriodicMediaRetry();
             appendEvent({
@@ -2788,7 +2800,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      connectMedia(sfuUrl, token);
+      connectMedia(sfuUrl, token, iceConfig);
       break;
     }
 
