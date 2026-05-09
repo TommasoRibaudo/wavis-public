@@ -10,8 +10,10 @@ void loadShootoutEnv();
 // Initialize the LiveKit transceiver reuse patch WeakMap early
 // This is created by the patched livekit-client bundle and needs to exist
 // before any screen sharing attempts
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 if (!(globalThis as { __wavisSenderData?: unknown }).__wavisSenderData) {
-  (globalThis as { __wavisSenderData?: WeakMap<unknown, unknown> }).__wavisSenderData = new WeakMap();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as { __wavisSenderData?: WeakMap<any, any> }).__wavisSenderData = new WeakMap();
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
