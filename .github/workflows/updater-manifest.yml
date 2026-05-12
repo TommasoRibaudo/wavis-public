@@ -71,8 +71,8 @@ jobs:
 
       # ── Wait for all three platform updater .sig files ────────────
       # Artifact naming (from Tauri + codemagic.yaml):
-      #   Linux:   *.AppImage.tar.gz.sig  (crate name: wavis-gui)
-      #   Windows: *.nsis.zip.sig         (productName: Wavis)
+      #   Linux:   *.AppImage.sig         (raw AppImage, signed by Tauri)
+      #   Windows: *-setup.exe.sig        (NSIS installer, signed by Tauri)
       #   macOS:   *.app.tar.gz.sig       (productName: Wavis)
       - name: Wait for all platform sig files
         env:
@@ -82,9 +82,9 @@ jobs:
           while true; do
             ASSETS=$(gh release view "${TAG}" --json assets -q '[.assets[].name]')
 
-            LINUX_SIG=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage\\.tar\\.gz\\.sig$"))] | first // empty')
-            WIN_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.nsis\\.zip\\.sig$"))]          | first // empty')
-            MAC_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz\\.sig$"))]      | first // empty')
+            LINUX_SIG=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage\\.sig$"))]       | first // empty')
+            WIN_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("-setup\\.exe\\.sig$"))]      | first // empty')
+            MAC_SIG=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz\\.sig$"))] | first // empty')
 
             echo "linux_sig=${LINUX_SIG:-(missing)}  win_sig=${WIN_SIG:-(missing)}  mac_sig=${MAC_SIG:-(missing)}"
 
@@ -108,9 +108,9 @@ jobs:
         run: |
           ASSETS=$(gh release view "${TAG}" --json assets -q '[.assets[].name]')
 
-          LINUX=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage\\.tar\\.gz$"))] | first // empty')
-          WIN=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.nsis\\.zip$"))]          | first // empty')
-          MAC=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz$"))]      | first // empty')
+          LINUX=$(echo "$ASSETS" | jq -r '[.[] | select(test("\\.AppImage$"))]          | first // empty')
+          WIN=$(echo "$ASSETS"   | jq -r '[.[] | select(test("-setup\\.exe$"))]         | first // empty')
+          MAC=$(echo "$ASSETS"   | jq -r '[.[] | select(test("\\.app\\.tar\\.gz$"))]    | first // empty')
 
           if [ -z "$LINUX" ] || [ -z "$WIN" ] || [ -z "$MAC" ]; then
             echo "::error::Could not find all updater bundle assets."
