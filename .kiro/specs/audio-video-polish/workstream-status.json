@@ -1,0 +1,34 @@
+{
+  "W1": {
+    "exit_criteria_met": true,
+    "verified_at": "2026-05-06T08:51:02-06:00",
+    "notes": "Focused W1 verification passed: release-config guard, LiveKit patch verification, Windows share-path state, WASAPI reconnect resume, stranded-sender diagnostics, and W1 property/test suites."
+  },
+  "W2": {
+    "exit_criteria_met": false,
+    "verified_at": null,
+    "notes": "BLOCKED: AudioHardwareCreateProcessTap returns kAudioHardwareBadObjectError (OSStatus 560947818) on macOS 26.4.1 even from a properly-bundled release .app. This is a macOS 26 Core Audio tap API change (WWDC 2025). The old CATapDescription + AudioHardwareCreateProcessTap path no longer works on macOS 26. Requires investigation of the new macOS 26 tap API before this criterion can be verified. SCKit fallback is active on macOS 26 so share-audio still works without loopback isolation. Use --skip-w2-gate for W4 shootout."
+  },
+  "W3": {
+    "exit_criteria_met": true,
+    "verified_at": "2026-05-06T09:34:19.9842752-06:00",
+    "notes": "W3 verification passed: checked-in Linux capability matrix and codegen landed, native Linux share gating now blocks unsupported combinations and warns on degraded ones, linux capture fallback telemetry is emitted from Rust and bridged into frontend telemetry, and focused verification passed via npm run check:linux-matrix, npm test -- src/features/voice/__tests__/voice-room-audio-share.test.ts, npm test -- src/features/voice/__tests__/voice-room-media.test.ts, and cargo check in clients/wavis-gui/src-tauri."
+  },
+  "W4": {
+    "exit_criteria_met": true,
+    "verified_at": "2026-05-11T19:34:37.441Z",
+    "notes": "",
+    "decision": "vp8sim"
+  },
+  "W5": {
+    "exit_criteria_met": true,
+    "verified_at": "2026-05-11T19:34:37.441Z",
+    "notes": "Auto-flipped when W4/decision=\"vp8sim\" was recorded. Motion-detector auto-switch is unconditional (A1.5); no further code gate exists.",
+    "depends_on": "W4"
+  },
+  "W6": {
+    "exit_criteria_met": false,
+    "verified_at": null,
+    "notes": "AV1 is now a W4 shootout candidate (A4). never_defaults removed — AV1 default requires W4 decision + §2.5 telemetry bar + human steering update."
+  }
+}

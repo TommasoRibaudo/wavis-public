@@ -405,7 +405,7 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   // Screen Share
   lines.push('[SCREEN SHARE]');
   if (snap.share) {
-    lines.push(pad('Bitrate:', `${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps`));
+    lines.push(pad('Sender Bitrate:', `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`));
     lines.push(pad('FPS:', snap.share.fps.toFixed(1)));
     lines.push(pad('Resolution:', snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A'));
     lines.push(pad('Quality Limit:', snap.share.qualityLimitationReason || 'none'));
@@ -446,7 +446,7 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   const history = historyBuffer.snapshot().filter((_, i) => i % 5 === 0);
   if (history.length > 0) {
     lines.push(`[HISTORY — ${history.length} samples, ~5s interval]`);
-    lines.push('timestamp,rtt_ms,loss_pct,jitter_ms,mos,jitter_buf_ms,concealment,bw_kbps,rss_mb,cpu_pct,share_fps,share_res,share_pli,share_nack');
+    lines.push('timestamp,rtt_ms,loss_pct,jitter_ms,mos,jitter_buf_ms,concealment,bw_kbps,rss_mb,cpu_pct,share_bitrate_kbps,share_fps,share_res,share_pli,share_nack');
     for (const h of history) {
       const t = new Date(h.timestamp).toTimeString().slice(0, 8);
       const rtt = h.network ? Math.round(h.network.rttMs) : '';
@@ -458,11 +458,12 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
       const bw = h.network ? h.network.availableBandwidthKbps : '';
       const rss = h.rss ? h.rss.mb.toFixed(1) : '';
       const cpu = h.cpuPercent !== null ? h.cpuPercent.toFixed(1) : '';
+      const shareBitrate = h.share ? h.share.bitrateKbps : '';
       const fps = h.share ? h.share.fps.toFixed(1) : '';
       const res = h.share && h.share.frameWidth > 0 ? `${h.share.frameWidth}x${h.share.frameHeight}` : '';
       const pli = h.share ? h.share.pliCount : '';
       const nack = h.share ? h.share.nackCount : '';
-      lines.push(`${t},${rtt},${loss},${jitter},${mos},${jb},${conc},${bw},${rss},${cpu},${fps},${res},${pli},${nack}`);
+      lines.push(`${t},${rtt},${loss},${jitter},${mos},${jb},${conc},${bw},${rss},${cpu},${shareBitrate},${fps},${res},${pli},${nack}`);
     }
   }
 

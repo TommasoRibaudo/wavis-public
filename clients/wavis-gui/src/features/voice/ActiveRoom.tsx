@@ -62,8 +62,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/too
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startSending, stopSending, stopSendingForWindow, stopAllSending, resendStream } from '@features/screen-share/screen-share-viewer';
-import { getWatchAllHotkey } from '@features/settings/settings-store';
-import { setLastChannel, clearLastChannel } from '@features/settings/settings-store';
+import { getWatchAllHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
@@ -242,6 +241,7 @@ function mediaIndicator(state: MediaState, error: string | null): { color: strin
   switch (state) {
     case 'connected': return { color: 'var(--wavis-accent)', label: 'Media: connected' };
     case 'connecting': return { color: 'var(--wavis-warn)', label: 'Media: connecting...' };
+    case 'reconnecting': return { color: 'var(--wavis-warn)', label: 'Media: reconnecting...' };
     case 'failed': return { color: 'var(--wavis-danger)', label: `Media: failed${error ? ` — ${error}` : ''}` };
     case 'disconnected':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Media: disconnected' };
@@ -254,6 +254,8 @@ function combinedStatusBadge(
 ): { text: string; color: string } {
   // Failed media takes priority
   if (media === 'failed') return { text: 'FAILED', color: 'var(--wavis-danger)' };
+  // Media reconnecting takes priority over live/connected state
+  if (media === 'reconnecting') return { text: 'RECONNECTING', color: 'var(--wavis-warn)' };
   // Both fully connected = live
   if (machine === 'active' && media === 'connected') return { text: 'LIVE', color: 'var(--wavis-accent)' };
   // Reconnecting signaling
@@ -651,6 +653,9 @@ export default function ActiveRoom() {
   const [shareVolumes, setShareVolumes] = useState<Map<string, number>>(new Map());
   const shareVolumesRef = useRef(shareVolumes);
   const watchAllVolumesRef = useRef<Map<string, number>>(new Map());
+  // Local mute state: key = participantId, value = pre-mute volume (presence means muted).
+  const [localMicMuted, setLocalMicMuted] = useState<Map<string, number>>(new Map());
+  const [localSysMuted, setLocalSysMuted] = useState<Map<string, number>>(new Map());
   const watchAllAttachedAudioRef = useRef<Set<string>>(new Set());
   const [shareQualityState, setShareQualityState] = useState<ShareQuality>('high');
   const [shareAudioOn, setShareAudioOn] = useState(false);
@@ -756,6 +761,37 @@ export default function ActiveRoom() {
     setScreenShareAudioVolume(participantId, volume);
     emit('watch-all:restore-volume', { participantId, volume });
     emit('screen-share:restore-volume', { participantId, volume });
+  }, []);
+
+  const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
+    setLocalMicMuted((prev) => {
+      const next = new Map(prev);
+      if (next.has(participantId)) {
+        const saved = next.get(participantId)!;
+        next.delete(participantId);
+        setParticipantVolume(participantId, saved);
+      } else {
+        next.set(participantId, currentVolume || 70);
+        setParticipantVolume(participantId, 0);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleLocalSysMute = useCallback((participantId: string) => {
+    setLocalSysMuted((prev) => {
+      const next = new Map(prev);
+      if (next.has(participantId)) {
+        const saved = next.get(participantId)!;
+        next.delete(participantId);
+        setScreenShareAudioVolume(participantId, saved);
+      } else {
+        const current = shareVolumesRef.current.get(participantId) ?? 70;
+        next.set(participantId, current || 70);
+        setScreenShareAudioVolume(participantId, 0);
+      }
+      return next;
+    });
   }, []);
 
   const emitWatchAllRestoreVolume = useCallback((participantId: string) => {
@@ -1459,7 +1495,8 @@ export default function ActiveRoom() {
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
-  const macShareAudioDisabledMessage = "mac sucks and we can't make this feature work yet";
+  const macShareAudioDisabledMessage =
+    'System audio on macOS requires the WavisAudioTap driver — stop sharing and restart to enable audio.';
 
   // macOS: check / install the WavisAudioTap HAL driver needed for echo-free audio share.
   const { driverState, installError, triggerInstall } = useAudioDriverInstall(isMacPlatform);
@@ -2018,6 +2055,12 @@ export default function ActiveRoom() {
     </div>
   ) : null;
 
+  const mediaReconnectingBanner = roomState.mediaState === 'reconnecting' ? (
+    <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
+      Audio reconnecting... still in room
+    </div>
+  ) : null;
+
   const reconnectBanner = roomState.lastRateLimitError && (
     roomState.machineState === 'reconnecting' ||
     roomState.machineState === 'authenticated' ||
@@ -2090,19 +2133,45 @@ export default function ActiveRoom() {
         {expandedUser === p.id && !isSelf && (
           <div className="pl-6 py-1 space-y-0.5 text-xs">
             <div className="flex items-center gap-2">
-              <span className="text-wavis-text-secondary shrink-0">voice vol</span>
+              <span className="text-wavis-text-secondary shrink-0">mic</span>
               <div className="flex-1">
-                <VolumeSlider value={p.volume} onChange={(v) => setParticipantVolume(p.id, v)} color={p.color} />
+                <VolumeSlider
+                  value={p.volume}
+                  onChange={(v) => {
+                    if (localMicMuted.has(p.id)) setLocalMicMuted((prev) => { const next = new Map(prev); next.delete(p.id); return next; });
+                    setParticipantVolume(p.id, v);
+                  }}
+                  color={p.color}
+                />
               </div>
-              <span className="text-wavis-text-secondary w-6 text-right">{p.volume}</span>
+              <span className="text-wavis-text-secondary w-6 text-right">{localMicMuted.has(p.id) ? 0 : p.volume}</span>
+              <button
+                onClick={() => toggleLocalMicMute(p.id, p.volume)}
+                className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
+                style={localMicMuted.has(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
+                title={localMicMuted.has(p.id) ? 'unmute mic (local)' : 'mute mic (local)'}
+              >{localMicMuted.has(p.id) ? '/unmute' : '/mute'}</button>
             </div>
             {p.isSharing && (
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-wavis-text-secondary shrink-0">share vol</span>
                 <div className="flex-1">
-                  <VolumeSlider value={shareVolumes.get(p.id) ?? 70} onChange={(v) => syncScreenShareVolume(p.id, v)} color={p.color} />
+                  <VolumeSlider
+                    value={shareVolumes.get(p.id) ?? 70}
+                    onChange={(v) => {
+                      if (localSysMuted.has(p.id)) setLocalSysMuted((prev) => { const next = new Map(prev); next.delete(p.id); return next; });
+                      syncScreenShareVolume(p.id, v);
+                    }}
+                    color={p.color}
+                  />
                 </div>
-                <span className="text-wavis-text-secondary w-6 text-right">{shareVolumes.get(p.id) ?? 70}</span>
+                <span className="text-wavis-text-secondary w-6 text-right">{localSysMuted.has(p.id) ? 0 : (shareVolumes.get(p.id) ?? 70)}</span>
+                <button
+                  onClick={() => toggleLocalSysMute(p.id)}
+                  className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
+                  style={localSysMuted.has(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
+                  title={localSysMuted.has(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'}
+                >{localSysMuted.has(p.id) ? '/unmute' : '/mute'}</button>
               </div>
             )}
             {isHost && (
@@ -2603,6 +2672,7 @@ export default function ActiveRoom() {
           </div>
         </div>
 
+        {mediaReconnectingBanner}
         {mediaRetryBanner}
         {reconnectBanner}
 
@@ -2647,6 +2717,7 @@ export default function ActiveRoom() {
       <div className="hidden md:flex flex-1 overflow-hidden">
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
+          {mediaReconnectingBanner}
           {mediaRetryBanner}
           {reconnectBanner}
           {participantsSections}

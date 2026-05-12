@@ -1,0 +1,10 @@
+# Ignore per-run output directories (JSONL samples, CSV summaries, manifests).
+# Committed: fixtures/ (content corpus), this file.
+/runs/
+
+# Large binary fixture files should be stored in a shared object store,
+# not committed to git. See fixtures/README.md.
+fixtures/**/*.mkv
+fixtures/**/*.mp4
+fixtures/**/*.avi
+fixtures/**/*.mov

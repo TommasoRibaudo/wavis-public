@@ -39,6 +39,31 @@ pub(super) fn stop(
     audio_share_stop_linux(state, audio_capture)
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, serde::Serialize)]
+struct LinuxCaptureFallbackEvent {
+    from: String,
+    to: String,
+    reason: String,
+}
+
+#[cfg(target_os = "linux")]
+fn emit_linux_capture_fallback(app: &AppHandle, reason: impl Into<String>) {
+    use tauri::Emitter;
+
+    let reason = reason.into();
+    if let Err(err) = app.emit(
+        "linux-capture-fallback-activated",
+        LinuxCaptureFallbackEvent {
+            from: "pulse_audio".to_string(),
+            to: "none".to_string(),
+            reason,
+        },
+    ) {
+        log::warn!("[audio_capture] failed to emit linux capture fallback event: {err}");
+    }
+}
+
 /// Timeout for PulseAudio operations to avoid hanging if the daemon is unresponsive.
 #[cfg(target_os = "linux")]
 const PA_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
@@ -241,7 +266,10 @@ fn audio_share_start_linux(
     use std::sync::Arc;
 
     // -- Preflight: required CLI tools ------------------------------
-    ensure_pactl_available()?;
+    ensure_pactl_available().map_err(|reason| {
+        emit_linux_capture_fallback(&app, reason.clone());
+        reason
+    })?;
 
     // -- Double-start guard -----------------------------------------
     {
@@ -256,11 +284,16 @@ fn audio_share_start_linux(
 
     // -- Validate source ID -----------------------------------------
     if source_id.is_empty() {
-        return Err("audio source not found: (empty source id)".to_string());
+        let reason = "audio source not found: (empty source id)".to_string();
+        emit_linux_capture_fallback(&app, reason.clone());
+        return Err(reason);
     }
 
     // Validate the source exists in PulseAudio before proceeding.
-    validate_pa_source(&source_id)?;
+    validate_pa_source(&source_id).map_err(|reason| {
+        emit_linux_capture_fallback(&app, reason.clone());
+        reason
+    })?;
 
     // -- Publish screen audio track via LiveKit ---------------------
     let lk_guard = state.lk().map_err(|e| format!("lock: {e}"))?;
@@ -300,6 +333,7 @@ fn audio_share_start_linux(
         teardown_loopback_exclusion(&rollback_handle);
         let _ = rollback_handle.pa_thread.join();
         let _ = cleanup_publish_on_error(&state);
+        emit_linux_capture_fallback(&app, error.clone());
         return Err(error);
     }
 
@@ -340,7 +374,9 @@ fn audio_share_start_linux(
             let _ = rollback_handle.pa_thread.join();
             // Clean up: unpublish the track we just published.
             let _ = cleanup_publish_on_error(&state);
-            format!("failed to spawn audio capture thread: {e}")
+            let reason = format!("failed to spawn audio capture thread: {e}");
+            emit_linux_capture_fallback(&app, reason.clone());
+            reason
         })?;
 
     // -- Store handle -----------------------------------------------
@@ -370,6 +406,8 @@ fn audio_share_start_linux(
         real_output_device_id: None,
         real_output_device_name: None,
         requires_mute_for_echo_prevention: false,
+        capture_path: Some("pulse_audio".to_string()),
+        fallback_reason: None,
     })
 }
 
@@ -1384,6 +1422,7 @@ fn audio_capture_loop(
         Err(e) => {
             log::error!("[audio_capture] pa_simple open failed: {e}");
             let _ = conn.unpublish_screen_audio();
+            emit_linux_capture_fallback(app, format!("Audio capture failed: {e}"));
             let _ = app.emit(
                 "share_error",
                 serde_json::json!({ "message": format!("Audio capture failed: {e}") }),
@@ -1427,6 +1466,7 @@ fn audio_capture_loop(
                 log::error!("[audio_capture] pa_simple read error: {e}");
                 // PulseAudio disconnected — stop capture, unpublish, emit error.
                 let _ = conn.unpublish_screen_audio();
+                emit_linux_capture_fallback(app, "Audio source disconnected");
                 let _ = app.emit(
                     "share_error",
                     serde_json::json!({ "message": "Audio source disconnected" }),
