@@ -225,6 +225,7 @@ import {
   leaveSubRoom,
   joinSubRoom,
   toggleSelfMute,
+  toggleSelfDeafen,
   reconnectMedia,
   resetMediaReconnectFailures,
   setScreenShareAudioVolume,
@@ -504,6 +505,22 @@ describe('VoiceRoom sub-room state', () => {
 });
 
 describe('VoiceRoom room-based effective volume isolation', () => {
+  it('keeps the default no-room self state unmuted while media stays isolated', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')).toMatchObject({
+      isMuted: false,
+      isSpeaking: false,
+      rmsLevel: 0,
+    });
+  });
+
   it('disables local mic publishing and incoming audio when a snapshot moves self out of all rooms', async () => {
     await driveToActive('ch-subrooms', 'subroom-test');
 
@@ -533,7 +550,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
     expect(getState().joinedSubRoomId).toBeNull();
     expect(getState().participants.find((p) => p.id === 'self-peer')).toMatchObject({
-      isMuted: true,
+      isMuted: false,
       isSpeaking: false,
       rmsLevel: 0,
     });
@@ -618,10 +635,10 @@ describe('VoiceRoom room-based effective volume isolation', () => {
 
     expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
     expect(getState().joinedSubRoomId).toBeNull();
-    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
   });
 
-  it('keeps mic publishing disabled when mute is toggled outside a room', async () => {
+  it('stores pre-room mute intent and joins with mic publishing disabled', async () => {
     await driveToActive('ch-subrooms', 'subroom-test');
 
     messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
@@ -632,11 +649,80 @@ describe('VoiceRoom room-based effective volume isolation', () => {
 
     toggleSelfMute();
     await tick();
+
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    expect(sentMessages.at(-1)).toEqual({ type: 'self_mute' });
+
+    lastLkModule!.setMicEnabledCalls = [];
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+      ],
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-1');
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+  });
+
+  it('stores pre-room unmute intent but keeps mic publishing disabled until room entry', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    toggleSelfMute();
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
     toggleSelfMute();
     await tick();
 
     expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    expect(sentMessages.at(-1)).toEqual({ type: 'self_unmute' });
+
+    lastLkModule!.setMicEnabledCalls = [];
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+      ],
+    });
+    await tick();
+
+    expect(getState().joinedSubRoomId).toBe('room-1');
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([true]);
+  });
+
+  it('restores pre-deafen mute intent outside a room without enabling the mic', async () => {
+    await driveToActive('ch-subrooms', 'subroom-test');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    lastLkModule!.setMicEnabledCalls = [];
+
+    toggleSelfDeafen();
+    await tick();
+    expect(getState().isDeafened).toBe(true);
     expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
+
+    toggleSelfDeafen();
+    await tick();
+
+    expect(getState().isDeafened).toBe(false);
+    expect(getState().joinedSubRoomId).toBeNull();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
     expect(lastLkModule!.setMicEnabledCalls).toEqual([false, false]);
   });
 
@@ -1284,7 +1370,8 @@ describe('Voice-room media wiring', () => {
       expect(self).toBeTruthy();
       expect(self!.isMuted).toBe(true);
       expect(lastLkModule!.setMicEnabledCalls[lastLkModule!.setMicEnabledCalls.length - 1]).toBe(false);
-      expect(latestState!.events.some((e) => e.message === 'mute toggle ignored: join a room before using the microphone')).toBe(true);
+      expect(sentMessages.at(-1)).toEqual({ type: 'self_mute' });
+      expect(latestState!.events.some((e) => e.type === 'muted' && e.message === 'you muted microphone')).toBe(true);
 
       leaveRoom();
     });

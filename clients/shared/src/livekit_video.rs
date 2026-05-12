@@ -102,7 +102,10 @@ pub(super) async fn run_video_receiver_task(
     });
 
     let mut frames_received: u64 = 0;
+    #[cfg(target_os = "linux")]
     let mut frames_dropped: u64 = 0;
+    #[cfg(not(target_os = "linux"))]
+    let frames_dropped: u64 = 0;
 
     #[cfg(target_os = "linux")]
     let mut last_frame_emit: Option<std::time::Instant> = None;

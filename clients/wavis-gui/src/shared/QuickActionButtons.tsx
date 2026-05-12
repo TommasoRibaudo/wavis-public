@@ -11,6 +11,14 @@ export interface QuickActionState {
   isDeafened: boolean;
 }
 
+export function quickActionMuteTitle(isMuted: boolean): '/mute' | '/unmute' {
+  return isMuted ? '/unmute' : '/mute';
+}
+
+export function quickActionMuteAriaLabel(isMuted: boolean): 'Mute yourself' | 'Unmute yourself' {
+  return isMuted ? 'Unmute yourself' : 'Mute yourself';
+}
+
 interface QuickActionButtonsProps extends QuickActionState {
   onToggleMute: () => void;
   onToggleDeafen: () => void;
@@ -31,8 +39,8 @@ export default function QuickActionButtons({
         }}
         className="px-1.5 flex items-center justify-center hover:opacity-70 transition-opacity"
         style={{ color: isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-        title={isMuted ? '/unmute' : '/mute'}
-        aria-label={isMuted ? 'Unmute yourself' : 'Mute yourself'}
+        title={quickActionMuteTitle(isMuted)}
+        aria-label={quickActionMuteAriaLabel(isMuted)}
       >
         {SELF_MUTE_ICON}
       </button>

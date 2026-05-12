@@ -702,7 +702,7 @@ pub fn media_connect(
                 .map_err(|err| format!("{err}"))
             });
             if let Err(err) = publish_result {
-                let reason = format!("{err}");
+                let reason = err.to_string();
                 log::error!("{LOG} publish failed: {reason}");
                 let _ = state.runtime.block_on(async { conn.disconnect() });
                 let _ = app_failed.emit(
