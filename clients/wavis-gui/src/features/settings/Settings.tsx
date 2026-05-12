@@ -7,7 +7,7 @@ import { emit } from '@tauri-apps/api/event';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
 import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
-import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume } from './settings-store';
+import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getScreenShareCodec, setScreenShareCodec, type ScreenShareCodecOverride, DEFAULT_SCREEN_SHARE_CODEC } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
 import { updateSessionProfileColor, getState as getVoiceRoomState } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
@@ -41,13 +41,13 @@ type DenoiseStatus = {
 export function describeDenoiseStatus(params: {
   denoiseEnabled: boolean;
   connectionMode: 'livekit' | 'native' | undefined;
-  mediaState: 'disconnected' | 'connecting' | 'connected' | 'failed';
+  mediaState: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
   userAgent: string;
   noiseSuppressionActive?: boolean;
 }): DenoiseStatus {
   const { denoiseEnabled, connectionMode, mediaState, userAgent, noiseSuppressionActive } = params;
   const isMacOrWindows = /Macintosh|Windows/i.test(userAgent);
-  const sessionActive = mediaState === 'connected' || mediaState === 'connecting';
+  const sessionActive = mediaState === 'connected' || mediaState === 'connecting' || mediaState === 'reconnecting';
 
   if (!denoiseEnabled) {
     return {
@@ -147,6 +147,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [muteHotkey, setMuteHotkeyState] = useState<string>(DEFAULT_MUTE_HOTKEY);
   const [watchAllHotkey, setWatchAllHotkeyState] = useState<string>(DEFAULT_WATCH_ALL_HOTKEY);
   const [denoiseEnabled, setDenoiseEnabledState] = useState(true);
+  const [screenShareCodecState, setScreenShareCodecState] = useState<ScreenShareCodecOverride>(DEFAULT_SCREEN_SHARE_CODEC);
   const [inputVolume, setInputVolumeState] = useState<number>(100);
   const [notificationVolume, setNotificationVolumeState] = useState<number>(50);
   const [soundVolumes, setSoundVolumesState] = useState<Record<string, number>>({});
@@ -181,6 +182,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     getMuteHotkey().then(setMuteHotkeyState);
     getWatchAllHotkey().then(setWatchAllHotkeyState);
     getDenoiseEnabled().then(setDenoiseEnabledState);
+    getScreenShareCodec().then(setScreenShareCodecState);
     getInputVolume().then(setInputVolumeState);
     getNotificationVolume().then(setNotificationVolumeState);
     getSoundVolumes().then(setSoundVolumesState);
@@ -665,6 +667,30 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               }`}>
                 {denoiseStatus.message}
               </p>
+              <div>
+                <label className="text-wavis-text-secondary block mb-1 text-sm">Screen Share Codec</label>
+                <div className="flex gap-0">
+                  {(['auto', 'vp9', 'vp8', 'av1'] as const).map((codec) => (
+                    <button
+                      key={codec}
+                      onClick={() => {
+                        setScreenShareCodecState(codec);
+                        void setScreenShareCodec(codec);
+                      }}
+                      className={`flex-1 py-1 px-1 text-xs text-center border transition-colors ${
+                        screenShareCodecState === codec
+                          ? 'border-wavis-accent text-wavis-accent'
+                          : 'border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
+                      }`}
+                    >
+                      {codec.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-wavis-text-secondary mt-1">
+                  Auto: uses W4 shootout winner. Override only for testing.
+                </p>
+              </div>
             </div>
           </div>
 

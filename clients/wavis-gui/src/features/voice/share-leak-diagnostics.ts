@@ -87,10 +87,23 @@ export interface ShareLeakDegradationPreferenceResult {
 
 export interface ShareLeakSenderReuseDiagnostics {
   publishWebRtcSnapshot: ShareLeakBrowserWebRtcSnapshot | null;
+  videoSenderCount: number | null;
   reuseExpected: boolean;
   events: ShareLeakSenderReuseEvent[];
   finalSetParametersError: string | null;
   degradationPreferenceResult?: ShareLeakDegradationPreferenceResult | null;
+}
+
+export interface ShareLeakStrandedSender {
+  trackId: string;
+  direction: RTCRtpTransceiverDirection;
+}
+
+export interface ShareLeakStrandedSenderInvariant {
+  expected: number | null;
+  videoSenderCount: number | null;
+  stranded: number;
+  satisfied: boolean | null;
 }
 
 export interface ShareSessionLeakSummary {
@@ -107,6 +120,8 @@ export interface ShareSessionLeakSummary {
   browserWebRtcBeforeStop: ShareLeakBrowserWebRtcSnapshot | null;
   browserWebRtcAfterStop: ShareLeakBrowserWebRtcSnapshot | null;
   senderReuseDiagnostics?: ShareLeakSenderReuseDiagnostics | null;
+  strandedSenders?: ShareLeakStrandedSender[];
+  strandedSenderInvariant?: ShareLeakStrandedSenderInvariant | null;
   baselineMemory: ShareLeakMemorySample | null;
   activeMemory: ShareLeakMemorySample | null;
   cleanupMemory: ShareLeakMemorySample | null;

@@ -109,6 +109,8 @@ pub(super) fn start(
         real_output_device_id: None,
         real_output_device_name: None,
         requires_mute_for_echo_prevention: false,
+        capture_path: Some("wasapi".to_string()),
+        fallback_reason: None,
     })
 }
 

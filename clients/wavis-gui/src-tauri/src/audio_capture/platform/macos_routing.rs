@@ -1,4 +1,5 @@
 use super::super::audio_capture_state::AudioShareStartResult;
+use super::MacOsVersion;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct VirtualDeviceCandidate {
@@ -23,6 +24,13 @@ pub(super) struct StaleMultiOutputCleanupPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MacAudioShareDecision {
     Tap,
+    VirtualDevice,
+    ScreenCaptureKit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MacosAudioCapturePath {
+    ProcessTap,
     VirtualDevice,
     ScreenCaptureKit,
 }
@@ -59,6 +67,22 @@ pub(super) fn bare_sck_fallback_result() -> AudioShareStartResult {
         real_output_device_id: None,
         real_output_device_name: None,
         requires_mute_for_echo_prevention: false,
+        capture_path: Some("screen_capture_kit".to_string()),
+        fallback_reason: None,
+    }
+}
+
+pub(super) fn select_default_path(
+    version: MacOsVersion,
+    process_tap_available: bool,
+    virtual_device_available: bool,
+) -> MacosAudioCapturePath {
+    if version.supports_process_tap() && process_tap_available {
+        MacosAudioCapturePath::ProcessTap
+    } else if virtual_device_available {
+        MacosAudioCapturePath::VirtualDevice
+    } else {
+        MacosAudioCapturePath::ScreenCaptureKit
     }
 }
 
@@ -246,9 +270,10 @@ mod tests {
 
     use super::{
         bare_sck_fallback_result, plan_stale_multi_output_cleanup, plan_virtual_device_teardown,
-        select_macos_audio_share_decision, select_virtual_device_candidate, virtual_device_rank,
-        MacAudioShareDecision, StaleCleanupDeviceInfo, VirtualDeviceCandidate,
-        VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot, VirtualDeviceTeardownTrigger,
+        select_default_path, select_macos_audio_share_decision, select_virtual_device_candidate,
+        virtual_device_rank, MacAudioShareDecision, MacOsVersion, MacosAudioCapturePath,
+        StaleCleanupDeviceInfo, VirtualDeviceCandidate, VirtualDeviceTeardownAction,
+        VirtualDeviceTeardownSnapshot, VirtualDeviceTeardownTrigger,
     };
     use crate::audio_capture::platform::try_start_process_tap;
 
@@ -372,6 +397,8 @@ mod tests {
             real_output_device_id: None,
             real_output_device_name: None,
             requires_mute_for_echo_prevention: false,
+            capture_path: Some("process_tap".to_string()),
+            fallback_reason: None,
         }
     }
 
@@ -381,6 +408,8 @@ mod tests {
             real_output_device_id: Some("built-in-output".to_string()),
             real_output_device_name: None,
             requires_mute_for_echo_prevention: false,
+            capture_path: Some("virtual_device".to_string()),
+            fallback_reason: None,
         }
     }
 
@@ -456,6 +485,21 @@ mod tests {
 
         assert_eq!(decision, MacAudioShareDecision::ScreenCaptureKit);
         assert_eq!(result, bare_sck_fallback_result());
+    }
+
+    #[test]
+    fn select_default_path_prefers_process_tap_on_macos_14_2_and_newer() {
+        let path = select_default_path(
+            MacOsVersion {
+                major: 14,
+                minor: 2,
+                patch: 0,
+            },
+            true,
+            true,
+        );
+
+        assert_eq!(path, MacosAudioCapturePath::ProcessTap);
     }
 
     #[test]

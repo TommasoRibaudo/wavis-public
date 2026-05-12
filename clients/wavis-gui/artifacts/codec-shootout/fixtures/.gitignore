@@ -1,0 +1,7 @@
+# Fixture video files are large binaries — store locally, not in git.
+# The .gitkeep files in detail/ and motion/ track the directory structure.
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm

@@ -48,3 +48,6 @@ TODO.md
 
 # Tauri generated files
 /src-tauri/gen/
+
+# Local dev scripts with credentials
+run-shootout.ps1

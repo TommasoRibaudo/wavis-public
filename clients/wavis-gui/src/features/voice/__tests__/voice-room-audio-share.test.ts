@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { AudioShareStartResult } from '@features/screen-share/share-types';
+import { clearTelemetrySnapshot, getTelemetrySnapshot } from '../telemetry';
 
 /* ─── Type-Level Assertion ──────────────────────────────────────── */
 
@@ -32,9 +33,12 @@ let messageHandler: ((msg: unknown) => void) | null;
 
 /** Tracks invoke calls — key is command name, value is array of arg objects. */
 let invokeCalls: Array<{ command: string; args?: Record<string, unknown> }>;
+let tauriListeners: Map<string, Set<(event: { payload: unknown }) => void>>;
 
 /** When set, invoke('audio_share_start') will reject with this error. */
 let audioShareStartError: string | null;
+let audioShareStartResult: AudioShareStartResult;
+let linuxDesktopContext: { desktopEnv: string; sessionType: string };
 
 /* ─── Mock toast (sonner) ───────────────────────────────────────── */
 
@@ -135,6 +139,7 @@ vi.mock('@features/settings/settings-store', () => ({
   getMuteHotkey: vi.fn(async () => 'Ctrl+Shift+M'),
   getProfileColor: vi.fn(async () => '#E06C75'),
   getChannelVolumes: vi.fn(async () => null),
+  getWindowsSharePath: vi.fn(async () => 'browser'),
   setChannelVolumes: vi.fn(async () => {}),
   getNotificationVolume: vi.fn(async () => 100),
   getSoundVolumes: vi.fn(async () => ({})),
@@ -153,20 +158,42 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (command === 'audio_share_start' && audioShareStartError) {
       throw new Error(audioShareStartError);
     }
+    if (command === 'audio_share_start') {
+      return audioShareStartResult;
+    }
     if (command === 'get_default_audio_monitor') {
       return 'default-monitor';
+    }
+    if (command === 'get_default_audio_monitor_fast') {
+      return 'default-monitor';
+    }
+    if (command === 'get_linux_desktop_context') {
+      return linuxDesktopContext;
+    }
+    if (command === 'screen_share_start') {
+      return true;
     }
     return {};
   }),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (eventName: string, handler: (event: { payload: unknown }) => void) => {
+    if (!tauriListeners.has(eventName)) {
+      tauriListeners.set(eventName, new Set());
+    }
+    tauriListeners.get(eventName)!.add(handler);
+    return () => {
+      tauriListeners.get(eventName)?.delete(handler);
+    };
+  }),
   emit: vi.fn(async () => {}),
 }));
 
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  WebviewWindow: vi.fn(),
+  WebviewWindow: Object.assign(vi.fn(), {
+    getByLabel: vi.fn(async () => null),
+  }),
 }));
 
 vi.mock('../native-media', () => ({
@@ -185,6 +212,7 @@ import {
   leaveRoom,
   getState,
   startCustomShare,
+  startPortalShare,
 } from '../voice-room';
 import type { ShareSelection } from '@features/screen-share/share-types';
 
@@ -197,8 +225,25 @@ function resetAll() {
   sentMessages = [];
   messageHandler = null;
   invokeCalls = [];
+  tauriListeners = new Map();
   audioShareStartError = null;
+  audioShareStartResult = {
+    loopback_exclusion_available: true,
+    capture_path: 'wasapi',
+  };
+  linuxDesktopContext = {
+    desktopEnv: 'GNOME',
+    sessionType: 'wayland',
+  };
   mockToastError.mockClear();
+  clearTelemetrySnapshot();
+  (globalThis as { __wavisSenderData?: unknown }).__wavisSenderData = {};
+}
+
+function emitTauriEvent(eventName: string, payload: unknown): void {
+  for (const handler of tauriListeners.get(eventName) ?? []) {
+    handler({ payload });
+  }
 }
 
 async function driveToActive() {
@@ -241,11 +286,13 @@ async function driveToActive() {
 describe('Audio share error propagation and toast display (Task 4.4)', () => {
   beforeEach(async () => {
     resetAll();
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
     await driveToActive();
   });
 
   afterEach(() => {
     try { leaveRoom(); } catch { /* ignore */ }
+    vi.unstubAllGlobals();
   });
 
   it('toast.error() is called with the error message when audio_share_start rejects', async () => {
@@ -317,6 +364,116 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     const newMsgs = sentMessages.slice(msgsBefore);
     const startShareMsgs = newMsgs.filter(m => m.type === 'start_share');
     expect(startShareMsgs).toHaveLength(0);
+  });
+
+  it('surfaces a room notice when macOS falls back to ScreenCaptureKit audio isolation', async () => {
+    audioShareStartResult = {
+      loopback_exclusion_available: false,
+      capture_path: 'screen_capture_kit',
+      fallback_reason: 'process tap isolation was unavailable',
+    };
+
+    const selection: ShareSelection = {
+      mode: 'audio_only',
+      sourceId: 'system-audio-1',
+      sourceName: 'System Audio',
+      withAudio: false,
+    };
+
+    await startCustomShare(selection);
+
+    expect(
+      getState().events.some((event) =>
+        event.message.includes('ScreenCaptureKit fallback with weaker isolation'),
+      ),
+    ).toBe(true);
+  });
+
+  it('logs the Linux matrix degradation message before starting native capture', async () => {
+    audioShareStartResult = {
+      loopback_exclusion_available: true,
+      capture_path: 'pulse_audio',
+    };
+
+    const selection: ShareSelection = {
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      withAudio: true,
+    };
+
+    await startCustomShare(selection);
+
+    expect(invokeCalls).toContainEqual({ command: 'get_linux_desktop_context', args: undefined });
+    expect(invokeCalls).toContainEqual({
+      command: 'screen_share_start_source',
+      args: expect.objectContaining({ sourceId: 'screen-1' }),
+    });
+    expect(invokeCalls).toContainEqual({ command: 'get_default_audio_monitor', args: undefined });
+    expect(
+      getState().events.some((event) =>
+        event.message.includes('remote mic and system-audio still share one subscriber volume slot on Linux'),
+      ),
+    ).toBe(true);
+  });
+
+  it('blocks unsupported Linux native combinations before native capture starts', async () => {
+    linuxDesktopContext = {
+      desktopEnv: 'sway',
+      sessionType: 'wayland',
+    };
+
+    const selection: ShareSelection = {
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      withAudio: true,
+    };
+
+    await expect(startCustomShare(selection)).rejects.toThrow(
+      'Linux native share is not supported on Sway/Wayland in the checked-in Wavis matrix yet; use GNOME, KDE, or an X11 session instead.',
+    );
+
+    expect(invokeCalls.some((call) => call.command === 'screen_share_start_source')).toBe(false);
+    expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
+    expect(
+      getState().events.some((event) =>
+        event.message.includes('not supported on Sway/Wayland'),
+      ),
+    ).toBe(true);
+  });
+
+  it('blocks unsupported Linux portal share before invoking the native portal capture', async () => {
+    linuxDesktopContext = {
+      desktopEnv: 'sway',
+      sessionType: 'wayland',
+    };
+
+    await expect(startPortalShare()).rejects.toThrow(
+      'Linux native share is not supported on Sway/Wayland in the checked-in Wavis matrix yet; use GNOME, KDE, or an X11 session instead.',
+    );
+
+    expect(invokeCalls.some((call) => call.command === 'screen_share_start')).toBe(false);
+  });
+
+  it('converts the Rust Linux fallback event into telemetry', () => {
+    emitTauriEvent('linux-capture-fallback-activated', {
+      from: 'pulse_audio',
+      to: 'none',
+      reason: 'system audio sharing blocked to prevent echo',
+    });
+
+    expect(getTelemetrySnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'capture.fallback.activated',
+          os: 'linux',
+          from: 'pulse_audio',
+          to: 'none',
+          reason: 'system audio sharing blocked to prevent echo',
+        }),
+      ]),
+    );
   });
 
   it('AudioShareStartResult does not have a warning field (compile check)', () => {
