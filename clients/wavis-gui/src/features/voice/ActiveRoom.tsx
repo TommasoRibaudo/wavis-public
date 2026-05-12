@@ -660,6 +660,7 @@ export default function ActiveRoom() {
   const [shareQualityState, setShareQualityState] = useState<ShareQuality>('high');
   const [shareAudioOn, setShareAudioOn] = useState(false);
   const [showPostShareAudioPrompt, setShowPostShareAudioPrompt] = useState(false);
+  const [showMacAudioHoverMessage, setShowMacAudioHoverMessage] = useState(false);
 // Screen share error toast (auto-dismisses after 5s)
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
   const shareErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1494,6 +1495,8 @@ export default function ActiveRoom() {
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
+  const macShareAudioDisabledMessage =
+    'System audio on macOS requires the WavisAudioTap driver — stop sharing and restart to enable audio.';
 
   // macOS: check / install the WavisAudioTap HAL driver needed for echo-free audio share.
   const { driverState, installError, triggerInstall } = useAudioDriverInstall(isMacPlatform);
