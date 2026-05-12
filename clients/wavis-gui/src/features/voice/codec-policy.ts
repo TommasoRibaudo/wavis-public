@@ -8,10 +8,11 @@ export interface CodecPolicyConfigOptions {
   defaultPrimaryCodec?: 'vp9' | 'vp8' | 'av1';
 }
 
+// W4 shootout decision (2026-05-11): vp8sim wins for motion-heavy content (games/video).
 export const DEFAULT_CODEC_POLICY: CodecPolicy = {
-  primary: 'vp9',
-  backup: 'vp8',
-  simulcast: false,
+  primary: 'vp8',
+  backup: null,
+  simulcast: true,
 };
 
 export class CodecPolicyConfig {

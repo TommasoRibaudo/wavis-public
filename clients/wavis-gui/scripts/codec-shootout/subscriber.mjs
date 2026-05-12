@@ -8,7 +8,7 @@
  * register as a participant and keep the slot filled for the measurement window.
  *
  * Env vars (set by run-matrix.mjs):
- *   WAVIS_LIVEKIT_URL           wss://... LiveKit server
+ *   WAVIS_LIVEKIT_URL           ws://... LiveKit server
  *   WAVIS_LIVEKIT_API_KEY       LiveKit API key
  *   WAVIS_LIVEKIT_API_SECRET    LiveKit API secret
  *   WAVIS_SHOOTOUT_ROOM_NAME    room to join
@@ -17,7 +17,6 @@
  */
 
 import { createHmac } from 'node:crypto';
-import { WebSocket } from 'node:events'; // node 22+ has WebSocket globally; older nodes need 'ws'
 
 const ROOM   = process.env.WAVIS_SHOOTOUT_ROOM_NAME ?? 'shootout-room';
 const INDEX  = process.env.WAVIS_SHOOTOUT_SUBSCRIBER_INDEX ?? '1';
@@ -54,36 +53,35 @@ const wsUrl = `${LK_URL.replace(/\/$/, '')}/rtc?access_token=${token}&auto_subsc
 let ws;
 let pingInterval;
 
-function connect() {
-  const NodeWebSocket = globalThis.WebSocket ?? (await import('ws').then(m => m.default).catch(() => null));
-  if (!NodeWebSocket) {
-    console.error(`[sub-${INDEX}] No WebSocket implementation found. Install 'ws': npm install ws -g`);
+async function connect() {
+  // Node.js 22 has WebSocket globally; fall back to the 'ws' package for older nodes.
+  const WS = globalThis.WebSocket ?? (await import('ws').then(m => m.default).catch(() => null));
+  if (!WS) {
+    console.error(`[sub-${INDEX}] No WebSocket implementation found. Requires Node.js 22+ or 'ws' package.`);
     process.exit(1);
   }
 
-  ws = new NodeWebSocket(wsUrl, { rejectUnauthorized: false });
+  ws = new WS(wsUrl);
 
-  ws.on('open', () => {
+  ws.addEventListener('open', () => {
     console.log(`[sub-${INDEX}] connected to room ${ROOM} (cell ${CELL})`);
-    // send ping every 10s to keep connection alive
     pingInterval = setInterval(() => {
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping' }));
     }, 10_000);
   });
 
-  ws.on('message', () => { /* ignore incoming signals — subscriber only */ });
+  ws.addEventListener('message', () => { /* ignore incoming signals — subscriber only */ });
 
-  ws.on('close', (code) => {
-    console.log(`[sub-${INDEX}] disconnected (code ${code})`);
+  ws.addEventListener('close', (event) => {
+    console.log(`[sub-${INDEX}] disconnected (code ${event.code})`);
     clearInterval(pingInterval);
   });
 
-  ws.on('error', (err) => {
-    console.error(`[sub-${INDEX}] WS error: ${err.message}`);
+  ws.addEventListener('error', (event) => {
+    console.error(`[sub-${INDEX}] WS error: ${event.message ?? 'unknown'}`);
   });
 }
 
-// Graceful shutdown on SIGTERM from the runner
 process.on('SIGTERM', () => {
   console.log(`[sub-${INDEX}] SIGTERM — closing`);
   clearInterval(pingInterval);

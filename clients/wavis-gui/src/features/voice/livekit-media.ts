@@ -288,9 +288,9 @@ interface ScreenSharePublishOptions {
 
 const DEFAULT_PUBLISH_OPTIONS: ScreenSharePublishOptions = {
   screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
-  videoCodec: 'vp9',
-  backupCodec: { codec: 'vp8' },
-  simulcast: false,
+  videoCodec: 'vp8',
+  backupCodec: false,
+  simulcast: true,
   degradationPreference: 'maintain-resolution',
   screenShareSimulcastLayers: [
     { width: 640, height: 360 },
@@ -4800,8 +4800,13 @@ export class LiveKitModule {
       new Promise<void>((_, reject) =>
         setTimeout(() => reject(new Error('native capture: first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
       ),
-    ]).catch((err) => {
+    ]).catch(async (err) => {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      // Clean up the polling interval, canvas, and any state we set up before the
+      // first-frame gate. Without this, a first-frame timeout (or a concurrent
+      // stopNativeCapture() that races with this startup) leaves the poll
+      // setInterval running and the canvas attached to document.body.
+      await this.stopNativeCapture();
       throw err;
     });
 

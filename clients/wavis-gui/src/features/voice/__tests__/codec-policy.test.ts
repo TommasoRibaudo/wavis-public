@@ -7,9 +7,10 @@ import {
 } from '../codec-policy';
 
 describe('codec-policy', () => {
-  it('defaults to vp9 primary with vp8 backup and no simulcast', () => {
-    expect(new CodecPolicyConfig().defaultPrimaryCodec).toBe('vp9');
+  it('defaults to vp8 simulcast (W4 decision: vp8sim)', () => {
+    expect(new CodecPolicyConfig().defaultPrimaryCodec).toBe('vp8');
     expect(getDefaultCodecPolicy()).toEqual(DEFAULT_CODEC_POLICY);
+    expect(DEFAULT_CODEC_POLICY).toEqual({ primary: 'vp8', backup: null, simulcast: true });
   });
 
   it('allows vp9 as primary: backup=vp8, simulcast=false', () => {

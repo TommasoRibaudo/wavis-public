@@ -30,7 +30,7 @@ export const DEFAULT_MOTION_DETECTOR_CONFIG: MotionDetectorConfig = {
   switchInAreaThreshold: 0.40,
   switchOutAreaThreshold: 0.10,
   switchInDwellMs: 1_000,
-  switchOutDwellMs: 10_000,
+  switchOutDwellMs: 5_000,
   sampleWindowMs: 1_000,
   sampleRateHz: 4,
 };

@@ -270,9 +270,10 @@ mod tests {
 
     use super::{
         bare_sck_fallback_result, plan_stale_multi_output_cleanup, plan_virtual_device_teardown,
-        select_macos_audio_share_decision, select_virtual_device_candidate, virtual_device_rank,
-        MacAudioShareDecision, StaleCleanupDeviceInfo, VirtualDeviceCandidate,
-        VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot, VirtualDeviceTeardownTrigger,
+        select_default_path, select_macos_audio_share_decision, select_virtual_device_candidate,
+        virtual_device_rank, MacAudioShareDecision, MacOsVersion, MacosAudioCapturePath,
+        StaleCleanupDeviceInfo, VirtualDeviceCandidate, VirtualDeviceTeardownAction,
+        VirtualDeviceTeardownSnapshot, VirtualDeviceTeardownTrigger,
     };
     use crate::audio_capture::platform::try_start_process_tap;
 

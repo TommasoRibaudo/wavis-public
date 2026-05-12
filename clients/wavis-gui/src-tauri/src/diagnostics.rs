@@ -237,6 +237,7 @@ pub fn get_shootout_env() -> Option<ShootoutEnvConfig> {
 /// `artifact_dir` is the run directory (e.g. `artifacts/codec-shootout/runs/{runId}`).
 /// The file is written to `{artifact_dir}/{cell_id}/{cell_id}.jsonl`.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn write_shootout_sample(
     sys_state: tauri::State<'_, DiagnosticsSystemState>,
     run_id: String,

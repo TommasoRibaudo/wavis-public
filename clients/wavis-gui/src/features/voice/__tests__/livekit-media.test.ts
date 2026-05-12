@@ -2747,13 +2747,14 @@ describe('Screen share quality optimization', () => {
             const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
             expect(publishOpts).toBeDefined();
 
-            // videoCodec: 'vp9'
-            expect(publishOpts.videoCodec).toBe('vp9');
+            // videoCodec: 'vp8' (W4 decision 2026-05-11: vp8sim wins for motion-heavy content)
+            expect(publishOpts.videoCodec).toBe('vp8');
 
-            // backupCodec: object with codec === 'vp8' (SDK shape)
-            expect(publishOpts.backupCodec).toBeDefined();
-            expect(typeof publishOpts.backupCodec).toBe('object');
-            expect((publishOpts.backupCodec as Record<string, unknown>).codec).toBe('vp8');
+            // backupCodec: false (vp8 is its own baseline; no backup needed)
+            expect(publishOpts.backupCodec).toBe(false);
+
+            // simulcast: true (vp8 uses classic simulcast, not SVC)
+            expect(publishOpts.simulcast).toBe(true);
 
             // degradationPreference: 'maintain-resolution'
             expect(publishOpts.degradationPreference).toBe('maintain-resolution');
