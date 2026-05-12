@@ -5,15 +5,24 @@
   "type": "module",
   "scripts": {
     "patch:livekit": "node ./scripts/apply-livekit-transceiver-reuse-fix.mjs",
-    "predev": "npm run patch:livekit",
+    "verify:livekit-patch": "node ./scripts/verify-livekit-patch.mjs",
+    "check:release-config": "node ./scripts/check-release-config.mjs",
+    "gen:linux-matrix": "node ./scripts/gen-linux-matrix.mjs",
+    "check:linux-matrix": "node ./scripts/gen-linux-matrix.mjs --check",
+    "lint:mic-bitrate": "node ./scripts/lint/mic-bitrate-ceiling.mjs",
+    "lint:forbidden-macos-paths": "node ./scripts/lint/forbidden-macos-paths.mjs",
+    "shootout": "node ./scripts/codec-shootout/run-matrix.mjs",
+    "shootout:dry-run": "node ./scripts/codec-shootout/run-matrix.mjs --dry-run",
+    "w4:record-decision": "node ./scripts/record-w4-decision.mjs",
+    "predev": "npm run patch:livekit && npm run verify:livekit-patch",
     "dev": "vite",
-    "prebuild": "npm run patch:livekit",
+    "prebuild": "npm run patch:livekit && npm run verify:livekit-patch",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "pretest": "npm run patch:livekit",
+    "pretest": "npm run patch:livekit && npm run verify:livekit-patch",
     "test": "vitest --run",
-    "postinstall": "node ./scripts/apply-livekit-transceiver-reuse-fix.mjs"
+    "postinstall": "npm run patch:livekit && npm run verify:livekit-patch"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.3",

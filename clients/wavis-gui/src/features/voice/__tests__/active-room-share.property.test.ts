@@ -19,6 +19,7 @@ const arbVideoShare: fc.Arbitrary<VoiceRoomState['activeVideoShare']> = fc.oneof
     mode: fc.constantFrom('screen_audio' as const, 'window' as const),
     sourceName: fc.string({ minLength: 1, maxLength: 64 }),
     withAudio: fc.boolean(),
+    audioSourceId: fc.option(fc.string({ minLength: 1, maxLength: 64 }), { nil: null }),
   }),
 );
 
