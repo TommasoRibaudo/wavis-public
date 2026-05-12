@@ -12,13 +12,20 @@ import type { ChannelRole } from '@features/channels/channels';
 import { getServerUrl, getDisplayName, refreshTokens, onTokensRefreshed } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { toWsUrl } from '@shared/helpers';
-import { LiveKitModule, type MediaState, type MediaCallbacks, type ShareQualityInfo, type ShareStats, type VideoReceiveStats } from './livekit-media';
+import { LiveKitModule, type MediaState, type MediaCallbacks, type ShareQualityInfo, type ShareStats, type VideoReceiveStats, type ShareProfileId } from './livekit-media';
+import { MotionDetector, DEFAULT_MOTION_DETECTOR_CONFIG } from './motion-detector';
+import { startOffscreenCanvasSampling, isLeakDiagnosticsThumbnailingActive } from './motion-sample-source';
 import { NativeMediaModule } from './native-media';
 import { setActiveLiveKitModule } from './audio-devices';
-import { getDefaultVolume, getReconnectConfig, getMuteHotkey, getProfileColor, getChannelVolumes, setChannelVolumes } from '@features/settings/settings-store';
+import { getDefaultVolume, getReconnectConfig, getMuteHotkey, getProfileColor, getChannelVolumes, getWindowsSharePath, setChannelVolumes } from '@features/settings/settings-store';
 import type { ChannelVolumePrefs } from '@features/settings/settings-store';
 import type { ShareMode, ShareSelection, EnumerationResult, FallbackReason, AudioShareStartResult } from '@features/screen-share/share-types';
 import type { ShareSessionLeakSummary } from './share-leak-diagnostics';
+import { emitTelemetryEvent, type WindowsSharePath } from './telemetry';
+import {
+  lookupLinuxCapability,
+  type LinuxCapabilityRow,
+} from './linux-capability-matrix';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import { playNotificationSound } from './notification-sounds';
 import { toast } from 'sonner';
@@ -162,7 +169,12 @@ export interface VoiceRoomState {
   /** Consecutive media reconnect failure count. */
   mediaReconnectFailures: number;
   /** Active video share slot (screen or window). Null when no video share. */
-  activeVideoShare: { mode: 'screen_audio' | 'window'; sourceName: string; withAudio: boolean } | null;
+  activeVideoShare: {
+    mode: 'screen_audio' | 'window';
+    sourceName: string;
+    withAudio: boolean;
+    audioSourceId: string | null;
+  } | null;
   /** Active standalone audio share slot. Null when no audio-only share. */
   activeAudioShare: { sourceId: string; sourceName: string } | null;
   /** Transient error from the last `error` signaling message (for chat panel display). */
@@ -178,6 +190,8 @@ export interface VoiceRoomState {
   nativeMicBridgeActive: boolean;
   /** True when the active JS LiveKit microphone track has the denoise processor attached. */
   noiseSuppressionActive: boolean;
+  /** Preferred Windows share path; reads as browser on non-Windows platforms. */
+  windowsSharePath: WindowsSharePath;
   /** Ordered synchronized sub-rooms inside the current channel voice session. */
   subRooms: VoiceSubRoom[];
   /** Actual sub-room currently joined by the local participant, or null when in no sub-room. */
@@ -773,6 +787,11 @@ export async function startFallbackShare(): Promise<{ started: boolean; withAudi
   if (!lkModule) {
     throw new Error(`Screen sharing is not available (media module not initialized, mediaState=${state.mediaState})`);
   }
+  ensureReusePatchReadyForPublish();
+  emitSharePathSelected(
+    isWindowsPlatform() ? 'browser' : isMacPlatform() ? 'browser_mac' : 'linux_native',
+    isWindowsPlatform() ? 'browser_display_media' : isMacPlatform() ? 'mac_browser_share' : 'linux_share_start',
+  );
 
   const success = await lkModule.startScreenShare();
 
@@ -783,6 +802,14 @@ export async function startFallbackShare(): Promise<{ started: boolean; withAudi
       client.send({ type: 'start_share', shareType: 'browser' });
     }
     notify();
+    // Start motion-sample source and profile-switch state machine (W5).
+    if (lkModule instanceof LiveKitModule) {
+      const track = lkModule.getLocalScreenShareTrack();
+      if (track) selectMotionSampleSource(track);
+    }
+    await applyProfileSwitch('detail', 'init');
+    _stopAutoSwitchPoll?.();
+    _stopAutoSwitchPoll = startAutoSwitchPoll();
   }
   // Native share-audio platforms report an audio track only after the
   // separate audio bridge is started. Browser-managed paths report it here.
@@ -901,6 +928,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   latestClosedShareLeakSummary: null,
   nativeMicBridgeActive: false,
   noiseSuppressionActive: false,
+  windowsSharePath: 'browser',
   subRooms: [],
   joinedSubRoomId: null,
   desiredSubRoomId: null,
@@ -914,6 +942,99 @@ let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], pa
 type MediaModule = LiveKitModule | NativeMediaModule;
 
 let lkModule: MediaModule | null = null;
+let reusePatchGuardCheckedForSession = false;
+let reusePatchGuardPassedForSession = false;
+interface PendingWasapiResume {
+  systemAudioEnabled: boolean;
+  systemAudioMuted: boolean;
+  systemAudioSourceId: string | null;
+}
+let pendingWasapiResume: PendingWasapiResume | null = null;
+
+/* ─── Motion detection (W5) ─────────────────────────────────────── */
+
+let _motionDetector: MotionDetector | null = null;
+let _stopMotionSampling: (() => void) | null = null;
+
+/** Current active motion detector, or null when no share is active. */
+export function getMotionDetector(): MotionDetector | null {
+  return _motionDetector;
+}
+
+/**
+ * Selects and starts a motion-sample source for the given track.
+ * Primary: Leak_Diagnostics thumbnail canvas (when active).
+ * Fallback: OffscreenCanvas 4 Hz sampler (always available while share is active).
+ * Re-call to re-select source on diagnostics-toggle events.
+ */
+function selectMotionSampleSource(track: MediaStreamTrack): void {
+  _stopMotionSampling?.();
+  _stopMotionSampling = null;
+  if (!_motionDetector) {
+    _motionDetector = new MotionDetector(DEFAULT_MOTION_DETECTOR_CONFIG);
+  }
+  if (isLeakDiagnosticsThumbnailingActive()) {
+    // Primary source (thumbnailing) — not yet implemented; falls through to fallback.
+  }
+  _stopMotionSampling = startOffscreenCanvasSampling(track, _motionDetector);
+}
+
+function stopMotionDetection(): void {
+  _stopMotionSampling?.();
+  _stopMotionSampling = null;
+  _motionDetector = null;
+  _stopAutoSwitchPoll?.();
+  _stopAutoSwitchPoll = null;
+}
+
+/* ─── Profile-switch state machine (W5 task 10.8) ───────────────── */
+
+let _currentShareProfile: ShareProfileId = 'detail';
+let _stopAutoSwitchPoll: (() => void) | null = null;
+
+/** Maps a ShareProfileId to the legacy ShareQuality for the existing setScreenShareQuality path. */
+function profileToQuality(profile: ShareProfileId): ShareQuality {
+  return profile === 'motion' ? 'low' : 'high';
+}
+
+/**
+ * Applies the given profile's encoding envelope to the active share.
+ * Emits share.profile.switched telemetry.
+ */
+async function applyProfileSwitch(
+  to: ShareProfileId,
+  reason: 'init' | 'auto_in' | 'auto_out',
+): Promise<void> {
+  const from = _currentShareProfile;
+  _currentShareProfile = to;
+  const quality = profileToQuality(to);
+  if (lkModule && 'setScreenShareQuality' in lkModule) {
+    await (lkModule as { setScreenShareQuality(q: ShareQuality): Promise<void> })
+      .setScreenShareQuality(quality).catch(() => {});
+  }
+  emitTelemetryEvent({ name: 'share.profile.switched', from, to, reason, ts: Date.now() });
+}
+
+/**
+ * Starts the auto-switch polling loop. Polls _motionDetector.currentRecommendation()
+ * every 1 second. Unconditional — no user gate (A1.5).
+ * Returns a stop function.
+ */
+function startAutoSwitchPoll(): () => void {
+  let stopped = false;
+  const id = setInterval(async () => {
+    if (stopped || !_motionDetector) return;
+    const recommendation = _motionDetector.currentRecommendation();
+    if (recommendation === _currentShareProfile) return;
+    const reason: 'auto_in' | 'auto_out' =
+      recommendation === 'motion' ? 'auto_in' : 'auto_out';
+    await applyProfileSwitch(recommendation, reason).catch(() => {});
+  }, 1_000);
+  return () => {
+    stopped = true;
+    clearInterval(id);
+  };
+}
 
 /**
  * Platform detection: use the native Rust media path when the webview
@@ -942,7 +1063,250 @@ function shouldUseNativeMedia(): boolean {
 
   return !(hasRtc && hasGetUserMedia && hasGetDisplayMedia);
 }
-let bufferedMediaToken: { sfuUrl: string; token: string } | null = null;
+
+function isWindowsPlatform(): boolean {
+  return typeof navigator !== 'undefined' && /Windows NT/i.test(navigator.userAgent || '');
+}
+
+function isMacPlatform(): boolean {
+  return typeof navigator !== 'undefined' && /Macintosh/i.test(navigator.userAgent || '');
+}
+
+function isLinuxPlatform(): boolean {
+  return typeof navigator !== 'undefined' && !isWindowsPlatform() && !isMacPlatform();
+}
+
+function getWindowsSharePathOverride(): WindowsSharePath | null {
+  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH;
+  return value === 'browser' || value === 'native' ? value : null;
+}
+
+function resolveWindowsSharePathPreference(storedPath: WindowsSharePath): WindowsSharePath {
+  if (!isWindowsPlatform()) {
+    return 'browser';
+  }
+  return getWindowsSharePathOverride() ?? storedPath;
+}
+
+function emitSharePathSelected(path: 'browser' | 'native' | 'linux_native' | 'browser_mac', reason: string): void {
+  emitTelemetryEvent({
+    name: 'share.path.selected',
+    path,
+    reason,
+    ts: Date.now(),
+  });
+}
+
+function emitAudioCaptureSelection(result: AudioShareStartResult): void {
+  if (!result.capture_path) {
+    return;
+  }
+
+  const os = result.capture_path === 'wasapi'
+    ? 'windows'
+    : result.capture_path === 'pulse_audio'
+      ? 'linux'
+      : 'macos';
+  emitTelemetryEvent({
+    name: 'capture.path.selected',
+    os,
+    path: result.capture_path,
+    ts: Date.now(),
+  });
+
+  if (result.capture_path === 'screen_capture_kit') {
+    emitTelemetryEvent({
+      name: 'capture.fallback.activated',
+      os: 'macos',
+      from: 'process_tap',
+      to: 'sck',
+      reason: result.fallback_reason ?? 'process tap isolation was unavailable',
+      ts: Date.now(),
+    });
+  }
+}
+
+interface LinuxDesktopContext {
+  desktopEnv: string;
+  sessionType: string;
+}
+
+interface LinuxCaptureFallbackPayload {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+function normalizeLinuxDesktopEnv(desktopEnv: string): string {
+  const tokens = desktopEnv
+    .split(':')
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token.length > 0);
+
+  for (const token of tokens) {
+    if (token.includes('gnome')) return 'gnome';
+    if (token.includes('kde') || token.includes('plasma')) return 'kde';
+    if (token.includes('sway')) return 'sway';
+    if (token.includes('xfce')) return 'xfce';
+  }
+
+  return tokens[0] ?? 'unknown';
+}
+
+function normalizeLinuxCompositor(sessionType: string): 'wayland' | 'x11' | null {
+  const normalized = sessionType.trim().toLowerCase();
+  if (normalized === 'wayland' || normalized === 'x11') {
+    return normalized;
+  }
+  return null;
+}
+
+function buildUnknownLinuxCapabilityRow(reason: string): LinuxCapabilityRow {
+  return {
+    desktopEnv: 'unknown',
+    compositor: 'x11',
+    videoCapture: 'unsupported',
+    audioCapture: 'unsupported',
+    combinedStatus: 'degraded',
+    userMessage: reason,
+  };
+}
+
+async function resolveLinuxCapabilityRow(): Promise<LinuxCapabilityRow> {
+  const context = await invoke<LinuxDesktopContext>('get_linux_desktop_context');
+  const desktopEnv = normalizeLinuxDesktopEnv(context.desktopEnv);
+  const compositor = normalizeLinuxCompositor(context.sessionType);
+
+  if (!compositor) {
+    return buildUnknownLinuxCapabilityRow(
+      'Linux native share on this desktop is not in the checked-in Wavis capability matrix yet; share will proceed with degraded expectations.',
+    );
+  }
+
+  return lookupLinuxCapability(desktopEnv, compositor);
+}
+
+async function guardLinuxNativeShareStart(): Promise<void> {
+  if (!isLinuxPlatform()) {
+    return;
+  }
+
+  const row = await resolveLinuxCapabilityRow();
+  if (row.combinedStatus === 'supported') {
+    return;
+  }
+
+  if (row.userMessage) {
+    appendEvent({
+      id: makeEventId(),
+      timestamp: timestamp(),
+      type: 'system',
+      message: row.userMessage,
+    });
+    notify();
+  }
+
+  if (row.combinedStatus === 'unsupported') {
+    throw new Error(row.userMessage ?? 'Linux native share is not supported on this desktop.');
+  }
+}
+
+function maybeNoticeMacCaptureFallback(result: AudioShareStartResult): void {
+  if (result.capture_path !== 'screen_capture_kit') {
+    return;
+  }
+
+  appendEvent({
+    id: makeEventId(),
+    timestamp: timestamp(),
+    type: 'system',
+    message: `macOS system audio is using the ScreenCaptureKit fallback with weaker isolation: ${result.fallback_reason ?? 'process tap isolation was unavailable'}`,
+  });
+}
+
+function ensureReusePatchReadyForPublish(): void {
+  if (!(lkModule instanceof LiveKitModule)) {
+    return;
+  }
+  if (reusePatchGuardCheckedForSession && reusePatchGuardPassedForSession) {
+    return;
+  }
+
+  reusePatchGuardCheckedForSession = true;
+  reusePatchGuardPassedForSession =
+    (globalThis as { __wavisSenderData?: unknown }).__wavisSenderData !== undefined;
+  if (reusePatchGuardPassedForSession) {
+    return;
+  }
+
+  emitTelemetryEvent({
+    name: 'share.reuse_patch.missing',
+    ts: Date.now(),
+  });
+  throw new Error('Screen sharing is unavailable because the LiveKit transceiver reuse patch is missing.');
+}
+
+function snapshotPendingWasapiResume(): void {
+  if (!isWindowsPlatform()) {
+    pendingWasapiResume = null;
+    return;
+  }
+
+  const videoShareAudioEnabled = state.activeVideoShare?.withAudio === true;
+  const audioSourceId = state.activeAudioShare?.sourceId ?? state.activeVideoShare?.audioSourceId ?? null;
+  const systemAudioEnabled = state.activeAudioShare !== null || videoShareAudioEnabled;
+
+  pendingWasapiResume = {
+    systemAudioEnabled,
+    systemAudioMuted: !systemAudioEnabled,
+    systemAudioSourceId: audioSourceId,
+  };
+}
+
+async function resumePendingWasapiCapture(): Promise<void> {
+  const snapshot = pendingWasapiResume;
+  if (!snapshot) {
+    return;
+  }
+  if (
+    !snapshot.systemAudioEnabled
+    || snapshot.systemAudioMuted
+    || snapshot.systemAudioSourceId === null
+    || !(lkModule instanceof LiveKitModule)
+  ) {
+    pendingWasapiResume = null;
+    return;
+  }
+
+  try {
+    const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', {
+      sourceId: snapshot.systemAudioSourceId,
+    });
+    emitAudioCaptureSelection(audioStartResult);
+    await lkModule.startWasapiAudioBridge(audioStartResult.loopback_exclusion_available);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    emitTelemetryEvent({
+      name: 'capture.fallback.activated',
+      os: 'windows',
+      from: 'wasapi',
+      to: 'none',
+      reason,
+      ts: Date.now(),
+    });
+    appendEvent({
+      id: makeEventId(),
+      timestamp: timestamp(),
+      type: 'system',
+      message: `system audio resume failed: ${reason}`,
+    });
+    notify();
+  } finally {
+    pendingWasapiResume = null;
+  }
+}
+
+let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 /** Currently registered hotkey string (null when no hotkey is active). */
@@ -1001,6 +1365,7 @@ let unlistenSharePickerRequest: UnlistenFn | null = null;
 let unlistenExternalShareStarted: UnlistenFn | null = null;
 let unlistenExternalShareStopped: UnlistenFn | null = null;
 let unlistenExternalShareError: UnlistenFn | null = null;
+let unlistenLinuxCaptureFallback: UnlistenFn | null = null;
 let unlistenViewerJoined: UnlistenFn | null = null;
 
 export function setPendingSharePickerData(data: PendingSharePickerData | null): void {
@@ -1028,6 +1393,29 @@ function teardownSharePickerListener(): void {
     unlistenSharePickerRequest = null;
   }
   pendingSharePickerData = null;
+}
+
+function setupLinuxCaptureFallbackListener(): void {
+  if (unlistenLinuxCaptureFallback) return;
+  listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
+    emitTelemetryEvent({
+      name: 'capture.fallback.activated',
+      os: 'linux',
+      from: payload.from,
+      to: payload.to,
+      reason: payload.reason,
+      ts: Date.now(),
+    });
+  }).then((unlisten) => {
+    unlistenLinuxCaptureFallback = unlisten;
+  });
+}
+
+function teardownLinuxCaptureFallbackListener(): void {
+  if (unlistenLinuxCaptureFallback) {
+    unlistenLinuxCaptureFallback();
+    unlistenLinuxCaptureFallback = null;
+  }
 }
 
 function setupExternalShareHelperListeners(): void {
@@ -1338,7 +1726,7 @@ function scheduleColdStartRetry(): void {
   }, COLD_START_RETRY_MS);
 }
 
-function connectMedia(sfuUrl: string, token: string): void {
+function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): void {
   // Tear down previous instance if any
   if (lkModule) {
     lkModule.disconnect();
@@ -1346,34 +1734,50 @@ function connectMedia(sfuUrl: string, token: string): void {
   }
 
   state.mediaState = 'connecting';
+  state.mediaError = null;
   state.nativeMicBridgeActive = false;
   state.noiseSuppressionActive = false;
   notify();
 
+  const restoreConnectedMediaState = (): void => {
+    state.mediaState = 'connected';
+    state.mediaError = null;
+    state.mediaReconnectFailures = 0;
+    stopPeriodicMediaRetry();
+    const self = selfParticipant();
+    setLocalMicPublishing(shouldPublishLocalMic(self));
+    // Apply persisted master volume to the media layer
+    if (lkModule) {
+      lkModule.setMasterVolume(state.masterVolume);
+      // Apply effective participant volumes after reconnect.
+      applyEffectiveParticipantVolumes();
+    }
+    // Register global mute hotkey on media connect success (R22.1)
+    getMuteHotkey().then((hotkey) => {
+      registerMuteHotkey(hotkey, toggleSelfMute)
+        .then(() => { registeredHotkey = hotkey; })
+        .catch((err) => {
+          console.warn(LOG, 'hotkey registration failed:', err);
+        });
+    }).catch(() => { });
+    void resumePendingWasapiCapture();
+    notify();
+  };
+
   const callbacks: MediaCallbacks = {
     onMediaConnected: () => {
-      state.mediaState = 'connected';
-      state.mediaReconnectFailures = 0;
-      stopPeriodicMediaRetry();
+      restoreConnectedMediaState();
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
-      const self = selfParticipant();
-      setLocalMicPublishing(shouldPublishLocalMic(self));
-      // Apply persisted master volume to the media layer
-      if (lkModule) {
-        lkModule.setMasterVolume(state.masterVolume);
-        // Apply effective participant volumes after reconnect.
-        applyEffectiveParticipantVolumes();
-      }
-      // Register global mute hotkey on media connect success (R22.1)
-      getMuteHotkey().then((hotkey) => {
-        registerMuteHotkey(hotkey, toggleSelfMute)
-          .then(() => { registeredHotkey = hotkey; })
-          .catch((err) => {
-            console.warn(LOG, 'hotkey registration failed:', err);
-          });
-      }).catch(() => { });
+    },
+    onMediaReconnecting: () => {
+      if (state.mediaState === 'failed' || state.mediaState === 'disconnected') return;
+      state.mediaState = 'reconnecting';
+      state.mediaError = null;
       notify();
+    },
+    onMediaReconnected: () => {
+      restoreConnectedMediaState();
     },
     onMediaFailed: (reason) => {
       state.mediaReconnectFailures += 1;
@@ -1451,6 +1855,7 @@ function connectMedia(sfuUrl: string, token: string): void {
       // Clear quality info and stats when share ends
       state.shareQualityInfo = null;
       state.shareStats = null;
+      stopMotionDetection();
       // Only send stop_share if we didn't already send it from stopShare()
       // and we're not in the middle of changing the share source
       if (!localStopShareSent && !localSourceChanging && client) {
@@ -1536,7 +1941,7 @@ function connectMedia(sfuUrl: string, token: string): void {
     lkModule = new LiveKitModule(callbacks);
   }
 
-  lkModule.connect(sfuUrl, token).catch((err) => {
+  lkModule.connect(sfuUrl, token, iceConfig).catch((err) => {
     state.mediaState = 'failed';
     state.mediaError = err instanceof Error ? err.message : 'Connection failed';
     notify();
@@ -1678,9 +2083,9 @@ function dispatchMessage(raw: unknown): void {
 
       // Flush buffered media token if present
       if (bufferedMediaToken) {
-        const { sfuUrl, token } = bufferedMediaToken;
+        const { sfuUrl, token, iceConfig } = bufferedMediaToken;
         bufferedMediaToken = null;
-        connectMedia(sfuUrl, token);
+        connectMedia(sfuUrl, token, iceConfig);
       }
 
       // Request chat history after successful join
@@ -2337,6 +2742,18 @@ function dispatchMessage(raw: unknown): void {
     case 'media_token': {
       const token = msg.token as string;
       const sfuUrl = msg.sfuUrl as string;
+      const iceConfig = msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined;
+
+      console.log(LOG, 'media_token received:', { 
+        hasToken: !!token, 
+        hasSfuUrl: !!sfuUrl, 
+        hasIceConfig: !!iceConfig,
+        iceConfig: iceConfig ? {
+          stunUrls: iceConfig.stunUrls,
+          turnUrls: iceConfig.turnUrls,
+          hasTurnCredentials: !!(iceConfig.turnUsername && iceConfig.turnCredential),
+        } : null,
+      });
 
       if (!token || !sfuUrl) {
         appendEvent({
@@ -2348,14 +2765,18 @@ function dispatchMessage(raw: unknown): void {
       }
 
       if (state.machineState !== 'active') {
-        bufferedMediaToken = { sfuUrl, token };
+        bufferedMediaToken = { sfuUrl, token, iceConfig };
         break;
       }
 
       // Media already connected — this is a proactive refresh from the backend.
       // LiveKit SDK handles its own reconnection internally; tearing down and
       // rebuilding the Room would cause a visible audio/screenshare hiccup.
-      if (state.mediaState === 'connected' || state.mediaState === 'connecting') {
+      if (
+        state.mediaState === 'connected'
+        || state.mediaState === 'connecting'
+        || state.mediaState === 'reconnecting'
+      ) {
         console.log(LOG, `media_token received while media ${state.mediaState} — ignoring (no reconnect needed)`);
         break;
       }
@@ -2364,7 +2785,7 @@ function dispatchMessage(raw: unknown): void {
       if (state.mediaState === 'failed') {
         getReconnectConfig().then((config) => {
           if (state.mediaReconnectFailures < config.maxRetries) {
-            connectMedia(sfuUrl, token);
+            connectMedia(sfuUrl, token, iceConfig);
           } else {
             startPeriodicMediaRetry();
             appendEvent({
@@ -2377,7 +2798,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      connectMedia(sfuUrl, token);
+      connectMedia(sfuUrl, token, iceConfig);
       break;
     }
 
@@ -2476,6 +2897,7 @@ export function initSession(
 
   // Set up share picker event listener for Tauri event handshake
   setupSharePickerListener();
+  setupLinuxCaptureFallbackListener();
   setupExternalShareHelperListeners();
 
   // Forward viewer-subscribed events from WatchAllPage/ScreenSharePage to the signaling server
@@ -2548,14 +2970,22 @@ export function initSession(
   getServerUrl().then((serverUrl) => {
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
-    // Load display name, default volume, profile color, and persisted channel volumes before connecting
-    Promise.all([getDisplayName(), getDefaultVolume(), getProfileColor(), getChannelVolumes(channelId)]).then(([name, vol, profileColor, savedVols]) => {
+    // Load display name, default volume, profile color, persisted channel volumes,
+    // and the Windows share-path preference before connecting.
+    Promise.all([
+      getDisplayName(),
+      getDefaultVolume(),
+      getProfileColor(),
+      getChannelVolumes(channelId),
+      getWindowsSharePath(),
+    ]).then(([name, vol, profileColor, savedVols, windowsSharePath]) => {
       if (client !== thisClient) return;
       sessionDisplayName = name;
       sessionProfileColor = profileColor;
       channelVolumePrefs = savedVols;
       state.defaultVolume = vol;
       state.masterVolume = savedVols?.master ?? vol;
+      state.windowsSharePath = resolveWindowsSharePathPreference(windowsSharePath);
       client.connectWithAuth(wsUrl).catch((err) => {
         console.error(LOG, 'connect failed:', err);
         if (client !== thisClient) return;
@@ -2598,6 +3028,7 @@ export function leaveRoom(): void {
     // Clear state synchronously
     state.activeVideoShare = null;
     state.activeAudioShare = null;
+    stopMotionDetection();
   }
 
   // Clean up fallback (getDisplayMedia) share if active
@@ -2632,6 +3063,9 @@ export function leaveRoom(): void {
   }
   bufferedMediaToken = null;
   externalShareHelperActive = false;
+  reusePatchGuardCheckedForSession = false;
+  reusePatchGuardPassedForSession = false;
+  pendingWasapiResume = null;
   stopColdStartRetry();
   stopPeriodicMediaRetry();
   setActiveLiveKitModule(null);
@@ -2678,6 +3112,7 @@ export function leaveRoom(): void {
 
   // Tear down share picker event listener
   teardownSharePickerListener();
+  teardownLinuxCaptureFallbackListener();
   teardownExternalShareHelperListeners();
   if (unlistenViewerJoined) {
     unlistenViewerJoined();
@@ -2714,7 +3149,11 @@ function startPeriodicMediaRetry(): void {
       stopPeriodicMediaRetry();
       return;
     }
-    if (state.mediaState === 'connected' || state.mediaState === 'connecting') {
+    if (
+      state.mediaState === 'connected'
+      || state.mediaState === 'connecting'
+      || state.mediaState === 'reconnecting'
+    ) {
       stopPeriodicMediaRetry();
       return;
     }
@@ -2749,6 +3188,8 @@ export async function reconnectMedia(): Promise<void> {
     notify();
     return;
   }
+
+  snapshotPendingWasapiResume();
 
   // Tear down current media
   if (lkModule) {
@@ -2883,6 +3324,7 @@ export function toggleSelfDeafen(): void {
 
 export async function startExternalBrowserShare(): Promise<void> {
   ensureInSubRoomForShare();
+  emitSharePathSelected('browser', 'external_browser_share');
   await invoke('external_share_start');
 }
 
@@ -2894,6 +3336,8 @@ export async function startExternalBrowserShare(): Promise<void> {
  */
 export async function startPortalShare(): Promise<boolean> {
   ensureInSubRoomForShare();
+  await guardLinuxNativeShareStart();
+  emitSharePathSelected('linux_native', 'linux_portal_share');
   const result = await invoke<boolean>('screen_share_start');
   if (result) {
     // Mark self as sharing and notify peers (same as other share paths).
@@ -2912,7 +3356,9 @@ export async function startPortalShare(): Promise<boolean> {
     // Echo prevention is handled Rust-side via null sink + loopback routing.
     try {
       const audioSourceId = await invoke<string>('get_default_audio_monitor_fast');
-      await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+      const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+      emitAudioCaptureSelection(audioStartResult);
+      maybeNoticeMacCaptureFallback(audioStartResult);
     } catch (audioErr) {
       console.warn('[wavis] portal share: audio capture failed, continuing video-only:', audioErr);
     }
@@ -2927,11 +3373,21 @@ export async function startPortalShare(): Promise<boolean> {
  */
 export async function startCustomShare(selection: ShareSelection): Promise<void> {
   ensureInSubRoomForShare();
+  ensureReusePatchReadyForPublish();
   // 1. Check if the requested slot is available
   const check = canStartShare(selection, state.activeVideoShare, state.activeAudioShare);
   if (!check.allowed) {
     throw new Error(check.reason ?? 'share slot occupied');
   }
+
+  if (isLinuxPlatform()) {
+    await guardLinuxNativeShareStart();
+  }
+
+  emitSharePathSelected(
+    isWindowsPlatform() ? 'native' : isMacPlatform() ? 'browser_mac' : 'linux_native',
+    isWindowsPlatform() ? 'native_custom_picker' : isMacPlatform() ? 'mac_custom_share' : 'linux_custom_share',
+  );
 
   // 2. Set state fields optimistically
   const isVideoShare = selection.mode === 'screen_audio' || selection.mode === 'window';
@@ -2940,6 +3396,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       mode: selection.mode as 'screen_audio' | 'window',
       sourceName: selection.sourceName,
       withAudio: selection.withAudio,
+      audioSourceId: null,
     };
   } else {
     state.activeAudioShare = {
@@ -3013,7 +3470,12 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);
         const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+        emitAudioCaptureSelection(audioStartResult);
+        maybeNoticeMacCaptureFallback(audioStartResult);
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio_share_start result:', audioStartResult);
+        if (isVideoShare && state.activeVideoShare) {
+          state.activeVideoShare.audioSourceId = audioSourceId;
+        }
 
         // On Windows, the Rust WASAPI capture thread streams PCM frames via
         // Tauri events. Start the JS-side AudioWorklet bridge to receive them
@@ -3040,6 +3502,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
           console.warn(LOG, 'audio companion failed, continuing with video-only:', audioErr);
           if (isVideoShare && state.activeVideoShare) {
             state.activeVideoShare.withAudio = false;
+            state.activeVideoShare.audioSourceId = null;
           }
           appendEvent({
             id: makeEventId(),
@@ -3058,6 +3521,17 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     // 5. Send signaling on success
     if (client) {
       client.send({ type: 'start_share', shareType: selection.mode });
+    }
+
+    // Start motion-sample source and profile-switch state machine for video shares (W5).
+    if (isVideoShare) {
+      if (lkModule instanceof LiveKitModule) {
+        const track = lkModule.getLocalScreenShareTrack();
+        if (track) selectMotionSampleSource(track);
+      }
+      await applyProfileSwitch('detail', 'init');
+      _stopAutoSwitchPoll?.();
+      _stopAutoSwitchPoll = startAutoSwitchPoll();
     }
 
     // 6. Open or update ShareIndicator window
@@ -3147,6 +3621,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
     state.activeVideoShare = null;
     state.shareQualityInfo = null;
     state.shareStats = null;
+    stopMotionDetection();
   }
   if (target === 'audio' || target === 'all') {
     state.activeAudioShare = null;

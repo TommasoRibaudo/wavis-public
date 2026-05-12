@@ -46,6 +46,29 @@ fn is_hyprland_wayland() -> bool {
     has_wayland && (has_hypr_sig || xdg_desktop.to_ascii_lowercase().contains("hypr"))
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+struct LinuxCaptureFallbackEvent {
+    from: String,
+    to: String,
+    reason: String,
+}
+
+#[cfg(target_os = "linux")]
+fn emit_linux_capture_fallback(app: &AppHandle, from: &str, reason: impl Into<String>) {
+    let reason = reason.into();
+    if let Err(err) = app.emit(
+        "linux-capture-fallback-activated",
+        LinuxCaptureFallbackEvent {
+            from: from.to_string(),
+            to: "none".to_string(),
+            reason,
+        },
+    ) {
+        log::warn!("{LOG} failed to emit linux capture fallback event: {err}");
+    }
+}
+
 // ─── Event Types (Rust → JS via Tauri events) ─────────────────────
 
 #[derive(Clone, Serialize)]
@@ -962,9 +985,19 @@ fn screen_share_start_impl(state: State<'_, MediaState>, app: AppHandle) -> Resu
     ) {
         Ok(c) => c,
         Err(screen_capture::CaptureError::UserCancelled) => return Ok(false),
-        Err(screen_capture::CaptureError::NoBackendAvailable(msg)) => return Err(msg),
-        Err(screen_capture::CaptureError::CaptureStartFailed(msg)) => return Err(msg),
-        Err(e) => return Err(format!("{e}")),
+        Err(screen_capture::CaptureError::NoBackendAvailable(msg)) => {
+            emit_linux_capture_fallback(&app, "pipewire_video", msg.clone());
+            return Err(msg);
+        }
+        Err(screen_capture::CaptureError::CaptureStartFailed(msg)) => {
+            emit_linux_capture_fallback(&app, "pipewire_video", msg.clone());
+            return Err(msg);
+        }
+        Err(e) => {
+            let reason = format!("{e}");
+            emit_linux_capture_fallback(&app, "pipewire_video", reason.clone());
+            return Err(reason);
+        }
     };
 
     // Read current quality config for publish dimensions.

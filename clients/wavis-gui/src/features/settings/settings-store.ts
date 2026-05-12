@@ -32,6 +32,11 @@ export interface ChannelVolumePrefs {
   participants: Record<string, number>;
 }
 
+export type WindowsSharePathPreference = 'browser' | 'native';
+
+/** Codec override for screen share. 'auto' uses the W4 shootout winner. */
+export type ScreenShareCodecOverride = 'auto' | 'vp9' | 'vp8' | 'av1';
+
 // ─── Constants ─────────────────────────────────────────────────────
 
 export const SETTINGS_STORE_PATH = 'wavis-settings.json';
@@ -58,6 +63,8 @@ export const STORE_KEYS = {
   notificationVolume: 'wavis_notification_volume',
   soundVolumes: 'wavis_notification_sound_volumes',
   inputVolume: 'wavis_input_volume',
+  windowsSharePath: 'wavis_windows_share_path',
+  screenShareCodec: 'wavis_screen_share_codec',
   lastChannelId: 'wavis_last_channel_id',
   lastChannelName: 'wavis_last_channel_name',
   lastChannelRole: 'wavis_last_channel_role',
@@ -73,6 +80,8 @@ export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
 export const DEFAULT_VOLUME = 70;
 export const DEFAULT_MUTE_HOTKEY = 'Ctrl+Shift+M';
 export const DEFAULT_WATCH_ALL_HOTKEY = 'CmdOrCtrl+Shift+W';
+export const DEFAULT_WINDOWS_SHARE_PATH: WindowsSharePathPreference = 'browser';
+export const DEFAULT_SCREEN_SHARE_CODEC: ScreenShareCodecOverride = 'auto';
 
 const LOG_PREFIX = '[wavis:settings]';
 
@@ -237,6 +246,14 @@ export async function setInputVolume(volume: number): Promise<void> {
   return setStoreValue(STORE_KEYS.inputVolume, volume);
 }
 
+export async function getWindowsSharePath(): Promise<WindowsSharePathPreference> {
+  return getStoreValue(STORE_KEYS.windowsSharePath, DEFAULT_WINDOWS_SHARE_PATH);
+}
+
+export async function setWindowsSharePath(path: WindowsSharePathPreference): Promise<void> {
+  return setStoreValue(STORE_KEYS.windowsSharePath, path);
+}
+
 /**
  * Maps a 0–100 slider value to a 0–1 linear gain using a square law so that
  * 50% on the slider produces approximately half the perceived loudness (−12 dB).
@@ -321,3 +338,14 @@ export async function clearLastChannel(): Promise<void> {
     setStoreValue(STORE_KEYS.lastChannelRole, null),
   ]);
 }
+
+// ─── Screen Share Codec Override (W4 post-shootout) ────────────────
+
+export async function getScreenShareCodec(): Promise<ScreenShareCodecOverride> {
+  return getStoreValue(STORE_KEYS.screenShareCodec, DEFAULT_SCREEN_SHARE_CODEC);
+}
+
+export async function setScreenShareCodec(codec: ScreenShareCodecOverride): Promise<void> {
+  return setStoreValue(STORE_KEYS.screenShareCodec, codec);
+}
+

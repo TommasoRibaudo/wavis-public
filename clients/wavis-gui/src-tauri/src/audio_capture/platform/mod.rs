@@ -210,6 +210,8 @@ mod tests {
             real_output_device_id: None,
             real_output_device_name: None,
             requires_mute_for_echo_prevention: false,
+            capture_path: Some("screen_capture_kit".to_string()),
+            fallback_reason: None,
         });
 
         assert!(
@@ -233,6 +235,8 @@ mod tests {
                     real_output_device_id: None,
                     real_output_device_name: None,
                     requires_mute_for_echo_prevention: false,
+                    capture_path: Some("process_tap".to_string()),
+                    fallback_reason: None,
                 })
             },
         )
@@ -259,6 +263,8 @@ mod tests {
                     real_output_device_id: None,
                     real_output_device_name: None,
                     requires_mute_for_echo_prevention: false,
+                    capture_path: Some("process_tap".to_string()),
+                    fallback_reason: None,
                 })
             },
         )
@@ -317,6 +323,8 @@ mod tests {
                     real_output_device_id: None,
                     real_output_device_name: None,
                     requires_mute_for_echo_prevention: false,
+                    capture_path: Some("process_tap".to_string()),
+                    fallback_reason: None,
                 })
             })
             .expect("tap success should be returned directly for supported macOS versions");
@@ -342,6 +350,8 @@ mod tests {
                     real_output_device_id: None,
                     real_output_device_name: None,
                     requires_mute_for_echo_prevention: false,
+                    capture_path: Some("process_tap".to_string()),
+                    fallback_reason: None,
                 })
             })
             .expect("pre-14.2 macOS should skip the tap path cleanly");

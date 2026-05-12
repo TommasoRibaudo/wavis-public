@@ -41,6 +41,7 @@ function buildServerContext(context: CapturedContext) {
     rust_logs: context.rustLogs,
     ws_messages: context.wsMessages,
     ...(context.shareLeakSummary ? { share_leak_summary: context.shareLeakSummary } : {}),
+    ...(context.telemetryEvents ? { telemetry_events: context.telemetryEvents } : {}),
     app_state: {
       route: context.appState.route,
       ws_status: context.appState.wsStatus,
@@ -190,6 +191,15 @@ export function buildOfflineIssueBody(
     `- Voice Room: ${context.appState.voiceRoomState ?? 'none'}`,
     `- Platform: ${context.appState.platform}`,
     `- Captured At: ${context.capturedAt}`,
+    ...(context.telemetryEvents && context.telemetryEvents.length > 0
+      ? [
+          '',
+          '### Share Telemetry',
+          '```json',
+          JSON.stringify(context.telemetryEvents, null, 2),
+          '```',
+        ]
+      : []),
     ...(context.shareLeakSummary
       ? [
           '',

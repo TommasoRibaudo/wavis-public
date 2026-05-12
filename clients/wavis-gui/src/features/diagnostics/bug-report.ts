@@ -12,6 +12,7 @@ import { apiFetch, apiPublicFetch } from '@shared/api';
 import { getAccessToken, getServerUrl } from '@features/auth/auth';
 import { redactAll, redactText } from '@shared/redaction';
 import { consoleLogBuffer } from '@shared/ring-buffer';
+import { getTelemetrySnapshot, type TelemetryEvent } from '@features/voice/telemetry';
 import { getState as getVoiceRoomState } from '@features/voice/voice-room';
 import type { ShareSessionLeakSummary } from '@features/voice/share-leak-diagnostics';
 import { wsMessageBuffer } from '@shared/ws-message-buffer';
@@ -34,6 +35,7 @@ export interface CapturedContext {
   screenshot: Uint8Array | null;
   appState: AppStateSnapshot;
   shareLeakSummary?: ShareSessionLeakSummary | null;
+  telemetryEvents?: TelemetryEvent[];
   capturedAt: string;
 }
 
@@ -129,6 +131,7 @@ export async function captureAllContext(preScreenshot?: Uint8Array | null): Prom
     screenshot,
     appState: redactedAppState,
     shareLeakSummary: voiceState.latestClosedShareLeakSummary,
+    telemetryEvents: getTelemetrySnapshot(),
     capturedAt: new Date().toISOString(),
   };
 }
