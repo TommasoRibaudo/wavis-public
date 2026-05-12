@@ -12,5 +12,11 @@
 	<!-- This grants TCC permission for the "System Audio Recording" capability -->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
+	<!-- Required for WebRTC peer connections (outgoing network connections) -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Required for WebRTC peer connections (incoming network connections) -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>

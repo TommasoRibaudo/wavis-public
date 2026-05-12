@@ -13,11 +13,22 @@ import {
   LocalParticipant, LocalTrackPublication, LocalAudioTrack, Participant,
   VideoPreset, TrackPublication,
 } from 'livekit-client';
-import type { AudioProcessorOptions, TrackProcessor, LocalVideoTrack } from 'livekit-client';
+import type { AudioProcessorOptions, TrackProcessor, LocalVideoTrack, TrackPublishOptions } from 'livekit-client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { NativeMicBridge } from './native-mic-bridge';
-import { getAudioOutputDevice, getAudioInputDevice, getInputVolume, setInputVolume, inputVolumeToGain, setStoreValue, STORE_KEYS, getDenoiseEnabled } from '@features/settings/settings-store';
+import {
+  getAudioOutputDevice,
+  getAudioInputDevice,
+  getInputVolume,
+  setInputVolume,
+  inputVolumeToGain,
+  setStoreValue,
+  STORE_KEYS,
+  getDenoiseEnabled,
+  getScreenShareCodec,
+  type ScreenShareCodecOverride,
+} from '@features/settings/settings-store';
 import type { AudioShareStartResult } from '@features/screen-share/share-types';
 import type {
   NativeShareLeakStage,
@@ -28,6 +39,14 @@ import type {
   ShareLeakSenderReuseDiagnostics,
   ShareSessionLeakSummary,
 } from './share-leak-diagnostics';
+import { getDefaultCodecPolicy } from './codec-policy';
+import { emitTelemetryEvent } from './telemetry';
+import {
+  getShootoutCodecOverride,
+  getShootoutEnv,
+  startShootoutSampling,
+  stopShootoutSampling,
+} from './shootout-bridge';
 
 const LOG = '[wavis:livekit-media]';
 const NS_LOG = '[wavis:ns]';
@@ -37,7 +56,46 @@ const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_SHARE_TRACK_SUB = import.meta.env.VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION === 'true';
 const DEBUG_MAC_SHARE_AUDIO = import.meta.env.VITE_DEBUG_MAC_SHARE_AUDIO === 'true';
+
+function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
+  if (!result.capture_path) {
+    return;
+  }
+
+  const os = result.capture_path === 'wasapi'
+    ? 'windows'
+    : result.capture_path === 'pulse_audio'
+      ? 'linux'
+      : 'macos';
+  emitTelemetryEvent({
+    name: 'capture.path.selected',
+    os,
+    path: result.capture_path,
+    ts: Date.now(),
+  });
+
+  if (result.capture_path === 'screen_capture_kit') {
+    emitTelemetryEvent({
+      name: 'capture.fallback.activated',
+      os: 'macos',
+      from: 'process_tap',
+      to: 'sck',
+      reason: result.fallback_reason ?? 'process tap isolation was unavailable',
+      ts: Date.now(),
+    });
+  }
+}
 const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION === 'true';
+
+export const MIC_OPUS_BITRATE_BPS = 48_000;
+export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
+// Keep in sync with clients/wavis-gui/scripts/apply-livekit-transceiver-reuse-fix.mjs
+// and revisit on every livekit-client version bump.
+const INACTIVE_VIDEO_TRANSCEIVER_CAP = 2;
+
+type TrackPublishOptionsWithAudioBitrate = TrackPublishOptions & {
+  audioBitrate?: number;
+};
 
 // Capture the real browser enumerateDevices from the prototype BEFORE Tauri's
 // native media module patches the instance. The patched instance method returns
@@ -93,9 +151,40 @@ function usesNativeScreenShareAudio(): boolean {
   return isWindows() || isMac();
 }
 
+function isInactiveVideoLeakCandidate(transceiver: RTCRtpTransceiver): boolean {
+  const stopped = (transceiver as { stopped?: boolean }).stopped;
+  return (
+    stopped !== true
+    && transceiver.direction === 'inactive'
+    && transceiver.sender.track == null
+    && transceiver.receiver.track?.kind === 'video'
+  );
+}
+
+function isStrandedSenderTransceiver(
+  transceiver: ShareLeakBrowserWebRtcSnapshot['transceivers'][number],
+): transceiver is ShareLeakBrowserWebRtcSnapshot['transceivers'][number] & {
+  direction: 'sendonly' | 'sendrecv';
+} {
+  return (
+    transceiver.senderTrackId === null
+    && (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
+  );
+}
+
+function expectedActiveVideoSenderSlots(snapshot: ShareLeakBrowserWebRtcSnapshot | null): number | null {
+  if (!snapshot) {
+    return null;
+  }
+  return snapshot.transceivers.filter((transceiver) =>
+    (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
+    && (transceiver.senderTrackKind === 'video' || transceiver.receiverTrackKind === 'video'),
+  ).length;
+}
+
 /* ─── Types ─────────────────────────────────────────────────────── */
 
-export type MediaState = 'disconnected' | 'connecting' | 'connected' | 'failed';
+export type MediaState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 /** Quality tier for screen share — matches the export in voice-room.ts. */
 export type ShareQuality = 'low' | 'high' | 'max';
@@ -182,30 +271,45 @@ interface ScreenSharePublishOptions {
     maxBitrate: number;
     maxFramerate: number;
   };
-  videoCodec: 'vp9';
+  videoCodec: 'vp9' | 'vp8' | 'av1';
   /**
-   * LiveKit SDK shape: boolean | { codec: 'vp8' | 'h264'; encoding?: VideoEncoding }.
-   * We use the object form to explicitly select VP8 as backup.
+   * LiveKit SDK shape: boolean | { codec: 'vp9' | 'vp8' | 'h264'; encoding?: VideoEncoding }.
+   * We keep the object form so W4 can exercise explicit backup paths.
    */
-  backupCodec: boolean | { codec: 'vp8' | 'h264'; encoding?: { maxBitrate: number; maxFramerate: number } };
+  backupCodec: boolean | { codec: 'vp9' | 'vp8' | 'h264'; encoding?: { maxBitrate: number; maxFramerate: number } };
+  simulcast: boolean;
   degradationPreference: 'maintain-resolution';
   /**
    * Screen-share simulcast layers (not videoSimulcastLayers, which is the camera path).
-   * Note: has no effect when VP9 SVC is active — kept for VP8 backup fallback.
+   * Used for VP8 simulcast and retained for backup-path coverage in W4.
    */
   screenShareSimulcastLayers: Array<{ width: number; height: number }>;
 }
 
 const DEFAULT_PUBLISH_OPTIONS: ScreenSharePublishOptions = {
   screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
-  videoCodec: 'vp9',
-  backupCodec: { codec: 'vp8' },
+  videoCodec: 'vp8',
+  backupCodec: false,
+  simulcast: true,
   degradationPreference: 'maintain-resolution',
   screenShareSimulcastLayers: [
     { width: 640, height: 360 },
     { width: 1280, height: 720 },
   ],
 };
+
+function buildSdkScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): TrackPublishOptions {
+  return {
+    screenShareEncoding: pubOpts.screenShareEncoding,
+    videoCodec: pubOpts.videoCodec,
+    backupCodec: pubOpts.backupCodec,
+    simulcast: pubOpts.simulcast,
+    degradationPreference: pubOpts.degradationPreference,
+    screenShareSimulcastLayers: pubOpts.screenShareSimulcastLayers.map(
+      (layer) => new VideoPreset({ width: layer.width, height: layer.height, maxBitrate: 0 }),
+    ),
+  } as unknown as TrackPublishOptions;
+}
 
 /* ─── Adaptive Quality ──────────────────────────────────────────── */
 
@@ -241,7 +345,64 @@ const RESOLUTION_TIERS: Array<{ width: number; height: number }> = [
 /** FPS tiers for adaptive step-down. */
 const FPS_TIERS = [60, 30, 15];
 
-/* ─── Quality Presets ───────────────────────────────────────────── */
+/* ─── Share Profiles (W5 — R1, R5, R6, R12, R16) ───────────────── */
+
+export type ShareProfileId = 'detail' | 'motion';
+
+/** Minimum encoding layer at which Detail_Profile still claims G1 compliance. See design.md §2.1. */
+export interface LayerFloor {
+  minWidth: number;
+  minHeight: number;
+  /** bps */
+  minBitrate: number;
+  /** fps */
+  minFramerate: number;
+}
+
+/** A named bundle of capture intent, bitrate, framerate, resolution cap, and degradation preference. */
+export interface ShareProfile {
+  id: ShareProfileId;
+  resolution: { width: number; height: number };
+  maxFramerate: number;
+  /** bps */
+  maxBitrate: number;
+  degradationPreference: 'maintain-resolution' | 'maintain-framerate';
+  contentHint: 'detail' | 'motion';
+  /** Non-null only for 'detail' profile; null means motion profile accepts resolution drops. */
+  minReadableLayer: LayerFloor | null;
+}
+
+/** Detail profile: 1440p30, maintain-resolution, 8 Mbps, text-heavy. R1.2, R5.1, R12.4, R16.1. */
+export const DETAIL_PROFILE: ShareProfile = {
+  id: 'detail',
+  resolution: { width: 2560, height: 1440 },
+  maxFramerate: 30,
+  maxBitrate: 8_000_000,
+  degradationPreference: 'maintain-resolution',
+  contentHint: 'detail',
+  // Floor from design.md §2.1: lowest layer still legible for code at ~0.04-0.08 bpp.
+  minReadableLayer: {
+    minWidth: 1920,
+    minHeight: 1080,
+    minBitrate: 2_500_000,
+    minFramerate: 15,
+  },
+};
+
+/** Motion profile: 1080p60, maintain-framerate, 6 Mbps, moving content. R6.1, R12.5. */
+export const MOTION_PROFILE: ShareProfile = {
+  id: 'motion',
+  resolution: { width: 1920, height: 1080 },
+  maxFramerate: 60,
+  maxBitrate: 6_000_000,
+  degradationPreference: 'maintain-framerate',
+  contentHint: 'motion',
+  minReadableLayer: null,
+};
+
+/* ─── Quality Presets (legacy shim) ────────────────────────────── */
+// Callers using `ShareQuality` ('low' | 'high' | 'max') continue to work.
+// high → DETAIL_PROFILE (1440p30); max → DETAIL_PROFILE at 60fps; low → MOTION_PROFILE.
 
 interface QualityPreset {
   resolution: { width: number; height: number };
@@ -252,32 +413,18 @@ interface QualityPreset {
 }
 
 const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
-  low: {
-    resolution: { width: 1920, height: 1080 },
-    maxFramerate: 60,
-    maxBitrate: 6_000_000,
-    degradationPreference: 'maintain-framerate',
-    contentHint: 'motion',
-  },
-  high: {
-    resolution: { width: 2560, height: 1440 },
-    maxFramerate: 30,
-    maxBitrate: 6_000_000,
-    degradationPreference: 'maintain-resolution',
-    contentHint: 'detail',
-  },
-  max: {
-    resolution: { width: 2560, height: 1440 },
-    maxFramerate: 60,
-    maxBitrate: 8_000_000,
-    degradationPreference: 'maintain-resolution',
-    contentHint: 'detail',
-  },
+  low:  MOTION_PROFILE,
+  high: DETAIL_PROFILE,
+  max:  { ...DETAIL_PROFILE, maxFramerate: 60 },
 };
 
 export interface MediaCallbacks {
   /** Called when media transitions to connected (mic published or listen-only). */
   onMediaConnected: () => void;
+  /** Called when LiveKit reports that media is reconnecting in place. */
+  onMediaReconnecting?: () => void;
+  /** Called when an in-place LiveKit media reconnect completes. */
+  onMediaReconnected?: () => void;
   /** Called when media connection fails. */
   onMediaFailed: (reason: string) => void;
   /** Called when media disconnects (cleanup complete). */
@@ -936,11 +1083,14 @@ export class LiveKitModule {
         browserWebRtcAfterStop: null,
         senderReuseDiagnostics: {
           publishWebRtcSnapshot: null,
+          videoSenderCount: null,
           reuseExpected: false,
           events: [],
           finalSetParametersError: null,
           degradationPreferenceResult: null,
         },
+        strandedSenders: [],
+        strandedSenderInvariant: null,
         baselineMemory: null,
         activeMemory: null,
         cleanupMemory: null,
@@ -1141,6 +1291,40 @@ export class LiveKitModule {
     );
   }
 
+  private sweepInactiveVideoTransceivers(): void {
+    const peerConnection = this.getPublisherPeerConnection();
+    if (!peerConnection) {
+      return;
+    }
+
+    const inactiveVideoTransceivers = peerConnection
+      .getTransceivers()
+      .filter(isInactiveVideoLeakCandidate);
+    const before = inactiveVideoTransceivers.length;
+    if (before <= INACTIVE_VIDEO_TRANSCEIVER_CAP) {
+      return;
+    }
+
+    for (const transceiver of inactiveVideoTransceivers.slice(INACTIVE_VIDEO_TRANSCEIVER_CAP)) {
+      try {
+        transceiver.stop();
+      } catch {
+        // Best-effort leak trimming should not block the next publish attempt.
+      }
+    }
+
+    const after = peerConnection
+      .getTransceivers()
+      .filter(isInactiveVideoLeakCandidate)
+      .length;
+    emitTelemetryEvent({
+      name: 'share.leak.transceiver_cap',
+      before,
+      after,
+      ts: Date.now(),
+    });
+  }
+
   private captureShareLeakPublishDiagnostics(): void {
     const session = this.nativeCaptureLeakSession;
     const diagnostics = this.getShareLeakSenderReuseDiagnostics();
@@ -1148,6 +1332,7 @@ export class LiveKitModule {
 
     const publishSnapshot = this.captureBrowserWebRtcSnapshot();
     diagnostics.publishWebRtcSnapshot = publishSnapshot;
+    diagnostics.videoSenderCount = publishSnapshot?.videoSenderCount ?? null;
     const trackId = publishSnapshot?.publicationTrackId ?? null;
     const peerConnection = this.getPublisherPeerConnection();
     const publishSender = trackId && peerConnection
@@ -1209,6 +1394,34 @@ export class LiveKitModule {
     if (!summary.stages.session_closed) {
       summary.stages.session_closed = cleanupRaw.capturedAt;
     }
+    const strandedSenders = summary.browserWebRtcAfterStop?.transceivers
+      .filter(isStrandedSenderTransceiver)
+      .map((transceiver) => ({
+        trackId: transceiver.mid ?? `transceiver-${transceiver.index}`,
+        direction: transceiver.direction,
+      })) ?? [];
+    summary.strandedSenders = strandedSenders;
+    for (const strandedSender of strandedSenders) {
+      emitTelemetryEvent({
+        name: 'share.leak.stranded_sender',
+        trackId: strandedSender.trackId,
+        direction: strandedSender.direction,
+        ts: Date.now(),
+      });
+    }
+    const expected = expectedActiveVideoSenderSlots(summary.browserWebRtcAfterStop);
+    const videoSenderCount = summary.browserWebRtcAfterStop?.videoSenderCount ?? null;
+    if (summary.senderReuseDiagnostics) {
+      summary.senderReuseDiagnostics.videoSenderCount = videoSenderCount;
+    }
+    summary.strandedSenderInvariant = {
+      expected,
+      videoSenderCount,
+      stranded: strandedSenders.length,
+      satisfied: expected === null || videoSenderCount === null
+        ? null
+        : videoSenderCount + strandedSenders.length === expected,
+    };
     const cleanupRssDelta = summary.cleanupMemory?.deltaRssMb ?? 'n/a';
     const cleanupHeapDelta = summary.cleanupMemory?.deltaJsHeapUsedMb ?? 'n/a';
     const afterStopSenders = summary.browserWebRtcAfterStop?.screenShareSenderCount ?? 'n/a';
@@ -1244,6 +1457,27 @@ export class LiveKitModule {
       },
       degradationPreference: 'maintain-resolution',
     };
+  }
+
+  private async syncCodecPolicyFromSettings(): Promise<void> {
+    const shootoutOverride = getShootoutCodecOverride();
+    const codecOverride: ScreenShareCodecOverride = shootoutOverride ?? await getScreenShareCodec();
+    const codecPolicy = codecOverride === 'auto'
+      ? getDefaultCodecPolicy()
+      : getDefaultCodecPolicy({ defaultPrimaryCodec: codecOverride });
+
+    this.currentPublishOptions = {
+      ...this.currentPublishOptions,
+      videoCodec: codecPolicy.primary,
+      backupCodec: codecPolicy.backup ? { codec: codecPolicy.backup } : false,
+      simulcast: codecPolicy.simulcast,
+    };
+  }
+
+  private async prepareScreenSharePublishOptions(): Promise<ScreenSharePublishOptions> {
+    this.syncProfileFromPreset();
+    await this.syncCodecPolicyFromSettings();
+    return this.currentPublishOptions;
   }
 
   /* ─── AudioContext ────────────────────────────────────────────── */
@@ -1600,7 +1834,7 @@ export class LiveKitModule {
   }
 
   /** Connect to LiveKit SFU. Creates Room in listen-only mode. */
-  async connect(sfuUrl: string, token: string): Promise<void> {
+  async connect(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): Promise<void> {
     try {
       // 0. Read denoise preference for this session.
       const denoiseEnabled = await getDenoiseEnabled();
@@ -1614,7 +1848,53 @@ export class LiveKitModule {
         `session start platform=${isWindows() ? 'windows' : isMac() ? 'mac' : 'other'} denoise_pref=${denoiseEnabled} native_bridge_bypassed=${!useNativeBridge} js_processor_enabled=${this.jsDenoise}`,
       );
 
-      // 1. Create Room
+      // 1. Build ICE configuration
+      console.log(LOG, 'Building ICE configuration:', iceConfig);
+      const rtcConfig: RTCConfiguration = {};
+      
+      if (iceConfig) {
+        const iceServers: RTCIceServer[] = [];
+        
+        // Add STUN servers
+        if (iceConfig.stunUrls && iceConfig.stunUrls.length > 0) {
+          iceServers.push({ urls: iceConfig.stunUrls });
+          console.log(LOG, 'ICE config: added STUN servers:', iceConfig.stunUrls);
+        }
+        
+        // Add TURN servers with credentials
+        if (iceConfig.turnUrls && iceConfig.turnUrls.length > 0 && iceConfig.turnUsername && iceConfig.turnCredential) {
+          iceServers.push({
+            urls: iceConfig.turnUrls,
+            username: iceConfig.turnUsername,
+            credential: iceConfig.turnCredential,
+          });
+          console.log(LOG, 'ICE config: added TURN servers:', iceConfig.turnUrls, 'with credentials');
+        }
+        
+        if (iceServers.length > 0) {
+          rtcConfig.iceServers = iceServers;
+        }
+      }
+      
+      // Fallback: if no ICE servers configured, use Google's public STUN servers
+      if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
+        console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
+        rtcConfig.iceServers = [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ];
+      }
+      
+      console.log(LOG, 'creating LiveKit Room with config:', {
+        adaptiveStream: true,
+        dynacast: false,
+        platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
+        hasIceServers: !!rtcConfig.iceServers,
+        iceServerCount: rtcConfig.iceServers?.length ?? 0,
+        iceServers: rtcConfig.iceServers,
+      });
+      
+      // 2. Create Room
       this.room = new Room({
         adaptiveStream: true,
         dynacast: false,          // Disable dynacast — with ≤6 participants it aggressively
@@ -1675,6 +1955,7 @@ export class LiveKitModule {
       // c. Reconnecting
       addListener(RoomEvent.Reconnecting, () => {
         if (this.disposed) return;
+        this.callbacks.onMediaReconnecting?.();
         this.callbacks.onSystemEvent('LiveKit reconnecting…');
       });
 
@@ -1691,6 +1972,7 @@ export class LiveKitModule {
       // d. Reconnected
       addListener(RoomEvent.Reconnected, () => {
         if (this.disposed) return;
+        this.callbacks.onMediaReconnected?.();
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
         // audio elements are recreated and lose the previous sinkId.
@@ -2089,8 +2371,35 @@ export class LiveKitModule {
       }, 10_000);
 
       // 7. Connect to SFU
-      await this.room.connect(sfuUrl, token, { autoSubscribe: true });
+      const finalSfuUrl = sfuUrl.trim();
+      console.log(LOG, `attempting to connect to SFU: ${finalSfuUrl}`);
+      console.log(LOG, `platform: ${isMac() ? 'mac (WKWebView)' : isWindows() ? 'windows (WebView2)' : 'other'}`);
+      console.log(LOG, `user agent: ${navigator.userAgent}`);
+      console.log(LOG, `WebSocket available: ${typeof WebSocket !== 'undefined'}`);
+      console.log(LOG, `RTCPeerConnection available: ${typeof RTCPeerConnection !== 'undefined'}`);
+      
+      // Mac-specific: Try to work around WKWebView WebSocket issues
+      const connectOptions: any = { 
+        autoSubscribe: true,
+        rtcConfig: Object.keys(rtcConfig).length > 0 ? rtcConfig : undefined,
+      };
+      
+      console.log(LOG, 'connect options:', JSON.stringify({
+        autoSubscribe: connectOptions.autoSubscribe,
+        hasRtcConfig: !!connectOptions.rtcConfig,
+        iceServerCount: connectOptions.rtcConfig?.iceServers?.length ?? 0,
+      }));
+      
+      await this.room.connect(finalSfuUrl, token, connectOptions);
+      console.log(LOG, 'SFU connection successful');
     } catch (err) {
+      console.error(LOG, 'SFU connection failed:', err);
+      // Log more details about the error
+      if (err instanceof Error) {
+        console.error(LOG, 'Error name:', err.name);
+        console.error(LOG, 'Error message:', err.message);
+        console.error(LOG, 'Error stack:', err.stack);
+      }
       this.callbacks.onMediaFailed(err instanceof Error ? err.message : String(err));
     }
   }
@@ -2325,12 +2634,11 @@ export class LiveKitModule {
   async startScreenShare(): Promise<boolean> {
     if (!this.room) return false;
 
-    this.syncProfileFromPreset();
+    const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
     const nativeShareAudio = usesNativeScreenShareAudio();
     console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
       nativeShareAudio, profile.audio, navigator.userAgent.slice(0, 60));
-    const pubOpts = this.currentPublishOptions;
 
     const captureOpts = {
       resolution: {
@@ -2347,15 +2655,7 @@ export class LiveKitModule {
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
-    const publishOpts = {
-      screenShareEncoding: pubOpts.screenShareEncoding,
-      videoCodec: pubOpts.videoCodec,
-      backupCodec: pubOpts.backupCodec,
-      degradationPreference: pubOpts.degradationPreference,
-      screenShareSimulcastLayers: pubOpts.screenShareSimulcastLayers.map(
-        (l) => new VideoPreset({ width: l.width, height: l.height, maxBitrate: 0 }),
-      ),
-    };
+    const publishOpts = buildSdkScreenSharePublishOptions(pubOpts);
 
     if (isWindows()) {
       // Windows users usually land here, not in beginNativeCaptureLeakSession().
@@ -2369,6 +2669,7 @@ export class LiveKitModule {
     }
 
     try {
+      this.sweepInactiveVideoTransceivers();
       this.noteShareLeakPublishStart();
       await this.room.localParticipant.setScreenShareEnabled(true, captureOpts, publishOpts);
       this.captureShareLeakPublishDiagnostics();
@@ -2397,6 +2698,8 @@ export class LiveKitModule {
         this.applyPostPublishTuning();
       }, 100);
       this.startScreenShareStatsPolling();
+      const _shootoutEnv = getShootoutEnv();
+      if (_shootoutEnv) startShootoutSampling(_shootoutEnv);
 
       return true;
     } catch (err) {
@@ -2407,6 +2710,7 @@ export class LiveKitModule {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
+          this.sweepInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
           await this.room.localParticipant.setScreenShareEnabled(true);
           this.captureShareLeakPublishDiagnostics();
@@ -2473,6 +2777,12 @@ export class LiveKitModule {
     if (!this.room) return false;
     const pub = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
     return !!(pub?.track && !pub.isMuted);
+  }
+
+  /** Returns the active local screen-share MediaStreamTrack for motion sampling, or null if none. */
+  getLocalScreenShareTrack(): MediaStreamTrack | null {
+    const pub = this.room?.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    return pub?.track?.mediaStreamTrack ?? null;
   }
 
   private hasActiveScreenShare(): boolean {
@@ -2754,7 +3064,8 @@ export class LiveKitModule {
       try {
         if (withAudio) {
           const sourceId = await invoke<string>('get_default_audio_monitor_fast');
-          await invoke<AudioShareStartResult>('audio_share_start', { sourceId });
+          const result = await invoke<AudioShareStartResult>('audio_share_start', { sourceId });
+          emitAudioCaptureSelectionTelemetry(result);
         } else {
           await invoke('audio_share_stop');
         }
@@ -2823,9 +3134,8 @@ export class LiveKitModule {
       return false;
     }
 
-    this.syncProfileFromPreset();
+    const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
-    const pubOpts = this.currentPublishOptions;
 
     const captureOpts = {
       resolution: {
@@ -2840,15 +3150,7 @@ export class LiveKitModule {
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
-    const publishOpts = {
-      screenShareEncoding: pubOpts.screenShareEncoding,
-      videoCodec: pubOpts.videoCodec,
-      backupCodec: pubOpts.backupCodec,
-      degradationPreference: pubOpts.degradationPreference,
-      screenShareSimulcastLayers: pubOpts.screenShareSimulcastLayers.map(
-        (l) => new VideoPreset({ width: l.width, height: l.height, maxBitrate: 0 }),
-      ),
-    };
+    const publishOpts = buildSdkScreenSharePublishOptions(pubOpts);
 
     try {
       if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] calling setScreenShareEnabled(false) then setScreenShareEnabled(true, audio:', withAudio, ')');
@@ -2898,9 +3200,8 @@ export class LiveKitModule {
   async changeScreenShareSource(): Promise<boolean> {
     if (!this.room) return false;
 
-    this.syncProfileFromPreset();
+    const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
-    const pubOpts = this.currentPublishOptions;
 
     const captureOpts = {
       resolution: {
@@ -2915,15 +3216,7 @@ export class LiveKitModule {
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
-    const publishOpts = {
-      screenShareEncoding: pubOpts.screenShareEncoding,
-      videoCodec: pubOpts.videoCodec,
-      backupCodec: pubOpts.backupCodec,
-      degradationPreference: pubOpts.degradationPreference,
-      screenShareSimulcastLayers: pubOpts.screenShareSimulcastLayers.map(
-        (l) => new VideoPreset({ width: l.width, height: l.height, maxBitrate: 0 }),
-      ),
-    };
+    const publishOpts = buildSdkScreenSharePublishOptions(pubOpts);
 
     const publication = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     const existingLocalTrack = publication?.track;
@@ -3554,6 +3847,7 @@ export class LiveKitModule {
     if (this.screenShareStatsInterval !== null) {
       clearInterval(this.screenShareStatsInterval);
       this.screenShareStatsInterval = null;
+      stopShootoutSampling();
     }
   }
 
@@ -3671,7 +3965,9 @@ export class LiveKitModule {
     await this.room.localParticipant.publishTrack(track, {
       source: Track.Source.Microphone,
       name: 'native-mic',
-    });
+      audioPreset: { maxBitrate: MIC_OPUS_BITRATE_BPS },
+      audioBitrate: MIC_OPUS_BITRATE_BPS,
+    } as TrackPublishOptionsWithAudioBitrate);
 
     this.callbacks.onNativeMicBridgeState?.(true);
     console.log(LOG, 'native mic bridge started and Microphone track published');
@@ -3750,11 +4046,13 @@ export class LiveKitModule {
       audioTrack,
       {
         source: Track.Source.ScreenShareAudio,
+        audioPreset: { maxBitrate: SYS_AUDIO_OPUS_BITRATE_BPS },
+        audioBitrate: SYS_AUDIO_OPUS_BITRATE_BPS,
         // Keep the synthetic share-audio track grouped under a stable logical
         // stream so remote subscribers can map it back to the publisher instead
         // of treating the browser-generated MediaStream UUID as a participant sid.
         stream: Track.Source.ScreenShare,
-      },
+      } as TrackPublishOptionsWithAudioBitrate,
     );
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] ScreenShareAudio published, publication:', this.wasapiAudioPublication);
     if (DEBUG_MAC_SHARE_AUDIO) {
@@ -3930,6 +4228,7 @@ export class LiveKitModule {
     await this.stopWasapiScreenShareAudio().catch(() => {});
     try {
       const result = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: 'system' });
+      emitAudioCaptureSelectionTelemetry(result);
       // Always log loopback_exclusion_available — it determines whether echo prevention is needed.
       console.log(LOG, '[share-audio] audio_share_start → loopback_exclusion_available=%s',
         result?.loopback_exclusion_available);
@@ -4300,8 +4599,7 @@ export class LiveKitModule {
     // If already fully active (not just prepared), skip.
     if (this.nativeCapturePublication) return;
 
-    this.syncProfileFromPreset();
-    const pubOpts = this.currentPublishOptions;
+    const pubOpts = await this.prepareScreenSharePublishOptions();
     const targetFps = pubOpts.screenShareEncoding.maxFramerate || 30;
 
     // ── Strategy: MediaStreamTrackGenerator (preferred) or canvas fallback ──
@@ -4502,8 +4800,13 @@ export class LiveKitModule {
       new Promise<void>((_, reject) =>
         setTimeout(() => reject(new Error('native capture: first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
       ),
-    ]).catch((err) => {
+    ]).catch(async (err) => {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      // Clean up the polling interval, canvas, and any state we set up before the
+      // first-frame gate. Without this, a first-frame timeout (or a concurrent
+      // stopNativeCapture() that races with this startup) leaves the poll
+      // setInterval running and the canvas attached to document.body.
+      await this.stopNativeCapture();
       throw err;
     });
 
@@ -4519,15 +4822,18 @@ export class LiveKitModule {
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
+      this.sweepInactiveVideoTransceivers();
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
-        simulcast: false,
+        videoCodec: pubOpts.videoCodec,
+        backupCodec: pubOpts.backupCodec,
+        simulcast: pubOpts.simulcast,
         videoEncoding: {
           maxBitrate: pubOpts.screenShareEncoding.maxBitrate,
           maxFramerate: targetFps,
         },
-      });
+      } as unknown as TrackPublishOptions);
     } catch (err) {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await this.stopNativeCapture();

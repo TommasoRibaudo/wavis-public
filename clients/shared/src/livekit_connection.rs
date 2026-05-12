@@ -34,6 +34,11 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
+// Keep these aligned with the GUI constants in
+// clients/wavis-gui/src/features/voice/livekit-media.ts.
+const MIC_OPUS_BITRATE_BPS: u64 = 48_000;
+const SYS_AUDIO_OPUS_BITRATE_BPS: u64 = 128_000;
+
 // ---------------------------------------------------------------------------
 // RealLiveKitConnection
 // ---------------------------------------------------------------------------
@@ -572,6 +577,7 @@ impl LiveKitConnection for RealLiveKitConnection {
 
     // Task 4.3
     fn publish_audio(&self, _track: &AudioTrack) -> Result<(), RoomError> {
+        use livekit::options::AudioEncoding;
         use livekit::options::TrackPublishOptions;
         use livekit::webrtc::audio_source::native::NativeAudioSource;
         use livekit::webrtc::audio_source::AudioSourceOptions;
@@ -598,6 +604,9 @@ impl LiveKitConnection for RealLiveKitConnection {
         let local_track = LocalTrack::Audio(lk_track.clone());
         let publish_opts = TrackPublishOptions {
             source: TrackSource::Microphone,
+            audio_encoding: Some(AudioEncoding {
+                max_bitrate: MIC_OPUS_BITRATE_BPS,
+            }),
             ..Default::default()
         };
 
@@ -976,6 +985,7 @@ impl LiveKitConnection for RealLiveKitConnection {
     }
 
     fn publish_screen_audio(&self) -> Result<(), RoomError> {
+        use livekit::options::AudioEncoding;
         use livekit::options::TrackPublishOptions;
         use livekit::webrtc::audio_source::native::NativeAudioSource;
         use livekit::webrtc::audio_source::AudioSourceOptions;
@@ -1008,6 +1018,9 @@ impl LiveKitConnection for RealLiveKitConnection {
         let local_track = LocalTrack::Audio(lk_track.clone());
         let publish_opts = TrackPublishOptions {
             source: TrackSource::ScreenshareAudio,
+            audio_encoding: Some(AudioEncoding {
+                max_bitrate: SYS_AUDIO_OPUS_BITRATE_BPS,
+            }),
             ..Default::default()
         };
 

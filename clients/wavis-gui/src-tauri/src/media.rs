@@ -46,6 +46,29 @@ fn is_hyprland_wayland() -> bool {
     has_wayland && (has_hypr_sig || xdg_desktop.to_ascii_lowercase().contains("hypr"))
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+struct LinuxCaptureFallbackEvent {
+    from: String,
+    to: String,
+    reason: String,
+}
+
+#[cfg(target_os = "linux")]
+fn emit_linux_capture_fallback(app: &AppHandle, from: &str, reason: impl Into<String>) {
+    let reason = reason.into();
+    if let Err(err) = app.emit(
+        "linux-capture-fallback-activated",
+        LinuxCaptureFallbackEvent {
+            from: from.to_string(),
+            to: "none".to_string(),
+            reason,
+        },
+    ) {
+        log::warn!("{LOG} failed to emit linux capture fallback event: {err}");
+    }
+}
+
 // ─── Event Types (Rust → JS via Tauri events) ─────────────────────
 
 #[derive(Clone, Serialize)]
@@ -606,10 +629,10 @@ pub fn media_connect(
         // JSON Tauri event. Under load (multiple shares, large resolutions)
         // this saturates CPU and lets libwebrtc's native frame queue grow
         // unbounded — eventually segfaulting. Capping the visible refresh at
-        // 15 fps keeps the screen share visually fluid while preventing the
+        // 10 fps keeps the screen share usable while preventing the
         // overload regime that triggered the crashes we observed.
         const VIEWER_MIN_FRAME_INTERVAL: std::time::Duration =
-            std::time::Duration::from_millis(66); // ≈ 15 fps
+            std::time::Duration::from_millis(100); // 10 fps
         let last_emit_per_identity: Arc<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
 
@@ -693,11 +716,15 @@ pub fn media_connect(
 
     match state.runtime.block_on(async { conn.connect(&url, &token) }) {
         Ok(()) => {
-            conn.set_mic_enabled(false)
-                .map_err(|err| format!("failed to disable mic before publish: {err}"))?;
-            if let Err(err) = conn.publish_audio(&AudioTrack {
-                id: "native-mic".to_string(),
-            }) {
+            let publish_result = state.runtime.block_on(async {
+                conn.set_mic_enabled(false)
+                    .map_err(|err| format!("failed to disable mic before publish: {err}"))?;
+                conn.publish_audio(&AudioTrack {
+                    id: "native-mic".to_string(),
+                })
+                .map_err(|err| format!("{err}"))
+            });
+            if let Err(err) = publish_result {
                 let reason = format!("{err}");
                 log::error!("{LOG} publish failed: {reason}");
                 let _ = state.runtime.block_on(async { conn.disconnect() });
@@ -958,9 +985,19 @@ fn screen_share_start_impl(state: State<'_, MediaState>, app: AppHandle) -> Resu
     ) {
         Ok(c) => c,
         Err(screen_capture::CaptureError::UserCancelled) => return Ok(false),
-        Err(screen_capture::CaptureError::NoBackendAvailable(msg)) => return Err(msg),
-        Err(screen_capture::CaptureError::CaptureStartFailed(msg)) => return Err(msg),
-        Err(e) => return Err(format!("{e}")),
+        Err(screen_capture::CaptureError::NoBackendAvailable(msg)) => {
+            emit_linux_capture_fallback(&app, "pipewire_video", msg.clone());
+            return Err(msg);
+        }
+        Err(screen_capture::CaptureError::CaptureStartFailed(msg)) => {
+            emit_linux_capture_fallback(&app, "pipewire_video", msg.clone());
+            return Err(msg);
+        }
+        Err(e) => {
+            let reason = format!("{e}");
+            emit_linux_capture_fallback(&app, "pipewire_video", reason.clone());
+            return Err(reason);
+        }
     };
 
     // Read current quality config for publish dimensions.
