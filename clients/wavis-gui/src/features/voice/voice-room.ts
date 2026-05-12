@@ -1868,9 +1868,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (!p) return;
 
       if (identity === state.selfParticipantId) {
-        if (!isMuted && state.joinedSubRoomId === null) {
+        if (state.joinedSubRoomId === null) {
           clearSelfAudioActivity(p);
-          lkModule?.setMicEnabled(false);
+          if (!isMuted) {
+            lkModule?.setMicEnabled(false);
+          }
           notify();
           return;
         }
@@ -3247,6 +3249,9 @@ export function toggleSelfMute(): void {
   }
   if (state.joinedSubRoomId === null) {
     clearSelfAudioActivity(self);
+    lkModule?.setMicEnabled(false);
+    notify();
+    return;
   }
   lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
@@ -3280,6 +3285,11 @@ export function toggleSelfDeafen(): void {
       self.isMuted = restoredSelfMuted;
     }
     clearSelfAudioActivity(self);
+    if (state.joinedSubRoomId === null) {
+      lkModule?.setMicEnabled(false);
+      notify();
+      return;
+    }
     lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
@@ -3303,6 +3313,10 @@ export function toggleSelfDeafen(): void {
     }
     clearSelfAudioActivity(self);
     lkModule?.setMicEnabled(false);
+    if (state.joinedSubRoomId === null) {
+      notify();
+      return;
+    }
     client?.send({ type: 'self_deafen' });
     appendEvent({
       id: makeEventId(),
