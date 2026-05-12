@@ -472,8 +472,7 @@ function selfParticipant(): RoomParticipant | undefined {
   return state.participants.find((p) => p.id === state.selfParticipantId);
 }
 
-function silenceSelfParticipant(self: RoomParticipant): void {
-  self.isMuted = true;
+function clearSelfAudioActivity(self: RoomParticipant): void {
   self.isSpeaking = false;
   self.rmsLevel = 0;
 }
@@ -498,22 +497,19 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
 
   if (currentJoinedSubRoomId === null) {
     if (self) {
-      silenceSelfParticipant(self);
+      clearSelfAudioActivity(self);
     }
     setLocalMicPublishing(false);
     return;
   }
 
   if (previousJoinedSubRoomId !== null) return;
-  if (!self || self.isHostMuted || state.isDeafened) {
+  if (!self) {
     setLocalMicPublishing(false);
     return;
   }
-
-  self.isMuted = false;
-  self.isSpeaking = false;
-  self.rmsLevel = 0;
-  setLocalMicPublishing(true);
+  clearSelfAudioActivity(self);
+  setLocalMicPublishing(shouldPublishLocalMic(self));
 }
 
 /**
@@ -1317,6 +1313,8 @@ let lastReconnectMediaTime = 0;
 let registeredHotkey: string | null = null;
 /** Volume before deafen, restored on undeafen. */
 let preDeafenVolume: number | null = null;
+/** Self mute intent before deafen forced the mic silent. */
+let preDeafenSelfMuted: boolean | null = null;
 let localStopShareSent = false;
 let localSourceChanging = false;
 let externalShareHelperActive = false;
@@ -1870,9 +1868,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (!p) return;
 
       if (identity === state.selfParticipantId) {
-        if (!isMuted && state.joinedSubRoomId === null) {
-          silenceSelfParticipant(p);
-          lkModule?.setMicEnabled(false);
+        if (state.joinedSubRoomId === null) {
+          clearSelfAudioActivity(p);
+          if (!isMuted) {
+            lkModule?.setMicEnabled(false);
+          }
           notify();
           return;
         }
@@ -3110,6 +3110,7 @@ export function leaveRoom(): void {
   displayNameCache.clear();
   speakingTracker.clear();
   preDeafenVolume = null;
+  preDeafenSelfMuted = null;
 
   // Tear down share picker event listener
   teardownSharePickerListener();
@@ -3235,20 +3236,6 @@ export function toggleSelfMute(): void {
     notify();
     return;
   }
-  if (state.joinedSubRoomId === null) {
-    silenceSelfParticipant(self);
-    lkModule?.setMicEnabled(false);
-    appendEvent({
-      id: makeEventId(),
-      timestamp: timestamp(),
-      type: 'system',
-      message: 'mute toggle ignored: join a room before using the microphone',
-      participantId: self.id,
-    });
-    notify();
-    return;
-  }
-
   // If deafened and trying to unmute, cancel deafen entirely
   if (state.isDeafened && self.isMuted) {
     toggleSelfDeafen();
@@ -3260,7 +3247,13 @@ export function toggleSelfMute(): void {
     self.rmsLevel = 0;
     self.isSpeaking = false;
   }
-  lkModule?.setMicEnabled(!self.isMuted);
+  if (state.joinedSubRoomId === null) {
+    clearSelfAudioActivity(self);
+    lkModule?.setMicEnabled(false);
+    notify();
+    return;
+  }
+  lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
   client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
@@ -3279,20 +3272,25 @@ export function toggleSelfDeafen(): void {
   if (!self) return;
 
   if (state.isDeafened) {
-    // Undeafen: restore volume, unmute (unless host-muted)
+    // Undeafen: restore volume and the mute intent that existed before deafen.
     state.isDeafened = false;
     self.isDeafened = false;
     const restored = preDeafenVolume ?? 70;
     preDeafenVolume = null;
+    const restoredSelfMuted = preDeafenSelfMuted ?? self.isMuted;
+    preDeafenSelfMuted = null;
     state.masterVolume = restored;
     lkModule?.setMasterVolume(restored);
-    if (!self.isHostMuted && state.joinedSubRoomId !== null) {
-      self.isMuted = false;
-      lkModule?.setMicEnabled(true);
-    } else {
-      silenceSelfParticipant(self);
-      lkModule?.setMicEnabled(false);
+    if (!self.isHostMuted) {
+      self.isMuted = restoredSelfMuted;
     }
+    clearSelfAudioActivity(self);
+    if (state.joinedSubRoomId === null) {
+      lkModule?.setMicEnabled(false);
+      notify();
+      return;
+    }
+    lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
       id: makeEventId(),
@@ -3307,13 +3305,17 @@ export function toggleSelfDeafen(): void {
     state.isDeafened = true;
     self.isDeafened = true;
     preDeafenVolume = state.masterVolume;
+    preDeafenSelfMuted = self.isMuted;
     state.masterVolume = 0;
     lkModule?.setMasterVolume(0);
     if (!self.isMuted) {
       self.isMuted = true;
-      self.rmsLevel = 0;
-      self.isSpeaking = false;
-      lkModule?.setMicEnabled(false);
+    }
+    clearSelfAudioActivity(self);
+    lkModule?.setMicEnabled(false);
+    if (state.joinedSubRoomId === null) {
+      notify();
+      return;
     }
     client?.send({ type: 'self_deafen' });
     appendEvent({
@@ -3825,6 +3827,7 @@ export function setMasterVolume(volume: number): void {
     const self = state.participants.find((p) => p.id === state.selfParticipantId);
     if (self) self.isDeafened = false;
     preDeafenVolume = null;
+    preDeafenSelfMuted = null;
     client?.send({ type: 'self_undeafen' });
   }
   state.masterVolume = clamped;
