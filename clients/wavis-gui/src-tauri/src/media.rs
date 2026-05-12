@@ -629,10 +629,10 @@ pub fn media_connect(
         // JSON Tauri event. Under load (multiple shares, large resolutions)
         // this saturates CPU and lets libwebrtc's native frame queue grow
         // unbounded — eventually segfaulting. Capping the visible refresh at
-        // 15 fps keeps the screen share visually fluid while preventing the
+        // 10 fps keeps the screen share usable while preventing the
         // overload regime that triggered the crashes we observed.
         const VIEWER_MIN_FRAME_INTERVAL: std::time::Duration =
-            std::time::Duration::from_millis(66); // ≈ 15 fps
+            std::time::Duration::from_millis(100); // 10 fps
         let last_emit_per_identity: Arc<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
 
@@ -716,11 +716,15 @@ pub fn media_connect(
 
     match state.runtime.block_on(async { conn.connect(&url, &token) }) {
         Ok(()) => {
-            conn.set_mic_enabled(false)
-                .map_err(|err| format!("failed to disable mic before publish: {err}"))?;
-            if let Err(err) = conn.publish_audio(&AudioTrack {
-                id: "native-mic".to_string(),
-            }) {
+            let publish_result = state.runtime.block_on(async {
+                conn.set_mic_enabled(false)
+                    .map_err(|err| format!("failed to disable mic before publish: {err}"))?;
+                conn.publish_audio(&AudioTrack {
+                    id: "native-mic".to_string(),
+                })
+                .map_err(|err| format!("{err}"))
+            });
+            if let Err(err) = publish_result {
                 let reason = format!("{err}");
                 log::error!("{LOG} publish failed: {reason}");
                 let _ = state.runtime.block_on(async { conn.disconnect() });

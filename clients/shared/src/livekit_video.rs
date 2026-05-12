@@ -102,10 +102,30 @@ pub(super) async fn run_video_receiver_task(
     });
 
     let mut frames_received: u64 = 0;
+    let mut frames_dropped: u64 = 0;
+
+    #[cfg(target_os = "linux")]
+    let mut last_frame_emit: Option<std::time::Instant> = None;
+    #[cfg(target_os = "linux")]
+    const MIN_REMOTE_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
     while let Some(frame) = stream.next().await {
         if closing.load(std::sync::atomic::Ordering::SeqCst) {
             break;
+        }
+
+        frames_received += 1;
+
+        #[cfg(target_os = "linux")]
+        {
+            let now = std::time::Instant::now();
+            if let Some(last) = last_frame_emit {
+                if now.duration_since(last) < MIN_REMOTE_FRAME_INTERVAL {
+                    frames_dropped += 1;
+                    continue;
+                }
+            }
+            last_frame_emit = Some(now);
         }
 
         let buffer = frame.buffer.as_ref();
@@ -132,17 +152,16 @@ pub(super) async fn run_video_receiver_task(
         // Send to the keep-latest channel (drops old frame).
         let _ = frame_tx.send(Some((rgba, width, height)));
 
-        frames_received += 1;
         if frames_received.is_multiple_of(150) {
             log::info!(
-                "livekit_video: participant={participant_id} frames_received={frames_received}"
+                "livekit_video: participant={participant_id} frames_received={frames_received} frames_dropped={frames_dropped}"
             );
         }
     }
 
     emit_task.abort();
     log::info!(
-        "livekit_video: video stream ended for {participant_id}, total frames={frames_received}"
+        "livekit_video: video stream ended for {participant_id}, total frames={frames_received} dropped={frames_dropped}"
     );
 
     // Fire track-ended callback when the stream ends.
