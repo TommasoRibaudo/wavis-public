@@ -920,17 +920,20 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
       </div>
 
       {/* Bottom command bar */}
-      <div className="border-t border-wavis-text-secondary px-3 sm:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <div className="border-t border-wavis-text-secondary p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div className="flex gap-4 border-b border-transparent w-full max-w-[1000px] mx-auto">
         {bottomCommands.map((cmd) => (
           <CmdButton
             key={cmd}
-            label={cmd === '/leave' ? '/abandon channel' : cmd}
+            label={cmd === '/leave' ? '/abandon' : cmd}
             onClick={() => handleCmdClick(cmd)}
             active={false}
             danger={cmd === '/leave'}
             disabled={submitting && cmd !== '/back'}
+            className="py-[7px] flex-1"
           />
         ))}
+        </div>
       </div>
     </div>
   );
