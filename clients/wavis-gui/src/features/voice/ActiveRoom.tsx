@@ -2011,7 +2011,7 @@ export default function ActiveRoom() {
 
   const renderChannelSwitcherToggle = () => (
     <button
-      onClick={() => setChannelSwitcherOpen((v) => !v)}
+      onClick={() => { setChannelSwitcherOpen((v) => !v); setShowSettings(false); }}
       className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
         channelSwitcherOpen
           ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
@@ -2514,7 +2514,7 @@ export default function ActiveRoom() {
               );
             })()}
             <div className="mt-4 flex flex-col gap-1">
-              <button onClick={() => setShowSettings(true)} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
+              <button onClick={() => { setShowSettings(true); setChannelSwitcherOpen(false); }} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
             </div>
           </div>
         </div>
