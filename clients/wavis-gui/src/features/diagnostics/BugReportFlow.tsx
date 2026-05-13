@@ -39,6 +39,7 @@ interface BugReportFlowProps {
 
 const LOG_PREFIX = '[wavis:bug-report]';
 const MIN_DESCRIPTION_LENGTH = 10;
+const MAX_TITLE_CHARS = 72;
 const OFFLINE_CATEGORIES = ['audio', 'ui', 'connectivity', 'crash', 'performance', 'other'];
 const MAX_ISSUE_BODY_CHARS = 900_000;
 const MAX_SUBMISSION_JSON_CHARS = 120_000;
@@ -50,6 +51,10 @@ const TRANSPORT_TRUNCATION_NOTICE = '\n\n_[diagnostics truncated for submission 
 
 export function validateDescription(text: string): boolean {
   return text.trim().length >= MIN_DESCRIPTION_LENGTH;
+}
+
+export function truncateTitle(title: string): string {
+  return title.length > MAX_TITLE_CHARS ? title.slice(0, MAX_TITLE_CHARS).trimEnd() : title;
 }
 
 export function truncateIssueBody(
@@ -317,7 +322,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     if (!context) return;
     setReportMode('quick');
     const body = buildOfflineIssueBody(description, context, [], 'other');
-    setIssueTitle(`Bug Report: ${description.slice(0, 80)}`);
+    setIssueTitle(truncateTitle(`Bug Report: ${description}`));
     setIssueBody(body);
     setCategory('other');
     setStep('preview');
@@ -353,7 +358,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       // Offline mode: go straight to preview
       if (!context) return;
       const body = buildOfflineFormBody(description, offlineForm, context);
-      const title = `Bug Report: ${description.slice(0, 80)}`;
+      const title = truncateTitle(`Bug Report: ${description}`);
       setIssueTitle(title);
       setIssueBody(body);
       setCategory(offlineForm.category || 'other');
@@ -405,14 +410,14 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       } catch (err) {
         console.warn(LOG_PREFIX, 'Issue body generation failed, using offline format:', err);
         const body = buildOfflineIssueBody(description, context, rounds, category);
-        setIssueTitle(`Bug Report: ${description.slice(0, 80)}`);
+        setIssueTitle(truncateTitle(`Bug Report: ${description}`));
         setIssueBody(body);
       } finally {
         setLlmLoading(false);
       }
     } else {
       const body = buildOfflineIssueBody(description, context, rounds, category);
-      setIssueTitle(`Bug Report: ${description.slice(0, 80)}`);
+      setIssueTitle(truncateTitle(`Bug Report: ${description}`));
       setIssueBody(body);
     }
 
