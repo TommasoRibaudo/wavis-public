@@ -2173,13 +2173,6 @@ function dispatchMessage(raw: unknown): void {
       if (lkModule && state.mediaState === 'connected' && pjId !== state.selfParticipantId) {
         applyEffectiveParticipantVolume(newParticipant);
       }
-      appendEvent({
-        id: makeEventId(),
-        timestamp: timestamp(),
-        type: 'join',
-        message: `${msg.displayName} joined`,
-        participantId: msg.participantId as string,
-      });
       notify();
       break;
     }
@@ -2192,6 +2185,8 @@ function dispatchMessage(raw: unknown): void {
       state.participants = state.participants.filter((p) => p.id !== leftId);
       if (state.participantSubRoomById[leftId]) {
         const leftRoomId = state.participantSubRoomById[leftId];
+        const plRoom = state.subRooms.find((r) => r.id === leftRoomId);
+        const plRoomLabel = plRoom ? `Room ${plRoom.roomNumber}` : 'a room';
         state.subRooms = state.subRooms.map((room) => (
           room.id === leftRoomId
             ? { ...room, participantIds: room.participantIds.filter((id) => id !== leftId) }
@@ -2201,16 +2196,10 @@ function dispatchMessage(raw: unknown): void {
         reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
         playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
+        const plName = leftP?.displayName ?? displayNameCache.get(leftId) ?? leftId;
+        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: `${plName} left ${plRoomLabel}`, participantId: leftId });
       }
       speakingTracker.delete(leftId);
-      const leftName = leftP?.displayName ?? displayNameCache.get(leftId) ?? leftId;
-      appendEvent({
-        id: makeEventId(),
-        timestamp: timestamp(),
-        type: 'leave',
-        message: `${leftName} left`,
-        participantId: leftId,
-      });
       notify();
       break;
     }
@@ -2293,6 +2282,17 @@ function dispatchMessage(raw: unknown): void {
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      {
+        const srjName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
+        const srjRoom = state.subRooms.find((r) => r.id === subRoomId);
+        const srjRoomLabel = srjRoom ? `Room ${srjRoom.roomNumber}` : 'a room';
+        const srjWasInRoom = !!previousParticipantSubRoomById[participantId];
+        const srjIsSelf = participantId === state.selfParticipantId;
+        const srjMessage = srjIsSelf
+          ? (srjWasInRoom ? `moved to ${srjRoomLabel}` : `joined ${srjRoomLabel}`)
+          : (srjWasInRoom ? `${srjName} moved to ${srjRoomLabel}` : `${srjName} joined ${srjRoomLabel}`);
+        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'join', message: srjMessage, participantId });
+      }
       notify();
       break;
     }
@@ -2302,6 +2302,8 @@ function dispatchMessage(raw: unknown): void {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const participantId = msg.participantId as string;
       const subRoomId = msg.subRoomId as string;
+      const srlRoom = state.subRooms.find((r) => r.id === subRoomId);
+      const srlRoomLabel = srlRoom ? `Room ${srlRoom.roomNumber}` : 'a room';
       state.subRooms = state.subRooms.map((room) => (
         room.id === subRoomId
           ? { ...room, participantIds: room.participantIds.filter((id) => id !== participantId) }
@@ -2313,6 +2315,12 @@ function dispatchMessage(raw: unknown): void {
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      {
+        const srlName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
+        const srlIsSelf = participantId === state.selfParticipantId;
+        const srlMessage = srlIsSelf ? `left ${srlRoomLabel}` : `${srlName} left ${srlRoomLabel}`;
+        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: srlMessage, participantId });
+      }
       notify();
       break;
     }
