@@ -75,10 +75,6 @@ export async function openExternalLink(
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
-function isLinux(): boolean {
-  return navigator.platform?.toLowerCase().includes('linux') ?? false;
-}
-
 function measureBugReportPayloadChars(payload: BugReportPayload): number {
   return JSON.stringify(payload).length;
 }
@@ -245,8 +241,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
         if (cancelled) return;
         setContext(captured);
 
-        // Skip redaction step on Linux or if no screenshot
-        if (isLinux() || !captured.screenshot) {
+        if (!captured.screenshot) {
           setStep('describe');
         } else {
           setStep('redact');
