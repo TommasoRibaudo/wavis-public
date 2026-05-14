@@ -174,7 +174,7 @@ function renderChatText(text: string): ReactNode[] {
       <a
         key={`link-${index}-${hrefText}`}
         href={href}
-        className="text-wavis-accent underline underline-offset-2 break-all hover:opacity-80"
+        className="text-wavis-accent underline underline-offset-2 break-words hover:opacity-80"
         onClick={(event) => {
           event.preventDefault();
           void open(href);
@@ -2009,6 +2009,18 @@ export default function ActiveRoom() {
   const mediaDot = mediaIndicator(roomState.mediaState, roomState.mediaError);
   const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
+  const renderChannelSwitcherToggle = () => (
+    <button
+      onClick={() => setChannelSwitcherOpen((v) => !v)}
+      className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
+        channelSwitcherOpen
+          ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+          : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
+      }`}
+      title="Change channel"
+    >{channelSwitcherOpen ? '<' : '>'}</button>
+  );
+
   const roomHeader = (
     <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex items-center gap-3 overflow-hidden">
       <div className="flex-1 flex flex-col justify-center gap-0.5 min-w-0">
@@ -2031,15 +2043,7 @@ export default function ActiveRoom() {
           {roomState.channelName}
         </div>
       </div>
-      <button
-        onClick={() => setChannelSwitcherOpen((v) => !v)}
-        className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
-          channelSwitcherOpen
-            ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-            : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
-        }`}
-        title="Change channel"
-      >{channelSwitcherOpen ? '<' : '>'}</button>
+      {renderChannelSwitcherToggle()}
     </div>
   );
 
@@ -2569,7 +2573,7 @@ export default function ActiveRoom() {
               {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
             </div>
           ) : (
-            <div key={item.message.id} className="break-all">
+            <div key={item.message.id} className="break-words">
               <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
               <span style={{ color: resolveChatMessageDisplayColor(item.message, roomState.participants) }}>{item.message.displayName}</span>
               <span>: {renderChatText(item.message.text)}</span>
@@ -2662,14 +2666,15 @@ export default function ActiveRoom() {
       {/* ═══ MOBILE LAYOUT (< md) ═══ */}
       <div className="flex flex-col flex-1 overflow-hidden md:hidden">
         {/* Compact header */}
-        <div className="flex items-center px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <StatusDot color={sigDot.color} label={sigDot.label} />
             <StatusDot color={mediaDot.color} label={mediaDot.label} />
             <span className="truncate text-sm">{roomState.channelName}</span>
             <span className="shrink-0 text-[0.625rem] text-wavis-text-secondary">{Object.keys(roomState.participantSubRoomById).length}/6</span>
             <span className="shrink-0 text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
           </div>
+          {renderChannelSwitcherToggle()}
         </div>
 
         {mediaReconnectingBanner}
