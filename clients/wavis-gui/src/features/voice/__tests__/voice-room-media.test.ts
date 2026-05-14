@@ -282,8 +282,12 @@ const tick = () => new Promise<void>(r => setTimeout(r, 0));
 
 let latestState: VoiceRoomState | null = null;
 
-/** Initialize a session and drive it to the `active` state. */
-async function driveToActive(channelId = 'ch-1', channelName = 'test-room') {
+/** Initialize a session and drive it to the `active` state.
+ * By default also assigns self to room-1 via sub_room_state so that a
+ * subsequent media_token triggers connectMedia immediately. Pass
+ * joinSubRoom = false for tests that specifically need the pre-room state.
+ */
+async function driveToActive(channelId = 'ch-1', channelName = 'test-room', joinSubRoom = true) {
   latestState = null;
   initSession(channelId, channelName, 'owner', (s) => { latestState = s; });
   await tick(); // let connectWithAuth resolve
@@ -301,7 +305,11 @@ async function driveToActive(channelId = 'ch-1', channelName = 'test-room') {
       ],
     });
   }
-  await tick();
+  if (joinSubRoom) {
+    await assignSelfToSubRoom();
+  } else {
+    await tick();
+  }
 }
 
 async function assignSelfToSubRoom(subRoomId = 'room-1') {
@@ -539,6 +547,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
     await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
+    await tick();
 
     expect(getState().joinedSubRoomId).toBeNull();
     expect(getState().participants.find((p) => p.id === 'self-peer')).toMatchObject({
@@ -592,6 +602,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
     await tick();
     lastLkModule!.setMicEnabledCalls = [];
 
@@ -676,6 +688,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
     await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
+    await tick();
     lastLkModule!.setMicEnabledCalls = [];
     const sentBefore = sentMessages.length;
     const eventsBefore = getState().events.length;
@@ -710,6 +724,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
     await tick();
 
     toggleSelfMute();
@@ -749,6 +765,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
     await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
+    await tick();
     lastLkModule!.setMicEnabledCalls = [];
     const sentBefore = sentMessages.length;
     const eventsBefore = getState().events.length;
@@ -776,6 +794,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
     await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
+    await tick();
     lastLkModule!.setMicEnabledCalls = [];
     const eventsBefore = getState().events.length;
 
@@ -798,6 +818,8 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
     await tick();
     lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
     await tick();
     lastLkModule!.setMicEnabledCalls = [];
     const sentBefore = sentMessages.length;
@@ -935,7 +957,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
 
 describe('VoiceRoom room-scoped join/leave sounds', () => {
   it('does not play join sound for voice-session joined or participant_joined before room membership exists', async () => {
-    await driveToActive('ch-sounds', 'room-sounds');
+    await driveToActive('ch-sounds', 'room-sounds', false);
 
     expect(playNotificationSoundCalls).toEqual([]);
 
@@ -1111,7 +1133,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
   });
 
   it('plays one leave sound when the local participant is kicked', async () => {
-    await driveToActive('ch-sounds', 'room-sounds');
+    await driveToActive('ch-sounds', 'room-sounds', false);
 
     messageHandler!({
       type: 'participant_kicked',
@@ -1124,7 +1146,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
   });
 
   it('plays one leave sound when the local session is displaced', async () => {
-    await driveToActive('ch-sounds', 'room-sounds');
+    await driveToActive('ch-sounds', 'room-sounds', false);
 
     messageHandler!({ type: 'session_displaced' });
     await tick();
@@ -1134,7 +1156,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
   });
 
   it('plays one leave sound when signaling reconnect exhaustion ends an active session', async () => {
-    await driveToActive('ch-sounds', 'room-sounds');
+    await driveToActive('ch-sounds', 'room-sounds', false);
 
     statusChangeHandler!('disconnected');
     await tick();
@@ -1163,7 +1185,7 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
   });
 
   it('plays one leave sound when duplicate terminal paths arrive for the same session', async () => {
-    await driveToActive('ch-sounds', 'room-sounds');
+    await driveToActive('ch-sounds', 'room-sounds', false);
 
     messageHandler!({
       type: 'participant_kicked',
@@ -1328,7 +1350,7 @@ describe('Voice-room media wiring', () => {
 
   // P2: Media token buffering when not active
   describe('P2: Media token buffering when not active', () => {
-    it('media_token before active state is buffered and flushed on joined', async () => {
+    it('media_token before active state is buffered and flushed on sub_room_state', async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.string({ minLength: 1, maxLength: 50 }).filter(s => s.trim().length > 0),
@@ -1349,7 +1371,7 @@ describe('Voice-room media wiring', () => {
             // No LiveKitModule created yet
             expect(lkConstructorCalls).toHaveLength(0);
 
-            // Now transition to active via joined
+            // Transition to active via joined — still buffered (no sub-room yet)
             messageHandler!({
               type: 'joined',
               peerId: 'self-peer',
@@ -1358,7 +1380,17 @@ describe('Voice-room media wiring', () => {
             });
             await tick();
 
-            // Buffered token should have been flushed — LiveKitModule created
+            // Still buffered: active but joinedSubRoomId is still null
+            expect(lkConstructorCalls).toHaveLength(0);
+
+            // sub_room_state snapshot arrives (as backend sends after join) — flushes token
+            messageHandler!({
+              type: 'sub_room_state',
+              rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] }],
+            });
+            await tick();
+
+            // Buffered token flushed — LiveKitModule created
             expect(lkConstructorCalls).toHaveLength(1);
             expect(lastLkModule!.connectCalls).toHaveLength(1);
             expect(lastLkModule!.connectCalls[0].sfuUrl).toBe(sfuUrl);
@@ -1369,6 +1401,94 @@ describe('Voice-room media wiring', () => {
         ),
         { numRuns: 50 },
       );
+    });
+  });
+
+  // P2b: sub_room_joined ordering race — token arrives before sub_room_state seeds the room
+  describe('P2b: Media token flushed via sub_room_joined when room already in state', () => {
+    it('media_token buffered pre-join is flushed by sub_room_joined when room exists in state', async () => {
+      resetAll();
+      latestState = null;
+      initSession('ch-buf2', 'buf-room2', 'member', (s) => { latestState = s; });
+      await tick();
+
+      messageHandler!({ type: 'auth_success' });
+
+      // Buffer the token before active
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu-srj', token: 'tok-srj' });
+      await tick();
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // joined — active but no sub-room yet
+      messageHandler!({
+        type: 'joined',
+        peerId: 'self-peer',
+        roomId: 'room-srj',
+        participants: [{ participantId: 'self-peer', displayName: 'TestUser' }],
+      });
+      await tick();
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // sub_room_state seeds the room first (room now exists in state)
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [{ subRoomId: 'room-srj', roomNumber: 1, isDefault: true, participantIds: [] }],
+      });
+      await tick();
+      // Room exists but self not in it yet — still buffered
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // sub_room_joined for self — room already in state, joinedSubRoomId becomes non-null
+      messageHandler!({ type: 'sub_room_joined', participantId: 'self-peer', subRoomId: 'room-srj' });
+      await tick();
+
+      // Token flushed via sub_room_joined
+      expect(lkConstructorCalls).toHaveLength(1);
+      expect(lastLkModule!.connectCalls[0]).toEqual({ sfuUrl: 'wss://sfu-srj', token: 'tok-srj' });
+
+      leaveRoom();
+    });
+
+    it('media_token buffered pre-join is flushed by sub_room_state when sub_room_joined arrived before room was seeded', async () => {
+      resetAll();
+      latestState = null;
+      initSession('ch-buf3', 'buf-room3', 'member', (s) => { latestState = s; });
+      await tick();
+
+      messageHandler!({ type: 'auth_success' });
+
+      // Buffer the token before active
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu-srs', token: 'tok-srs' });
+      await tick();
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // joined — active but no sub-room yet
+      messageHandler!({
+        type: 'joined',
+        peerId: 'self-peer',
+        roomId: 'room-srs',
+        participants: [{ participantId: 'self-peer', displayName: 'TestUser' }],
+      });
+      await tick();
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // sub_room_joined arrives before sub_room_state — room not in state yet,
+      // so syncDerivedSubRoomState leaves joinedSubRoomId null → still buffered
+      messageHandler!({ type: 'sub_room_joined', participantId: 'self-peer', subRoomId: 'room-srs' });
+      await tick();
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // sub_room_state snapshot catches up — flushes the token
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [{ subRoomId: 'room-srs', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] }],
+      });
+      await tick();
+
+      expect(lkConstructorCalls).toHaveLength(1);
+      expect(lastLkModule!.connectCalls[0]).toEqual({ sfuUrl: 'wss://sfu-srs', token: 'tok-srs' });
+
+      leaveRoom();
     });
   });
 
@@ -1487,6 +1607,12 @@ describe('Voice-room media wiring', () => {
 
       expect(latestState!.participants.find((p) => p.id === 'self-peer')).toBeTruthy();
       expect(latestState!.events.some((e) => e.message === 'local participant state was restored')).toBe(true);
+
+      // Flush buffered token via sub_room_state snapshot, then leave to test no-room mute
+      messageHandler!({ type: 'sub_room_state', rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] }] });
+      await tick();
+      messageHandler!({ type: 'sub_room_state', rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] }] });
+      await tick();
 
       toggleSelfMute();
       await tick();
@@ -1839,6 +1965,16 @@ describe('Edge case unit tests', () => {
       });
       await tick();
 
+      // Still buffered: active but not yet in a sub-room
+      expect(lkConstructorCalls).toHaveLength(0);
+
+      // sub_room_state snapshot arrives (as backend sends after join) — flushes token
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] }],
+      });
+      await tick();
+
       expect(lkConstructorCalls).toHaveLength(1);
       expect(lastLkModule!.connectCalls[0]).toEqual({ sfuUrl: 'wss://sfu', token: 'deferred-tok' });
 
@@ -1901,14 +2037,14 @@ describe('Edge case unit tests', () => {
 
     it('startFallbackShare rejects when self is not in a synchronized room', async () => {
       resetAll();
-      await driveToActive();
+      await driveToActive('ch-1', 'test-room', false);
 
       messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
       await tick();
 
       const { startFallbackShare } = await import('../voice-room');
       await expect(startFallbackShare()).rejects.toThrow('Join a room before sharing.');
-      expect(lastLkModule!.startScreenShareCalls).toBe(0);
+      expect(lastLkModule?.startScreenShareCalls ?? 0).toBe(0);
       expect(sentMessages.filter(m => m.type === 'start_share')).toHaveLength(0);
 
       leaveRoom();

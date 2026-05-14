@@ -1541,6 +1541,19 @@ function syncDerivedSubRoomState(): void {
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
 }
 
+/**
+ * If a media token is buffered and the local user is now in a sub-room,
+ * consume the token and connect media. Called from every handler that can
+ * advance joinedSubRoomId: joined, sub_room_joined, sub_room_state.
+ */
+function flushBufferedMediaTokenIfReady(): void {
+  if (bufferedMediaToken && state.joinedSubRoomId !== null) {
+    const { sfuUrl, token, iceConfig } = bufferedMediaToken;
+    bufferedMediaToken = null;
+    connectMedia(sfuUrl, token, iceConfig);
+  }
+}
+
 function ensureInSubRoomForShare(): void {
   if (state.joinedSubRoomId !== null) return;
   throw new Error('Join a room before sharing.');
@@ -2083,12 +2096,9 @@ function dispatchMessage(raw: unknown): void {
         appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'reconnected — back online' });
       }
 
-      // Flush buffered media token if present
-      if (bufferedMediaToken) {
-        const { sfuUrl, token, iceConfig } = bufferedMediaToken;
-        bufferedMediaToken = null;
-        connectMedia(sfuUrl, token, iceConfig);
-      }
+      // Belt-and-suspenders: flush if the backend ever sends joined with the
+      // user already in a sub-room. Normally fires on sub_room_joined/sub_room_state.
+      flushBufferedMediaTokenIfReady();
 
       // Request chat history after successful join
       if (client) {
@@ -2234,6 +2244,9 @@ function dispatchMessage(raw: unknown): void {
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
+      // yet in state when sub_room_joined arrives), so flush here once state catches up.
+      flushBufferedMediaTokenIfReady();
       notify();
       break;
     }
@@ -2292,6 +2305,9 @@ function dispatchMessage(raw: unknown): void {
           ? (srjWasInRoom ? `moved to ${srjRoomLabel}` : `joined ${srjRoomLabel}`)
           : (srjWasInRoom ? `${srjName} moved to ${srjRoomLabel}` : `${srjName} joined ${srjRoomLabel}`);
         appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'join', message: srjMessage, participantId });
+      }
+      if (participantId === state.selfParticipantId) {
+        flushBufferedMediaTokenIfReady();
       }
       notify();
       break;
@@ -2774,7 +2790,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      if (state.machineState !== 'active') {
+      if (state.machineState !== 'active' || state.joinedSubRoomId === null) {
         bufferedMediaToken = { sfuUrl, token, iceConfig };
         break;
       }
