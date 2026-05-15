@@ -3,6 +3,7 @@ import { Volume2 } from 'lucide-react';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import QuickActionButtons, { SEPARATOR } from '@shared/QuickActionButtons';
 import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixer';
+import FocusMainButton from '@shared/FocusMainButton';
 
 interface StreamHoverBarProps {
   visible: boolean;
@@ -19,6 +20,7 @@ interface StreamHoverBarProps {
   onVoiceVolumeChange: (id: string, vol: number) => void;
   onVoiceMuteToggle: (id: string) => void;
   ownerControls?: ReactNode;
+  onFocusMain?: () => void;
 }
 
 const STREAM_MUTED_ICON = '\u25cb';
@@ -39,6 +41,7 @@ export default function StreamHoverBar({
   onVoiceVolumeChange,
   onVoiceMuteToggle,
   ownerControls,
+  onFocusMain,
 }: StreamHoverBarProps) {
   const [voiceMixerOpen, setVoiceMixerOpen] = useState(false);
 
@@ -57,6 +60,13 @@ export default function StreamHoverBar({
         onToggleMute={onToggleMute}
         onToggleDeafen={onToggleDeafen}
       />
+
+      {onFocusMain && (
+        <>
+          <span className="text-wavis-text-secondary opacity-30 select-none leading-none">{SEPARATOR}</span>
+          <FocusMainButton onClick={onFocusMain} />
+        </>
+      )}
 
       <span className="text-wavis-text-secondary opacity-30 select-none leading-none">{SEPARATOR}</span>
 
