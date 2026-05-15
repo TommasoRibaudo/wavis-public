@@ -104,6 +104,42 @@ export async function unregisterWatchAllHotkey(hotkey: string): Promise<void> {
   }
 }
 
+/* ─── Focus Main Hotkey ─────────────────────────────────────────── */
+
+/**
+ * Register the Focus Main hotkey — called from connectMedia() success path.
+ * Non-fatal on failure (same policy as Watch All hotkey).
+ */
+export async function registerFocusMainHotkey(
+  hotkey: string,
+  onFocus: () => void,
+): Promise<void> {
+  try {
+    await register(hotkey, (event) => {
+      if (event.state === 'Pressed') {
+        onFocus();
+      }
+    });
+    console.log(LOG, `registered focus-main hotkey: ${hotkey}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(LOG, `failed to register focus-main hotkey "${hotkey}":`, message);
+  }
+}
+
+/**
+ * Unregister the Focus Main hotkey — called from leaveRoom() and
+ * disconnect paths.
+ */
+export async function unregisterFocusMainHotkey(hotkey: string): Promise<void> {
+  try {
+    await unregister(hotkey);
+    console.log(LOG, `unregistered focus-main hotkey: ${hotkey}`);
+  } catch (err) {
+    console.warn(LOG, `failed to unregister focus-main hotkey "${hotkey}":`, err);
+  }
+}
+
 /**
  * Check if a hotkey is currently registered (for settings UI re-registration).
  */

@@ -62,13 +62,13 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/too
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startSending, stopSending, stopSendingForWindow, stopAllSending, resendStream } from '@features/screen-share/screen-share-viewer';
-import { getWatchAllHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
+import { getWatchAllHotkey, getFocusMainHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
-import { registerWatchAllHotkey, unregisterWatchAllHotkey } from '@shared/hotkey-bridge';
+import { registerWatchAllHotkey, unregisterWatchAllHotkey, registerFocusMainHotkey, unregisterFocusMainHotkey } from '@shared/hotkey-bridge';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
 import type { TrayAction } from './tray-bridge';
 import { useDebug } from '@shared/debug-context';
@@ -646,6 +646,7 @@ export default function ActiveRoom() {
   const [watchAllOpen, setWatchAllOpen] = useState(false);
   const watchAllReadyRef = useRef(false);
   const watchAllHotkeyRef = useRef<string | null>(null);
+  const focusMainHotkeyRef = useRef<string | null>(null);
   const toggleWatchAllRef = useRef<() => void>(() => { });
 
   // Screen share window state (multi-window: one per sharer)
@@ -1488,6 +1489,26 @@ export default function ActiveRoom() {
       if (watchAllHotkeyRef.current) {
         unregisterWatchAllHotkey(watchAllHotkeyRef.current);
         watchAllHotkeyRef.current = null;
+      }
+    };
+  }, [roomState?.mediaState]);
+
+  // Register Focus Main hotkey when media connects
+  useEffect(() => {
+    if (roomState?.mediaState !== 'connected') return;
+
+    let cancelled = false;
+    getFocusMainHotkey().then((hotkey) => {
+      if (cancelled) return;
+      focusMainHotkeyRef.current = hotkey;
+      registerFocusMainHotkey(hotkey, () => { void getCurrentWindow().setFocus(); });
+    });
+
+    return () => {
+      cancelled = true;
+      if (focusMainHotkeyRef.current) {
+        unregisterFocusMainHotkey(focusMainHotkeyRef.current);
+        focusMainHotkeyRef.current = null;
       }
     };
   }, [roomState?.mediaState]);
