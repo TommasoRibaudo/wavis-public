@@ -235,9 +235,7 @@ function classifyCameraCaptureError(error: unknown): CameraStartError {
 
 export const MIC_OPUS_BITRATE_BPS = 48_000;
 export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
-// Keep in sync with clients/wavis-gui/scripts/apply-livekit-transceiver-reuse-fix.mjs
-// and revisit on every livekit-client version bump.
-const INACTIVE_VIDEO_TRANSCEIVER_CAP = 2;
+
 
 type TrackPublishOptionsWithAudioBitrate = TrackPublishOptions & {
   audioBitrate?: number;
@@ -1538,40 +1536,6 @@ export class LiveKitModule {
       LOG,
       `[share-leak] session=${session.summary.shareSessionId} publish_start sender_count=${senderCount} transceivers=${transceiverCount} reusable_inactive_video_transceiver=${diagnostics.reuseExpected}`,
     );
-  }
-
-  private sweepInactiveVideoTransceivers(): void {
-    const peerConnection = this.getPublisherPeerConnection();
-    if (!peerConnection) {
-      return;
-    }
-
-    const inactiveVideoTransceivers = peerConnection
-      .getTransceivers()
-      .filter(isInactiveVideoLeakCandidate);
-    const before = inactiveVideoTransceivers.length;
-    if (before <= INACTIVE_VIDEO_TRANSCEIVER_CAP) {
-      return;
-    }
-
-    for (const transceiver of inactiveVideoTransceivers.slice(INACTIVE_VIDEO_TRANSCEIVER_CAP)) {
-      try {
-        transceiver.stop();
-      } catch {
-        // Best-effort leak trimming should not block the next publish attempt.
-      }
-    }
-
-    const after = peerConnection
-      .getTransceivers()
-      .filter(isInactiveVideoLeakCandidate)
-      .length;
-    emitTelemetryEvent({
-      name: 'share.leak.transceiver_cap',
-      before,
-      after,
-      ts: Date.now(),
-    });
   }
 
   // Stop ALL inactive video transceivers before each screen share publish.
