@@ -1041,6 +1041,8 @@ let roomPanelHadAnyVideoActive = false;
 let cameraQualityRequestVersion = 0;
 let cameraQualityRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRequestedCameraQualityTier: CameraQuality['tier'] | null = null;
+/** Serialises concurrent toggleCameraIntent calls — prevents intent/publication desync on rapid clicks. */
+let cameraToggleChain: Promise<void> = Promise.resolve();
 
 /** Common shape for both LiveKitModule (JS SDK) and NativeMediaModule (Rust IPC). */
 type MediaModule = LiveKitModule | NativeMediaModule;
@@ -1641,15 +1643,51 @@ function resetCameraRuntimeState(): void {
   state.roomPanelTab = 'logs';
 }
 
+function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {
+  const joinedSubRoomId = state.joinedSubRoomId;
+  if (!joinedSubRoomId) return { ids: new Set(), tiles: {} };
+  const visibleSubRoomIds = new Set([joinedSubRoomId]);
+  if (state.passthrough) {
+    const { sourceSubRoomId, targetSubRoomId } = state.passthrough;
+    if (sourceSubRoomId === joinedSubRoomId) visibleSubRoomIds.add(targetSubRoomId);
+    else if (targetSubRoomId === joinedSubRoomId) visibleSubRoomIds.add(sourceSubRoomId);
+  }
+  const ids = new Set<string>();
+  const tiles: Record<string, RemoteCameraTileRuntimeState> = {};
+  for (const [id, entry] of Object.entries(remoteCameraTilesById)) {
+    const participantSubRoomId = state.participantSubRoomById[id] ?? null;
+    if (participantSubRoomId && visibleSubRoomIds.has(participantSubRoomId)) {
+      ids.add(id);
+      tiles[id] = entry;
+    }
+  }
+  // Also include in-scope participants without an existing tile entry yet, so a camera
+  // that publishes after we've already filtered (e.g. someone turns on camera in our
+  // sub-room) is allowed to subscribe through applyRemoteCameraVisibility.
+  for (const participant of state.participants) {
+    const participantSubRoomId = state.participantSubRoomById[participant.id] ?? null;
+    if (participantSubRoomId && visibleSubRoomIds.has(participantSubRoomId)) {
+      ids.add(participant.id);
+    }
+  }
+  return { ids, tiles };
+}
+
 function rebuildVideoTiles(): void {
-  const localTrack = getCameraMediaModule()?.getLocalCameraTrack() ?? null;
+  const module = getCameraMediaModule();
+  const localTrack = module?.getLocalCameraTrack() ?? null;
+  const { ids: visibleIds, tiles: visibleTiles } = visibleRemoteCameraSet();
   state.videoTilesById = buildVideoTilesById({
     participants: state.participants,
     selfParticipantId: state.selfParticipantId,
     cameraPublication: state.cameraPublication,
     localTrack,
-    remoteTilesById: remoteCameraTilesById,
+    remoteTilesById: visibleTiles,
   });
+  // Keep server-side subscriptions in sync with the visibility filter so cameras outside
+  // the joined sub-room don't keep streaming bytes (TrackSubscribed force-enables every
+  // camera publication; without this, hidden cameras would burn bandwidth indefinitely).
+  module?.applyRemoteCameraVisibility(visibleIds);
   syncRoomPanelTab();
 }
 
@@ -1831,6 +1869,13 @@ function stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId: string | nul
   }
 }
 
+function stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId: string | null): void {
+  if (!previousJoinedSubRoomId || state.joinedSubRoomId !== null) return;
+  if (!state.cameraIntent) return;
+  state.cameraIntent = false;
+  void unpublishLocalCamera();
+}
+
 function syncDesiredSubRoomPreference(): void {
   state.desiredSubRoomId = desiredSubRoomIntent === undefined
     ? state.joinedSubRoomId
@@ -1967,6 +2012,16 @@ function desiredCameraQualityForState(currentState: VoiceRoomState): CameraQuali
   return screenShareActiveInRoom(currentState) ? CAMERA_QUALITY_LOW : CAMERA_QUALITY_HIGH;
 }
 
+const CAMERA_QUALITY_RETRY_INTERVAL_MS = 1_000;
+const CAMERA_QUALITY_MAX_ATTEMPTS = 3;
+
+// Exported for tests so retry-timing assertions stay in sync with the source
+// of truth — never duplicate these literals.
+export const __CAMERA_TEST_HOOKS__ = {
+  CAMERA_QUALITY_RETRY_INTERVAL_MS,
+  CAMERA_QUALITY_MAX_ATTEMPTS,
+} as const;
+
 async function attemptCameraQualityUpdate(
   version: number,
   quality: CameraQuality,
@@ -1982,23 +2037,25 @@ async function attemptCameraQualityUpdate(
     if (version !== cameraQualityRequestVersion) {
       return;
     }
+    // Only record the tier after a successful apply so the dedupe check in
+    // applyCameraQualityForShareState doesn't skip a retry after exhaustion.
+    lastRequestedCameraQualityTier = quality.tier;
   } catch (error) {
     if (version !== cameraQualityRequestVersion) {
       return;
     }
-    if (attempt < 3) {
+    if (attempt < CAMERA_QUALITY_MAX_ATTEMPTS) {
       cameraQualityRetryTimer = setTimeout(() => {
         cameraQualityRetryTimer = null;
         void attemptCameraQualityUpdate(version, quality, attempt + 1);
-      }, 1_000);
+      }, CAMERA_QUALITY_RETRY_INTERVAL_MS);
       return;
     }
-    const message = `camera quality update failed after 3 attempts (${quality.tier})`;
+    const message = `camera quality update failed after ${CAMERA_QUALITY_MAX_ATTEMPTS} attempts (${quality.tier})`;
     appendCameraSystemEvent(message);
     toast.error(message);
-    if (DEBUG_VIDEO_FEED) {
-      console.warn(LOG, message, error);
-    }
+    // Always log retry exhaustion — it's a warning-level event regardless of the debug flag.
+    console.warn(LOG, message, error);
   }
 }
 
@@ -2019,7 +2076,6 @@ export async function applyCameraQualityForShareState(): Promise<void> {
     cameraQualityRetryTimer = null;
   }
 
-  lastRequestedCameraQualityTier = quality.tier;
   cameraQualityRequestVersion += 1;
   if (DEBUG_VIDEO_FEED) {
     console.log(LOG, '[video-feed] applying camera quality', quality.tier);
@@ -2107,17 +2163,36 @@ export async function toggleCameraIntent(): Promise<void> {
     return;
   }
 
-  if (state.cameraIntent) {
-    state.cameraIntent = false;
-    notify();
-    await unpublishLocalCamera();
-    return;
-  }
+  // Serialise concurrent invocations so rapid double-clicks can't interleave
+  // a publish and an unpublish, leaving intent and publication out of sync.
+  cameraToggleChain = cameraToggleChain.then(async () => {
+    // Re-check lkModule and mediaState inside the chain — state may have
+    // changed while we were waiting for the previous toggle to finish.
+    if (!lkModule || state.mediaState === 'disconnected' || state.mediaState === 'failed') {
+      return;
+    }
 
-  state.cameraIntent = true;
-  state.cameraPublication = 'opening';
-  notify();
-  await publishLocalCamera();
+    if (state.cameraIntent) {
+      state.cameraIntent = false;
+      notify();
+      await unpublishLocalCamera();
+      return;
+    }
+
+    state.cameraIntent = true;
+    state.cameraPublication = 'opening';
+    notify();
+    await publishLocalCamera();
+  }).catch((err) => {
+    // publishLocalCamera/unpublishLocalCamera surface their own errors via
+    // toast + system event. Anything reaching this catch is unexpected
+    // (programming error, lkModule torn down mid-flight, etc.) — log it so
+    // it doesn't disappear silently, but keep the chain alive so the next
+    // toggle can still run.
+    console.warn(LOG, 'unexpected error in camera toggle chain', err);
+  });
+
+  return cameraToggleChain;
 }
 
 export function selectRoomPanelTab(tab: 'logs' | 'video'): void {
@@ -2737,9 +2812,11 @@ function dispatchMessage(raw: unknown): void {
         : null;
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
       // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
       // yet in state when sub_room_joined arrives), so flush here once state catches up.
@@ -2789,10 +2866,12 @@ function dispatchMessage(raw: unknown): void {
       });
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       void source;
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
       {
         const srjName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
@@ -2827,9 +2906,11 @@ function dispatchMessage(raw: unknown): void {
       ));
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
       {
         const srlName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
@@ -2848,11 +2929,13 @@ function dispatchMessage(raw: unknown): void {
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       if (desiredSubRoomIntent === subRoomId) {
         desiredSubRoomIntent = undefined;
       }
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
       void applyCameraQualityForShareState();
       notify();
@@ -3639,6 +3722,9 @@ export function leaveRoom(): void {
   remoteCameraTilesById = {};
   roomPanelHadAnyVideoActive = false;
   resetCameraQualityController();
+  // Reset the toggle chain so stale in-flight toggles from the previous session
+  // don't bleed into the next one.
+  cameraToggleChain = Promise.resolve();
   desiredSubRoomIntent = undefined;
 
   // Reset reconnect cooldown timer

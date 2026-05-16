@@ -6,6 +6,8 @@ describe('VoiceRoom camera quality retry timing', () => {
   it('retries failed quality updates three times with 1s spacing and then stops', async () => {
     vi.useFakeTimers();
     const harness = await setupVoiceRoomCameraHarness();
+    const { CAMERA_QUALITY_RETRY_INTERVAL_MS, CAMERA_QUALITY_MAX_ATTEMPTS } =
+      harness.voiceRoom.__CAMERA_TEST_HOOKS__;
 
     try {
       await harness.driveToActive();
@@ -27,7 +29,8 @@ describe('VoiceRoom camera quality retry timing', () => {
       expect(harness.state.lastLiveKitModule).not.toBeNull();
       expect(harness.state.lastLiveKitModule!.setCameraQualityCalls.map((call) => call.tier)).toEqual(['low']);
 
-      await vi.advanceTimersByTimeAsync(999);
+      // First retry — just before the interval, no new attempt.
+      await vi.advanceTimersByTimeAsync(CAMERA_QUALITY_RETRY_INTERVAL_MS - 1);
       expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(1);
 
       await vi.advanceTimersByTimeAsync(1);
@@ -36,7 +39,8 @@ describe('VoiceRoom camera quality retry timing', () => {
         'low',
       ]);
 
-      await vi.advanceTimersByTimeAsync(999);
+      // Second retry, same spacing.
+      await vi.advanceTimersByTimeAsync(CAMERA_QUALITY_RETRY_INTERVAL_MS - 1);
       expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(2);
 
       await vi.advanceTimersByTimeAsync(1);
@@ -47,11 +51,12 @@ describe('VoiceRoom camera quality retry timing', () => {
       ]);
       expect(
         harness.voiceRoom.getState().events.some((event) =>
-          event.message.includes('camera quality update failed after 3 attempts (low)')),
+          event.message.includes(`camera quality update failed after ${CAMERA_QUALITY_MAX_ATTEMPTS} attempts (low)`)),
       ).toBe(true);
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(3);
+      // After the cap, no further attempts even if more time passes.
+      await vi.advanceTimersByTimeAsync(CAMERA_QUALITY_RETRY_INTERVAL_MS);
+      expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(CAMERA_QUALITY_MAX_ATTEMPTS);
     } finally {
       harness.cleanup();
       vi.useRealTimers();

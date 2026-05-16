@@ -1538,7 +1538,7 @@ export default function ActiveRoom() {
     : false;
   const showCameraButton = shouldMountCameraButton(voiceRoomConnected, supportedCapturePlatform);
   const videoButtonLabel = cameraButtonLabel(roomState?.cameraIntent ?? false);
-  const cameraLabel = roomState?.cameraIntent ? '/camera on' : '/camera off';
+  const cameraLabel = roomState?.cameraIntent ? '/stopcamera' : '/camera';
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
   const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
