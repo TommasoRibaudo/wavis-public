@@ -45,6 +45,7 @@ export const STORE_KEYS = {
   profileColor: 'wavis_profile_color',
   tlsEnabled: 'wavis_tls_enabled',
   audioInputDevice: 'wavis_audio_input_device',
+  videoInputDevice: 'wavis_video_input_device',
   audioOutputDevice: 'wavis_audio_output_device',
   defaultVolume: 'wavis_default_volume',
   notifyParticipantJoined: 'wavis_notify_participant_joined',
@@ -288,6 +289,16 @@ export async function getAudioOutputDevice(): Promise<string | null> {
 /** Returns the saved audio input device ID, or null if none has been selected. */
 export async function getAudioInputDevice(): Promise<string | null> {
   return getStoreValue<string | null>(STORE_KEYS.audioInputDevice, null);
+}
+
+/** Returns the saved video input device ID, or null if none has been selected. */
+export async function getVideoInputDevice(): Promise<string | null> {
+  return getStoreValue<string | null>(STORE_KEYS.videoInputDevice, null);
+}
+
+/** Persists the selected video input device ID, or null to use the default camera. */
+export async function setVideoInputDevice(deviceId: string | null): Promise<void> {
+  return setStoreValue<string | null>(STORE_KEYS.videoInputDevice, deviceId);
 }
 
 // ─── Notification Volume ───────────────────────────────────────────

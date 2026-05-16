@@ -13,11 +13,30 @@ import { getServerUrl, getDisplayName, refreshTokens, onTokensRefreshed } from '
 import { PROFILE_COLORS } from '@shared/colors';
 import { toWsUrl } from '@shared/helpers';
 import { LiveKitModule, type MediaState, type MediaCallbacks, type ShareQualityInfo, type ShareStats, type VideoReceiveStats, type ShareProfileId } from './livekit-media';
+import {
+  CAMERA_QUALITY_HIGH,
+  CAMERA_QUALITY_LOW,
+  type CameraQuality,
+  type CameraStartError,
+  type CameraStartWarning,
+  type PanelTabInput,
+  type VideoTileViewModel,
+} from './camera-types';
 import { MotionDetector, DEFAULT_MOTION_DETECTOR_CONFIG } from './motion-detector';
 import { startOffscreenCanvasSampling, isLeakDiagnosticsThumbnailingActive } from './motion-sample-source';
 import { NativeMediaModule } from './native-media';
 import { setActiveLiveKitModule } from './audio-devices';
-import { getDefaultVolume, getReconnectConfig, getMuteHotkey, getProfileColor, getChannelVolumes, getWindowsSharePath, setChannelVolumes } from '@features/settings/settings-store';
+import {
+  getDefaultVolume,
+  getReconnectConfig,
+  getMuteHotkey,
+  getProfileColor,
+  getChannelVolumes,
+  getWindowsSharePath,
+  setChannelVolumes,
+  getVideoInputDevice,
+  setVideoInputDevice,
+} from '@features/settings/settings-store';
 import type { ChannelVolumePrefs } from '@features/settings/settings-store';
 import type { ShareMode, ShareSelection, EnumerationResult, FallbackReason, AudioShareStartResult } from '@features/screen-share/share-types';
 import type { ShareSessionLeakSummary } from './share-leak-diagnostics';
@@ -36,6 +55,7 @@ import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 const LOG = '[wavis:voice-room]';
 const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
+const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
@@ -202,6 +222,12 @@ export interface VoiceRoomState {
   participantSubRoomById: Record<string, string>;
   /** Authoritative active passthrough pair, if any. */
   passthrough: VoicePassthroughState | null;
+  cameraIntent: boolean;
+  cameraPublication: 'idle' | 'opening' | 'publishing' | 'published' | 'failing';
+  cameraSelectedDeviceId: string | null;
+  videoTilesById: Record<string, VideoTileViewModel>;
+  roomPanelManualOverride: 'logs' | 'video' | null;
+  roomPanelTab: 'logs' | 'video';
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -214,6 +240,12 @@ export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 export const MAX_CHAT_MESSAGES = 200;
 const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
+
+interface RemoteCameraTileRuntimeState {
+  track: MediaStreamTrack | null;
+  isMuted: boolean;
+  hasError: boolean;
+}
 const RATE_LIMIT_RECONNECT_MESSAGE = "Connection closed — you're sending messages too fast. Reconnecting";
 
 /**
@@ -754,6 +786,67 @@ export function isFallbackBadgeVisible(
   return activeShareType === null && selfSharing;
 }
 
+export function screenShareActiveInRoom(currentState: VoiceRoomState): boolean {
+  const joinedSubRoomId = currentState.joinedSubRoomId;
+  if (!joinedSubRoomId) {
+    return false;
+  }
+
+  return currentState.participants.some((participant) => (
+    participant.isSharing === true
+    && currentState.participantSubRoomById[participant.id] === joinedSubRoomId
+  ));
+}
+
+export function computeRoomPanelTab(input: PanelTabInput): 'logs' | 'video' {
+  if (!input.anyVideoActive) {
+    return 'logs';
+  }
+  if (input.manualOverride !== null) {
+    return input.manualOverride;
+  }
+  return 'video';
+}
+
+export function buildVideoTilesById(input: {
+  participants: Array<Pick<RoomParticipant, 'id' | 'displayName' | 'color'>>;
+  selfParticipantId: string | null;
+  cameraPublication: VoiceRoomState['cameraPublication'];
+  localTrack: MediaStreamTrack | null;
+  remoteTilesById: Record<string, RemoteCameraTileRuntimeState>;
+}): Record<string, VideoTileViewModel> {
+  const tilesById: Record<string, VideoTileViewModel> = {};
+  const participantsById = new Map(input.participants.map((participant) => [participant.id, participant]));
+
+  for (const [participantId, remoteTile] of Object.entries(input.remoteTilesById)) {
+    const participant = participantsById.get(participantId);
+    tilesById[participantId] = {
+      participantId,
+      displayName: participant?.displayName || participantId,
+      color: participant?.color || colorFor({ id: participantId }),
+      track: remoteTile.track,
+      isSelf: false,
+      isMuted: remoteTile.isMuted,
+      hasError: remoteTile.hasError,
+    };
+  }
+
+  if (input.cameraPublication === 'published' && input.selfParticipantId) {
+    const participant = participantsById.get(input.selfParticipantId);
+    tilesById[input.selfParticipantId] = {
+      participantId: input.selfParticipantId,
+      displayName: participant?.displayName || input.selfParticipantId,
+      color: participant?.color || colorFor({ id: input.selfParticipantId }),
+      track: input.localTrack,
+      isSelf: true,
+      isMuted: false,
+      hasError: false,
+    };
+  }
+
+  return tilesById;
+}
+
 /**
  * Pure logic for what share cleanup action leaveRoom should perform.
  * Returns which cleanup path to take:
@@ -934,9 +1027,20 @@ const DEFAULT_STATE: VoiceRoomState = {
   desiredSubRoomId: null,
   participantSubRoomById: {},
   passthrough: null,
+  cameraIntent: false,
+  cameraPublication: 'idle',
+  cameraSelectedDeviceId: null,
+  videoTilesById: {},
+  roomPanelManualOverride: null,
+  roomPanelTab: 'logs',
 };
 
 let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+let remoteCameraTilesById: Record<string, RemoteCameraTileRuntimeState> = {};
+let roomPanelHadAnyVideoActive = false;
+let cameraQualityRequestVersion = 0;
+let cameraQualityRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRequestedCameraQualityTier: CameraQuality['tier'] | null = null;
 
 /** Common shape for both LiveKitModule (JS SDK) and NativeMediaModule (Rust IPC). */
 type MediaModule = LiveKitModule | NativeMediaModule;
@@ -1507,8 +1611,159 @@ function notify(): void {
         participantIds: [...room.participantIds],
       })),
       participantSubRoomById: { ...state.participantSubRoomById },
+      videoTilesById: { ...state.videoTilesById },
     });
   }
+}
+
+function getCameraMediaModule(): LiveKitModule | null {
+  return lkModule instanceof LiveKitModule ? lkModule : null;
+}
+
+function resetCameraQualityController(): void {
+  cameraQualityRequestVersion = 0;
+  lastRequestedCameraQualityTier = null;
+  if (cameraQualityRetryTimer) {
+    clearTimeout(cameraQualityRetryTimer);
+    cameraQualityRetryTimer = null;
+  }
+}
+
+function resetCameraRuntimeState(): void {
+  remoteCameraTilesById = {};
+  roomPanelHadAnyVideoActive = false;
+  resetCameraQualityController();
+  state.cameraIntent = false;
+  state.cameraPublication = 'idle';
+  state.cameraSelectedDeviceId = null;
+  state.videoTilesById = {};
+  state.roomPanelManualOverride = null;
+  state.roomPanelTab = 'logs';
+}
+
+function rebuildVideoTiles(): void {
+  const localTrack = getCameraMediaModule()?.getLocalCameraTrack() ?? null;
+  state.videoTilesById = buildVideoTilesById({
+    participants: state.participants,
+    selfParticipantId: state.selfParticipantId,
+    cameraPublication: state.cameraPublication,
+    localTrack,
+    remoteTilesById: remoteCameraTilesById,
+  });
+  syncRoomPanelTab();
+}
+
+function syncRoomPanelTab(): void {
+  const anyVideoActive = Object.values(state.videoTilesById).some((tile) => !tile.isMuted);
+  if (anyVideoActive) {
+    roomPanelHadAnyVideoActive = true;
+  } else if (roomPanelHadAnyVideoActive) {
+    state.roomPanelManualOverride = null;
+    roomPanelHadAnyVideoActive = false;
+  }
+
+  state.roomPanelTab = computeRoomPanelTab({
+    anyVideoActive,
+    manualOverride: state.roomPanelManualOverride,
+    hadAnyVideoActive: roomPanelHadAnyVideoActive,
+  });
+}
+
+function appendCameraSystemEvent(message: string): void {
+  appendSystemEvent(message);
+}
+
+function cameraErrorMessage(error: CameraStartError): string {
+  switch (error.kind) {
+    case 'permission_denied':
+      return 'camera permission denied';
+    case 'device_unavailable':
+      return 'camera device unavailable';
+    case 'device_in_use':
+      return 'camera device is already in use';
+    case 'timeout':
+      return 'camera start timed out';
+    case 'no_camera_configured':
+      return 'no camera available';
+    case 'publish_failed':
+      return 'camera publish failed';
+  }
+}
+
+function cameraWarningMessage(warning: CameraStartWarning): string {
+  switch (warning.kind) {
+    case 'device_not_found':
+      return `camera warning (device_not_found): selected camera not found, using browser default (${warning.missingDeviceId})`;
+    case 'permission_denied':
+      return 'camera warning (permission_denied): camera change blocked by permission denial';
+    case 'device_in_use':
+      return 'camera warning (device_in_use): camera change failed because the device is in use';
+    case 'hardware_error':
+      return 'camera warning (hardware_error): camera change failed due to a hardware error';
+  }
+}
+
+function surfaceCameraError(error: CameraStartError): void {
+  const message = cameraErrorMessage(error);
+  appendCameraSystemEvent(message);
+  toast.error(message);
+}
+
+function surfaceCameraWarning(warning: CameraStartWarning): void {
+  const message = cameraWarningMessage(warning);
+  appendCameraSystemEvent(message);
+  toast.error(message);
+}
+
+function classifyCameraReplaceWarning(error: unknown, requestedDeviceId: string | null): CameraStartWarning {
+  const cameraError = error as CameraStartError | null;
+  if (requestedDeviceId !== null && cameraError?.kind === 'device_unavailable') {
+    return { kind: 'device_not_found', missingDeviceId: requestedDeviceId };
+  }
+  if (cameraError?.kind === 'permission_denied') {
+    return { kind: 'permission_denied' };
+  }
+  if (cameraError?.kind === 'device_in_use') {
+    return { kind: 'device_in_use' };
+  }
+  return { kind: 'hardware_error' };
+}
+
+async function enumerateVideoInputs(): Promise<MediaDeviceInfo[]> {
+  if (
+    typeof navigator === 'undefined'
+    || !('mediaDevices' in navigator)
+    || navigator.mediaDevices === undefined
+    || typeof navigator.mediaDevices.enumerateDevices !== 'function'
+  ) {
+    return [];
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((device) => device.kind === 'videoinput');
+}
+
+async function resolveCameraDeviceSelection(deviceId: string | null): Promise<{
+  effectiveDeviceId: string | null;
+  warning: CameraStartWarning | null;
+}> {
+  const videoInputs = await enumerateVideoInputs();
+  if (videoInputs.length === 0) {
+    throw { kind: 'no_camera_configured' } satisfies CameraStartError;
+  }
+
+  if (deviceId === null) {
+    return { effectiveDeviceId: null, warning: null };
+  }
+
+  if (videoInputs.some((device) => device.deviceId === deviceId)) {
+    return { effectiveDeviceId: deviceId, warning: null };
+  }
+
+  return {
+    effectiveDeviceId: null,
+    warning: { kind: 'device_not_found', missingDeviceId: deviceId },
+  };
 }
 
 function appendEvent(event: RoomEvent): void {
@@ -1708,6 +1963,197 @@ export function appendSystemEvent(message: string): void {
   notify();
 }
 
+function desiredCameraQualityForState(currentState: VoiceRoomState): CameraQuality {
+  return screenShareActiveInRoom(currentState) ? CAMERA_QUALITY_LOW : CAMERA_QUALITY_HIGH;
+}
+
+async function attemptCameraQualityUpdate(
+  version: number,
+  quality: CameraQuality,
+  attempt: number,
+): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    return;
+  }
+
+  try {
+    await cameraModule.setCameraQuality(quality);
+    if (version !== cameraQualityRequestVersion) {
+      return;
+    }
+  } catch (error) {
+    if (version !== cameraQualityRequestVersion) {
+      return;
+    }
+    if (attempt < 3) {
+      cameraQualityRetryTimer = setTimeout(() => {
+        cameraQualityRetryTimer = null;
+        void attemptCameraQualityUpdate(version, quality, attempt + 1);
+      }, 1_000);
+      return;
+    }
+    const message = `camera quality update failed after 3 attempts (${quality.tier})`;
+    appendCameraSystemEvent(message);
+    toast.error(message);
+    if (DEBUG_VIDEO_FEED) {
+      console.warn(LOG, message, error);
+    }
+  }
+}
+
+export async function applyCameraQualityForShareState(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    resetCameraQualityController();
+    return;
+  }
+
+  const quality = desiredCameraQualityForState(state);
+  if (lastRequestedCameraQualityTier === quality.tier && cameraQualityRetryTimer === null) {
+    return;
+  }
+
+  if (cameraQualityRetryTimer) {
+    clearTimeout(cameraQualityRetryTimer);
+    cameraQualityRetryTimer = null;
+  }
+
+  lastRequestedCameraQualityTier = quality.tier;
+  cameraQualityRequestVersion += 1;
+  if (DEBUG_VIDEO_FEED) {
+    console.log(LOG, '[video-feed] applying camera quality', quality.tier);
+  }
+  await attemptCameraQualityUpdate(cameraQualityRequestVersion, quality, 1);
+}
+
+async function publishLocalCamera(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || !(isWindowsPlatform() || isMacPlatform())) {
+    state.cameraIntent = false;
+    state.cameraPublication = 'idle';
+    rebuildVideoTiles();
+    notify();
+    return;
+  }
+
+  const selectedDeviceId = await getVideoInputDevice();
+  state.cameraSelectedDeviceId = selectedDeviceId;
+
+  try {
+    const { effectiveDeviceId, warning } = await resolveCameraDeviceSelection(selectedDeviceId);
+    if (warning) {
+      surfaceCameraWarning(warning);
+    }
+
+    const quality = desiredCameraQualityForState(state);
+    state.cameraPublication = 'publishing';
+    notify();
+
+    await cameraModule.publishCamera({
+      deviceId: effectiveDeviceId,
+      quality,
+    });
+
+    state.cameraPublication = 'published';
+    lastRequestedCameraQualityTier = quality.tier;
+    rebuildVideoTiles();
+    notify();
+  } catch (error) {
+    const cameraError = (
+      error && typeof error === 'object' && 'kind' in error
+        ? error
+        : { kind: 'publish_failed' }
+    ) as CameraStartError;
+
+    state.cameraIntent = false;
+    state.cameraPublication = 'failing';
+    surfaceCameraError(cameraError);
+    await cameraModule.unpublishCamera().catch(() => {});
+    state.cameraPublication = 'idle';
+    resetCameraQualityController();
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
+async function unpublishLocalCamera(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  try {
+    await cameraModule?.unpublishCamera();
+  } catch (error) {
+    console.warn(LOG, 'unpublishCamera failed, classifying as publish_failed', error);
+    surfaceCameraError({ kind: 'publish_failed' });
+  } finally {
+    state.cameraPublication = 'idle';
+    resetCameraQualityController();
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
+async function restorePublishedCameraAfterReconnect(): Promise<void> {
+  if (!state.cameraIntent || state.cameraPublication !== 'published') {
+    return;
+  }
+  await publishLocalCamera();
+}
+
+export async function toggleCameraIntent(): Promise<void> {
+  if (!(isWindowsPlatform() || isMacPlatform())) {
+    return;
+  }
+  if (!lkModule || state.mediaState === 'disconnected' || state.mediaState === 'failed') {
+    return;
+  }
+
+  if (state.cameraIntent) {
+    state.cameraIntent = false;
+    notify();
+    await unpublishLocalCamera();
+    return;
+  }
+
+  state.cameraIntent = true;
+  state.cameraPublication = 'opening';
+  notify();
+  await publishLocalCamera();
+}
+
+export function selectRoomPanelTab(tab: 'logs' | 'video'): void {
+  state.roomPanelManualOverride = tab;
+  syncRoomPanelTab();
+  notify();
+}
+
+export async function changeSelectedCamera(deviceId: string | null): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    await setVideoInputDevice(deviceId);
+    state.cameraSelectedDeviceId = deviceId;
+    notify();
+    return;
+  }
+
+  const previousDeviceId = state.cameraSelectedDeviceId;
+  try {
+    const { effectiveDeviceId, warning } = await resolveCameraDeviceSelection(deviceId);
+    if (warning) {
+      surfaceCameraWarning(warning);
+    }
+    await cameraModule.replaceCameraDevice(effectiveDeviceId);
+    await setVideoInputDevice(deviceId);
+    state.cameraSelectedDeviceId = deviceId;
+    rebuildVideoTiles();
+    notify();
+  } catch (error) {
+    state.cameraSelectedDeviceId = previousDeviceId;
+    surfaceCameraWarning(classifyCameraReplaceWarning(error, deviceId));
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
 /* ─── Media Lifecycle ────────────────────────────────────────────── */
 
 function sendJoinVoiceRequest(): void {
@@ -1791,6 +2237,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     },
     onMediaReconnected: () => {
       restoreConnectedMediaState();
+      void restorePublishedCameraAfterReconnect();
     },
     onMediaFailed: (reason) => {
       state.mediaReconnectFailures += 1;
@@ -1914,6 +2361,48 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         }
         notify();
       }
+    },
+    onRemoteCameraPublished: (participantId) => {
+      if (DEBUG_VIDEO_FEED) {
+        console.log(LOG, '[video-feed] remote camera published', participantId);
+      }
+    },
+    onRemoteCameraReady: (participantId, track) => {
+      remoteCameraTilesById = {
+        ...remoteCameraTilesById,
+        [participantId]: {
+          track,
+          isMuted: false,
+          hasError: false,
+        },
+      };
+      rebuildVideoTiles();
+      notify();
+    },
+    onRemoteCameraMutedChanged: (participantId, muted) => {
+      const current = remoteCameraTilesById[participantId];
+      if (!current) {
+        return;
+      }
+      remoteCameraTilesById = {
+        ...remoteCameraTilesById,
+        [participantId]: {
+          ...current,
+          isMuted: muted,
+        },
+      };
+      rebuildVideoTiles();
+      notify();
+    },
+    onRemoteCameraUnpublished: (participantId) => {
+      if (!(participantId in remoteCameraTilesById)) {
+        return;
+      }
+      const nextTiles = { ...remoteCameraTilesById };
+      delete nextTiles[participantId];
+      remoteCameraTilesById = nextTiles;
+      rebuildVideoTiles();
+      notify();
     },
     onSystemEvent: (message) => {
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message });
@@ -2183,6 +2672,7 @@ function dispatchMessage(raw: unknown): void {
       if (lkModule && state.mediaState === 'connected' && pjId !== state.selfParticipantId) {
         applyEffectiveParticipantVolume(newParticipant);
       }
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2210,6 +2700,13 @@ function dispatchMessage(raw: unknown): void {
         appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: `${plName} left ${plRoomLabel}`, participantId: leftId });
       }
       speakingTracker.delete(leftId);
+      if (leftId in remoteCameraTilesById) {
+        const nextTiles = { ...remoteCameraTilesById };
+        delete nextTiles[leftId];
+        remoteCameraTilesById = nextTiles;
+      }
+      rebuildVideoTiles();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2247,6 +2744,7 @@ function dispatchMessage(raw: unknown): void {
       // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
       // yet in state when sub_room_joined arrives), so flush here once state catches up.
       flushBufferedMediaTokenIfReady();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2268,6 +2766,7 @@ function dispatchMessage(raw: unknown): void {
       syncDerivedSubRoomState();
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2309,6 +2808,7 @@ function dispatchMessage(raw: unknown): void {
       if (participantId === state.selfParticipantId) {
         flushBufferedMediaTokenIfReady();
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2337,6 +2837,7 @@ function dispatchMessage(raw: unknown): void {
         const srlMessage = srlIsSelf ? `left ${srlRoomLabel}` : `${srlName} left ${srlRoomLabel}`;
         appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: srlMessage, participantId });
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2353,6 +2854,7 @@ function dispatchMessage(raw: unknown): void {
       }
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2407,6 +2909,7 @@ function dispatchMessage(raw: unknown): void {
         client.send(historyReq);
       }
 
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2625,6 +3128,7 @@ function dispatchMessage(raw: unknown): void {
       if (cp) {
         cp.color = msg.profileColor as string;
       }
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2653,6 +3157,7 @@ function dispatchMessage(raw: unknown): void {
         });
       }
       void playNotificationSound('share-start');
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2682,6 +3187,7 @@ function dispatchMessage(raw: unknown): void {
       } else {
         void playNotificationSound('share-stop');
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2703,6 +3209,7 @@ function dispatchMessage(raw: unknown): void {
           p.isSharing = true;
         }
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2914,6 +3421,7 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  resetCameraRuntimeState();
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
@@ -3084,6 +3592,9 @@ export function leaveRoom(): void {
 
   // Tear down LiveKit media
   if (lkModule) {
+    if (state.cameraPublication === 'published' || state.cameraIntent) {
+      void getCameraMediaModule()?.unpublishCamera().catch(() => {});
+    }
     lkModule.disconnect();
     lkModule = null;
   }
@@ -3125,6 +3636,9 @@ export function leaveRoom(): void {
 
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+  remoteCameraTilesById = {};
+  roomPanelHadAnyVideoActive = false;
+  resetCameraQualityController();
   desiredSubRoomIntent = undefined;
 
   // Reset reconnect cooldown timer
@@ -3990,6 +4504,7 @@ export function getState(): VoiceRoomState {
       participantIds: [...room.participantIds],
     })),
     participantSubRoomById: { ...state.participantSubRoomById },
+    videoTilesById: { ...state.videoTilesById },
     passthrough: state.passthrough ? { ...state.passthrough } : null,
   };
 }
