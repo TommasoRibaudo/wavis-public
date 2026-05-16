@@ -68,6 +68,7 @@ interface MockLiveKitModule {
   setCameraQuality: (quality: { tier: string }) => Promise<void>;
   replaceCameraDevice: (deviceId: string | null) => Promise<{ trackId: string }>;
   getLocalCameraTrack: () => MediaStreamTrack | null;
+  applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
@@ -130,6 +131,7 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
       return { trackId: `camera-${deviceId ?? 'default'}` };
     }),
     getLocalCameraTrack: vi.fn(() => mod.localCameraTrack),
+    applyRemoteCameraVisibility: vi.fn(() => {}),
     setParticipantVolume: vi.fn((id: string, vol: number) => { mod.setParticipantVolumeCalls.push({ id, vol }); }),
     setMasterVolume: vi.fn((vol: number) => { mod.setMasterVolumeCalls.push(vol); }),
     setScreenShareAudioVolume: vi.fn((id: string, vol: number) => { mod.setScreenShareAudioVolumeCalls.push({ id, vol }); }),
