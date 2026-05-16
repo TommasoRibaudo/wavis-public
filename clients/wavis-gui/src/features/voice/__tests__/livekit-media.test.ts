@@ -102,7 +102,7 @@ function createMockLocalParticipant() {
       }
       return undefined;
     }),
-    publishTrack: vi.fn(async (track: unknown, opts?: unknown) => {
+    publishTrack: vi.fn(async (track: unknown, opts?: unknown): Promise<unknown> => {
       sdkCalls.push({ method: 'publishTrack', args: [track, opts] });
       return undefined;
     }),
@@ -181,6 +181,7 @@ vi.mock('livekit-client', () => ({
     TrackPublished: 'trackPublished',
     TrackSubscribed: 'trackSubscribed',
     TrackUnsubscribed: 'trackUnsubscribed',
+    TrackUnpublished: 'trackUnpublished',
     ActiveSpeakersChanged: 'activeSpeakersChanged',
     ParticipantConnected: 'participantConnected',
     ParticipantDisconnected: 'participantDisconnected',
@@ -188,10 +189,12 @@ vi.mock('livekit-client', () => ({
     LocalTrackPublished: 'localTrackPublished',
     LocalTrackUnpublished: 'localTrackUnpublished',
     MediaDevicesError: 'mediaDevicesError',
+    TrackMuted: 'trackMuted',
+    TrackUnmuted: 'trackUnmuted',
   },
   Track: {
     Kind: { Audio: 'audio', Video: 'video' },
-    Source: { Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio' },
+    Source: { Microphone: 'microphone', Camera: 'camera', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio' },
   },
   ConnectionQuality: {
     Excellent: 'excellent',
@@ -544,6 +547,13 @@ function createMockMediaDevices() {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     enumerateDevices: vi.fn(async () => []),
+    getUserMedia: vi.fn(async (): Promise<{
+      getVideoTracks: () => unknown[];
+      getTracks: () => unknown[];
+    }> => ({
+      getVideoTracks: () => [],
+      getTracks: () => [],
+    })),
     getDisplayMedia: vi.fn(async () => createMockDisplayMediaStream()),
   };
 }
@@ -556,6 +566,7 @@ vi.stubGlobal('navigator', {
 // ─── Import module under test ──────────────────────────────────────
 
 import { LiveKitModule, type MediaCallbacks } from '../livekit-media';
+import { CAMERA_QUALITY_HIGH } from '../camera-types';
 
 // ─── Callback Mock Helper ──────────────────────────────────────────
 
@@ -574,6 +585,10 @@ function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
     onLocalAudioLevel: (level) => calls.push({ method: 'onLocalAudioLevel', args: [level] }),
     onActiveSpeakers: (ids) => calls.push({ method: 'onActiveSpeakers', args: [ids] }),
     onConnectionQuality: (stats) => calls.push({ method: 'onConnectionQuality', args: [stats] }),
+    onRemoteCameraPublished: (participantId) => calls.push({ method: 'onRemoteCameraPublished', args: [participantId] }),
+    onRemoteCameraReady: (participantId, track) => calls.push({ method: 'onRemoteCameraReady', args: [participantId, track] }),
+    onRemoteCameraMutedChanged: (participantId, muted) => calls.push({ method: 'onRemoteCameraMutedChanged', args: [participantId, muted] }),
+    onRemoteCameraUnpublished: (participantId) => calls.push({ method: 'onRemoteCameraUnpublished', args: [participantId] }),
     onScreenShareSubscribed: (id, stream) => calls.push({ method: 'onScreenShareSubscribed', args: [id, stream] }),
     onScreenShareUnsubscribed: (id) => calls.push({ method: 'onScreenShareUnsubscribed', args: [id] }),
     onLocalScreenShareEnded: () => calls.push({ method: 'onLocalScreenShareEnded', args: [] }),
@@ -663,6 +678,22 @@ function createMockLocalScreenShareMediaTrack(displaySurface: 'monitor' | 'windo
       height: 1440,
       frameRate: 60,
     })),
+  };
+}
+
+function createMockCameraMediaTrack(id = 'local-camera-track') {
+  let readyState: 'live' | 'ended' = 'live';
+  const stop = vi.fn(() => {
+    readyState = 'ended';
+  });
+  return {
+    id,
+    kind: 'video' as const,
+    applyConstraints: vi.fn().mockResolvedValue(undefined),
+    stop,
+    get readyState() {
+      return readyState;
+    },
   };
 }
 
@@ -827,6 +858,290 @@ async function driveToConnected(mod: LiveKitModule, url = 'wss://sfu.test', toke
   await tick();
   emitRoomEvent('localTrackPublished', AUDIO_PUB, mockRoom.localParticipant);
 }
+
+describe('camera publish/unpublish', () => {
+  it('publishCamera publishes the selected camera with non-simulcast VP8 options', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-1');
+    const publication = {
+      trackSid: 'camera-pub-1',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-pub-1',
+        mediaStreamTrack: mediaTrack,
+      },
+      setPublishingLayers: vi.fn(),
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async (track: unknown, opts?: unknown) => {
+      sdkCalls.push({ method: 'publishTrack', args: [track, opts] });
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    const result = await mod.publishCamera({
+      deviceId: 'camera-device-1',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    expect(mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      video: { deviceId: 'camera-device-1' },
+    });
+    expect(mockRoom.localParticipant.publishTrack).toHaveBeenCalledWith(
+      mediaTrack,
+      expect.objectContaining({
+        source: 'camera',
+        simulcast: false,
+        videoCodec: 'vp8',
+        videoEncoding: {
+          maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+          maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+        },
+      }),
+    );
+    expect(result).toEqual({ trackId: 'camera-pub-1' });
+    expect(publication.setPublishingLayers).not.toHaveBeenCalled();
+  });
+
+  it('publishCamera falls back to browser default camera when deviceId is null', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-default');
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async (track: unknown, opts?: unknown) => {
+      sdkCalls.push({ method: 'publishTrack', args: [track, opts] });
+      return {
+        trackSid: 'camera-default',
+        source: 'camera',
+        kind: 'video',
+        track: { mediaStreamTrack: track },
+      };
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    await mod.publishCamera({
+      deviceId: null,
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    expect(mediaDevices.getUserMedia).toHaveBeenCalledWith({ video: true });
+  });
+
+  it('unpublishCamera stops the underlying track and is idempotent', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-stop');
+    const publication = {
+      trackSid: 'camera-stop',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-stop',
+        mediaStreamTrack: mediaTrack,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async (track: unknown, opts?: unknown) => {
+      sdkCalls.push({ method: 'publishTrack', args: [track, opts] });
+      mockRoom.localParticipant.trackPublications.set('camera-stop', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-stop',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    await mod.unpublishCamera();
+    await mod.unpublishCamera();
+
+    expect(mediaTrack.stop).toHaveBeenCalledTimes(1);
+    expect(sdkCalls.filter((call) => call.method === 'unpublishTrack')).toHaveLength(1);
+  });
+
+  it('setCameraQuality applies exact constraints and sender parameters', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-quality');
+    const sender = {
+      setParameters: vi.fn(async () => {}),
+    };
+    const publication = {
+      trackSid: 'camera-quality',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-quality',
+        mediaStreamTrack: mediaTrack,
+        sender,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-quality', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-quality',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    await mod.setCameraQuality(CAMERA_QUALITY_HIGH);
+
+    expect(mediaTrack.applyConstraints).toHaveBeenCalledWith({
+      width: CAMERA_QUALITY_HIGH.width,
+      height: CAMERA_QUALITY_HIGH.height,
+      frameRate: CAMERA_QUALITY_HIGH.maxFps,
+    });
+    expect(sender.setParameters).toHaveBeenCalledWith({
+      encodings: [{
+        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+      }],
+    });
+  });
+
+  it('replaceCameraDevice swaps the published camera track and stops the old track after replace resolves', async () => {
+    const oldTrack = createMockCameraMediaTrack('camera-old');
+    const newTrack = createMockCameraMediaTrack('camera-new');
+    const replaceTrack = vi.fn(async (track: MediaStreamTrack) => {
+      expect(track).toBe(newTrack);
+      expect(oldTrack.stop).not.toHaveBeenCalled();
+    });
+    const publication = {
+      trackSid: 'camera-replace',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-replace',
+        mediaStreamTrack: oldTrack,
+        replaceTrack,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi
+      .fn()
+      .mockResolvedValueOnce({
+        getVideoTracks: () => [oldTrack],
+        getTracks: () => [oldTrack],
+      })
+      .mockResolvedValueOnce({
+        getVideoTracks: () => [newTrack],
+        getTracks: () => [newTrack],
+      });
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-replace', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-old-device',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    const result = await mod.replaceCameraDevice('camera-new-device');
+
+    expect(mediaDevices.getUserMedia).toHaveBeenNthCalledWith(2, {
+      video: { deviceId: 'camera-new-device' },
+    });
+    expect(replaceTrack).toHaveBeenCalledWith(newTrack, { userProvidedTrack: true });
+    expect(oldTrack.stop).toHaveBeenCalledTimes(1);
+    expect(newTrack.stop).not.toHaveBeenCalled();
+    expect(result).toEqual({ trackId: 'camera-replace' });
+  });
+
+  it('emits remote camera lifecycle callbacks from room events', async () => {
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const participant = {
+      identity: 'remote-camera-user',
+    };
+    const publication = {
+      trackSid: 'remote-camera-pub',
+      source: 'camera',
+      kind: 'video',
+      isMuted: false,
+      setSubscribed: vi.fn(),
+    };
+    const remoteTrack = {
+      sid: 'remote-camera-pub',
+      kind: 'video',
+      mediaStreamTrack: createMockCameraMediaTrack('remote-camera-track'),
+    };
+
+    emitRoomEvent('trackPublished', publication, participant);
+    emitRoomEvent('trackSubscribed', remoteTrack, publication, participant);
+    await tick();
+    emitRoomEvent('trackMuted', publication, participant);
+    emitRoomEvent('trackUnmuted', publication, participant);
+    emitRoomEvent('trackUnpublished', publication, participant);
+
+    expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+    expect(cbs.calls).toContainEqual({
+      method: 'onRemoteCameraPublished',
+      args: ['remote-camera-user'],
+    });
+    expect(cbs.calls).toContainEqual({
+      method: 'onRemoteCameraReady',
+      args: ['remote-camera-user', remoteTrack.mediaStreamTrack],
+    });
+    expect(cbs.calls).toContainEqual({
+      method: 'onRemoteCameraMutedChanged',
+      args: ['remote-camera-user', true],
+    });
+    expect(cbs.calls).toContainEqual({
+      method: 'onRemoteCameraMutedChanged',
+      args: ['remote-camera-user', false],
+    });
+    expect(cbs.calls).toContainEqual({
+      method: 'onRemoteCameraUnpublished',
+      args: ['remote-camera-user'],
+    });
+  });
+});
 
 // ═══ LiveKitModule lifecycle ═══════════════════════════════════════
 

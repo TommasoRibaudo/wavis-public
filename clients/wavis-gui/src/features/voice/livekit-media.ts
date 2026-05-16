@@ -17,6 +17,7 @@ import type { AudioProcessorOptions, TrackProcessor, LocalVideoTrack, TrackPubli
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { NativeMicBridge } from './native-mic-bridge';
+import type { CameraMediaCallbacks, CameraQuality, CameraStartError } from './camera-types';
 import {
   getAudioOutputDevice,
   getAudioInputDevice,
@@ -56,6 +57,7 @@ const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_SHARE_TRACK_SUB = import.meta.env.VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION === 'true';
 const DEBUG_MAC_SHARE_AUDIO = import.meta.env.VITE_DEBUG_MAC_SHARE_AUDIO === 'true';
+const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
 
 function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
   if (!result.capture_path) {
@@ -86,6 +88,92 @@ function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void
   }
 }
 const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION === 'true';
+
+const CAMERA_CAPTURE_TIMEOUT_MS = 10_000;
+const CAMERA_PUBLISH_TIMEOUT_MS = 5_000;
+const REMOTE_CAMERA_READY_TIMEOUT_MS = 10_000;
+
+export const LIVEKIT_ROOM_OPTIONS = {
+  adaptiveStream: true,
+  dynacast: false,
+} as const;
+
+export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishOptions {
+  return {
+    source: Track.Source.Camera,
+    simulcast: false,
+    videoCodec: 'vp8',
+    videoEncoding: {
+      maxBitrate: quality.maxBitrate,
+      maxFramerate: quality.maxFps,
+    },
+  } as TrackPublishOptions;
+}
+
+export function buildCameraTrackConstraints(quality: CameraQuality): MediaTrackConstraints {
+  return {
+    width: quality.width,
+    height: quality.height,
+    frameRate: quality.maxFps,
+  };
+}
+
+export function buildCameraSenderParameters(quality: CameraQuality): RTCRtpSendParameters {
+  return {
+    encodings: [{
+      maxBitrate: quality.maxBitrate,
+      maxFramerate: quality.maxFps,
+    }],
+  } as RTCRtpSendParameters;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutValue: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(timeoutValue), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isCameraStartError(value: unknown): value is CameraStartError {
+  if (!value || typeof value !== 'object' || !('kind' in value)) {
+    return false;
+  }
+  const kind = (value as { kind?: unknown }).kind;
+  return (
+    kind === 'permission_denied' ||
+    kind === 'device_unavailable' ||
+    kind === 'device_in_use' ||
+    kind === 'timeout' ||
+    kind === 'no_camera_configured' ||
+    kind === 'publish_failed'
+  );
+}
+
+function classifyCameraCaptureError(error: unknown): CameraStartError {
+  if (isCameraStartError(error)) {
+    return error;
+  }
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return { kind: 'permission_denied' };
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    return { kind: 'device_unavailable' };
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return { kind: 'device_in_use' };
+  }
+  return { kind: 'device_unavailable' };
+}
 
 export const MIC_OPUS_BITRATE_BPS = 48_000;
 export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
@@ -231,6 +319,13 @@ export interface VideoReceiveStats {
   nackCount: number;
   /** Average decode time per frame in ms (totalDecodeTime / framesDecoded * 1000). */
   avgDecodeTimeMs: number;
+}
+
+interface RemoteCameraEntry {
+  publication: RemoteTrackPublication | null;
+  track: MediaStreamTrack | null;
+  muted: boolean;
+  readyCleanup: (() => void) | null;
 }
 
 /** Reported from LiveKitModule to VoiceRoom after track is published. */
@@ -418,7 +513,7 @@ const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
   max:  { ...DETAIL_PROFILE, maxFramerate: 60 },
 };
 
-export interface MediaCallbacks {
+export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {
   /** Called when media transitions to connected (mic published or listen-only). */
   onMediaConnected: () => void;
   /** Called when LiveKit reports that media is reconnecting in place. */
@@ -859,6 +954,7 @@ export class LiveKitModule {
   private participantGains: Map<string, GainNode> = new Map();
   private desiredParticipantVolumes: Map<string, number> = new Map();
   private audioElementMap: Map<string, HTMLAudioElement> = new Map();
+  private cameraTracks: Map<string, RemoteCameraEntry> = new Map();
   private screenShareElements: Map<string, { stream: MediaStream; startedAtMs: number; trackSid: string; dummyVideo?: HTMLVideoElement; trackEndedCleanup?: () => void }> = new Map();
   private screenShareAudioTracks: Map<string, { track: RemoteTrack; participant: RemoteParticipant }> = new Map();
   private screenShareAudioPublications: Map<string, RemoteTrackPublication> = new Map();
@@ -878,6 +974,8 @@ export class LiveKitModule {
   private localMicInterval: ReturnType<typeof setInterval> | null = null;
   private micAudioProcessor: MicAudioProcessor | null = null;
   private localMicTrack: LocalAudioTrack | null = null;
+  private localCameraPublication: LocalTrackPublication | null = null;
+  private localCameraMediaTrack: MediaStreamTrack | null = null;
   /** Whether the JS-side noise suppression processor should be active on this session's mic. */
   private jsDenoise = false;
   /** Session preference used when voice-room later opts the microphone into publishing. */
@@ -977,6 +1075,87 @@ export class LiveKitModule {
       NS_LOG,
       `state=${state.state} noise_floor=${state.noiseFloor.toFixed(3)} gate=${state.gateGain.toFixed(3)} in_rms=${state.inputRms.toFixed(3)} out_rms=${state.outputRms.toFixed(3)}`,
     );
+  }
+
+  private clearRemoteCameraEntry(participantId: string): void {
+    const entry = this.cameraTracks.get(participantId);
+    entry?.readyCleanup?.();
+    this.cameraTracks.delete(participantId);
+  }
+
+  private async waitForRemoteCameraReady(track: MediaStreamTrack): Promise<() => void> {
+    const stream = new MediaStream([track]);
+    const video = document.createElement('video');
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    document.body.appendChild(video);
+    video.play().catch(() => {});
+
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== null) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        resolve();
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== null) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        reject(error);
+      };
+
+      timeout = setTimeout(() => {
+        fail(new Error('remote camera ready timeout'));
+      }, REMOTE_CAMERA_READY_TIMEOUT_MS);
+
+      if (track.readyState !== 'live') {
+        finish();
+        return;
+      }
+
+      if (typeof (video as HTMLVideoElement & {
+        requestVideoFrameCallback?: (callback: () => void) => void;
+      }).requestVideoFrameCallback === 'function') {
+        (video as HTMLVideoElement & {
+          requestVideoFrameCallback: (callback: () => void) => void;
+        }).requestVideoFrameCallback(() => finish());
+        return;
+      }
+
+      if ('onloadeddata' in video) {
+        video.onloadeddata = () => finish();
+        return;
+      }
+
+      finish();
+    }).catch((error) => {
+      video.srcObject = null;
+      video.onloadeddata = null;
+      video.remove();
+      throw error;
+    });
+
+    return () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      video.srcObject = null;
+      video.onloadeddata = null;
+      video.remove();
+    };
   }
 
   private shouldUseJsNoiseSuppression(denoiseEnabled: boolean): boolean {
@@ -1997,6 +2176,19 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const existing = this.cameraTracks.get(participant.identity);
+          this.cameraTracks.set(participant.identity, {
+            publication,
+            track: existing?.track ?? null,
+            muted: publication.isMuted ?? existing?.muted ?? false,
+            readyCleanup: existing?.readyCleanup ?? null,
+          });
+          publication.setSubscribed?.(true);
+          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera published, subscribing', participant.identity, 'trackSid:', publication.trackSid);
+          this.callbacks.onRemoteCameraPublished?.(participant.identity);
+          return;
+        }
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
         if (!this.screenShareAudioPending.has(participant.identity)) {
@@ -2011,6 +2203,42 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+          const previous = this.cameraTracks.get(participant.identity);
+          previous?.readyCleanup?.();
+          const entry: RemoteCameraEntry = {
+            publication,
+            track: null,
+            muted: publication.isMuted ?? false,
+            readyCleanup: null,
+          };
+          this.cameraTracks.set(participant.identity, entry);
+
+          this.waitForRemoteCameraReady(track.mediaStreamTrack)
+            .then((cleanup) => {
+              if (this.disposed) {
+                cleanup();
+                return;
+              }
+              const currentEntry = this.cameraTracks.get(participant.identity);
+              if (!currentEntry || currentEntry.publication !== publication) {
+                cleanup();
+                return;
+              }
+              currentEntry.track = track.mediaStreamTrack;
+              currentEntry.muted = publication.isMuted ?? currentEntry.muted;
+              currentEntry.readyCleanup = cleanup;
+              if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera ready', participant.identity, 'trackSid:', track.sid);
+              this.callbacks.onRemoteCameraReady?.(participant.identity, track.mediaStreamTrack);
+            })
+            .catch(() => {
+              const currentEntry = this.cameraTracks.get(participant.identity);
+              if (currentEntry?.publication === publication) {
+                currentEntry.readyCleanup = null;
+              }
+            });
+          return;
+        }
         if (track.kind === Track.Kind.Audio) {
           // Defer screen share audio — only attach when user opens the viewer
           if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
@@ -2086,6 +2314,11 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+          this.clearRemoteCameraEntry(participant.identity);
+          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+          return;
+        }
         if (track.kind === Track.Kind.Audio) {
           if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
             // Clean up deferred screen share audio
@@ -2129,6 +2362,10 @@ export class LiveKitModule {
       // h. ParticipantDisconnected
       addListener(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
+        if (this.cameraTracks.has(participant.identity)) {
+          this.clearRemoteCameraEntry(participant.identity);
+          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+        }
         this.cleanupParticipantAudio(participant.identity);
         // Clean up deferred screen share audio
         this.screenShareAudioTracks.delete(participant.identity);
@@ -2181,6 +2418,10 @@ export class LiveKitModule {
       // j. LocalTrackPublished
       addListener(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          this.localCameraPublication = publication;
+          this.localCameraMediaTrack = publication.track?.mediaStreamTrack ?? this.localCameraMediaTrack;
+        }
         if (publication.track?.kind === Track.Kind.Audio) {
           // Suppress local playback on screen share audio tracks — the LiveKit SDK
           // strips suppressLocalAudioPlayback from getDisplayMedia() options, so we
@@ -2208,9 +2449,23 @@ export class LiveKitModule {
       // k. LocalTrackUnpublished
       addListener(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          this.localCameraPublication = null;
+          this.localCameraMediaTrack = null;
+        }
         if (publication.source === Track.Source.ScreenShare) {
           this.callbacks.onLocalScreenShareEnded();
         }
+      });
+
+      addListener(RoomEvent.TrackUnpublished, (
+        publication: RemoteTrackPublication,
+        participant: RemoteParticipant,
+      ) => {
+        if (this.disposed) return;
+        if (publication.source !== Track.Source.Camera) return;
+        this.clearRemoteCameraEntry(participant.identity);
+        this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
       });
 
       // l. MediaDevicesError
@@ -2222,6 +2477,14 @@ export class LiveKitModule {
       // m. TrackMuted — remote participant muted their audio
       addListener(RoomEvent.TrackMuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const entry = this.cameraTracks.get(participant.identity);
+          if (entry) {
+            entry.muted = true;
+          }
+          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, true);
+          return;
+        }
         if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
           this.callbacks.onParticipantMuteChanged(participant.identity, true);
         }
@@ -2230,6 +2493,14 @@ export class LiveKitModule {
       // n. TrackUnmuted — remote participant unmuted their audio
       addListener(RoomEvent.TrackUnmuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const entry = this.cameraTracks.get(participant.identity);
+          if (entry) {
+            entry.muted = false;
+          }
+          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, false);
+          return;
+        }
         if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
           this.callbacks.onParticipantMuteChanged(participant.identity, false);
         }
@@ -2468,6 +2739,11 @@ export class LiveKitModule {
     this.micAudioProcessor = null;
     this.setNoiseSuppressionActive(false);
     this.localMicTrack = null;
+    if (this.localCameraMediaTrack) {
+      this.localCameraMediaTrack.stop();
+      this.localCameraMediaTrack = null;
+    }
+    this.localCameraPublication = null;
 
     // 5. Room cleanup (null-safe — room may never have been assigned)
     if (this.room !== null) {
@@ -3976,6 +4252,171 @@ export class LiveKitModule {
   /* ─── Placeholder methods (implemented in later tasks) ─────── */
 
   /* ─── WASAPI Audio Bridge ─────────────────────────────────────── */
+
+  async publishCamera(opts: {
+    deviceId: string | null;
+    quality: CameraQuality;
+  }): Promise<{ trackId: string }> {
+    if (!this.room) {
+      throw { kind: 'publish_failed' } satisfies CameraStartError;
+    }
+
+    let mediaTrack: MediaStreamTrack | null = null;
+    try {
+      const stream = await withTimeout(
+        navigator.mediaDevices.getUserMedia({
+          video: opts.deviceId === null ? true : { deviceId: opts.deviceId },
+        }),
+        CAMERA_CAPTURE_TIMEOUT_MS,
+        { kind: 'timeout' } satisfies CameraStartError,
+      );
+      mediaTrack = stream.getVideoTracks()[0] ?? null;
+      if (!mediaTrack) {
+        throw { kind: 'device_unavailable' } satisfies CameraStartError;
+      }
+
+      const publication = await withTimeout(
+        this.room.localParticipant.publishTrack(
+          mediaTrack,
+          buildCameraPublishOptions(opts.quality),
+        ),
+        CAMERA_PUBLISH_TIMEOUT_MS,
+        { kind: 'publish_failed' } satisfies CameraStartError,
+      );
+
+      this.localCameraPublication = publication;
+      this.localCameraMediaTrack = mediaTrack;
+      return {
+        trackId: publication?.trackSid ?? publication?.track?.sid ?? mediaTrack.id,
+      };
+    } catch (error) {
+      if (mediaTrack) {
+        mediaTrack.stop();
+      }
+      this.localCameraPublication = null;
+      this.localCameraMediaTrack = null;
+      if (isCameraStartError(error)) {
+        throw error;
+      }
+      if (mediaTrack) {
+        console.warn(LOG, 'publishCamera: publishTrack failed, classifying as publish_failed', error);
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+      console.warn(LOG, 'publishCamera: getUserMedia failed, classifying camera capture error', error);
+      throw classifyCameraCaptureError(error);
+    }
+  }
+
+  async unpublishCamera(): Promise<void> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const mediaTrack =
+      this.localCameraMediaTrack ??
+      publication?.track?.mediaStreamTrack ??
+      null;
+    const localTrack = publication?.track ?? null;
+
+    this.localCameraPublication = null;
+    this.localCameraMediaTrack = null;
+
+    try {
+      const trackToUnpublish = mediaTrack ?? localTrack;
+      if (this.room && trackToUnpublish) {
+        await this.room.localParticipant.unpublishTrack(trackToUnpublish);
+      }
+    } finally {
+      mediaTrack?.stop();
+    }
+  }
+
+  getLocalCameraTrack(): MediaStreamTrack | null {
+    return this.localCameraMediaTrack ?? this.localCameraPublication?.track?.mediaStreamTrack ?? null;
+  }
+
+  async setCameraQuality(quality: CameraQuality): Promise<void> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const localTrack = publication?.track ?? null;
+    const mediaTrack =
+      this.localCameraMediaTrack ??
+      localTrack?.mediaStreamTrack ??
+      null;
+
+    if (!publication || !mediaTrack) {
+      return;
+    }
+
+    await mediaTrack.applyConstraints(buildCameraTrackConstraints(quality));
+
+    const sender = (localTrack as { sender?: RTCRtpSender | null } | null)?.sender ?? null;
+    if (sender) {
+      await sender.setParameters(buildCameraSenderParameters(quality));
+    }
+  }
+
+  async replaceCameraDevice(deviceId: string | null): Promise<{ trackId: string }> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const localTrack = publication?.track ?? null;
+    const currentMediaTrack =
+      this.localCameraMediaTrack ??
+      localTrack?.mediaStreamTrack ??
+      null;
+
+    if (!publication || !localTrack || !currentMediaTrack) {
+      throw { kind: 'publish_failed' } satisfies CameraStartError;
+    }
+
+    let newMediaTrack: MediaStreamTrack | null = null;
+    try {
+      const stream = await withTimeout(
+        navigator.mediaDevices.getUserMedia({
+          video: deviceId === null ? true : { deviceId },
+        }),
+        CAMERA_CAPTURE_TIMEOUT_MS,
+        { kind: 'timeout' } satisfies CameraStartError,
+      );
+      newMediaTrack = stream.getVideoTracks()[0] ?? null;
+      if (!newMediaTrack) {
+        throw { kind: 'device_unavailable' } satisfies CameraStartError;
+      }
+
+      const replaceableTrack = localTrack as LocalVideoTrack & {
+        replaceTrack?: (track: MediaStreamTrack, options?: { userProvidedTrack?: boolean }) => Promise<void>;
+      };
+      if (typeof replaceableTrack.replaceTrack !== 'function') {
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+
+      await replaceableTrack.replaceTrack(newMediaTrack, {
+        userProvidedTrack: true,
+      });
+
+      currentMediaTrack.stop();
+      this.localCameraPublication = publication;
+      this.localCameraMediaTrack = newMediaTrack;
+      const trackId = publication.trackSid ?? localTrack.sid ?? newMediaTrack.id;
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] replaceCameraDevice success', { oldId: currentMediaTrack.id, newId: newMediaTrack.id, trackId, deviceId });
+      return { trackId };
+    } catch (error) {
+      if (newMediaTrack) {
+        newMediaTrack.stop();
+      }
+      if (isCameraStartError(error)) {
+        throw error;
+      }
+      if (newMediaTrack) {
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+      throw classifyCameraCaptureError(error);
+    }
+  }
 
   /**
    * Start the WASAPI audio bridge: load an AudioWorklet, create a

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { Volume2 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
 import { computeGridLayout } from './watch-all-grid';
@@ -10,6 +11,7 @@ import { useAutoHide } from '@shared/hooks/useAutoHide';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixer';
 import QuickActionButtons from '@shared/QuickActionButtons';
+import FocusMainButton from '@shared/FocusMainButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -797,6 +799,10 @@ export default function WatchAllPage() {
           isDeafened={userState.isDeafened}
           onToggleMute={() => { void emit('share:toggle-mute'); }}
           onToggleDeafen={() => { void emit('share:toggle-deafen'); }}
+        />
+        <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">│</span>
+        <FocusMainButton
+          onClick={() => { void WebviewWindow.getByLabel('main').then((win) => win?.setFocus()); }}
         />
         <div className="flex-1" />
         <div className="relative flex items-center gap-1 shrink-0">

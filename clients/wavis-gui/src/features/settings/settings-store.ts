@@ -45,6 +45,7 @@ export const STORE_KEYS = {
   profileColor: 'wavis_profile_color',
   tlsEnabled: 'wavis_tls_enabled',
   audioInputDevice: 'wavis_audio_input_device',
+  videoInputDevice: 'wavis_video_input_device',
   audioOutputDevice: 'wavis_audio_output_device',
   defaultVolume: 'wavis_default_volume',
   notifyParticipantJoined: 'wavis_notify_participant_joined',
@@ -56,6 +57,7 @@ export const STORE_KEYS = {
   reconnectConfig: 'wavis_reconnect_config',
   muteHotkey: 'wavis_mute_hotkey',
   watchAllHotkey: 'wavis_watch_all_hotkey',
+  focusMainHotkey: 'wavis_focus_main_hotkey',
   logLevel: 'wavis_log_level',
   denoiseEnabled: 'wavis_denoise_enabled',
   channelVolumes: 'wavis_channel_volumes',
@@ -80,6 +82,7 @@ export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
 export const DEFAULT_VOLUME = 70;
 export const DEFAULT_MUTE_HOTKEY = 'Ctrl+Shift+M';
 export const DEFAULT_WATCH_ALL_HOTKEY = 'CmdOrCtrl+Shift+W';
+export const DEFAULT_FOCUS_MAIN_HOTKEY = 'CmdOrCtrl+Shift+Home';
 export const DEFAULT_WINDOWS_SHARE_PATH: WindowsSharePathPreference = 'browser';
 export const DEFAULT_SCREEN_SHARE_CODEC: ScreenShareCodecOverride = 'auto';
 
@@ -225,6 +228,16 @@ export async function setWatchAllHotkey(hotkey: string): Promise<void> {
   return setStoreValue(STORE_KEYS.watchAllHotkey, hotkey);
 }
 
+// ─── Focus Main Hotkey ─────────────────────────────────────────────
+
+export async function getFocusMainHotkey(): Promise<string> {
+  return getStoreValue(STORE_KEYS.focusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY);
+}
+
+export async function setFocusMainHotkey(hotkey: string): Promise<void> {
+  return setStoreValue(STORE_KEYS.focusMainHotkey, hotkey);
+}
+
 // ─── Denoise ───────────────────────────────────────────────────────
 
 export async function getDenoiseEnabled(): Promise<boolean> {
@@ -276,6 +289,16 @@ export async function getAudioOutputDevice(): Promise<string | null> {
 /** Returns the saved audio input device ID, or null if none has been selected. */
 export async function getAudioInputDevice(): Promise<string | null> {
   return getStoreValue<string | null>(STORE_KEYS.audioInputDevice, null);
+}
+
+/** Returns the saved video input device ID, or null if none has been selected. */
+export async function getVideoInputDevice(): Promise<string | null> {
+  return getStoreValue<string | null>(STORE_KEYS.videoInputDevice, null);
+}
+
+/** Persists the selected video input device ID, or null to use the default camera. */
+export async function setVideoInputDevice(deviceId: string | null): Promise<void> {
+  return setStoreValue<string | null>(STORE_KEYS.videoInputDevice, deviceId);
 }
 
 // ─── Notification Volume ───────────────────────────────────────────

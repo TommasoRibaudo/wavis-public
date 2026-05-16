@@ -217,8 +217,8 @@ export default function BugReportButton() {
     try {
       const bytes = await invoke<number[]>('capture_window_screenshot');
       screenshot = new Uint8Array(bytes);
-    } catch {
-      // Non-fatal — flow continues without a screenshot.
+    } catch (err) {
+      console.warn('[bug-report] capture_window_screenshot failed:', err);
     }
     setPreScreenshot(screenshot);
     setIsCapturing(false);

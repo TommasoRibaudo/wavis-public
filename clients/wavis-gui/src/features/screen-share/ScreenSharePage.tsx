@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startReceiving, stopReceiving } from './screen-share-viewer';
 import type { ShareQuality } from '@features/voice/voice-room';
@@ -632,6 +633,7 @@ export default function ScreenSharePage() {
           onVoiceVolumeChange={handleVoiceVolumeChange}
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
+          onFocusMain={() => { void WebviewWindow.getByLabel('main').then((win) => win?.setFocus()); }}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (
