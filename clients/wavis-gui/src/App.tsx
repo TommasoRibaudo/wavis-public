@@ -20,6 +20,7 @@ function isChromelessWindow(): boolean {
     p.startsWith('/share-picker') ||
     p.startsWith('/share-indicator') ||
     p.startsWith('/watch-all') ||
+    p.startsWith('/video-popout') ||
     p.startsWith('/diagnostics')
   );
 }

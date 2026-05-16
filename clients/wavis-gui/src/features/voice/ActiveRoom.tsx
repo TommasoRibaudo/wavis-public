@@ -96,6 +96,7 @@ import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInst
 import { cameraButtonLabel, shouldMountCameraButton } from './active-room-camera';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
+import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function voiceIcon(p: RoomParticipant, isDeafened?: boolean): { char: string; color: string; strikethrough?: boolean; transform?: string } {
@@ -218,6 +219,28 @@ type ShareViewerScope = 'direct' | 'watch-all';
 interface ShareViewerWindow {
   scope: ShareViewerScope;
   window: WebviewWindow;
+}
+
+function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
+  return {
+    participantId: tile.participantId,
+    displayName: tile.displayName,
+    color: tile.color,
+    hasTrack: tile.track !== null,
+    isSelf: tile.isSelf,
+    isMuted: tile.isMuted,
+    hasError: tile.hasError,
+  };
+}
+
+function areVideoTileSnapshotsEqual(a: VideoTileSnapshot, b: VideoTileSnapshot): boolean {
+  return a.participantId === b.participantId
+    && a.displayName === b.displayName
+    && a.color === b.color
+    && a.hasTrack === b.hasTrack
+    && a.isSelf === b.isSelf
+    && a.isMuted === b.isMuted
+    && a.hasError === b.hasError;
 }
 
 /* ─── Sub-components ────────────────────────────────────────────── */
@@ -649,6 +672,10 @@ export default function ActiveRoom() {
   const watchAllReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [watchAllOpen, setWatchAllOpen] = useState(false);
   const watchAllReadyRef = useRef(false);
+  const videoPopoutWindowRef = useRef<WebviewWindow | null>(null);
+  const videoPopoutReadyUnlistenRef = useRef<(() => void) | null>(null);
+  const [videoPopoutOpen, setVideoPopoutOpen] = useState(false);
+  const videoPopoutReadyRef = useRef(false);
   const watchAllHotkeyRef = useRef<string | null>(null);
   const focusMainHotkeyRef = useRef<string | null>(null);
   const toggleWatchAllRef = useRef<() => void>(() => { });
@@ -750,6 +777,13 @@ export default function ActiveRoom() {
     }
     prevStreamsRef.current = new Map(roomState.screenShareStreams);
   }, [watchingShareIds, roomState?.screenShareStreams]);
+
+  useEffect(() => {
+    const unlisten = listen('video-popout:closed', () => {
+      closeVideoPopoutWindow(true);
+    });
+    return () => { unlisten.then((fn) => fn?.()); };
+  }, []);
 
   const getSavedShareVolume = useCallback((participantId: string) => {
     return shareVolumesRef.current.get(participantId) ?? watchAllVolumesRef.current.get(participantId) ?? 70;
@@ -1317,6 +1351,7 @@ export default function ActiveRoom() {
 
   /** Close all share windows. */
   const closeAllShareWindows = () => {
+    closeVideoPopoutWindow();
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
@@ -1330,6 +1365,123 @@ export default function ActiveRoom() {
   // Ref to latest roomState so the ready callback always reads fresh data
   const roomStateRef = useRef(roomState);
   roomStateRef.current = roomState;
+  const prevVideoPopoutTracksRef = useRef<Map<string, MediaStreamTrack | null>>(new Map());
+  const prevVideoPopoutTilesRef = useRef<Map<string, VideoTileSnapshot>>(new Map());
+
+  const closeVideoPopoutWindow = (alreadyDestroyed = false) => {
+    if (!videoPopoutWindowRef.current) return;
+    if (videoPopoutReadyUnlistenRef.current) {
+      videoPopoutReadyUnlistenRef.current();
+      videoPopoutReadyUnlistenRef.current = null;
+    }
+    videoPopoutReadyRef.current = false;
+    stopSendingForWindow('video-popout');
+    if (!alreadyDestroyed) {
+      videoPopoutWindowRef.current.close().catch(() => { });
+    }
+    videoPopoutWindowRef.current = null;
+    setVideoPopoutOpen(false);
+    prevVideoPopoutTracksRef.current = new Map();
+    prevVideoPopoutTilesRef.current = new Map();
+  };
+
+  const syncVideoPopoutSnapshot = useCallback((nextTilesById: Record<string, VideoTileViewModel>) => {
+    const prevTracks = prevVideoPopoutTracksRef.current;
+    const prevTiles = prevVideoPopoutTilesRef.current;
+    const nextTracks = new Map<string, MediaStreamTrack | null>();
+    const nextTiles = new Map<string, VideoTileSnapshot>();
+
+    for (const tile of Object.values(nextTilesById)) {
+      const snapshot = buildVideoTileSnapshot(tile);
+      const sendableTrack = snapshot.hasTrack && !snapshot.isMuted && !snapshot.hasError ? tile.track : null;
+      nextTracks.set(tile.participantId, sendableTrack);
+      nextTiles.set(tile.participantId, snapshot);
+
+      const prevSnapshot = prevTiles.get(tile.participantId);
+      if (!prevSnapshot) {
+        void emitTo('video-popout', 'video-popout:tile-added', snapshot);
+      } else if (!areVideoTileSnapshotsEqual(prevSnapshot, snapshot)) {
+        void emitTo('video-popout', 'video-popout:tile-updated', snapshot);
+      }
+
+      const prevTrack = prevTracks.get(tile.participantId) ?? null;
+      if (sendableTrack && !prevTrack) {
+        void startSending(tile.participantId, 'video-popout', new MediaStream([sendableTrack]));
+      } else if (sendableTrack && prevTrack !== sendableTrack) {
+        void resendStream(tile.participantId, 'video-popout', new MediaStream([sendableTrack]));
+      } else if (!sendableTrack && prevTrack) {
+        stopSending(tile.participantId, 'video-popout');
+      }
+    }
+
+    for (const participantId of prevTiles.keys()) {
+      if (!nextTiles.has(participantId)) {
+        stopSending(participantId, 'video-popout');
+        void emitTo('video-popout', 'video-popout:tile-removed', { participantId });
+      }
+    }
+
+    prevVideoPopoutTracksRef.current = nextTracks;
+    prevVideoPopoutTilesRef.current = nextTiles;
+  }, []);
+
+  const openVideoPopoutWindow = useCallback(async () => {
+    if (videoPopoutWindowRef.current) {
+      videoPopoutWindowRef.current.setFocus().catch(() => { });
+      return;
+    }
+
+    const rs = roomStateRef.current;
+    if (!rs) return;
+
+    const hash = encodeURIComponent(JSON.stringify({ channelName: rs.channelName }));
+
+    try {
+      videoPopoutReadyRef.current = false;
+      const unlistenReady = await listen('video-popout:ready', () => {
+        if (videoPopoutReadyRef.current) return;
+        videoPopoutReadyRef.current = true;
+        syncVideoPopoutSnapshot(roomStateRef.current?.videoTilesById ?? {});
+      });
+      videoPopoutReadyUnlistenRef.current = unlistenReady;
+
+      const win = new WebviewWindow('video-popout', {
+        url: `/video-popout#${hash}`,
+        title: `Video — ${rs.channelName}`,
+        width: 960,
+        height: 540,
+        minWidth: 480,
+        minHeight: 320,
+        resizable: true,
+        decorations: true,
+        center: true,
+      });
+
+      win.once('tauri://error', (event) => {
+        console.error('[wavis:active-room] video popout window error:', event);
+        closeVideoPopoutWindow(true);
+      });
+
+      win.once('tauri://destroyed', () => {
+        closeVideoPopoutWindow(true);
+      });
+
+      videoPopoutWindowRef.current = win;
+      setVideoPopoutOpen(true);
+    } catch (err) {
+      console.error('[wavis:active-room] failed to open video popout window:', err);
+    }
+  }, [syncVideoPopoutSnapshot]);
+
+  useEffect(() => {
+    if (!videoPopoutOpen) {
+      prevVideoPopoutTracksRef.current = new Map();
+      prevVideoPopoutTilesRef.current = new Map();
+      return;
+    }
+    if (!videoPopoutReadyRef.current) return;
+    syncVideoPopoutSnapshot(roomState?.videoTilesById ?? {});
+  }, [roomState?.videoTilesById, syncVideoPopoutSnapshot, videoPopoutOpen]);
 
   /** Open the Watch All window showing all active screen shares in a grid. */
   const openWatchAllWindow = async () => {
@@ -1538,7 +1690,7 @@ export default function ActiveRoom() {
     : false;
   const showCameraButton = shouldMountCameraButton(voiceRoomConnected, supportedCapturePlatform);
   const videoButtonLabel = cameraButtonLabel(roomState?.cameraIntent ?? false);
-  const cameraLabel = roomState?.cameraIntent ? '/stopcamera' : '/camera';
+  const cameraLabel = `/${videoButtonLabel}`;
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
   const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
@@ -2111,6 +2263,8 @@ export default function ActiveRoom() {
   const renderParticipantRow = (p: RoomParticipant) => {
     const isSelf = p.id === roomState.selfParticipantId;
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
+    const videoTile = roomState.videoTilesById[p.id];
+    const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
 
     return (
       <div key={p.id} className="pl-2">
@@ -2130,6 +2284,26 @@ export default function ActiveRoom() {
           }}>{p.displayName}</span>
           <span style={{ color: icon.color, textDecoration: icon.strikethrough ? 'line-through' : undefined, ...(icon.transform ? { display: 'inline-block', transform: icon.transform } : {}) }}>{icon.char}</span>
           <div className="ml-auto flex items-center gap-1">
+            {cameraOn && (
+              <span
+                aria-label={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
+                title={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
+                style={{
+                  display: 'inline-block',
+                  width: '0.75rem',
+                  height: '0.75rem',
+                  backgroundColor: 'var(--wavis-accent)',
+                  WebkitMaskImage: 'url(/video-camera.png)',
+                  WebkitMaskSize: 'contain',
+                  WebkitMaskRepeat: 'no-repeat',
+                  WebkitMaskPosition: 'center',
+                  maskImage: 'url(/video-camera.png)',
+                  maskSize: 'contain',
+                  maskRepeat: 'no-repeat',
+                  maskPosition: 'center',
+                }}
+              />
+            )}
             {isSelf && p.isSharing && (
               <span
                 className="text-sm leading-none"
@@ -2448,7 +2622,7 @@ export default function ActiveRoom() {
                 <button
                   onClick={toggleCameraIntent}
                   className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity"
-                  style={{ color: roomState.cameraIntent ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
+                  style={{ color: roomState.cameraIntent ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
                   title={cameraLabel}
                   aria-label={videoButtonLabel}
                 ><span style={{
@@ -2488,7 +2662,7 @@ export default function ActiveRoom() {
             {showCameraButton && (
               <button
                 onClick={toggleCameraIntent}
-                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border ${roomState.cameraIntent ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border ${roomState.cameraIntent ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
                 {cameraLabel}
               </button>
@@ -2727,6 +2901,11 @@ export default function ActiveRoom() {
               role="tab"
               aria-selected={active}
               onClick={() => selectRoomPanelTab(tab)}
+              onDoubleClick={() => {
+                if (tab !== 'video') return;
+                selectRoomPanelTab('video');
+                void openVideoPopoutWindow();
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
@@ -2746,7 +2925,17 @@ export default function ActiveRoom() {
       </div>
       {/* ── Tab body ── */}
       {currentPanelTab === 'video' ? (
-        <VideoTab videoTilesById={videoTilesById} />
+        <>
+          <VideoTab videoTilesById={videoTilesById} />
+          <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
+            <button
+              onClick={() => { void openVideoPopoutWindow(); }}
+              className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+            >
+              {videoPopoutOpen ? '/focus_video_window' : '/pop_out_video'}
+            </button>
+          </div>
+        </>
       ) : (
         logsContent
       )}
@@ -2796,6 +2985,11 @@ export default function ActiveRoom() {
               <button
                 key={tab}
                 onClick={() => setMobileTab(tab)}
+                onDoubleClick={() => {
+                  if (tab !== 'video') return;
+                  setMobileTab('video');
+                  void openVideoPopoutWindow();
+                }}
                 className="flex-1 py-2 text-center border-r border-wavis-text-secondary last:border-r-0 text-xs"
                 style={{ color, backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent' }}
               >
@@ -2824,7 +3018,19 @@ export default function ActiveRoom() {
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
               {mobileTab === 'chat' && chatPanel}
               {mobileTab === 'log' && logsContent}
-              {mobileTab === 'video' && <VideoTab videoTilesById={videoTilesById} />}
+              {mobileTab === 'video' && (
+                <div className="flex flex-col flex-1 min-h-0">
+                  <VideoTab videoTilesById={videoTilesById} />
+                  <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
+                    <button
+                      onClick={() => { void openVideoPopoutWindow(); }}
+                      className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                    >
+                      {videoPopoutOpen ? '/focus_video_window' : '/pop_out_video'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

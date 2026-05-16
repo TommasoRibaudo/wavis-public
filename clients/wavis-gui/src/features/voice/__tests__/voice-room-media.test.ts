@@ -2233,7 +2233,7 @@ describe('Edge case unit tests', () => {
       await tick();
 
       expect(lastLkModule!.stopScreenShareCalls).toBe(1);
-      expect(sentMessages).toContainEqual({ type: 'stop_share' });
+      expect(sentMessages).toContainEqual({ type: 'stop-share' });
       expect(playNotificationSoundCalls).not.toContain('share-stop');
 
       messageHandler!({ type: 'share_stopped', participantId: 'self-peer', displayName: 'TestUser' });
@@ -2269,7 +2269,7 @@ describe('Edge case unit tests', () => {
       await tick();
 
       expect(lastLkModule!.stopScreenShareCalls).toBe(0);
-      expect(sentMessages.filter(m => m.type === 'stop_share')).toHaveLength(0);
+      expect(sentMessages.filter(m => m.type === 'stop-share')).toHaveLength(0);
 
       leaveRoom();
     });
@@ -2285,7 +2285,7 @@ describe('Edge case unit tests', () => {
       lastLkModule!.callbacks.onLocalScreenShareEnded();
       await tick();
 
-      const stopMessages = sentMessages.filter(m => m.type === 'stop_share');
+      const stopMessages = sentMessages.filter(m => m.type === 'stop-share');
       expect(stopMessages).toHaveLength(1);
 
       leaveRoom();

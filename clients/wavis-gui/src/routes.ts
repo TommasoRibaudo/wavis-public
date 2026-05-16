@@ -52,6 +52,13 @@ export const router = createBrowserRouter([
     },
   },
   {
+    path: '/video-popout',
+    lazy: async () => {
+      const { default: Component } = await import('@features/voice/VideoPopoutPage');
+      return withFallback({ Component });
+    },
+  },
+  {
     path: '/share-picker',
     lazy: async () => {
       const { default: Component } = await import('@features/screen-share/SharePicker');
