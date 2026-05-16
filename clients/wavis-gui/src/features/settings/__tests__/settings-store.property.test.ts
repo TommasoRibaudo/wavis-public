@@ -34,6 +34,7 @@ interface MockLiveKitModule {
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
   getActiveScreenShares: () => Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
+  applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
 }
 
 function createMockLiveKitModule(
@@ -85,6 +86,7 @@ function createMockLiveKitModule(
     startScreenShare: vi.fn(async () => true),
     stopScreenShare: vi.fn(async () => {}),
     getActiveScreenShares: vi.fn(() => []),
+    applyRemoteCameraVisibility: vi.fn(() => {}),
   };
 
   return module;

@@ -93,6 +93,64 @@ const CAMERA_CAPTURE_TIMEOUT_MS = 10_000;
 const CAMERA_PUBLISH_TIMEOUT_MS = 5_000;
 const REMOTE_CAMERA_READY_TIMEOUT_MS = 10_000;
 
+/**
+ * Open a camera device via getUserMedia with a hard timeout. Standard
+ * `getUserMedia` does not accept an AbortSignal, so we cannot truly cancel an
+ * in-flight request — the load-bearing protection here is the post-resolve
+ * cleanup: if the browser resolves the stream after the timeout sentinel
+ * already rejected, every track is stopped immediately and a `timeout` error
+ * is thrown. This guarantees no orphaned camera (LED on, device locked from
+ * other apps) on slow USB enumeration.
+ *
+ * @param deviceId — concrete deviceId or null for the browser/Tauri default.
+ * @returns the resolved video MediaStreamTrack on success.
+ * @throws CameraStartError — `timeout` when the deadline expires,
+ *   `device_unavailable` when the stream has no video track, or any error
+ *   from getUserMedia (caller classifies via classifyCameraCaptureError).
+ */
+async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTrack> {
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    timedOut = true;
+  }, CAMERA_CAPTURE_TIMEOUT_MS);
+
+  // The browser request runs to completion regardless — we just observe the
+  // result and stop everything if we already gave up waiting.
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId === null ? true : { deviceId },
+    });
+  } catch (error) {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (timedOut) {
+      throw { kind: 'timeout' } satisfies CameraStartError;
+    }
+    throw error;
+  }
+  if (timer !== null) {
+    clearTimeout(timer);
+    timer = null;
+  }
+
+  if (timedOut) {
+    // Late-resolve race: the browser handed us a live stream after we already
+    // rejected. Stop every track so the camera LED goes off and the device is
+    // released, then throw the timeout we promised.
+    stream.getTracks().forEach((t) => t.stop());
+    throw { kind: 'timeout' } satisfies CameraStartError;
+  }
+
+  const track = stream.getVideoTracks()[0] ?? null;
+  if (!track) {
+    throw { kind: 'device_unavailable' } satisfies CameraStartError;
+  }
+  return track;
+}
+
 export const LIVEKIT_ROOM_OPTIONS = {
   adaptiveStream: true,
   dynacast: false,
@@ -1125,12 +1183,15 @@ export class LiveKitModule {
         return;
       }
 
-      if (typeof (video as HTMLVideoElement & {
-        requestVideoFrameCallback?: (callback: () => void) => void;
-      }).requestVideoFrameCallback === 'function') {
-        (video as HTMLVideoElement & {
-          requestVideoFrameCallback: (callback: () => void) => void;
-        }).requestVideoFrameCallback(() => finish());
+      const videoWithRvfc = video as HTMLVideoElement & {
+        requestVideoFrameCallback?: (callback: () => void) => number;
+        cancelVideoFrameCallback?: (handle: number) => void;
+      };
+      if (typeof videoWithRvfc.requestVideoFrameCallback === 'function') {
+        const rafHandle = videoWithRvfc.requestVideoFrameCallback(() => finish());
+        // Store the handle so cleanup() can cancel it on WebKit where the
+        // callback may stay queued after srcObject is nulled.
+        (video as HTMLVideoElement & { _rvfcHandle?: number })._rvfcHandle = rafHandle;
         return;
       }
 
@@ -1151,6 +1212,15 @@ export class LiveKitModule {
       if (timeout !== null) {
         clearTimeout(timeout);
         timeout = null;
+      }
+      // Cancel any pending requestVideoFrameCallback before detaching srcObject
+      // so WebKit doesn't fire the callback on a detached element.
+      const videoWithRvfc = video as HTMLVideoElement & {
+        cancelVideoFrameCallback?: (handle: number) => void;
+        _rvfcHandle?: number;
+      };
+      if (typeof videoWithRvfc.cancelVideoFrameCallback === 'function' && videoWithRvfc._rvfcHandle !== undefined) {
+        videoWithRvfc.cancelVideoFrameCallback(videoWithRvfc._rvfcHandle);
       }
       video.srcObject = null;
       video.onloadeddata = null;
@@ -1502,6 +1572,30 @@ export class LiveKitModule {
       after,
       ts: Date.now(),
     });
+  }
+
+  // Stop ALL inactive video transceivers before each screen share publish.
+  // This prevents the LiveKit transceiver reuse patch from claiming a stale
+  // m-line that was previously used for camera (or an earlier screen share
+  // session), which confuses the SFU: the SFU associates the new screen share
+  // track with the old trackSid from that m-line, breaking routing for viewers.
+  // Stopped transceivers are skipped by `isStopped` checks in both the reuse
+  // patch and the sweep, so a fresh transceiver is always created — giving the
+  // SFU a clean, unambiguous m-line for the new AddTrack signal.
+  private stopAllInactiveVideoTransceivers(): void {
+    const peerConnection = this.getPublisherPeerConnection();
+    if (!peerConnection) {
+      return;
+    }
+    for (const transceiver of peerConnection.getTransceivers()) {
+      if (isInactiveVideoLeakCandidate(transceiver)) {
+        try {
+          transceiver.stop();
+        } catch {
+          // Best-effort: do not block the next publish attempt.
+        }
+      }
+    }
   }
 
   private captureShareLeakPublishDiagnostics(): void {
@@ -2204,6 +2298,13 @@ export class LiveKitModule {
       ) => {
         if (this.disposed) return;
         if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+          // Force-keep this subscription enabled regardless of adaptive stream.
+          // VideoTile attaches via `video.srcObject = new MediaStream([track])`, bypassing
+          // LiveKit's element observer (track.attach()/registerElement). With no registered
+          // consumer, adaptiveStream pauses the track server-side after the first frame.
+          // Same override the screen-share path uses below.
+          publication.setEnabled(true);
+
           const previous = this.cameraTracks.get(participant.identity);
           previous?.readyCleanup?.();
           const entry: RemoteCameraEntry = {
@@ -2213,6 +2314,7 @@ export class LiveKitModule {
             readyCleanup: null,
           };
           this.cameraTracks.set(participant.identity, entry);
+          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera TrackSubscribed', participant.identity, 'trackSid:', track.sid, 'readyState:', track.mediaStreamTrack.readyState);
 
           this.waitForRemoteCameraReady(track.mediaStreamTrack)
             .then((cleanup) => {
@@ -2231,7 +2333,9 @@ export class LiveKitModule {
               if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera ready', participant.identity, 'trackSid:', track.sid);
               this.callbacks.onRemoteCameraReady?.(participant.identity, track.mediaStreamTrack);
             })
-            .catch(() => {
+            .catch((err) => {
+              // Subscription-timeout warnings are always logged (unconditional per design).
+              console.warn(LOG, '[video-feed] remote camera ready failed/timeout', participant.identity, 'trackSid:', track.sid, err);
               const currentEntry = this.cameraTracks.get(participant.identity);
               if (currentEntry?.publication === publication) {
                 currentEntry.readyCleanup = null;
@@ -2521,13 +2625,23 @@ export class LiveKitModule {
         }
       });
 
-      // p. TrackStreamStateChanged — detect paused/resumed screen share video (adaptive stream)
+      // p. TrackStreamStateChanged — detect paused/resumed screen share or camera video (adaptive stream)
       addListener(RoomEvent.TrackStreamStateChanged, (
         publication: RemoteTrackPublication,
         streamState: Track.StreamState,
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera && publication.kind === Track.Kind.Video) {
+          if (streamState === Track.StreamState.Paused) {
+            // Always warn — adaptiveStream pausing a camera track is unexpected
+            // (we call setEnabled(true) on subscribe) and worth logging unconditionally.
+            console.warn(LOG, '[video-feed] camera stream paused by adaptiveStream — re-enabling', participant.identity, 'trackSid:', publication.trackSid);
+            publication.setEnabled(true);
+          } else if (streamState === Track.StreamState.Active) {
+            if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera stream active', participant.identity, 'trackSid:', publication.trackSid);
+          }
+        }
         if (
           publication.source === Track.Source.ScreenShare &&
           publication.kind === Track.Kind.Video
@@ -2945,7 +3059,7 @@ export class LiveKitModule {
     }
 
     try {
-      this.sweepInactiveVideoTransceivers();
+      this.stopAllInactiveVideoTransceivers();
       this.noteShareLeakPublishStart();
       await this.room.localParticipant.setScreenShareEnabled(true, captureOpts, publishOpts);
       this.captureShareLeakPublishDiagnostics();
@@ -2986,7 +3100,7 @@ export class LiveKitModule {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
-          this.sweepInactiveVideoTransceivers();
+          this.stopAllInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
           await this.room.localParticipant.setScreenShareEnabled(true);
           this.captureShareLeakPublishDiagnostics();
@@ -4253,6 +4367,21 @@ export class LiveKitModule {
 
   /* ─── WASAPI Audio Bridge ─────────────────────────────────────── */
 
+  /**
+   * Open the camera via getUserMedia (with AbortController-backed timeout) and
+   * publish it to the LiveKit room as a single-encoding VP8 Camera track.
+   *
+   * Resolves with the published `trackId` on success.
+   * Rejects with a `CameraStartError` on any failure:
+   *   - `permission_denied` — OS/browser denied camera access
+   *   - `device_unavailable` — no video track returned by the browser
+   *   - `device_in_use` — device locked by another app
+   *   - `timeout` — getUserMedia or publishTrack did not resolve within the deadline
+   *   - `publish_failed` — LiveKit publication failed or timed out
+   *
+   * On any failure the captured MediaStreamTrack (if any) is stopped and
+   * `localCameraPublication` / `localCameraMediaTrack` are cleared.
+   */
   async publishCamera(opts: {
     deviceId: string | null;
     quality: CameraQuality;
@@ -4261,34 +4390,44 @@ export class LiveKitModule {
       throw { kind: 'publish_failed' } satisfies CameraStartError;
     }
 
+    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera start', { deviceId: opts.deviceId, quality: opts.quality.tier });
     let mediaTrack: MediaStreamTrack | null = null;
     try {
-      const stream = await withTimeout(
-        navigator.mediaDevices.getUserMedia({
-          video: opts.deviceId === null ? true : { deviceId: opts.deviceId },
-        }),
-        CAMERA_CAPTURE_TIMEOUT_MS,
-        { kind: 'timeout' } satisfies CameraStartError,
-      );
-      mediaTrack = stream.getVideoTracks()[0] ?? null;
-      if (!mediaTrack) {
-        throw { kind: 'device_unavailable' } satisfies CameraStartError;
-      }
+      // openCameraDevice uses AbortController so a slow camera that resolves
+      // after the timeout doesn't leave an orphaned track with the LED on.
+      mediaTrack = await openCameraDevice(opts.deviceId).catch((err) => {
+        throw classifyCameraCaptureError(err);
+      });
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera getUserMedia ok', { trackId: mediaTrack.id, readyState: mediaTrack.readyState, label: mediaTrack.label });
 
+      // publishTrack timeout: if the SDK resolves after we've already rejected,
+      // the then-handler below unpublishes the phantom publication best-effort.
+      // Capture the track in a const so the late-resolve closure doesn't have
+      // to reach back through a possibly-mutated outer variable.
+      const capturedTrack = mediaTrack;
+      const room = this.room;
+      const publishPromise = room.localParticipant.publishTrack(
+        capturedTrack,
+        buildCameraPublishOptions(opts.quality),
+      );
       const publication = await withTimeout(
-        this.room.localParticipant.publishTrack(
-          mediaTrack,
-          buildCameraPublishOptions(opts.quality),
-        ),
+        publishPromise,
         CAMERA_PUBLISH_TIMEOUT_MS,
         { kind: 'publish_failed' } satisfies CameraStartError,
-      );
+      ).catch((err) => {
+        // Best-effort cleanup of a phantom publication that may arrive after
+        // the timeout sentinel already rejected.
+        publishPromise.then((pub) => {
+          room.localParticipant.unpublishTrack(pub?.track ?? capturedTrack).catch(() => {});
+        }).catch(() => {});
+        throw err;
+      });
 
       this.localCameraPublication = publication;
       this.localCameraMediaTrack = mediaTrack;
-      return {
-        trackId: publication?.trackSid ?? publication?.track?.sid ?? mediaTrack.id,
-      };
+      const trackId = publication?.trackSid ?? publication?.track?.sid ?? mediaTrack.id;
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera published', { trackId, trackSid: publication?.trackSid });
+      return { trackId };
     } catch (error) {
       if (mediaTrack) {
         mediaTrack.stop();
@@ -4296,6 +4435,7 @@ export class LiveKitModule {
       this.localCameraPublication = null;
       this.localCameraMediaTrack = null;
       if (isCameraStartError(error)) {
+        if (DEBUG_VIDEO_FEED) console.warn(LOG, '[video-feed] publishCamera CameraStartError', error);
         throw error;
       }
       if (mediaTrack) {
@@ -4316,15 +4456,18 @@ export class LiveKitModule {
       this.localCameraMediaTrack ??
       publication?.track?.mediaStreamTrack ??
       null;
+    // Prefer the LiveKit LocalTrack wrapper so the SDK can cleanly remove its own publication.
     const localTrack = publication?.track ?? null;
 
+    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] unpublishCamera start', { hasPub: !!publication, hasLocalTrack: !!localTrack, hasMediaTrack: !!mediaTrack });
     this.localCameraPublication = null;
     this.localCameraMediaTrack = null;
 
     try {
-      const trackToUnpublish = mediaTrack ?? localTrack;
+      const trackToUnpublish = localTrack ?? mediaTrack;
       if (this.room && trackToUnpublish) {
         await this.room.localParticipant.unpublishTrack(trackToUnpublish);
+        if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] unpublishCamera unpublishTrack done');
       }
     } finally {
       mediaTrack?.stop();
@@ -4335,6 +4478,50 @@ export class LiveKitModule {
     return this.localCameraMediaTrack ?? this.localCameraPublication?.track?.mediaStreamTrack ?? null;
   }
 
+  /**
+   * Subscribe only to remote cameras whose participant id is in `visibleParticipantIds`;
+   * unsubscribe the rest. Used to avoid pulling video bytes for cameras that voice-room
+   * is currently filtering out of the tile grid (e.g. participants in another sub-room).
+   *
+   * Pairs with the TrackSubscribed handler that force-enables every camera publication
+   * to defeat adaptiveStream — without this, hidden cameras would otherwise stay
+   * subscribed and continuously stream wasted bandwidth.
+   */
+  applyRemoteCameraVisibility(visibleParticipantIds: ReadonlySet<string>): void {
+    if (!this.room) return;
+    for (const participant of this.room.remoteParticipants.values()) {
+      const publication = participant.getTrackPublication(Track.Source.Camera);
+      if (!publication) continue;
+      const shouldSubscribe = visibleParticipantIds.has(participant.identity);
+      if (publication.isSubscribed !== shouldSubscribe) {
+        publication.setSubscribed(shouldSubscribe);
+        if (DEBUG_VIDEO_FEED) {
+          console.log(
+            LOG,
+            '[video-feed] applyRemoteCameraVisibility',
+            participant.identity,
+            'trackSid:',
+            publication.trackSid,
+            'subscribed:',
+            shouldSubscribe,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Update the encoding parameters of the currently-published camera track.
+   *
+   * Applies constraints to the capture-side MediaStreamTrack (resolution/fps)
+   * and updates the RTCRtpSender encoding (bitrate cap). Does NOT call
+   * `setPublishingLayers` — that is a simulcast pause/resume API and is a
+   * silent no-op for single-encoding VP8 publications.
+   *
+   * On `OverconstrainedError` (camera hardware can't satisfy the resolution
+   * constraint) the resolution constraint is dropped and only the fps/bitrate
+   * are applied, so quality still degrades gracefully on cheap webcams.
+   */
   async setCameraQuality(quality: CameraQuality): Promise<void> {
     const publication =
       this.localCameraPublication ??
@@ -4350,7 +4537,20 @@ export class LiveKitModule {
       return;
     }
 
-    await mediaTrack.applyConstraints(buildCameraTrackConstraints(quality));
+    try {
+      await mediaTrack.applyConstraints(buildCameraTrackConstraints(quality));
+    } catch (err) {
+      // OverconstrainedError means the camera can't satisfy the resolution
+      // constraint (common on cheap USB webcams). Retry with fps-only so the
+      // bitrate cap still applies and we don't loop-retry pointlessly.
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'OverconstrainedError') {
+        console.warn(LOG, '[video-feed] setCameraQuality: OverconstrainedError on resolution constraint, retrying fps-only', quality.tier);
+        await mediaTrack.applyConstraints({ frameRate: quality.maxFps });
+      } else {
+        throw err;
+      }
+    }
 
     const sender = (localTrack as { sender?: RTCRtpSender | null } | null)?.sender ?? null;
     if (sender) {
@@ -4358,6 +4558,17 @@ export class LiveKitModule {
     }
   }
 
+  /**
+   * Replace the underlying capture device without unpublishing — used when the
+   * user changes `Selected_Camera_Source` while published (Requirement 6.6).
+   *
+   * Opens the new device via `openCameraDevice` (AbortController-backed timeout),
+   * calls `LocalTrackPublication.replaceTrack` so the LiveKit publication keeps
+   * the same track id and source, then stops the old MediaStreamTrack only after
+   * the replace resolves (no flicker for remote viewers).
+   *
+   * On any failure the old track and publication are kept intact.
+   */
   async replaceCameraDevice(deviceId: string | null): Promise<{ trackId: string }> {
     const publication =
       this.localCameraPublication ??
@@ -4375,17 +4586,11 @@ export class LiveKitModule {
 
     let newMediaTrack: MediaStreamTrack | null = null;
     try {
-      const stream = await withTimeout(
-        navigator.mediaDevices.getUserMedia({
-          video: deviceId === null ? true : { deviceId },
-        }),
-        CAMERA_CAPTURE_TIMEOUT_MS,
-        { kind: 'timeout' } satisfies CameraStartError,
-      );
-      newMediaTrack = stream.getVideoTracks()[0] ?? null;
-      if (!newMediaTrack) {
-        throw { kind: 'device_unavailable' } satisfies CameraStartError;
-      }
+      // openCameraDevice uses AbortController so a slow camera that resolves
+      // after the timeout doesn't leave an orphaned track with the LED on.
+      newMediaTrack = await openCameraDevice(deviceId).catch((err) => {
+        throw classifyCameraCaptureError(err);
+      });
 
       const replaceableTrack = localTrack as LocalVideoTrack & {
         replaceTrack?: (track: MediaStreamTrack, options?: { userProvidedTrack?: boolean }) => Promise<void>;
@@ -5263,7 +5468,7 @@ export class LiveKitModule {
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
-      this.sweepInactiveVideoTransceivers();
+      this.stopAllInactiveVideoTransceivers();
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,

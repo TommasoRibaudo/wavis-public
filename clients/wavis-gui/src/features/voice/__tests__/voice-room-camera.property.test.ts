@@ -180,6 +180,7 @@ type IntegrationMockLiveKitModule = {
   setCameraQuality: (quality: { tier: string }) => Promise<void>;
   replaceCameraDevice: (deviceId: string | null) => Promise<{ trackId: string }>;
   getLocalCameraTrack: () => MediaStreamTrack | null;
+  applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
@@ -265,6 +266,7 @@ function createIntegrationMockLiveKitModule(
       return { trackId: module.localCameraTrack.id };
     }),
     getLocalCameraTrack: vi.fn(() => module.localCameraTrack),
+    applyRemoteCameraVisibility: vi.fn(() => {}),
     setParticipantVolume: vi.fn(() => {}),
     setMasterVolume: vi.fn(() => {}),
     setScreenShareAudioVolume: vi.fn(() => {}),

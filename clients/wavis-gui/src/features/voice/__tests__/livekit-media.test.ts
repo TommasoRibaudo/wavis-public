@@ -191,10 +191,12 @@ vi.mock('livekit-client', () => ({
     MediaDevicesError: 'mediaDevicesError',
     TrackMuted: 'trackMuted',
     TrackUnmuted: 'trackUnmuted',
+    TrackStreamStateChanged: 'trackStreamStateChanged',
   },
   Track: {
     Kind: { Audio: 'audio', Video: 'video' },
     Source: { Microphone: 'microphone', Camera: 'camera', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio' },
+    StreamState: { Paused: 'paused', Active: 'active' },
   },
   ConnectionQuality: {
     Excellent: 'excellent',
@@ -1036,6 +1038,79 @@ describe('camera publish/unpublish', () => {
     });
   });
 
+  // Bug 6 regression: cheap webcams that can't satisfy 1280x720 throw
+  // OverconstrainedError on applyConstraints. The module must transparently
+  // retry with fps-only so the bitrate cap still applies and the upstream
+  // retry loop is not triggered for a hardware mismatch.
+  it('setCameraQuality falls back to fps-only constraints on OverconstrainedError', async () => {
+    const overconstrained = new Error('cannot satisfy width');
+    overconstrained.name = 'OverconstrainedError';
+
+    const mediaTrack = createMockCameraMediaTrack('camera-track-overconstrained');
+    mediaTrack.applyConstraints = vi
+      .fn<(constraints: MediaTrackConstraints) => Promise<void>>()
+      .mockRejectedValueOnce(overconstrained)
+      .mockResolvedValueOnce(undefined);
+
+    const sender = {
+      setParameters: vi.fn(async () => {}),
+    };
+    const publication = {
+      trackSid: 'camera-overconstrained',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-overconstrained',
+        mediaStreamTrack: mediaTrack,
+        sender,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-overconstrained', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-overconstrained',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+    // Reset the spy after publish so we only see setCameraQuality's calls.
+    (mediaTrack.applyConstraints as ReturnType<typeof vi.fn>).mockClear();
+    (mediaTrack.applyConstraints as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(overconstrained)
+      .mockResolvedValueOnce(undefined);
+
+    await expect(mod.setCameraQuality(CAMERA_QUALITY_HIGH)).resolves.toBeUndefined();
+
+    expect(mediaTrack.applyConstraints).toHaveBeenCalledTimes(2);
+    expect(mediaTrack.applyConstraints).toHaveBeenNthCalledWith(1, {
+      width: CAMERA_QUALITY_HIGH.width,
+      height: CAMERA_QUALITY_HIGH.height,
+      frameRate: CAMERA_QUALITY_HIGH.maxFps,
+    });
+    expect(mediaTrack.applyConstraints).toHaveBeenNthCalledWith(2, {
+      frameRate: CAMERA_QUALITY_HIGH.maxFps,
+    });
+    // The bitrate cap still goes through.
+    expect(sender.setParameters).toHaveBeenCalledWith({
+      encodings: [{
+        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+      }],
+    });
+  });
+
   it('replaceCameraDevice swaps the published camera track and stops the old track after replace resolves', async () => {
     const oldTrack = createMockCameraMediaTrack('camera-old');
     const newTrack = createMockCameraMediaTrack('camera-new');
@@ -1105,6 +1180,7 @@ describe('camera publish/unpublish', () => {
       kind: 'video',
       isMuted: false,
       setSubscribed: vi.fn(),
+      setEnabled: vi.fn(),
     };
     const remoteTrack = {
       sid: 'remote-camera-pub',
@@ -1120,6 +1196,9 @@ describe('camera publish/unpublish', () => {
     emitRoomEvent('trackUnpublished', publication, participant);
 
     expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+    // adaptiveStream fix: setEnabled(true) must be called on subscribe so the track is
+    // not paused by LiveKit when VideoTile bypasses track.attach().
+    expect(publication.setEnabled).toHaveBeenCalledWith(true);
     expect(cbs.calls).toContainEqual({
       method: 'onRemoteCameraPublished',
       args: ['remote-camera-user'],
@@ -1140,6 +1219,76 @@ describe('camera publish/unpublish', () => {
       method: 'onRemoteCameraUnpublished',
       args: ['remote-camera-user'],
     });
+  });
+
+  // adaptiveStream defense-in-depth: even if subscribe-time setEnabled(true) somehow
+  // fails to keep the camera enabled, a Paused stream-state event must re-enable it.
+  it('re-enables a remote camera publication when its stream state transitions to Paused', async () => {
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const participant = { identity: 'remote-camera-paused' };
+    const publication = {
+      trackSid: 'remote-camera-paused-pub',
+      source: 'camera',
+      kind: 'video',
+      isMuted: false,
+      setSubscribed: vi.fn(),
+      setEnabled: vi.fn(),
+    };
+    const remoteTrack = {
+      sid: 'remote-camera-paused-pub',
+      kind: 'video',
+      mediaStreamTrack: createMockCameraMediaTrack('remote-camera-paused-track'),
+    };
+
+    emitRoomEvent('trackPublished', publication, participant);
+    emitRoomEvent('trackSubscribed', remoteTrack, publication, participant);
+    publication.setEnabled.mockClear();
+
+    emitRoomEvent('trackStreamStateChanged', publication, 'paused', participant);
+    expect(publication.setEnabled).toHaveBeenCalledWith(true);
+
+    publication.setEnabled.mockClear();
+    emitRoomEvent('trackStreamStateChanged', publication, 'active', participant);
+    expect(publication.setEnabled).not.toHaveBeenCalled();
+  });
+
+  it('applyRemoteCameraVisibility subscribes/unsubscribes only what changed', async () => {
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const makePub = (sid: string, isSubscribed: boolean) => ({
+      trackSid: sid,
+      source: 'camera',
+      kind: 'video',
+      isSubscribed,
+      setSubscribed: vi.fn(),
+    });
+    const aliceCamPub = makePub('alice-cam', true);
+    const bobCamPub = makePub('bob-cam', true);
+    const carolCamPub = makePub('carol-cam', false);
+    const alice = { identity: 'alice', getTrackPublication: vi.fn((src: string) => src === 'camera' ? aliceCamPub : undefined) };
+    const bob = { identity: 'bob', getTrackPublication: vi.fn((src: string) => src === 'camera' ? bobCamPub : undefined) };
+    const carol = { identity: 'carol', getTrackPublication: vi.fn((src: string) => src === 'camera' ? carolCamPub : undefined) };
+    const dave = { identity: 'dave', getTrackPublication: vi.fn(() => undefined) };
+    mockRoom.remoteParticipants = new Map([
+      ['alice', alice],
+      ['bob', bob],
+      ['carol', carol],
+      ['dave', dave],
+    ]) as unknown as typeof mockRoom.remoteParticipants;
+
+    // Visibility set says only alice and carol are visible. bob (currently subscribed)
+    // should be unsubscribed; carol (currently unsubscribed) should be subscribed.
+    // alice (already subscribed) and dave (no camera publication) should be no-ops.
+    mod.applyRemoteCameraVisibility(new Set(['alice', 'carol']));
+
+    expect(aliceCamPub.setSubscribed).not.toHaveBeenCalled();
+    expect(bobCamPub.setSubscribed).toHaveBeenCalledWith(false);
+    expect(carolCamPub.setSubscribed).toHaveBeenCalledWith(true);
   });
 });
 
