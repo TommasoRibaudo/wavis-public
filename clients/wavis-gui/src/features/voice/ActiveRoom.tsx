@@ -18,6 +18,7 @@ import {
   leaveRoom,
   toggleSelfMute,
   toggleSelfDeafen,
+  toggleCameraIntent,
   stopShare,
   startCustomShare,
   stopCustomShare,
@@ -92,6 +93,9 @@ import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
+import { cameraButtonLabel, shouldMountCameraButton } from './active-room-camera';
+import { selectRoomPanelTab } from './voice-room';
+import { VideoTab } from './VideoTab';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function voiceIcon(p: RoomParticipant, isDeafened?: boolean): { char: string; color: string; strikethrough?: boolean; transform?: string } {
@@ -388,7 +392,7 @@ export default function ActiveRoom() {
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
   // Mobile tab state
-  type MobileTab = 'participants' | 'chat' | 'log';
+  type MobileTab = 'participants' | 'chat' | 'log' | 'video';
   const [mobileTab, setMobileTab] = useState<MobileTab>('participants');
 
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
@@ -1516,6 +1520,8 @@ export default function ActiveRoom() {
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
+  const isWindowsPlatform = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent);
+  const supportedCapturePlatform = isWindowsPlatform || isMacPlatform;
   const macShareAudioDisabledMessage =
     'System audio on macOS requires the WavisAudioTap driver — stop sharing and restart to enable audio.';
 
@@ -1527,6 +1533,12 @@ export default function ActiveRoom() {
   const selfP = roomState?.participants.find((p) => p.id === roomState.selfParticipantId);
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
+  const voiceRoomConnected = roomState
+    ? roomState.machineState === 'active' || roomState.machineState === 'reconnecting'
+    : false;
+  const showCameraButton = shouldMountCameraButton(voiceRoomConnected, supportedCapturePlatform);
+  const videoButtonLabel = cameraButtonLabel(roomState?.cameraIntent ?? false);
+  const cameraLabel = roomState?.cameraIntent ? '/camera on' : '/camera off';
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
   const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
@@ -2430,6 +2442,31 @@ export default function ActiveRoom() {
               style={{ color: roomState.isDeafened ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={roomState.isDeafened ? '/undeafen' : '/deafen'}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none" style={{ fontSize: '1.1em' }}>¤</span></button>
+            {showCameraButton && (
+              <>
+                <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
+                <button
+                  onClick={toggleCameraIntent}
+                  className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity"
+                  style={{ color: roomState.cameraIntent ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
+                  title={cameraLabel}
+                  aria-label={videoButtonLabel}
+                ><span style={{
+                    display: 'inline-block',
+                    width: '0.75rem',
+                    height: '0.75rem',
+                    backgroundColor: 'currentColor',
+                    WebkitMaskImage: 'url(/video-camera.png)',
+                    WebkitMaskSize: 'contain',
+                    WebkitMaskRepeat: 'no-repeat',
+                    WebkitMaskPosition: 'center',
+                    maskImage: 'url(/video-camera.png)',
+                    maskSize: 'contain',
+                    maskRepeat: 'no-repeat',
+                    maskPosition: 'center',
+                  }} /></button>
+              </>
+            )}
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={selfSharing ? stopShareAction : handleStartShare}
@@ -2448,6 +2485,14 @@ export default function ActiveRoom() {
               <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
               <button onClick={toggleSelfDeafen} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{roomState.isDeafened ? '/undeafen' : '/deafen'}</button>
             </div>
+            {showCameraButton && (
+              <button
+                onClick={toggleCameraIntent}
+                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border ${roomState.cameraIntent ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+              >
+                {cameraLabel}
+              </button>
+            )}
             {(selfSharing || !(roomState.activeVideoShare && roomState.activeAudioShare)) && (() => {
               const shareDisabled = !shareEnabled || isShareButtonDisabled(currentShareType, selfSharing) || sharePickerLoading;
               return (
@@ -2625,11 +2670,11 @@ export default function ActiveRoom() {
     </div>
   );
 
-  const logPanel = (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex flex-col justify-center">
-        <div className="font-bold text-sm">LOGS</div>
-      </div>
+  const currentPanelTab = roomState?.roomPanelTab ?? 'logs';
+  const videoTilesById = roomState?.videoTilesById ?? {};
+
+  const logsContent = (
+    <>
       <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
         {roomState.events.map((evt) => {
           const username = getEventUsername(evt);
@@ -2665,6 +2710,46 @@ export default function ActiveRoom() {
           />
         </div>
       </div>
+    </>
+  );
+
+  // Desktop right-panel: LOGS / VIDEOS tab switcher
+  const logPanel = (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* ── Tab header ── */}
+      <div className="flex h-[4.5rem] border-b border-wavis-text-secondary">
+        {(['logs', 'video'] as const).map((tab) => {
+          const label = tab === 'logs' ? 'LOGS' : 'VIDEOS';
+          const active = currentPanelTab === tab;
+          return (
+            <button
+              key={tab}
+              role="tab"
+              aria-selected={active}
+              onClick={() => selectRoomPanelTab(tab)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectRoomPanelTab(tab);
+                }
+              }}
+              className="flex-1 flex items-center justify-center font-bold text-sm border-r border-wavis-text-secondary last:border-r-0 transition-colors"
+              style={{
+                color: active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent',
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {/* ── Tab body ── */}
+      {currentPanelTab === 'video' ? (
+        <VideoTab videoTilesById={videoTilesById} />
+      ) : (
+        logsContent
+      )}
     </div>
   );
 
@@ -2704,19 +2789,24 @@ export default function ActiveRoom() {
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
-          {(['participants', 'chat', 'log'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setMobileTab(tab)}
-              className="flex-1 py-2 text-center border-r border-wavis-text-secondary last:border-r-0 text-xs"
-              style={{
-                color: mobileTab === tab ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
-                backgroundColor: mobileTab === tab ? 'rgba(46,160,67,0.08)' : 'transparent',
-              }}
-            >
-              {tab === 'participants' ? `VOICE (${Object.keys(roomState.participantSubRoomById).length})` : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})` : `LOG (${roomState.events.length})`}
-            </button>
-          ))}
+          {(['participants', 'chat', 'log', 'video'] as const).map((tab) => {
+            const active = mobileTab === tab;
+            const color = active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)';
+            return (
+              <button
+                key={tab}
+                onClick={() => setMobileTab(tab)}
+                className="flex-1 py-2 text-center border-r border-wavis-text-secondary last:border-r-0 text-xs"
+                style={{ color, backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent' }}
+              >
+                {tab === 'participants' ? `VOICE (${Object.keys(roomState.participantSubRoomById).length})`
+                  : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})`
+                  : tab === 'log' ? `LOG (${roomState.events.length})`
+                  : 'VIDEO'
+                }
+              </button>
+            );
+          })}
         </div>
 
         {/* Tab content */}
@@ -2733,7 +2823,8 @@ export default function ActiveRoom() {
             <>
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
               {mobileTab === 'chat' && chatPanel}
-              {mobileTab === 'log' && logPanel}
+              {mobileTab === 'log' && logsContent}
+              {mobileTab === 'video' && <VideoTab videoTilesById={videoTilesById} />}
             </>
           )}
         </div>
