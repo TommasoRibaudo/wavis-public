@@ -9,6 +9,8 @@ interface VideoPopoutParams {
   channelName: string;
 }
 
+const TITLE_BAR_HEIGHT = 32;
+
 function parseHashParams(): VideoPopoutParams | null {
   try {
     const hash = window.location.hash.slice(1);
@@ -38,7 +40,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
     }
 
     receiverRef.current?.stop();
-    const receiver = new StreamReceiver(tile.participantId, 'video-popout');
+    const receiver = new StreamReceiver(tile.participantId, 'camera-popout');
     receiverRef.current = receiver;
     setReceiverError(false);
 
@@ -79,15 +81,19 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
   const showVideo = shouldReceive && stream && !receiverError;
 
   return (
-    <div className="relative aspect-video overflow-hidden border border-wavis-text-secondary bg-wavis-panel">
+    <div className="relative overflow-hidden bg-wavis-panel" style={{ width: '100%', height: '100%' }}>
       {showVideo ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={tile.isSelf}
-          className="w-full h-full object-cover"
-          style={tile.isSelf ? { transform: 'scaleX(-1)' } : undefined}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            ...(tile.isSelf ? { transform: 'scaleX(-1)' } : {}),
+          }}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center">
@@ -145,20 +151,20 @@ export default function VideoPopoutPage() {
 
   useEffect(() => {
     const cleanups = [
-      listen<VideoTileSnapshot>('video-popout:tile-added', (event) => {
+      listen<VideoTileSnapshot>('camera-popout:tile-added', (event) => {
         setTilesById((prev) => ({ ...prev, [event.payload.participantId]: event.payload }));
       }),
-      listen<VideoTileSnapshot>('video-popout:tile-updated', (event) => {
+      listen<VideoTileSnapshot>('camera-popout:tile-updated', (event) => {
         setTilesById((prev) => ({ ...prev, [event.payload.participantId]: event.payload }));
       }),
-      listen<{ participantId: string }>('video-popout:tile-removed', (event) => {
+      listen<{ participantId: string }>('camera-popout:tile-removed', (event) => {
         setTilesById((prev) => {
           const next = { ...prev };
           delete next[event.payload.participantId];
           return next;
         });
       }),
-      listen('video-popout:close', () => {
+      listen('camera-popout:close', () => {
         getCurrentWindow().close().catch(() => { });
       }),
       listen('voice-session:ended', () => {
@@ -166,7 +172,7 @@ export default function VideoPopoutPage() {
       }),
     ];
 
-    void emit('video-popout:ready', {});
+    void emit('camera-popout:ready', {});
 
     return () => {
       for (const cleanup of cleanups) {
@@ -178,7 +184,7 @@ export default function VideoPopoutPage() {
   useEffect(() => {
     const win = getCurrentWindow();
     const unlisten = win.onCloseRequested(async () => {
-      await emit('video-popout:closed', {});
+      await emit('camera-popout:closed', {});
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -187,13 +193,35 @@ export default function VideoPopoutPage() {
   const layout = tiles.length > 0 && gridSize.width > 0 && gridSize.height > 0
     ? computeGridLayout(tiles.length, gridSize.width, gridSize.height)
     : null;
+  const handleClose = () => {
+    getCurrentWindow().close();
+  };
 
   return (
-    <div className="h-full flex flex-col bg-wavis-bg font-mono text-wavis-text">
+    <div className="h-screen flex flex-col bg-wavis-overlay-base font-mono text-wavis-text overflow-hidden select-none">
+      <div
+        data-tauri-drag-region
+        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0"
+        style={{ height: TITLE_BAR_HEIGHT }}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
+          <span className="truncate text-wavis-text">
+            Camera — {paramsRef.current?.channelName ?? 'wavis'}
+          </span>
+        </div>
+        <button
+          onClick={handleClose}
+          className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
+          aria-label="Close camera window"
+        >
+          [x]
+        </button>
+      </div>
       <div ref={gridRef} className="flex-1 overflow-hidden relative">
         {tiles.length === 0 ? (
           <div className="h-full flex items-center justify-center text-wavis-text-secondary text-sm">
-            {paramsRef.current?.channelName ? `${paramsRef.current.channelName}: no video active` : 'No video active'}
+            {paramsRef.current?.channelName ? `${paramsRef.current.channelName}: no camera active` : 'No camera active'}
           </div>
         ) : layout ? (
           <div
@@ -208,15 +236,7 @@ export default function VideoPopoutPage() {
               <VideoPopoutTile key={tile.participantId} tile={tile} />
             ))}
           </div>
-        ) : (
-          <div className="flex flex-wrap gap-2 p-2">
-            {tiles.map((tile) => (
-              <div key={tile.participantId} className="flex-1 min-w-[120px]">
-                <VideoPopoutTile tile={tile} />
-              </div>
-            ))}
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

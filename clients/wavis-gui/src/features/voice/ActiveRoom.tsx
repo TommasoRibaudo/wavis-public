@@ -779,7 +779,7 @@ export default function ActiveRoom() {
   }, [watchingShareIds, roomState?.screenShareStreams]);
 
   useEffect(() => {
-    const unlisten = listen('video-popout:closed', () => {
+    const unlisten = listen('camera-popout:closed', () => {
       closeVideoPopoutWindow(true);
     });
     return () => { unlisten.then((fn) => fn?.()); };
@@ -1375,7 +1375,7 @@ export default function ActiveRoom() {
       videoPopoutReadyUnlistenRef.current = null;
     }
     videoPopoutReadyRef.current = false;
-    stopSendingForWindow('video-popout');
+    stopSendingForWindow('camera-popout');
     if (!alreadyDestroyed) {
       videoPopoutWindowRef.current.close().catch(() => { });
     }
@@ -1399,25 +1399,25 @@ export default function ActiveRoom() {
 
       const prevSnapshot = prevTiles.get(tile.participantId);
       if (!prevSnapshot) {
-        void emitTo('video-popout', 'video-popout:tile-added', snapshot);
+        void emit('camera-popout:tile-added', snapshot);
       } else if (!areVideoTileSnapshotsEqual(prevSnapshot, snapshot)) {
-        void emitTo('video-popout', 'video-popout:tile-updated', snapshot);
+        void emit('camera-popout:tile-updated', snapshot);
       }
 
       const prevTrack = prevTracks.get(tile.participantId) ?? null;
       if (sendableTrack && !prevTrack) {
-        void startSending(tile.participantId, 'video-popout', new MediaStream([sendableTrack]));
+        void startSending(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
       } else if (sendableTrack && prevTrack !== sendableTrack) {
-        void resendStream(tile.participantId, 'video-popout', new MediaStream([sendableTrack]));
+        void resendStream(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
       } else if (!sendableTrack && prevTrack) {
-        stopSending(tile.participantId, 'video-popout');
+        stopSending(tile.participantId, 'camera-popout');
       }
     }
 
     for (const participantId of prevTiles.keys()) {
       if (!nextTiles.has(participantId)) {
-        stopSending(participantId, 'video-popout');
-        void emitTo('video-popout', 'video-popout:tile-removed', { participantId });
+        stopSending(participantId, 'camera-popout');
+        void emit('camera-popout:tile-removed', { participantId });
       }
     }
 
@@ -1438,22 +1438,22 @@ export default function ActiveRoom() {
 
     try {
       videoPopoutReadyRef.current = false;
-      const unlistenReady = await listen('video-popout:ready', () => {
+      const unlistenReady = await listen('camera-popout:ready', () => {
         if (videoPopoutReadyRef.current) return;
         videoPopoutReadyRef.current = true;
         syncVideoPopoutSnapshot(roomStateRef.current?.videoTilesById ?? {});
       });
       videoPopoutReadyUnlistenRef.current = unlistenReady;
 
-      const win = new WebviewWindow('video-popout', {
-        url: `/video-popout#${hash}`,
-        title: `Video — ${rs.channelName}`,
+      const win = new WebviewWindow('camera-popout', {
+        url: `/camera-popout#${hash}`,
+        title: `Camera — ${rs.channelName}`,
         width: 960,
         height: 540,
         minWidth: 480,
         minHeight: 320,
         resizable: true,
-        decorations: true,
+        decorations: false,
         center: true,
       });
 
@@ -1468,6 +1468,8 @@ export default function ActiveRoom() {
 
       videoPopoutWindowRef.current = win;
       setVideoPopoutOpen(true);
+      // Switch away from the video tab — it's now in the pop-out window
+      selectRoomPanelTab('logs');
     } catch (err) {
       console.error('[wavis:active-room] failed to open video popout window:', err);
     }
@@ -2892,7 +2894,7 @@ export default function ActiveRoom() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* ── Tab header ── */}
       <div className="flex h-[4.5rem] border-b border-wavis-text-secondary">
-        {(['logs', 'video'] as const).map((tab) => {
+        {(['logs', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
           const label = tab === 'logs' ? 'LOGS' : 'VIDEOS';
           const active = currentPanelTab === tab;
           return (
@@ -2924,7 +2926,7 @@ export default function ActiveRoom() {
         })}
       </div>
       {/* ── Tab body ── */}
-      {currentPanelTab === 'video' ? (
+      {currentPanelTab === 'video' && !videoPopoutOpen ? (
         <>
           <VideoTab videoTilesById={videoTilesById} />
           <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
@@ -2932,7 +2934,7 @@ export default function ActiveRoom() {
               onClick={() => { void openVideoPopoutWindow(); }}
               className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
             >
-              {videoPopoutOpen ? '/focus_video_window' : '/pop_out_video'}
+              /pop-out
             </button>
           </div>
         </>
@@ -2978,7 +2980,7 @@ export default function ActiveRoom() {
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
-          {(['participants', 'chat', 'log', 'video'] as const).map((tab) => {
+          {(['participants', 'chat', 'log', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
             const active = mobileTab === tab;
             const color = active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)';
             return (
@@ -3018,7 +3020,7 @@ export default function ActiveRoom() {
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
               {mobileTab === 'chat' && chatPanel}
               {mobileTab === 'log' && logsContent}
-              {mobileTab === 'video' && (
+              {mobileTab === 'video' && !videoPopoutOpen && (
                 <div className="flex flex-col flex-1 min-h-0">
                   <VideoTab videoTilesById={videoTilesById} />
                   <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
@@ -3026,7 +3028,7 @@ export default function ActiveRoom() {
                       onClick={() => { void openVideoPopoutWindow(); }}
                       className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                     >
-                      {videoPopoutOpen ? '/focus_video_window' : '/pop_out_video'}
+                      /pop-out
                     </button>
                   </div>
                 </div>

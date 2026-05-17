@@ -52,7 +52,7 @@ export const router = createBrowserRouter([
     },
   },
   {
-    path: '/video-popout',
+    path: '/camera-popout',
     lazy: async () => {
       const { default: Component } = await import('@features/voice/VideoPopoutPage');
       return withFallback({ Component });
