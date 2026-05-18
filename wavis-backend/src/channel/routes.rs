@@ -31,8 +31,8 @@ use crate::channel::channel;
 use crate::channel::channel_models::{ChannelError, ChannelRole};
 use crate::error::ErrorResponse;
 use crate::voice::voice_orchestrator;
-use axum::response::{IntoResponse, Response};
 use crate::ws::ws_dispatch::{dispatch_signals, schedule_sub_room_expiry};
+use axum::response::{IntoResponse, Response};
 
 pub struct ChannelErrorResponse(Box<(StatusCode, HeaderMap, Json<ErrorResponse>)>);
 
@@ -252,10 +252,7 @@ fn map_channel_error(
 // Rate limiting helper
 // ---------------------------------------------------------------------------
 
-fn check_rate_limit(
-    state: &AppState,
-    user_id: Uuid,
-) -> Result<(), ChannelErrorResponse> {
+fn check_rate_limit(state: &AppState, user_id: Uuid) -> Result<(), ChannelErrorResponse> {
     let now = Instant::now();
     let retry_after_secs = state.channel_rate_limiter.seconds_until_retry(user_id, now);
     if retry_after_secs.is_some() {
@@ -504,7 +501,12 @@ pub async fn ban_member(
                     state.connections.as_ref(),
                 );
                 if let Some(expiry) = sub_room_result.expiry {
-                    schedule_sub_room_expiry(&state, &room_id, &expiry.sub_room_id, expiry.delete_at);
+                    schedule_sub_room_expiry(
+                        &state,
+                        &room_id,
+                        &expiry.sub_room_id,
+                        expiry.delete_at,
+                    );
                 }
             }
             Err(e) => {
@@ -664,7 +666,11 @@ pub async fn get_voice_status(
                     let active = !participants.is_empty();
                     Ok(Json(VoiceStatusResponse {
                         active,
-                        participant_count: if active { Some(participants.len() as u32) } else { None },
+                        participant_count: if active {
+                            Some(participants.len() as u32)
+                        } else {
+                            None
+                        },
                         participants: if active { Some(participants) } else { None },
                     }))
                 }

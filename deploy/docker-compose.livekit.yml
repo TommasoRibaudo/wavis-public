@@ -3,13 +3,39 @@ services:
     container_name: wavis-livekit-redis
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Bind to the host loopback only. LiveKit runs in host network mode (see
+    # below) and reaches Redis via 127.0.0.1:6379. The host firewall + SG do
+    # not need to know about Redis because it is never exposed beyond
+    # loopback.
+    ports:
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
 
   livekit:
     container_name: wavis-livekit
     image: livekit/livekit-server:v1.9.3
-    # The prod host pre-renders this file once via SSM to avoid runtime
-    # template substitution inside the container.
+    # Host networking is REQUIRED for the embedded TURN relay.
+    #
+    # LiveKit's pion-based TURN allocates relay sockets in
+    # rtc.turn.relay_range_start..relay_range_end (default 30000-40000).
+    # Publishing that range through Docker's bridge networking
+    # (`ports: ["30000-40000:30000-40000/udp"]`) spawns one `docker-proxy`
+    # process per port (~10001 processes); on this t-class instance that
+    # either fails outright with `failed to start userland proxy for port
+    # mapping ... <random-port>/udp` or thrashes the host. This is the
+    # exact failure observed on LiveKit_EC2 (2026-05-18).
+    #
+    # With `network_mode: host` the container binds the host network
+    # namespace directly, the LiveKit-detected external IP matches the
+    # listener binding (use_external_ip: true), and the EC2 security group
+    # is the only ingress control. The SG already opens
+    # 3478/udp+tcp, 7880/tcp, 7881/tcp, 30000-40000/udp, 51000-51100/udp.
+    #
+    # The `ports:` block is intentionally absent: under host networking it
+    # is ignored and Compose emits a warning. SG rules in
+    # infrastructure/environments/dev-ecs/security_groups.tf are the
+    # single source of truth for ingress.
+    network_mode: host
     entrypoint:
       - /livekit-server
     command:
@@ -17,10 +43,6 @@ services:
       - /etc/livekit.yaml
     depends_on:
       - redis
-    ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "51000-51100:51000-51100/udp"
     volumes:
       - /etc/wavis/livekit.rendered.yaml:/etc/livekit.yaml:ro
     restart: unless-stopped

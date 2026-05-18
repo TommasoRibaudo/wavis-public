@@ -224,7 +224,10 @@ pub async fn submit_bug_report(
         decoded_size += estimated_decoded;
     }
     if decoded_size > MAX_DECODED_PAYLOAD_SIZE {
-        return Err(error_response(StatusCode::PAYLOAD_TOO_LARGE, "payload too large"));
+        return Err(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload too large",
+        ));
     }
 
     // --- Validate field lengths ---
@@ -237,7 +240,10 @@ pub async fn submit_bug_report(
         Some(ref b64) => match base64::engine::general_purpose::STANDARD.decode(b64) {
             Ok(bytes) => Some(bytes),
             Err(_) => {
-                return Err(error_response(StatusCode::BAD_REQUEST, "invalid screenshot encoding"));
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid screenshot encoding",
+                ));
             }
         },
         None => None,
@@ -340,10 +346,16 @@ pub async fn analyze_bug_report(
 
     // Validate description length
     if payload.description.len() < 10 {
-        return Err(error_response(StatusCode::BAD_REQUEST, "description too short"));
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "description too short",
+        ));
     }
     if payload.description.len() > MAX_BODY_LEN {
-        return Err(error_response(StatusCode::BAD_REQUEST, "description too long"));
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "description too long",
+        ));
     }
 
     let previous = payload.previous_answers.as_deref();
@@ -388,7 +400,10 @@ pub async fn generate_bug_report_body(
     }
 
     if payload.description.len() < 10 || payload.description.len() > MAX_BODY_LEN {
-        return Err(error_response(StatusCode::BAD_REQUEST, "invalid description length"));
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid description length",
+        ));
     }
 
     match state

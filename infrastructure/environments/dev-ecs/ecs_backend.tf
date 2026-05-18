@@ -25,9 +25,13 @@ resource "aws_cloudwatch_log_group" "backend" {
 resource "aws_ecs_cluster" "backend" {
   name = "${local.project}-${local.env}-backend"
 
+  # Container Insights is intentionally disabled in dev to avoid the per-container
+  # custom-metric charges (~$3-5/mo for a 1-task service). Service-level CPU/Memory
+  # are still available via the free AWS/ECS namespace and the dashboard in
+  # monitoring.tf. Re-enable for prod or when investigating a regression.
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"
   }
 
   tags = local.tags
@@ -221,10 +225,16 @@ resource "aws_ecs_service" "backend" {
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
+  # Dev runs Fargate tasks in public subnets with a public IP so the task ENI
+  # can reach the internet (ECR, SSM, CloudWatch, LiveKit) directly via the
+  # IGW, eliminating the NAT Gateway (~$33/mo). The task is still firewalled
+  # by aws_security_group.backend, which only permits ingress from the ALB SG.
+  # DO NOT add 0.0.0.0/0 ingress to that SG -- the ENI is publicly addressable.
+  # See doc/aws_costs/runbook.md (Tier 3) for context.
   network_configuration {
-    subnets          = [for subnet in aws_subnet.private_app : subnet.id]
+    subnets          = [for subnet in aws_subnet.public : subnet.id]
     security_groups  = [aws_security_group.backend.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
