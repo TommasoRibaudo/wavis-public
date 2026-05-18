@@ -326,7 +326,7 @@ async fn test_13_stop_share_broadcast() {
     drain(&mut stream2).await;
 
     // Stop sharing
-    ws_send(&mut sink1, json!({"type":"stop_share"})).await;
+    ws_send(&mut sink1, json!({"type":"stop-share"})).await;
 
     let stopped1 = recv_type(&mut stream1, "share_stopped").await;
     let stopped2 = recv_type(&mut stream2, "share_stopped").await;
@@ -351,7 +351,7 @@ async fn test_13_host_directed_stop() {
     // Host stops guest's share via targetParticipantId
     ws_send(
         &mut sink1,
-        json!({"type":"stop_share","targetParticipantId": guest_id}),
+        json!({"type":"stop-share","targetParticipantId": guest_id}),
     )
     .await;
 
@@ -378,7 +378,7 @@ async fn test_13_non_host_targeted_stop_rejected() {
     // Guest tries to stop host's share â†’ error
     ws_send(
         &mut sink2,
-        json!({"type":"stop_share","targetParticipantId": host_id}),
+        json!({"type":"stop-share","targetParticipantId": host_id}),
     )
     .await;
 
