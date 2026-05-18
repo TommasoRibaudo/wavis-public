@@ -345,9 +345,7 @@ pub fn handle_set_share_permission(
         members.info.share_permission = new_perm;
 
         let signal = OutboundSignal::broadcast_all(SignalingMessage::SharePermissionChanged(
-            SharePermissionChangedPayload {
-                permission,
-            },
+            SharePermissionChangedPayload { permission },
         ));
         ShareResult::Ok(vec![signal])
     });

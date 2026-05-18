@@ -786,9 +786,7 @@ pub fn spawn_shutdown_scheduler(app_state: AppState) {
             {
                 let health = app_state.sfu_health_status.read().await;
                 if matches!(*health, SfuHealth::Starting { .. }) {
-                    tracing::info!(
-                        "Shutdown scheduler: EC2 is starting; skipping until next day"
-                    );
+                    tracing::info!("Shutdown scheduler: EC2 is starting; skipping until next day");
                     continue;
                 }
             }

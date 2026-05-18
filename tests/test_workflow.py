@@ -119,29 +119,25 @@ class TestWorkflowStructure:
         )
 
     def test_livekit_deploy_step_invokes_livekit_script(self, workflow: dict) -> None:
-        """LiveKit deploy step invokes deploy/ssm-deploy-livekit.sh (when present).
+        """LiveKit deploy job invokes deploy/ssm-deploy-livekit.sh via SSM.
 
         Validates: Requirements 6.1
         """
-        deploy_job = workflow.get("jobs", {}).get("deploy", {})
-        steps = deploy_job.get("steps", [])
-
-        # Find the LiveKit deploy step
-        livekit_steps = [
-            step for step in steps
-            if isinstance(step, dict)
-            and "livekit" in (step.get("name", "") + step.get("run", "")).lower()
-        ]
-
-        if not livekit_steps:
-            pytest.skip("No LiveKit deploy step found in workflow")
-
-        livekit_run = " ".join(
-            step.get("run", "") for step in livekit_steps
+        livekit_job = workflow.get("jobs", {}).get("deploy-livekit")
+        assert livekit_job, (
+            "Workflow is missing the 'deploy-livekit' job"
         )
 
-        assert "ssm-deploy-livekit.sh" in livekit_run, (
-            "LiveKit deploy step does not invoke ssm-deploy-livekit.sh"
+        steps = livekit_job.get("steps", [])
+        all_run_blocks = " ".join(
+            step.get("run", "") for step in steps if isinstance(step, dict)
+        )
+
+        assert "ssm-deploy-livekit.sh" in all_run_blocks, (
+            "deploy-livekit job does not invoke ssm-deploy-livekit.sh"
+        )
+        assert "send-command" in all_run_blocks, (
+            "deploy-livekit job does not use 'aws ssm send-command'"
         )
 
 

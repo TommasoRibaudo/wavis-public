@@ -167,7 +167,9 @@ fn map_recover_error(err: &AuthError) -> AuthErrorResponse {
         AuthError::PhraseVerificationFailed | AuthError::RecoveryIdNotFound => {
             error_response(StatusCode::UNAUTHORIZED, "authentication failed")
         }
-        AuthError::DeviceRevoked => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        AuthError::DeviceRevoked => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -182,7 +184,9 @@ fn map_refresh_error(err: &AuthError) -> AuthErrorResponse {
         | AuthError::ValidationFailed
         | AuthError::TokenExpired
         | AuthError::InvalidToken
-        | AuthError::EpochMismatch => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        | AuthError::EpochMismatch => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -200,7 +204,9 @@ fn map_pairing_error(err: &PairingError) -> AuthErrorResponse {
             error_response(StatusCode::CONFLICT, "conflict")
         }
         PairingError::NotApproved => error_response(StatusCode::FORBIDDEN, "forbidden"),
-        PairingError::LockedOut => error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+        PairingError::LockedOut => {
+            error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests")
+        }
         PairingError::DatabaseError(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -211,7 +217,9 @@ fn map_device_error(err: &DeviceError) -> AuthErrorResponse {
     match err {
         DeviceError::NotFound => error_response(StatusCode::NOT_FOUND, "not found"),
         DeviceError::NotOwned => error_response(StatusCode::FORBIDDEN, "forbidden"),
-        DeviceError::DatabaseError(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        DeviceError::DatabaseError(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
     }
 }
 
@@ -243,7 +251,9 @@ pub async fn register_device(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "register_device rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -290,7 +300,9 @@ pub async fn register(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "register rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -342,7 +354,9 @@ pub async fn recover(
     let now = Instant::now();
 
     // Per-IP rate limit BEFORE any DB lookup; always count the attempt.
-    let retry_after_secs = app_state.recovery_rate_limiter.seconds_until_ip(client_ip, now);
+    let retry_after_secs = app_state
+        .recovery_rate_limiter
+        .seconds_until_ip(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "recover rate-limited (IP)");
         return Err(rate_limited_response(retry_after_secs));
@@ -436,7 +450,9 @@ pub async fn pair_start(
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour (reuse register limiter slot for pairing start).
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_start rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -525,7 +541,9 @@ pub async fn pair_finish(
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour.
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_finish rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -671,12 +689,16 @@ pub async fn rotate_phrase(
 
     match result {
         Ok(()) => Ok(StatusCode::OK),
-        Err(AuthError::PhraseVerificationFailed) => {
-            Err(error_response(StatusCode::UNAUTHORIZED, "authentication failed"))
-        }
+        Err(AuthError::PhraseVerificationFailed) => Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "authentication failed",
+        )),
         Err(err) => {
             warn!(user_id = %user.user_id, error = %err, "rotate_phrase failed");
-            Err(error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
         }
     }
 }
@@ -694,7 +716,9 @@ pub async fn refresh_token(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_refresh(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_refresh(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "refresh_token rate-limited");
         return Err(rate_limited_response(retry_after_secs));

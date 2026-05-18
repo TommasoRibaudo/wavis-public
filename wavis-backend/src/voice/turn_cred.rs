@@ -13,6 +13,10 @@ pub enum TurnConfigError {
     SecretTooShort,
     #[error("TURN_SHARED_SECRET_PREVIOUS is set but shorter than 32 bytes")]
     PreviousSecretTooShort,
+    #[error("TURN_SHARED_SECRET set but WAVIS_TURN_URLS is empty")]
+    TurnUrlsEmpty,
+    #[error("TURN_CREDENTIAL_TTL_SECS must be > 0")]
+    TtlIsZero,
 }
 
 /// Holds TURN configuration including shared secret(s).
@@ -66,7 +70,7 @@ impl TurnConfig {
     /// Returns:
     /// - `Ok(Some(config))` if `TURN_SHARED_SECRET` is set and valid (≥32 bytes)
     /// - `Ok(None)` if `TURN_SHARED_SECRET` is not set (TURN not configured)
-    /// - `Err` if secret is set but too short, or previous secret is set but too short
+    /// - `Err` if security-critical TURN config is invalid
     pub fn try_from_env() -> Result<Option<Self>, TurnConfigError> {
         let secret_str = match std::env::var("TURN_SHARED_SECRET").ok() {
             Some(s) => s,
@@ -93,7 +97,7 @@ impl TurnConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(3600);
 
-        let stun_urls = std::env::var("WAVIS_STUN_URLS")
+        let stun_urls: Vec<String> = std::env::var("WAVIS_STUN_URLS")
             .ok()
             .map(|v| {
                 v.split(',')
@@ -103,7 +107,7 @@ impl TurnConfig {
             })
             .unwrap_or_default();
 
-        let turn_urls = std::env::var("WAVIS_TURN_URLS")
+        let turn_urls: Vec<String> = std::env::var("WAVIS_TURN_URLS")
             .ok()
             .map(|v| {
                 v.split(',')
@@ -112,6 +116,14 @@ impl TurnConfig {
                     .collect()
             })
             .unwrap_or_default();
+
+        if credential_ttl_secs == 0 {
+            return Err(TurnConfigError::TtlIsZero);
+        }
+
+        if turn_urls.is_empty() {
+            return Err(TurnConfigError::TurnUrlsEmpty);
+        }
 
         Ok(Some(TurnConfig {
             current_secret: Sensitive(current_bytes),
@@ -175,6 +187,44 @@ pub fn build_ice_config_payload(config: &TurnConfig, creds: &TurnCredentials) ->
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn with_env_vars(vars: &[(&str, Option<&str>)], test: impl FnOnce()) {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+        struct RestoreEnv(Vec<(String, Option<String>)>);
+
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (key, value) in self.0.drain(..).rev() {
+                    match value {
+                        Some(value) => unsafe { std::env::set_var(&key, value) },
+                        None => unsafe { std::env::remove_var(&key) },
+                    }
+                }
+            }
+        }
+
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env mutex poisoned");
+
+        let saved = vars
+            .iter()
+            .map(|(key, _)| (key.to_string(), std::env::var(key).ok()))
+            .collect();
+        let _restore = RestoreEnv(saved);
+
+        for (key, value) in vars {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        test();
+    }
 
     fn make_config(secret: Vec<u8>, ttl: u64, stun: Vec<String>, turn: Vec<String>) -> TurnConfig {
         TurnConfig {
@@ -278,6 +328,46 @@ mod tests {
         // 32 bytes should be accepted
         let secret: Vec<u8> = vec![0xAB; 32];
         assert!(secret.len() >= 32);
+    }
+
+    #[test]
+    fn try_from_env_returns_err_when_secret_set_and_turn_urls_empty() {
+        with_env_vars(
+            &[
+                (
+                    "TURN_SHARED_SECRET",
+                    Some("dev-turn-shared-secret-32b!!XX!!"),
+                ),
+                ("TURN_SHARED_SECRET_PREVIOUS", None),
+                ("TURN_CREDENTIAL_TTL_SECS", None),
+                ("WAVIS_STUN_URLS", None),
+                ("WAVIS_TURN_URLS", None),
+            ],
+            || {
+                let result = TurnConfig::try_from_env();
+                assert!(matches!(result, Err(TurnConfigError::TurnUrlsEmpty)));
+            },
+        );
+    }
+
+    #[test]
+    fn try_from_env_returns_err_when_secret_set_and_ttl_is_zero() {
+        with_env_vars(
+            &[
+                (
+                    "TURN_SHARED_SECRET",
+                    Some("dev-turn-shared-secret-32b!!XX!!"),
+                ),
+                ("TURN_SHARED_SECRET_PREVIOUS", None),
+                ("TURN_CREDENTIAL_TTL_SECS", Some("0")),
+                ("WAVIS_STUN_URLS", None),
+                ("WAVIS_TURN_URLS", Some("turn:127.0.0.1:3478")),
+            ],
+            || {
+                let result = TurnConfig::try_from_env();
+                assert!(matches!(result, Err(TurnConfigError::TtlIsZero)));
+            },
+        );
     }
 
     proptest! {

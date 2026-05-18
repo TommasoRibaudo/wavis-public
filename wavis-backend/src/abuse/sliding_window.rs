@@ -53,10 +53,7 @@ impl SlidingWindow {
 
         oldest_in_window.map(|oldest| {
             let elapsed = now.saturating_duration_since(oldest);
-            self.window
-                .saturating_sub(elapsed)
-                .as_secs()
-                .max(1)
+            self.window.saturating_sub(elapsed).as_secs().max(1)
         })
     }
 }

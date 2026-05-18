@@ -46,7 +46,9 @@ impl ChannelRateLimiter {
     pub fn check(&self, user_id: Uuid, now: Instant) -> bool {
         let mut map = self.windows.lock().unwrap();
         let dur = Duration::from_secs(self.config.window_secs);
-        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(dur));
         window.count(now) < self.config.max_per_user as usize
     }
 
@@ -54,7 +56,9 @@ impl ChannelRateLimiter {
     pub fn seconds_until_retry(&self, user_id: Uuid, now: Instant) -> Option<u64> {
         let mut map = self.windows.lock().unwrap();
         let dur = Duration::from_secs(self.config.window_secs);
-        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(dur));
         window.seconds_until_retry(self.config.max_per_user as usize, now)
     }
 
@@ -62,7 +66,9 @@ impl ChannelRateLimiter {
     pub fn record(&self, user_id: Uuid, now: Instant) {
         let mut map = self.windows.lock().unwrap();
         let dur = Duration::from_secs(self.config.window_secs);
-        let window = map.entry(user_id).or_insert_with(|| SlidingWindow::new(dur));
+        let window = map
+            .entry(user_id)
+            .or_insert_with(|| SlidingWindow::new(dur));
         window.add(now);
     }
 

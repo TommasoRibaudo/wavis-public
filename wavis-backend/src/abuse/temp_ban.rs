@@ -169,8 +169,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::net::Ipv4Addr;
-    use std::sync::{LazyLock, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{LazyLock, Mutex};
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 

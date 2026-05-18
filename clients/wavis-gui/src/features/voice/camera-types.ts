@@ -1,13 +1,30 @@
+// Camera quality tiers.
+//
+// Bitrates are calibrated against LiveKit's WebRTC bitrate guide
+// (https://livekit.io/webrtc/bitrate-guide), VP8 webcam column, VMAF ~90 target.
+// We sit at or slightly under those numbers to keep bandwidth low for a small
+// invite-only voice app where the camera is a secondary feature, not the focus.
+//
+//   Resolution   LiveKit VP8 (VMAF 90)   Wavis HIGH   Notes
+//   1280x720     ~1.0 Mbps               (not used)   Too costly for our use
+//   960x540      ~600 kbps               500 kbps     -17% — still readable
+//   640x360      ~400 kbps               (not used)   Reserve for future MID
+//   320x240      ~140 kbps               120 kbps     LOW tier, fallback when
+//                                                     a screen share is active
+//
+// Frame rate is kept lower than typical (24 fps for HIGH, 15 fps for LOW) since
+// faces in a voice call rarely need cinematic motion smoothness. Dropping fps
+// is the cheapest way to reduce bitrate without touching resolution.
 export type CameraQuality =
-  | { tier: 'high'; width: 1280; height: 720; maxFps: 30; maxBitrate: 800_000; codec: 'vp8' }
-  | { tier: 'low'; width: 320; height: 240; maxFps: 15; maxBitrate: 150_000; codec: 'vp8' };
+  | { tier: 'high'; width: 960; height: 540; maxFps: 24; maxBitrate: 500_000; codec: 'vp8' }
+  | { tier: 'low'; width: 320; height: 240; maxFps: 15; maxBitrate: 120_000; codec: 'vp8' };
 
 export const CAMERA_QUALITY_HIGH: CameraQuality = {
   tier: 'high',
-  width: 1280,
-  height: 720,
-  maxFps: 30,
-  maxBitrate: 800_000,
+  width: 960,
+  height: 540,
+  maxFps: 24,
+  maxBitrate: 500_000,
   codec: 'vp8',
 };
 
@@ -16,7 +33,7 @@ export const CAMERA_QUALITY_LOW: CameraQuality = {
   width: 320,
   height: 240,
   maxFps: 15,
-  maxBitrate: 150_000,
+  maxBitrate: 120_000,
   codec: 'vp8',
 };
 
@@ -39,6 +56,16 @@ export interface VideoTileViewModel {
   displayName: string;
   color: string;
   track: MediaStreamTrack | null;
+  isSelf: boolean;
+  isMuted: boolean;
+  hasError: boolean;
+}
+
+export interface VideoTileSnapshot {
+  participantId: string;
+  displayName: string;
+  color: string;
+  hasTrack: boolean;
   isSelf: boolean;
   isMuted: boolean;
   hasError: boolean;

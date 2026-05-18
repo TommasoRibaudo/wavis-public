@@ -3,9 +3,9 @@ import * as fc from 'fast-check';
 
 import { cameraButtonLabel, shouldMountCameraButton } from '../active-room-camera';
 
-describe('Feature: video-feed, Property 4: Button label depends only on intent', () => {
-  it('returns Stop Video iff camera intent is true, regardless of publication state', () => {
-    const publicationStateArb = fc.constantFrom<'idle' | 'opening' | 'publishing' | 'published' | 'failing'>(
+  describe('Feature: video-feed, Property 4: Button label depends only on intent', () => {
+    it('returns camera-off iff camera intent is true, regardless of publication state', () => {
+      const publicationStateArb = fc.constantFrom<'idle' | 'opening' | 'publishing' | 'published' | 'failing'>(
       'idle',
       'opening',
       'publishing',
@@ -14,12 +14,12 @@ describe('Feature: video-feed, Property 4: Button label depends only on intent',
     );
 
     fc.assert(
-      fc.property(fc.boolean(), publicationStateArb, (cameraIntent, cameraPublication) => {
-        expect(cameraButtonLabel(cameraIntent)).toBe(cameraIntent ? 'Stop Video' : 'Start Video');
+        fc.property(fc.boolean(), publicationStateArb, (cameraIntent, cameraPublication) => {
+          expect(cameraButtonLabel(cameraIntent)).toBe(cameraIntent ? 'camera-off' : 'camera-on');
 
-        void cameraPublication;
-        expect(cameraButtonLabel(cameraIntent)).toBe(cameraIntent ? 'Stop Video' : 'Start Video');
-      }),
+          void cameraPublication;
+          expect(cameraButtonLabel(cameraIntent)).toBe(cameraIntent ? 'camera-off' : 'camera-on');
+        }),
       { numRuns: 100 },
     );
   });

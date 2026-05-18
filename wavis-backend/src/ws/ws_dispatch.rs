@@ -108,6 +108,13 @@ pub(crate) fn inject_turn_credentials(
         .as_secs();
     let creds = generate_turn_credentials(peer_id, config, now_unix);
     let ice_payload = build_ice_config_payload(config, &creds);
+    tracing::debug!(
+        target: "wavis::turn",
+        peer_id,
+        username = %creds.username,
+        turn_urls = config.turn_urls.len(),
+        "issued TURN credentials"
+    );
 
     for signal in signals.iter_mut() {
         if let SignalingMessage::Joined(ref mut joined) = signal.msg {
@@ -3366,6 +3373,67 @@ mod tests {
                 assert_eq!(payload.message, "invalid message type from client");
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[test]
+    fn test_inject_turn_credentials_updates_only_target_joined_signal() {
+        let turn_config = crate::voice::turn_cred::TurnConfig::new(
+            b"0123456789abcdef0123456789abcdef".to_vec(),
+            None,
+            3600,
+            vec!["stun:127.0.0.1:3478".to_string()],
+            vec!["turn:127.0.0.1:3478?transport=udp".to_string()],
+        );
+        let mut signals = vec![
+            OutboundSignal::to_peer(
+                "peer-1",
+                SignalingMessage::Joined(shared::signaling::JoinedPayload {
+                    room_id: "room-1".to_string(),
+                    peer_id: "peer-1".to_string(),
+                    peer_count: 2,
+                    participants: vec![],
+                    ice_config: None,
+                    share_permission: None,
+                }),
+            ),
+            OutboundSignal::to_peer(
+                "peer-2",
+                SignalingMessage::Joined(shared::signaling::JoinedPayload {
+                    room_id: "room-1".to_string(),
+                    peer_id: "peer-2".to_string(),
+                    peer_count: 2,
+                    participants: vec![],
+                    ice_config: None,
+                    share_permission: None,
+                }),
+            ),
+        ];
+
+        inject_turn_credentials(&mut signals, "peer-1", Some(&turn_config));
+
+        match &signals[0].msg {
+            SignalingMessage::Joined(payload) => {
+                let ice = payload
+                    .ice_config
+                    .as_ref()
+                    .expect("target peer should receive turn credentials");
+                assert_eq!(ice.stun_urls, vec!["stun:127.0.0.1:3478"]);
+                assert_eq!(ice.turn_urls, vec!["turn:127.0.0.1:3478?transport=udp"]);
+                assert!(ice.turn_username.ends_with(":peer-1"));
+                assert!(!ice.turn_credential.is_empty());
+            }
+            other => panic!("expected Joined signal, got {other:?}"),
+        }
+
+        match &signals[1].msg {
+            SignalingMessage::Joined(payload) => {
+                assert!(
+                    payload.ice_config.is_none(),
+                    "non-target peer must not be mutated"
+                );
+            }
+            other => panic!("expected Joined signal, got {other:?}"),
         }
     }
 
