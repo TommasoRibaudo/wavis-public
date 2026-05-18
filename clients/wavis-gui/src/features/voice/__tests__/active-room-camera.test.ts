@@ -37,15 +37,15 @@ describe('Feature: video-feed — button stays mounted during media reconnect (R
 
 /* ─── Button label ──────────────────────────────────────────────── */
 
-describe('Feature: video-feed — button label (Req 1.7, 1.8)', () => {
-  it('returns "Start Video" when intent is false', () => {
-    expect(cameraButtonLabel(false)).toBe('Start Video');
-  });
+  describe('Feature: video-feed — button label (Req 1.7, 1.8)', () => {
+    it('returns "camera-on" when intent is false', () => {
+      expect(cameraButtonLabel(false)).toBe('camera-on');
+    });
 
-  it('returns "Stop Video" when intent is true', () => {
-    expect(cameraButtonLabel(true)).toBe('Stop Video');
+    it('returns "camera-off" when intent is true', () => {
+      expect(cameraButtonLabel(true)).toBe('camera-off');
+    });
   });
-});
 
 /* ─── Panel tab defaults ────────────────────────────────────────── */
 

@@ -361,7 +361,7 @@ proptest! {
                            "room_state", "media_token", "kick_participant", "mute_participant",
                            "unmute_participant",
                            "participant_kicked", "participant_muted", "participant_unmuted",
-                           "start_share", "share_started", "stop_share", "share_stopped",
+                           "start_share", "share_started", "stop-share", "share_stopped",
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",

@@ -174,6 +174,7 @@ pub enum SignalingMessage {
     /// Server -> all participants broadcast that a share started.
     ShareStarted(ShareStartedPayload),
     /// Client -> server request to stop a share.
+    #[serde(rename = "stop-share")]
     StopShare(StopSharePayload),
     /// Server -> all participants broadcast that a share stopped.
     ShareStopped(ShareStoppedPayload),

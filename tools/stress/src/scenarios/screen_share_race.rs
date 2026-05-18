@@ -461,7 +461,7 @@ impl Scenario for ScreenShareRaceScenario {
             let sharer_task = tokio::spawn(async move {
                 b1.wait().await;
                 sharer
-                    .send_json(&serde_json::json!({ "type": "stop_share" }))
+                    .send_json(&serde_json::json!({ "type": "stop-share" }))
                     .await
                     .ok();
                 // Drain briefly

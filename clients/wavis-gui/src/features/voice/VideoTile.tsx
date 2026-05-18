@@ -24,7 +24,7 @@ class TileErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundary
     if (this.state.hasError) {
       return (
         <div
-          className="aspect-video flex items-center justify-center text-xs border"
+          className="w-full h-full flex items-center justify-center text-xs border"
           style={{ color: 'var(--wavis-danger)', borderColor: 'var(--wavis-danger)' }}
         >
           video error
@@ -60,7 +60,7 @@ function VideoTileInner({ tile }: VideoTileProps) {
 
   return (
     <div
-      className="relative aspect-video overflow-hidden border border-wavis-text-secondary bg-wavis-panel"
+      className="relative w-full h-full overflow-hidden bg-wavis-panel"
     >
       {tile.track && !tile.isMuted ? (
         <video
