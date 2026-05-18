@@ -122,7 +122,9 @@ fn generate_room_suffix() -> String {
 fn wire_membership_source(source: SubRoomMembershipSource) -> WireSubRoomMembershipSource {
     match source {
         SubRoomMembershipSource::Explicit => WireSubRoomMembershipSource::Explicit,
-        SubRoomMembershipSource::LegacyRoomOneFallback => WireSubRoomMembershipSource::LegacyRoomOne,
+        SubRoomMembershipSource::LegacyRoomOneFallback => {
+            WireSubRoomMembershipSource::LegacyRoomOne
+        }
     }
 }
 
@@ -231,7 +233,11 @@ fn sub_room_state_signals(room_state: &InMemoryRoomState, room_id: &str) -> Vec<
     room_state
         .get_room_info(room_id)
         .and_then(|info| info.sub_room_state.as_ref().map(sub_room_state_payload))
-        .map(|payload| vec![OutboundSignal::broadcast_all(SignalingMessage::SubRoomState(payload))])
+        .map(|payload| {
+            vec![OutboundSignal::broadcast_all(
+                SignalingMessage::SubRoomState(payload),
+            )]
+        })
         .unwrap_or_default()
 }
 
@@ -474,8 +480,14 @@ pub fn sync_sub_room_state_on_voice_join(
             .iter_mut()
             .find(|room| room.is_default)
             .expect("sub-room state always contains ROOM 1");
-        if !default_room.participant_ids.iter().any(|id| id == participant_id) {
-            default_room.participant_ids.push(participant_id.to_string());
+        if !default_room
+            .participant_ids
+            .iter()
+            .any(|id| id == participant_id)
+        {
+            default_room
+                .participant_ids
+                .push(participant_id.to_string());
         }
         default_room.delete_at = None;
         sub_rooms
@@ -502,7 +514,10 @@ pub fn sync_sub_room_state_on_voice_join(
     }
 }
 
-pub fn create_sub_room(room_state: &InMemoryRoomState, room_id: &str) -> Result<SubRoomActionResult, String> {
+pub fn create_sub_room(
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+) -> Result<SubRoomActionResult, String> {
     let mut created_room = None;
     let mut expiry = None;
 
@@ -542,9 +557,9 @@ pub fn create_sub_room(room_state: &InMemoryRoomState, room_id: &str) -> Result<
         return Err("sub-room state unavailable".to_string());
     };
 
-    let mut signals = vec![OutboundSignal::broadcast_all(SignalingMessage::SubRoomCreated(
-        SubRoomCreatedPayload { room: created_room },
-    ))];
+    let mut signals = vec![OutboundSignal::broadcast_all(
+        SignalingMessage::SubRoomCreated(SubRoomCreatedPayload { room: created_room }),
+    )];
     signals.extend(sub_room_state_signals(room_state, room_id));
     Ok(SubRoomActionResult { signals, expiry })
 }
@@ -558,55 +573,64 @@ pub fn join_sub_room(
     let mut joined = None;
     let mut expiry = None;
 
-    room_state.with_room_write(voice_room_id, |members| {
-        ensure_room_sub_rooms(&mut members.info);
-        let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
-            return Err("sub-room state unavailable".to_string());
-        };
-        clear_invalid_passthrough_locked(sub_rooms);
+    room_state
+        .with_room_write(voice_room_id, |members| {
+            ensure_room_sub_rooms(&mut members.info);
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return Err("sub-room state unavailable".to_string());
+            };
+            clear_invalid_passthrough_locked(sub_rooms);
 
-        let target_room_id = sub_room_id.to_string();
-        let target_idx = sub_rooms
-            .rooms
-            .iter()
-            .position(|room| room.sub_room_id == target_room_id)
-            .ok_or_else(|| "sub-room not found".to_string())?;
-
-        let previous_room_id = sub_rooms.participant_assignments.get(participant_id).cloned();
-        if previous_room_id.as_deref() == Some(target_room_id.as_str()) {
-            return Ok(());
-        }
-
-        if let Some(ref old_room_id) = previous_room_id {
-            if let Some(old_room) = sub_rooms
+            let target_room_id = sub_room_id.to_string();
+            let target_idx = sub_rooms
                 .rooms
-                .iter_mut()
-                .find(|room| room.sub_room_id == *old_room_id)
-            {
-                old_room.participant_ids.retain(|id| id != participant_id);
-            }
-            expiry = schedule_empty_room_if_needed(sub_rooms, old_room_id);
-        }
+                .iter()
+                .position(|room| room.sub_room_id == target_room_id)
+                .ok_or_else(|| "sub-room not found".to_string())?;
 
-        let target_room = &mut sub_rooms.rooms[target_idx];
-        if !target_room.participant_ids.iter().any(|id| id == participant_id) {
-            target_room.participant_ids.push(participant_id.to_string());
-        }
-        target_room.delete_at = None;
-        sub_rooms
-            .participant_assignments
-            .insert(participant_id.to_string(), target_room.sub_room_id.clone());
-        sub_rooms
-            .membership_sources
-            .insert(participant_id.to_string(), SubRoomMembershipSource::Explicit);
-        joined = Some(SignalingMessage::SubRoomJoined(SubRoomJoinedPayload {
-            participant_id: participant_id.to_string(),
-            sub_room_id: target_room.sub_room_id.clone(),
-            source: WireSubRoomMembershipSource::Explicit,
-        }));
-        Ok(())
-    })
-    .map_err(|_| "voice session not found".to_string())??;
+            let previous_room_id = sub_rooms
+                .participant_assignments
+                .get(participant_id)
+                .cloned();
+            if previous_room_id.as_deref() == Some(target_room_id.as_str()) {
+                return Ok(());
+            }
+
+            if let Some(ref old_room_id) = previous_room_id {
+                if let Some(old_room) = sub_rooms
+                    .rooms
+                    .iter_mut()
+                    .find(|room| room.sub_room_id == *old_room_id)
+                {
+                    old_room.participant_ids.retain(|id| id != participant_id);
+                }
+                expiry = schedule_empty_room_if_needed(sub_rooms, old_room_id);
+            }
+
+            let target_room = &mut sub_rooms.rooms[target_idx];
+            if !target_room
+                .participant_ids
+                .iter()
+                .any(|id| id == participant_id)
+            {
+                target_room.participant_ids.push(participant_id.to_string());
+            }
+            target_room.delete_at = None;
+            sub_rooms
+                .participant_assignments
+                .insert(participant_id.to_string(), target_room.sub_room_id.clone());
+            sub_rooms.membership_sources.insert(
+                participant_id.to_string(),
+                SubRoomMembershipSource::Explicit,
+            );
+            joined = Some(SignalingMessage::SubRoomJoined(SubRoomJoinedPayload {
+                participant_id: participant_id.to_string(),
+                sub_room_id: target_room.sub_room_id.clone(),
+                source: WireSubRoomMembershipSource::Explicit,
+            }));
+            Ok(())
+        })
+        .map_err(|_| "voice session not found".to_string())??;
 
     let mut signals = vec![];
     if let Some(event) = joined {
@@ -632,7 +656,8 @@ pub fn leave_sub_room(
             };
             clear_invalid_passthrough_locked(sub_rooms);
 
-            let Some(current_room_id) = sub_rooms.participant_assignments.remove(participant_id) else {
+            let Some(current_room_id) = sub_rooms.participant_assignments.remove(participant_id)
+            else {
                 sub_rooms.membership_sources.remove(participant_id);
                 return Ok::<(), String>(());
             };
@@ -642,7 +667,9 @@ pub fn leave_sub_room(
                 .iter_mut()
                 .find(|room| room.sub_room_id == current_room_id)
             {
-                current_room.participant_ids.retain(|id| id != participant_id);
+                current_room
+                    .participant_ids
+                    .retain(|id| id != participant_id);
             }
             expiry = schedule_empty_room_if_needed(sub_rooms, &current_room_id);
             left_sub_room_id = Some(current_room_id);
@@ -661,12 +688,12 @@ pub fn leave_sub_room(
 
     let mut signals = vec![];
     if let Some(sub_room_id) = left_sub_room_id {
-        signals.push(OutboundSignal::broadcast_all(SignalingMessage::SubRoomLeft(
-            SubRoomLeftPayload {
+        signals.push(OutboundSignal::broadcast_all(
+            SignalingMessage::SubRoomLeft(SubRoomLeftPayload {
                 participant_id: participant_id.to_string(),
                 sub_room_id,
-            },
-        )));
+            }),
+        ));
     }
     if let Some(event) = share_stopped {
         signals.push(OutboundSignal::broadcast_all(event));
@@ -790,7 +817,10 @@ pub fn expire_sub_room(
             return;
         };
         let room = &sub_rooms.rooms[idx];
-        if room.is_default || !room.participant_ids.is_empty() || room.delete_at != Some(expected_delete_at) {
+        if room.is_default
+            || !room.participant_ids.is_empty()
+            || room.delete_at != Some(expected_delete_at)
+        {
             return;
         }
         sub_rooms.rooms.remove(idx);
@@ -802,11 +832,11 @@ pub fn expire_sub_room(
         return SubRoomActionResult::default();
     }
 
-    let mut signals = vec![OutboundSignal::broadcast_all(SignalingMessage::SubRoomDeleted(
-        SubRoomDeletedPayload {
+    let mut signals = vec![OutboundSignal::broadcast_all(
+        SignalingMessage::SubRoomDeleted(SubRoomDeletedPayload {
             sub_room_id: sub_room_id.to_string(),
-        },
-    ))];
+        }),
+    )];
     signals.extend(sub_room_state_signals(room_state, room_id));
     SubRoomActionResult {
         signals,
@@ -953,12 +983,8 @@ pub async fn join_voice(
         info.record_token_issued(peer_id);
     });
 
-    let sub_room_sync = sync_sub_room_state_on_voice_join(
-        room_state,
-        &room_id,
-        peer_id,
-        supports_sub_rooms,
-    );
+    let sub_room_sync =
+        sync_sub_room_state_on_voice_join(room_state, &room_id, peer_id, supports_sub_rooms);
 
     // Sign media token.
     let token = match token_mode {

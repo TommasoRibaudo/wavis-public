@@ -5992,3 +5992,61 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     await expect(mod.setDenoiseEnabled(true)).resolves.toBeUndefined();
   });
 });
+
+describe('Feature: turn-credentials-audit, Property 7: GUI force-relay override', () => {
+  async function importBuildRtcConfiguration(forceRelay?: 'true'): Promise<typeof import('../livekit-media').buildRtcConfiguration> {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    if (forceRelay) {
+      vi.stubEnv('VITE_WAVIS_FORCE_RELAY', forceRelay);
+      vi.stubEnv('WAVIS_FORCE_RELAY', forceRelay);
+    }
+    const mod = await import('../livekit-media');
+    return mod.buildRtcConfiguration;
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('gui_force_relay_sets_policy_to_relay', async () => {
+    const buildRtcConfiguration = await importBuildRtcConfiguration('true');
+
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:127.0.0.1:3478'],
+      turnUrls: ['turn:127.0.0.1:3478?transport=udp'],
+      turnUsername: 'user',
+      turnCredential: 'credential',
+    });
+
+    expect(rtcConfig.iceTransportPolicy).toBe('relay');
+  });
+
+  it('gui_default_sets_policy_to_all', async () => {
+    const buildRtcConfiguration = await importBuildRtcConfiguration();
+
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:127.0.0.1:3478'],
+      turnUrls: ['turn:127.0.0.1:3478?transport=tcp'],
+      turnUsername: 'user',
+      turnCredential: 'credential',
+    });
+
+    expect(rtcConfig.iceTransportPolicy).toBe('all');
+  });
+
+  it('gui_force_relay_logs_policy_at_info', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const buildRtcConfiguration = await importBuildRtcConfiguration('true');
+
+    buildRtcConfiguration({
+      stunUrls: ['stun:127.0.0.1:3478'],
+      turnUrls: ['turn:127.0.0.1:3478?transport=udp'],
+      turnUsername: 'user',
+      turnCredential: 'credential',
+    });
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy.mock.calls[0]?.some((arg) => typeof arg === 'string' && arg.includes('iceTransportPolicy=relay'))).toBe(true);
+  });
+});

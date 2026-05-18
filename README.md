@@ -57,6 +57,8 @@ That runs a local audio loopback test (mic → WebRTC → speakers, no server ne
 
 For the full setup guide including Docker, LiveKit, and multi-terminal P2P/SFU tests, see [doc/QUICKSTART.md](doc/QUICKSTART.md).
 
+For the TURN topology decision, backend investigation steps, forced-relay verification, and rollback procedure, see [doc/turn_credentials_audit.md](doc/turn_credentials_audit.md).
+
 ## Modes
 
 | Mode                 | Description                                                    |

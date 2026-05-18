@@ -9,10 +9,33 @@ rtc:
   use_external_ip: true
 
 redis:
-  address: redis:6379
+  # LiveKit runs in host network mode (see deploy/docker-compose.livekit.yml).
+  # The Redis container publishes only to the host loopback at 127.0.0.1:6379,
+  # so the address here must NOT be the bridge DNS name `redis`. From the
+  # host network namespace, `redis` does not resolve.
+  address: 127.0.0.1:6379
 
+# Embedded TURN server (LiveKit v1.9.3 schema).
+#
+# LiveKit's pion-based embedded TURN authenticates clients with
+# username = base62(LIVEKIT_API_KEY|participantID) and
+# password = base62(SHA256(LIVEKIT_API_SECRET|participantID)).
+# See livekit/pkg/service/turn.go (TURNAuthHandler).
+#
+# It does NOT honor any `shared_secret` / RFC 5766 long-term-credential
+# scheme. Clients receive the matching credentials inside LiveKit's
+# JoinResponse.ice_servers when they connect with a valid AccessToken.
+# The backend's HMAC-SHA1 iceConfig payload (turn_cred.rs) is independent
+# and would not validate against this server. See the spec addendum at
+# .kiro/specs/turn-credentials-audit/design.md (Addendum: LiveKit auth).
+#
+# tls_port: 0 means TURN-over-TCP-only on 3478. Promote to TURNS in a
+# follow-up once an FQDN + cert are provisioned.
 turn:
-  enabled: false
+  enabled: true
+  udp_port: 3478
+  tls_port: 0
+  external_tls: false
 
 keys:
   LIVEKIT_API_KEY_PLACEHOLDER: LIVEKIT_API_SECRET_PLACEHOLDER

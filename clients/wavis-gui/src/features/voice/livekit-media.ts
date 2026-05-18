@@ -58,6 +58,7 @@ const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_SHARE_TRACK_SUB = import.meta.env.VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION === 'true';
 const DEBUG_MAC_SHARE_AUDIO = import.meta.env.VITE_DEBUG_MAC_SHARE_AUDIO === 'true';
 const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
+const FORCE_RELAY = import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true' || import.meta.env.WAVIS_FORCE_RELAY === 'true';
 
 function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
   if (!result.capture_path) {
@@ -153,7 +154,17 @@ async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTra
 
 export const LIVEKIT_ROOM_OPTIONS = {
   adaptiveStream: true,
-  dynacast: false,
+  // Dynacast pauses simulcast layers no subscriber is currently consuming.
+  // For our 2–6 person rooms this saves uplink bandwidth on screen share
+  // (3-layer VP8 simulcast) when not everyone is viewing the high layer.
+  // Camera tracks publish with simulcast:false so dynacast has near-zero
+  // effect on them — only the screen-share path is impacted.
+  //
+  // Trade-off: an earlier observation noted that small-room dynacast can
+  // aggressively downgrade screen share on transient congestion and not
+  // recover quickly. If screen-share quality regressions reappear after
+  // this change, this is the first knob to flip back to false.
+  dynacast: true,
 } as const;
 
 export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishOptions {
@@ -235,6 +246,62 @@ function classifyCameraCaptureError(error: unknown): CameraStartError {
 
 export const MIC_OPUS_BITRATE_BPS = 48_000;
 export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
+
+export interface TurnIceConfigPayload {
+  stunUrls: string[];
+  turnUrls: string[];
+  turnUsername?: string;
+  turnCredential?: string;
+}
+
+export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfiguration {
+  console.log(LOG, 'Building ICE configuration:', payload);
+  const rtcConfig: RTCConfiguration = {
+    iceTransportPolicy: FORCE_RELAY ? 'relay' : 'all',
+  };
+
+  if (payload) {
+    const iceServers: RTCIceServer[] = [];
+
+    if (payload.stunUrls && payload.stunUrls.length > 0) {
+      iceServers.push({ urls: payload.stunUrls });
+      console.log(LOG, 'ICE config: added STUN servers:', payload.stunUrls);
+    }
+
+    if (payload.turnUrls && payload.turnUrls.length > 0 && payload.turnUsername && payload.turnCredential) {
+      iceServers.push({
+        urls: payload.turnUrls,
+        username: payload.turnUsername,
+        credential: payload.turnCredential,
+      });
+      console.log(LOG, 'ICE config: added TURN servers:', payload.turnUrls, 'with credentials');
+    }
+
+    if (iceServers.length > 0) {
+      rtcConfig.iceServers = iceServers;
+    }
+  }
+
+  if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
+    console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
+    rtcConfig.iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ];
+  }
+
+  if (FORCE_RELAY) {
+    console.info(
+      '[wavis:livekit-media] iceTransportPolicy=relay',
+      'iceServersCount=',
+      rtcConfig.iceServers?.length ?? 0,
+      'turnUrls.length=',
+      payload?.turnUrls.length ?? 0,
+    );
+  }
+
+  return rtcConfig;
+}
 
 
 type TrackPublishOptionsWithAudioBitrate = TrackPublishOptions & {
@@ -2071,7 +2138,7 @@ export class LiveKitModule {
   }
 
   /** Connect to LiveKit SFU. Creates Room in listen-only mode. */
-  async connect(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): Promise<void> {
+  async connect(sfuUrl: string, token: string, iceConfig?: TurnIceConfigPayload): Promise<void> {
     try {
       // 0. Read denoise preference for this session.
       const denoiseEnabled = await getDenoiseEnabled();
@@ -2086,59 +2153,18 @@ export class LiveKitModule {
       );
 
       // 1. Build ICE configuration
-      console.log(LOG, 'Building ICE configuration:', iceConfig);
-      const rtcConfig: RTCConfiguration = {};
-      
-      if (iceConfig) {
-        const iceServers: RTCIceServer[] = [];
-        
-        // Add STUN servers
-        if (iceConfig.stunUrls && iceConfig.stunUrls.length > 0) {
-          iceServers.push({ urls: iceConfig.stunUrls });
-          console.log(LOG, 'ICE config: added STUN servers:', iceConfig.stunUrls);
-        }
-        
-        // Add TURN servers with credentials
-        if (iceConfig.turnUrls && iceConfig.turnUrls.length > 0 && iceConfig.turnUsername && iceConfig.turnCredential) {
-          iceServers.push({
-            urls: iceConfig.turnUrls,
-            username: iceConfig.turnUsername,
-            credential: iceConfig.turnCredential,
-          });
-          console.log(LOG, 'ICE config: added TURN servers:', iceConfig.turnUrls, 'with credentials');
-        }
-        
-        if (iceServers.length > 0) {
-          rtcConfig.iceServers = iceServers;
-        }
-      }
-      
-      // Fallback: if no ICE servers configured, use Google's public STUN servers
-      if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
-        console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
-        rtcConfig.iceServers = [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-        ];
-      }
+      const rtcConfig = buildRtcConfiguration(iceConfig);
       
       console.log(LOG, 'creating LiveKit Room with config:', {
-        adaptiveStream: true,
-        dynacast: false,
+        ...LIVEKIT_ROOM_OPTIONS,
         platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
         hasIceServers: !!rtcConfig.iceServers,
         iceServerCount: rtcConfig.iceServers?.length ?? 0,
         iceServers: rtcConfig.iceServers,
       });
-      
+
       // 2. Create Room
-      this.room = new Room({
-        adaptiveStream: true,
-        dynacast: false,          // Disable dynacast — with ≤6 participants it aggressively
-                                  // downgrades screen share based on transient congestion
-                                  // and doesn't recover well. Audio-only rooms don't benefit
-                                  // from dynacast anyway (single video = screen share).
-      });
+      this.room = new Room({ ...LIVEKIT_ROOM_OPTIONS });
 
       // 2. Eagerly init AudioContext before connecting
       this.ensureAudioContext();
@@ -4321,6 +4347,13 @@ export class LiveKitModule {
       name: 'native-mic',
       audioPreset: { maxBitrate: MIC_OPUS_BITRATE_BPS },
       audioBitrate: MIC_OPUS_BITRATE_BPS,
+      // Explicit Opus bandwidth-saving features — both default to true in
+      // livekit-client today, but pinning them here protects against silent
+      // regressions if SDK defaults change. dtx skips packets during silence
+      // (~5–15 kbps saved per silent participant); red adds packet-loss
+      // resilience by piggy-backing previous frames inside Opus packets.
+      dtx: true,
+      red: true,
     } as TrackPublishOptionsWithAudioBitrate);
 
     this.callbacks.onNativeMicBridgeState?.(true);
@@ -4662,6 +4695,11 @@ export class LiveKitModule {
         // stream so remote subscribers can map it back to the publisher instead
         // of treating the browser-generated MediaStream UUID as a participant sid.
         stream: Track.Source.ScreenShare,
+        // System-audio share is typically continuous (music, video, app sound)
+        // so DTX rarely fires, but explicit defaults document intent and match
+        // the mic publish path. red is kept on for packet-loss resilience.
+        dtx: true,
+        red: true,
       } as TrackPublishOptionsWithAudioBitrate,
     );
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] ScreenShareAudio published, publication:', this.wasapiAudioPublication);

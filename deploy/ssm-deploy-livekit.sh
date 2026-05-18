@@ -134,6 +134,14 @@ LIVEKIT_API_SECRET=$(aws ssm get-parameter \
   --with-decryption --region "$REGION" \
   --query "Parameter.Value" --output text)
 
+# Note: TURN_SHARED_SECRET is intentionally NOT fetched here.
+# LiveKit v1.9.3 has no `auth.shared_secret` / RFC 5766 long-term-credential
+# mode — its embedded TURN derives credentials from the LiveKit API key/secret
+# pair (see livekit.prod.yaml comment block). The backend's HMAC-SHA1
+# TURN_SHARED_SECRET in `wavis-backend/src/voice/turn_cred.rs` targets a
+# standalone TURN server and is not consumed by this deploy path.
+# Tracked in .kiro/specs/turn-credentials-audit/design.md § Addendum.
+
 if [[ -z "${LIVEKIT_API_KEY}" || "${LIVEKIT_API_KEY}" == *"CHANGE-ME"* ]]; then
   echo "ERROR: ${SSM_PREFIX}/LIVEKIT_API_KEY is missing or a placeholder." >&2
   exit 1
