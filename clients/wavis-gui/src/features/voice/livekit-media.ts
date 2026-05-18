@@ -58,7 +58,16 @@ const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_SHARE_TRACK_SUB = import.meta.env.VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION === 'true';
 const DEBUG_MAC_SHARE_AUDIO = import.meta.env.VITE_DEBUG_MAC_SHARE_AUDIO === 'true';
 const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
-const FORCE_RELAY = import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true' || import.meta.env.WAVIS_FORCE_RELAY === 'true';
+// Read inside the function rather than capturing at module-load. Tests
+// (and any future reload-based flow) can change the env between imports;
+// a top-level `const` here would freeze the value at the first import in
+// the worker and silently desync from `vi.stubEnv()` in subsequent tests.
+function isForceRelayEnabled(): boolean {
+  return (
+    import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true'
+    || import.meta.env.WAVIS_FORCE_RELAY === 'true'
+  );
+}
 
 function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
   if (!result.capture_path) {
@@ -256,8 +265,9 @@ export interface TurnIceConfigPayload {
 
 export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfiguration {
   console.log(LOG, 'Building ICE configuration:', payload);
+  const forceRelay = isForceRelayEnabled();
   const rtcConfig: RTCConfiguration = {
-    iceTransportPolicy: FORCE_RELAY ? 'relay' : 'all',
+    iceTransportPolicy: forceRelay ? 'relay' : 'all',
   };
 
   if (payload) {
@@ -290,7 +300,7 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
     ];
   }
 
-  if (FORCE_RELAY) {
+  if (forceRelay) {
     console.info(
       '[wavis:livekit-media] iceTransportPolicy=relay',
       'iceServersCount=',
