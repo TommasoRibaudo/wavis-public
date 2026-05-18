@@ -165,7 +165,7 @@ impl Scenario for HostDirectedStopScenario {
                 guests[0]
                     .0
                     .send_json(&serde_json::json!({
-                        "type": "stop_share",
+                        "type": "stop-share",
                         "targetParticipantId": target_pid,
                     }))
                     .await
@@ -194,7 +194,7 @@ impl Scenario for HostDirectedStopScenario {
             for pid in &guest_peer_ids {
                 host.0
                     .send_json(&serde_json::json!({
-                        "type": "stop_share",
+                        "type": "stop-share",
                         "targetParticipantId": pid,
                     }))
                     .await

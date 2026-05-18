@@ -1555,7 +1555,7 @@ function setupExternalShareHelperListeners(): void {
       self.isSharing = false;
     }
     if (!localStopShareSent && client) {
-      client.send({ type: 'stop_share' });
+      client.send({ type: 'stop-share' });
     }
     localStopShareSent = false;
     notify();
@@ -2394,7 +2394,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       // Only send stop_share if we didn't already send it from stopShare()
       // and we're not in the middle of changing the share source
       if (!localStopShareSent && !localSourceChanging && client) {
-        client.send({ type: 'stop_share' });
+        client.send({ type: 'stop-share' });
       }
       localStopShareSent = false;
     },
@@ -3640,7 +3640,7 @@ export function leaveRoom(): void {
       .catch(() => { });
     // Send stop_share before leave for custom shares
     if (client && client.status === 'connected') {
-      client.send({ type: 'stop_share' });
+      client.send({ type: 'stop-share' });
     }
     // Clear state synchronously
     state.activeVideoShare = null;
@@ -3655,7 +3655,7 @@ export function leaveRoom(): void {
     externalShareHelperActive = false;
     // Fallback share is active — send stop_share signaling before leave
     if (client && client.status === 'connected') {
-      client.send({ type: 'stop_share' });
+      client.send({ type: 'stop-share' });
     }
     selfP.isSharing = false;
     state.shareQualityInfo = null;
@@ -4251,7 +4251,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
 
   // 4. Send stop_share signaling
   if (client) {
-    client.send({ type: 'stop_share' });
+    client.send({ type: 'stop-share' });
   }
 
   // 5. Clear affected slot(s)
@@ -4340,7 +4340,7 @@ export async function stopShare(): Promise<void> {
   await invoke('audio_share_stop').catch(() => { });
   await lkModule?.stopScreenShare();
   if (client) {
-    client.send({ type: 'stop_share' });
+    client.send({ type: 'stop-share' });
   }
 }
 
@@ -4386,7 +4386,7 @@ export async function changeShareSource(): Promise<boolean> {
       // local media is already dead (e.g. replaceTrack threw after teardown).
       const stillActive = (lkModule as LiveKitModule).hasActiveScreenShareTrack();
       if (!stillActive) {
-        client.send({ type: 'stop_share' });
+        client.send({ type: 'stop-share' });
         localStopShareSent = true;
       }
     }
@@ -4490,7 +4490,7 @@ export function unmuteParticipant(participantId: string): void {
 export function stopParticipantShare(participantId: string): void {
   if (!state.selfIsHost) return;
   if (!client) return;
-  client.send({ type: 'stop_share', targetParticipantId: participantId });
+  client.send({ type: 'stop-share', targetParticipantId: participantId });
 }
 
 export function stopAllShares(): void {

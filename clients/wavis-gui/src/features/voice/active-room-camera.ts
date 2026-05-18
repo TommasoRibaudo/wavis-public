@@ -1,5 +1,5 @@
-export function cameraButtonLabel(cameraIntent: boolean): 'Start Video' | 'Stop Video' {
-  return cameraIntent ? 'Stop Video' : 'Start Video';
+export function cameraButtonLabel(cameraIntent: boolean): 'camera-off' | 'camera-on' {
+  return cameraIntent ? 'camera-off' : 'camera-on';
 }
 
 export function shouldMountCameraButton(

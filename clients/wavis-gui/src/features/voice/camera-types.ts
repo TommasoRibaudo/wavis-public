@@ -61,6 +61,16 @@ export interface VideoTileViewModel {
   hasError: boolean;
 }
 
+export interface VideoTileSnapshot {
+  participantId: string;
+  displayName: string;
+  color: string;
+  hasTrack: boolean;
+  isSelf: boolean;
+  isMuted: boolean;
+  hasError: boolean;
+}
+
 export interface PanelTabInput {
   anyVideoActive: boolean;
   manualOverride: 'logs' | 'video' | null;
