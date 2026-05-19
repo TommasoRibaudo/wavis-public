@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startReceiving, stopReceiving } from './screen-share-viewer';
 import type { ShareQuality } from '@features/voice/voice-room';
@@ -9,6 +8,7 @@ import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
 import StreamHoverBar from '@shared/StreamHoverBar';
+import FocusMainButton from '@shared/FocusMainButton';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
@@ -541,13 +541,16 @@ export default function ScreenSharePage() {
             {p.isOwner ? '(you)' : 'screen share'}
           </span>
         </div>
-        <button
-          onClick={handleClose}
-          className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
-          aria-label="Close screen share window"
-        >
-          [x]
-        </button>
+        <div data-no-drag className="flex items-center shrink-0">
+          <FocusMainButton onClick={() => { void emitTo('main', 'focus-main-window', {}); }} />
+          <button
+            onClick={handleClose}
+            className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
+            aria-label="Close screen share window"
+          >
+            [x]
+          </button>
+        </div>
       </div>
 
       {/* Video area — double-click to pop back into Watch All grid */}
@@ -633,7 +636,7 @@ export default function ScreenSharePage() {
           onVoiceVolumeChange={handleVoiceVolumeChange}
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
-          onFocusMain={() => { void WebviewWindow.getByLabel('main').then((win) => win?.setFocus()); }}
+          onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (
