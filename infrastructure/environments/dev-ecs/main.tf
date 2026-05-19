@@ -11,6 +11,40 @@ terraform {
 
 provider "aws" {
   region = var.region
+
+  # Apply Wavis-standard tags to every resource that supports tags. Per-resource
+  # `tags` blocks (via `merge(local.tags, ...)`) still work — they merge with
+  # these defaults. This is what guarantees the cost-allocation tags show up on
+  # auto-created sub-resources (e.g. the LiveKit EBS root volume, ACM cert,
+  # CloudWatch alarms missing explicit `tags = local.tags`, ECS task-def
+  # revisions, DynamoDB tables, etc.).
+  default_tags {
+    tags = {
+      Project     = "wavis"
+      Environment = var.environment_name
+      Owner       = "wavis"
+      CostCenter  = "wavis"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Aliased provider for us-east-1 — required for CloudFront WAFs (always global,
+# managed in us-east-1) and any other CloudFront-bound resources like ACM certs
+# used as viewer certificates.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "wavis"
+      Environment = var.environment_name
+      Owner       = "wavis"
+      CostCenter  = "wavis"
+      ManagedBy   = "terraform"
+    }
+  }
 }
 
 data "aws_availability_zones" "available" {
@@ -52,6 +86,25 @@ locals {
     BUG_REPORT_LLM_MODEL              = "claude-sonnet-4-20250514"
     LIVEKIT_HOST                      = "ws://${aws_eip.livekit.public_ip}:7880"
     LIVEKIT_PUBLIC_HOST               = "wss://${aws_cloudfront_distribution.backend.domain_name}"
+    # TURN configuration intentionally absent in dev-ecs.
+    #
+    # The backend's HMAC-SHA1 issuer (wavis-backend/src/voice/turn_cred.rs)
+    # produces RFC 5766 long-term credentials. LiveKit v1.9.3's embedded
+    # TURN does not honor that auth scheme — it derives credentials from
+    # LIVEKIT_API_KEY / LIVEKIT_API_SECRET per participant. Pointing
+    # WAVIS_TURN_URLS at LiveKit's TURN endpoint would produce backend-
+    # issued iceServers entries that fail STUN Allocate on every join.
+    #
+    # With WAVIS_TURN_URLS / TURN_SHARED_SECRET unset, TurnConfig::try_from_env
+    # returns Ok(None), inject_turn_credentials no-ops, and the GUI relies
+    # exclusively on LiveKit's JoinResponse.ice_servers for relay.
+    #
+    # Re-enable when a TURN server that honors RFC 5766 (e.g. a coturn
+    # sidecar) lands. Tracked in the workspace-only spec at
+    # .kiro/specs/turn-credentials-audit/ (Addendum: LiveKit auth).
+    # See also: .kiro/specs/turn-relay-symmetric-nat-fix/ — defines the
+    # post-Option-B contingency path; backend issuer remains dormant
+    # pending standalone-coturn promotion.
   }
 
   managed_config_keys = toset([
@@ -79,6 +132,17 @@ locals {
     PHRASE_ENCRYPTION_KEY   = "CHANGE-ME-base64-32-byte-key!!!!"
     PAIRING_CODE_PEPPER     = "CHANGE-ME-pairing-pepper-32b!!!!"
     SFU_JWT_SECRET          = "CHANGE-ME-sfu-secret-32-bytes!!!"
+    # TURN_SHARED_SECRET intentionally absent — see local.config above.
+    #
+    # IMPORTANT: removing this key from local.secrets causes
+    # `aws_ssm_parameter.secrets["TURN_SHARED_SECRET"]` (created by a
+    # previous apply) to be **destroyed** on the next apply. That is
+    # the desired outcome — the backend stops issuing dead HMAC
+    # credentials — but it is a destructive change. Review
+    # `terraform plan` before running apply.
+    # See also: .kiro/specs/turn-relay-symmetric-nat-fix/ — defines the
+    # post-Option-B contingency path; backend issuer remains dormant
+    # pending standalone-coturn promotion.
     LIVEKIT_API_KEY         = "CHANGE-ME-livekit-api-key"
     LIVEKIT_API_SECRET      = "CHANGE-ME-livekit-api-secret"
     RDS_MASTER_PASSWORD     = "CHANGE-ME-rds-master-password"

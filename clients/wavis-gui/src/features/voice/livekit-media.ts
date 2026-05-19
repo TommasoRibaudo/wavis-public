@@ -17,6 +17,7 @@ import type { AudioProcessorOptions, TrackProcessor, LocalVideoTrack, TrackPubli
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { NativeMicBridge } from './native-mic-bridge';
+import type { CameraMediaCallbacks, CameraQuality, CameraStartError } from './camera-types';
 import {
   getAudioOutputDevice,
   getAudioInputDevice,
@@ -56,6 +57,14 @@ const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_SHARE_TRACK_SUB = import.meta.env.VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION === 'true';
 const DEBUG_MAC_SHARE_AUDIO = import.meta.env.VITE_DEBUG_MAC_SHARE_AUDIO === 'true';
+const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
+// Read inside the function rather than capturing at module-load. Tests
+// (and any future reload-based flow) can change the env between imports;
+// a top-level `const` here would freeze the value at the first import in
+// the worker and silently desync from `vi.stubEnv()` in subsequent tests.
+export function isForceRelayEnabled(): boolean {
+  return import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true';
+}
 
 function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
   if (!result.capture_path) {
@@ -87,11 +96,219 @@ function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void
 }
 const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION === 'true';
 
+const CAMERA_CAPTURE_TIMEOUT_MS = 10_000;
+const CAMERA_PUBLISH_TIMEOUT_MS = 5_000;
+const REMOTE_CAMERA_READY_TIMEOUT_MS = 10_000;
+
+/**
+ * Open a camera device via getUserMedia with a hard timeout. Standard
+ * `getUserMedia` does not accept an AbortSignal, so we cannot truly cancel an
+ * in-flight request — the load-bearing protection here is the post-resolve
+ * cleanup: if the browser resolves the stream after the timeout sentinel
+ * already rejected, every track is stopped immediately and a `timeout` error
+ * is thrown. This guarantees no orphaned camera (LED on, device locked from
+ * other apps) on slow USB enumeration.
+ *
+ * @param deviceId — concrete deviceId or null for the browser/Tauri default.
+ * @returns the resolved video MediaStreamTrack on success.
+ * @throws CameraStartError — `timeout` when the deadline expires,
+ *   `device_unavailable` when the stream has no video track, or any error
+ *   from getUserMedia (caller classifies via classifyCameraCaptureError).
+ */
+async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTrack> {
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    timedOut = true;
+  }, CAMERA_CAPTURE_TIMEOUT_MS);
+
+  // The browser request runs to completion regardless — we just observe the
+  // result and stop everything if we already gave up waiting.
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId === null ? true : { deviceId },
+    });
+  } catch (error) {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (timedOut) {
+      throw { kind: 'timeout' } satisfies CameraStartError;
+    }
+    throw error;
+  }
+  if (timer !== null) {
+    clearTimeout(timer);
+    timer = null;
+  }
+
+  if (timedOut) {
+    // Late-resolve race: the browser handed us a live stream after we already
+    // rejected. Stop every track so the camera LED goes off and the device is
+    // released, then throw the timeout we promised.
+    stream.getTracks().forEach((t) => t.stop());
+    throw { kind: 'timeout' } satisfies CameraStartError;
+  }
+
+  const track = stream.getVideoTracks()[0] ?? null;
+  if (!track) {
+    throw { kind: 'device_unavailable' } satisfies CameraStartError;
+  }
+  return track;
+}
+
+export const LIVEKIT_ROOM_OPTIONS = {
+  adaptiveStream: true,
+  // Dynacast pauses simulcast layers no subscriber is currently consuming.
+  // For our 2–6 person rooms this saves uplink bandwidth on screen share
+  // (3-layer VP8 simulcast) when not everyone is viewing the high layer.
+  // Camera tracks publish with simulcast:false so dynacast has near-zero
+  // effect on them — only the screen-share path is impacted.
+  //
+  // Trade-off: an earlier observation noted that small-room dynacast can
+  // aggressively downgrade screen share on transient congestion and not
+  // recover quickly. If screen-share quality regressions reappear after
+  // this change, this is the first knob to flip back to false.
+  dynacast: true,
+} as const;
+
+export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishOptions {
+  return {
+    source: Track.Source.Camera,
+    simulcast: false,
+    videoCodec: 'vp8',
+    videoEncoding: {
+      maxBitrate: quality.maxBitrate,
+      maxFramerate: quality.maxFps,
+    },
+  } as TrackPublishOptions;
+}
+
+export function buildCameraTrackConstraints(quality: CameraQuality): MediaTrackConstraints {
+  return {
+    width: quality.width,
+    height: quality.height,
+    frameRate: quality.maxFps,
+  };
+}
+
+export function buildCameraSenderParameters(quality: CameraQuality): RTCRtpSendParameters {
+  return {
+    encodings: [{
+      maxBitrate: quality.maxBitrate,
+      maxFramerate: quality.maxFps,
+    }],
+  } as RTCRtpSendParameters;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutValue: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(timeoutValue), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isCameraStartError(value: unknown): value is CameraStartError {
+  if (!value || typeof value !== 'object' || !('kind' in value)) {
+    return false;
+  }
+  const kind = (value as { kind?: unknown }).kind;
+  return (
+    kind === 'permission_denied' ||
+    kind === 'device_unavailable' ||
+    kind === 'device_in_use' ||
+    kind === 'timeout' ||
+    kind === 'no_camera_configured' ||
+    kind === 'publish_failed'
+  );
+}
+
+function classifyCameraCaptureError(error: unknown): CameraStartError {
+  if (isCameraStartError(error)) {
+    return error;
+  }
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return { kind: 'permission_denied' };
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    return { kind: 'device_unavailable' };
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return { kind: 'device_in_use' };
+  }
+  return { kind: 'device_unavailable' };
+}
+
 export const MIC_OPUS_BITRATE_BPS = 48_000;
 export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
-// Keep in sync with clients/wavis-gui/scripts/apply-livekit-transceiver-reuse-fix.mjs
-// and revisit on every livekit-client version bump.
-const INACTIVE_VIDEO_TRANSCEIVER_CAP = 2;
+
+export interface TurnIceConfigPayload {
+  stunUrls: string[];
+  turnUrls: string[];
+  turnUsername?: string;
+  turnCredential?: string;
+}
+
+export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfiguration {
+  console.log(LOG, 'Building ICE configuration:', payload);
+  const forceRelay = isForceRelayEnabled();
+  const rtcConfig: RTCConfiguration = {
+    iceTransportPolicy: forceRelay ? 'relay' : 'all',
+  };
+
+  if (payload) {
+    const iceServers: RTCIceServer[] = [];
+
+    if (payload.stunUrls && payload.stunUrls.length > 0) {
+      iceServers.push({ urls: payload.stunUrls });
+      console.log(LOG, 'ICE config: added STUN servers:', payload.stunUrls);
+    }
+
+    if (payload.turnUrls && payload.turnUrls.length > 0 && payload.turnUsername && payload.turnCredential) {
+      iceServers.push({
+        urls: payload.turnUrls,
+        username: payload.turnUsername,
+        credential: payload.turnCredential,
+      });
+      console.log(LOG, 'ICE config: added TURN servers:', payload.turnUrls, 'with credentials');
+    }
+
+    if (iceServers.length > 0) {
+      rtcConfig.iceServers = iceServers;
+    }
+  }
+
+  // Leave iceServers undefined in ALL no-payload cases (force-relay on or off).
+  // livekit-client v2.17.2 Engine.makeRTCConfiguration's predicate
+  // `if (serverResponse.iceServers && !rtcConfig.iceServers)` only fires when
+  // rtcConfig.iceServers is falsy — supplying any array blocks SDK injection.
+  // With iceTransportPolicy:'relay', a STUN-only array causes immediate ICE
+  // failure, which is worse than any silent regression in the injection path.
+
+  if (forceRelay) {
+    console.info(
+      '[wavis:livekit-media] iceTransportPolicy=relay',
+      'iceServersCount=',
+      rtcConfig.iceServers?.length ?? 0,
+      'turnUrls.length=',
+      payload?.turnUrls?.length ?? 0,
+    );
+  }
+
+  return rtcConfig;
+}
+
 
 type TrackPublishOptionsWithAudioBitrate = TrackPublishOptions & {
   audioBitrate?: number;
@@ -231,6 +448,13 @@ export interface VideoReceiveStats {
   nackCount: number;
   /** Average decode time per frame in ms (totalDecodeTime / framesDecoded * 1000). */
   avgDecodeTimeMs: number;
+}
+
+interface RemoteCameraEntry {
+  publication: RemoteTrackPublication | null;
+  track: MediaStreamTrack | null;
+  muted: boolean;
+  readyCleanup: (() => void) | null;
 }
 
 /** Reported from LiveKitModule to VoiceRoom after track is published. */
@@ -418,7 +642,7 @@ const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
   max:  { ...DETAIL_PROFILE, maxFramerate: 60 },
 };
 
-export interface MediaCallbacks {
+export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {
   /** Called when media transitions to connected (mic published or listen-only). */
   onMediaConnected: () => void;
   /** Called when LiveKit reports that media is reconnecting in place. */
@@ -859,6 +1083,7 @@ export class LiveKitModule {
   private participantGains: Map<string, GainNode> = new Map();
   private desiredParticipantVolumes: Map<string, number> = new Map();
   private audioElementMap: Map<string, HTMLAudioElement> = new Map();
+  private cameraTracks: Map<string, RemoteCameraEntry> = new Map();
   private screenShareElements: Map<string, { stream: MediaStream; startedAtMs: number; trackSid: string; dummyVideo?: HTMLVideoElement; trackEndedCleanup?: () => void }> = new Map();
   private screenShareAudioTracks: Map<string, { track: RemoteTrack; participant: RemoteParticipant }> = new Map();
   private screenShareAudioPublications: Map<string, RemoteTrackPublication> = new Map();
@@ -878,6 +1103,8 @@ export class LiveKitModule {
   private localMicInterval: ReturnType<typeof setInterval> | null = null;
   private micAudioProcessor: MicAudioProcessor | null = null;
   private localMicTrack: LocalAudioTrack | null = null;
+  private localCameraPublication: LocalTrackPublication | null = null;
+  private localCameraMediaTrack: MediaStreamTrack | null = null;
   /** Whether the JS-side noise suppression processor should be active on this session's mic. */
   private jsDenoise = false;
   /** Session preference used when voice-room later opts the microphone into publishing. */
@@ -977,6 +1204,99 @@ export class LiveKitModule {
       NS_LOG,
       `state=${state.state} noise_floor=${state.noiseFloor.toFixed(3)} gate=${state.gateGain.toFixed(3)} in_rms=${state.inputRms.toFixed(3)} out_rms=${state.outputRms.toFixed(3)}`,
     );
+  }
+
+  private clearRemoteCameraEntry(participantId: string): void {
+    const entry = this.cameraTracks.get(participantId);
+    entry?.readyCleanup?.();
+    this.cameraTracks.delete(participantId);
+  }
+
+  private async waitForRemoteCameraReady(track: MediaStreamTrack): Promise<() => void> {
+    const stream = new MediaStream([track]);
+    const video = document.createElement('video');
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    document.body.appendChild(video);
+    video.play().catch(() => {});
+
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== null) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        resolve();
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== null) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        reject(error);
+      };
+
+      timeout = setTimeout(() => {
+        fail(new Error('remote camera ready timeout'));
+      }, REMOTE_CAMERA_READY_TIMEOUT_MS);
+
+      if (track.readyState !== 'live') {
+        finish();
+        return;
+      }
+
+      const videoWithRvfc = video as HTMLVideoElement & {
+        requestVideoFrameCallback?: (callback: () => void) => number;
+        cancelVideoFrameCallback?: (handle: number) => void;
+      };
+      if (typeof videoWithRvfc.requestVideoFrameCallback === 'function') {
+        const rafHandle = videoWithRvfc.requestVideoFrameCallback(() => finish());
+        // Store the handle so cleanup() can cancel it on WebKit where the
+        // callback may stay queued after srcObject is nulled.
+        (video as HTMLVideoElement & { _rvfcHandle?: number })._rvfcHandle = rafHandle;
+        return;
+      }
+
+      if ('onloadeddata' in video) {
+        video.onloadeddata = () => finish();
+        return;
+      }
+
+      finish();
+    }).catch((error) => {
+      video.srcObject = null;
+      video.onloadeddata = null;
+      video.remove();
+      throw error;
+    });
+
+    return () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      // Cancel any pending requestVideoFrameCallback before detaching srcObject
+      // so WebKit doesn't fire the callback on a detached element.
+      const videoWithRvfc = video as HTMLVideoElement & {
+        cancelVideoFrameCallback?: (handle: number) => void;
+        _rvfcHandle?: number;
+      };
+      if (typeof videoWithRvfc.cancelVideoFrameCallback === 'function' && videoWithRvfc._rvfcHandle !== undefined) {
+        videoWithRvfc.cancelVideoFrameCallback(videoWithRvfc._rvfcHandle);
+      }
+      video.srcObject = null;
+      video.onloadeddata = null;
+      video.remove();
+    };
   }
 
   private shouldUseJsNoiseSuppression(denoiseEnabled: boolean): boolean {
@@ -1291,38 +1611,28 @@ export class LiveKitModule {
     );
   }
 
-  private sweepInactiveVideoTransceivers(): void {
+  // Stop ALL inactive video transceivers before each screen share publish.
+  // This prevents the LiveKit transceiver reuse patch from claiming a stale
+  // m-line that was previously used for camera (or an earlier screen share
+  // session), which confuses the SFU: the SFU associates the new screen share
+  // track with the old trackSid from that m-line, breaking routing for viewers.
+  // Stopped transceivers are skipped by `isStopped` checks in both the reuse
+  // patch and the sweep, so a fresh transceiver is always created — giving the
+  // SFU a clean, unambiguous m-line for the new AddTrack signal.
+  private stopAllInactiveVideoTransceivers(): void {
     const peerConnection = this.getPublisherPeerConnection();
     if (!peerConnection) {
       return;
     }
-
-    const inactiveVideoTransceivers = peerConnection
-      .getTransceivers()
-      .filter(isInactiveVideoLeakCandidate);
-    const before = inactiveVideoTransceivers.length;
-    if (before <= INACTIVE_VIDEO_TRANSCEIVER_CAP) {
-      return;
-    }
-
-    for (const transceiver of inactiveVideoTransceivers.slice(INACTIVE_VIDEO_TRANSCEIVER_CAP)) {
-      try {
-        transceiver.stop();
-      } catch {
-        // Best-effort leak trimming should not block the next publish attempt.
+    for (const transceiver of peerConnection.getTransceivers()) {
+      if (isInactiveVideoLeakCandidate(transceiver)) {
+        try {
+          transceiver.stop();
+        } catch {
+          // Best-effort: do not block the next publish attempt.
+        }
       }
     }
-
-    const after = peerConnection
-      .getTransceivers()
-      .filter(isInactiveVideoLeakCandidate)
-      .length;
-    emitTelemetryEvent({
-      name: 'share.leak.transceiver_cap',
-      before,
-      after,
-      ts: Date.now(),
-    });
   }
 
   private captureShareLeakPublishDiagnostics(): void {
@@ -1834,7 +2144,7 @@ export class LiveKitModule {
   }
 
   /** Connect to LiveKit SFU. Creates Room in listen-only mode. */
-  async connect(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): Promise<void> {
+  async connect(sfuUrl: string, token: string, iceConfig?: TurnIceConfigPayload): Promise<void> {
     try {
       // 0. Read denoise preference for this session.
       const denoiseEnabled = await getDenoiseEnabled();
@@ -1849,59 +2159,22 @@ export class LiveKitModule {
       );
 
       // 1. Build ICE configuration
-      console.log(LOG, 'Building ICE configuration:', iceConfig);
-      const rtcConfig: RTCConfiguration = {};
-      
-      if (iceConfig) {
-        const iceServers: RTCIceServer[] = [];
-        
-        // Add STUN servers
-        if (iceConfig.stunUrls && iceConfig.stunUrls.length > 0) {
-          iceServers.push({ urls: iceConfig.stunUrls });
-          console.log(LOG, 'ICE config: added STUN servers:', iceConfig.stunUrls);
-        }
-        
-        // Add TURN servers with credentials
-        if (iceConfig.turnUrls && iceConfig.turnUrls.length > 0 && iceConfig.turnUsername && iceConfig.turnCredential) {
-          iceServers.push({
-            urls: iceConfig.turnUrls,
-            username: iceConfig.turnUsername,
-            credential: iceConfig.turnCredential,
-          });
-          console.log(LOG, 'ICE config: added TURN servers:', iceConfig.turnUrls, 'with credentials');
-        }
-        
-        if (iceServers.length > 0) {
-          rtcConfig.iceServers = iceServers;
-        }
-      }
-      
-      // Fallback: if no ICE servers configured, use Google's public STUN servers
-      if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
-        console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
-        rtcConfig.iceServers = [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-        ];
-      }
+      const rtcConfig = buildRtcConfiguration(iceConfig);
       
       console.log(LOG, 'creating LiveKit Room with config:', {
-        adaptiveStream: true,
-        dynacast: false,
+        ...LIVEKIT_ROOM_OPTIONS,
         platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
         hasIceServers: !!rtcConfig.iceServers,
         iceServerCount: rtcConfig.iceServers?.length ?? 0,
-        iceServers: rtcConfig.iceServers,
+        iceServers: rtcConfig.iceServers?.map((s) => ({
+          urls: s.urls,
+          username: s.username,
+          // credential intentionally omitted — Requirement 2.5
+        })),
       });
-      
+
       // 2. Create Room
-      this.room = new Room({
-        adaptiveStream: true,
-        dynacast: false,          // Disable dynacast — with ≤6 participants it aggressively
-                                  // downgrades screen share based on transient congestion
-                                  // and doesn't recover well. Audio-only rooms don't benefit
-                                  // from dynacast anyway (single video = screen share).
-      });
+      this.room = new Room({ ...LIVEKIT_ROOM_OPTIONS });
 
       // 2. Eagerly init AudioContext before connecting
       this.ensureAudioContext();
@@ -1997,6 +2270,19 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const existing = this.cameraTracks.get(participant.identity);
+          this.cameraTracks.set(participant.identity, {
+            publication,
+            track: existing?.track ?? null,
+            muted: publication.isMuted ?? existing?.muted ?? false,
+            readyCleanup: existing?.readyCleanup ?? null,
+          });
+          publication.setSubscribed?.(true);
+          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera published, subscribing', participant.identity, 'trackSid:', publication.trackSid);
+          this.callbacks.onRemoteCameraPublished?.(participant.identity);
+          return;
+        }
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
         if (!this.screenShareAudioPending.has(participant.identity)) {
@@ -2011,6 +2297,52 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+          // Force-keep this subscription enabled regardless of adaptive stream.
+          // VideoTile attaches via `video.srcObject = new MediaStream([track])`, bypassing
+          // LiveKit's element observer (track.attach()/registerElement). With no registered
+          // consumer, adaptiveStream pauses the track server-side after the first frame.
+          // Same override the screen-share path uses below.
+          publication.setEnabled(true);
+
+          const previous = this.cameraTracks.get(participant.identity);
+          previous?.readyCleanup?.();
+          const entry: RemoteCameraEntry = {
+            publication,
+            track: null,
+            muted: publication.isMuted ?? false,
+            readyCleanup: null,
+          };
+          this.cameraTracks.set(participant.identity, entry);
+          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera TrackSubscribed', participant.identity, 'trackSid:', track.sid, 'readyState:', track.mediaStreamTrack.readyState);
+
+          this.waitForRemoteCameraReady(track.mediaStreamTrack)
+            .then((cleanup) => {
+              if (this.disposed) {
+                cleanup();
+                return;
+              }
+              const currentEntry = this.cameraTracks.get(participant.identity);
+              if (!currentEntry || currentEntry.publication !== publication) {
+                cleanup();
+                return;
+              }
+              currentEntry.track = track.mediaStreamTrack;
+              currentEntry.muted = publication.isMuted ?? currentEntry.muted;
+              currentEntry.readyCleanup = cleanup;
+              if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera ready', participant.identity, 'trackSid:', track.sid);
+              this.callbacks.onRemoteCameraReady?.(participant.identity, track.mediaStreamTrack);
+            })
+            .catch((err) => {
+              // Subscription-timeout warnings are always logged (unconditional per design).
+              console.warn(LOG, '[video-feed] remote camera ready failed/timeout', participant.identity, 'trackSid:', track.sid, err);
+              const currentEntry = this.cameraTracks.get(participant.identity);
+              if (currentEntry?.publication === publication) {
+                currentEntry.readyCleanup = null;
+              }
+            });
+          return;
+        }
         if (track.kind === Track.Kind.Audio) {
           // Defer screen share audio — only attach when user opens the viewer
           if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
@@ -2086,6 +2418,11 @@ export class LiveKitModule {
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+          this.clearRemoteCameraEntry(participant.identity);
+          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+          return;
+        }
         if (track.kind === Track.Kind.Audio) {
           if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
             // Clean up deferred screen share audio
@@ -2129,6 +2466,10 @@ export class LiveKitModule {
       // h. ParticipantDisconnected
       addListener(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
+        if (this.cameraTracks.has(participant.identity)) {
+          this.clearRemoteCameraEntry(participant.identity);
+          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+        }
         this.cleanupParticipantAudio(participant.identity);
         // Clean up deferred screen share audio
         this.screenShareAudioTracks.delete(participant.identity);
@@ -2181,6 +2522,10 @@ export class LiveKitModule {
       // j. LocalTrackPublished
       addListener(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          this.localCameraPublication = publication;
+          this.localCameraMediaTrack = publication.track?.mediaStreamTrack ?? this.localCameraMediaTrack;
+        }
         if (publication.track?.kind === Track.Kind.Audio) {
           // Suppress local playback on screen share audio tracks — the LiveKit SDK
           // strips suppressLocalAudioPlayback from getDisplayMedia() options, so we
@@ -2208,9 +2553,23 @@ export class LiveKitModule {
       // k. LocalTrackUnpublished
       addListener(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          this.localCameraPublication = null;
+          this.localCameraMediaTrack = null;
+        }
         if (publication.source === Track.Source.ScreenShare) {
           this.callbacks.onLocalScreenShareEnded();
         }
+      });
+
+      addListener(RoomEvent.TrackUnpublished, (
+        publication: RemoteTrackPublication,
+        participant: RemoteParticipant,
+      ) => {
+        if (this.disposed) return;
+        if (publication.source !== Track.Source.Camera) return;
+        this.clearRemoteCameraEntry(participant.identity);
+        this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
       });
 
       // l. MediaDevicesError
@@ -2222,6 +2581,14 @@ export class LiveKitModule {
       // m. TrackMuted — remote participant muted their audio
       addListener(RoomEvent.TrackMuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const entry = this.cameraTracks.get(participant.identity);
+          if (entry) {
+            entry.muted = true;
+          }
+          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, true);
+          return;
+        }
         if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
           this.callbacks.onParticipantMuteChanged(participant.identity, true);
         }
@@ -2230,6 +2597,14 @@ export class LiveKitModule {
       // n. TrackUnmuted — remote participant unmuted their audio
       addListener(RoomEvent.TrackUnmuted, (publication: RemoteTrackPublication, participant: Participant) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera) {
+          const entry = this.cameraTracks.get(participant.identity);
+          if (entry) {
+            entry.muted = false;
+          }
+          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, false);
+          return;
+        }
         if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
           this.callbacks.onParticipantMuteChanged(participant.identity, false);
         }
@@ -2250,13 +2625,23 @@ export class LiveKitModule {
         }
       });
 
-      // p. TrackStreamStateChanged — detect paused/resumed screen share video (adaptive stream)
+      // p. TrackStreamStateChanged — detect paused/resumed screen share or camera video (adaptive stream)
       addListener(RoomEvent.TrackStreamStateChanged, (
         publication: RemoteTrackPublication,
         streamState: Track.StreamState,
         participant: RemoteParticipant,
       ) => {
         if (this.disposed) return;
+        if (publication.source === Track.Source.Camera && publication.kind === Track.Kind.Video) {
+          if (streamState === Track.StreamState.Paused) {
+            // Always warn — adaptiveStream pausing a camera track is unexpected
+            // (we call setEnabled(true) on subscribe) and worth logging unconditionally.
+            console.warn(LOG, '[video-feed] camera stream paused by adaptiveStream — re-enabling', participant.identity, 'trackSid:', publication.trackSid);
+            publication.setEnabled(true);
+          } else if (streamState === Track.StreamState.Active) {
+            if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera stream active', participant.identity, 'trackSid:', publication.trackSid);
+          }
+        }
         if (
           publication.source === Track.Source.ScreenShare &&
           publication.kind === Track.Kind.Video
@@ -2468,6 +2853,11 @@ export class LiveKitModule {
     this.micAudioProcessor = null;
     this.setNoiseSuppressionActive(false);
     this.localMicTrack = null;
+    if (this.localCameraMediaTrack) {
+      this.localCameraMediaTrack.stop();
+      this.localCameraMediaTrack = null;
+    }
+    this.localCameraPublication = null;
 
     // 5. Room cleanup (null-safe — room may never have been assigned)
     if (this.room !== null) {
@@ -2669,7 +3059,7 @@ export class LiveKitModule {
     }
 
     try {
-      this.sweepInactiveVideoTransceivers();
+      this.stopAllInactiveVideoTransceivers();
       this.noteShareLeakPublishStart();
       await this.room.localParticipant.setScreenShareEnabled(true, captureOpts, publishOpts);
       this.captureShareLeakPublishDiagnostics();
@@ -2710,7 +3100,7 @@ export class LiveKitModule {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
-          this.sweepInactiveVideoTransceivers();
+          this.stopAllInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
           await this.room.localParticipant.setScreenShareEnabled(true);
           this.captureShareLeakPublishDiagnostics();
@@ -3967,6 +4357,13 @@ export class LiveKitModule {
       name: 'native-mic',
       audioPreset: { maxBitrate: MIC_OPUS_BITRATE_BPS },
       audioBitrate: MIC_OPUS_BITRATE_BPS,
+      // Explicit Opus bandwidth-saving features — both default to true in
+      // livekit-client today, but pinning them here protects against silent
+      // regressions if SDK defaults change. dtx skips packets during silence
+      // (~5–15 kbps saved per silent participant); red adds packet-loss
+      // resilience by piggy-backing previous frames inside Opus packets.
+      dtx: true,
+      red: true,
     } as TrackPublishOptionsWithAudioBitrate);
 
     this.callbacks.onNativeMicBridgeState?.(true);
@@ -3976,6 +4373,262 @@ export class LiveKitModule {
   /* ─── Placeholder methods (implemented in later tasks) ─────── */
 
   /* ─── WASAPI Audio Bridge ─────────────────────────────────────── */
+
+  /**
+   * Open the camera via getUserMedia (with AbortController-backed timeout) and
+   * publish it to the LiveKit room as a single-encoding VP8 Camera track.
+   *
+   * Resolves with the published `trackId` on success.
+   * Rejects with a `CameraStartError` on any failure:
+   *   - `permission_denied` — OS/browser denied camera access
+   *   - `device_unavailable` — no video track returned by the browser
+   *   - `device_in_use` — device locked by another app
+   *   - `timeout` — getUserMedia or publishTrack did not resolve within the deadline
+   *   - `publish_failed` — LiveKit publication failed or timed out
+   *
+   * On any failure the captured MediaStreamTrack (if any) is stopped and
+   * `localCameraPublication` / `localCameraMediaTrack` are cleared.
+   */
+  async publishCamera(opts: {
+    deviceId: string | null;
+    quality: CameraQuality;
+  }): Promise<{ trackId: string }> {
+    if (!this.room) {
+      throw { kind: 'publish_failed' } satisfies CameraStartError;
+    }
+
+    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera start', { deviceId: opts.deviceId, quality: opts.quality.tier });
+    let mediaTrack: MediaStreamTrack | null = null;
+    try {
+      // openCameraDevice uses AbortController so a slow camera that resolves
+      // after the timeout doesn't leave an orphaned track with the LED on.
+      mediaTrack = await openCameraDevice(opts.deviceId).catch((err) => {
+        throw classifyCameraCaptureError(err);
+      });
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera getUserMedia ok', { trackId: mediaTrack.id, readyState: mediaTrack.readyState, label: mediaTrack.label });
+
+      // publishTrack timeout: if the SDK resolves after we've already rejected,
+      // the then-handler below unpublishes the phantom publication best-effort.
+      // Capture the track in a const so the late-resolve closure doesn't have
+      // to reach back through a possibly-mutated outer variable.
+      const capturedTrack = mediaTrack;
+      const room = this.room;
+      const publishPromise = room.localParticipant.publishTrack(
+        capturedTrack,
+        buildCameraPublishOptions(opts.quality),
+      );
+      const publication = await withTimeout(
+        publishPromise,
+        CAMERA_PUBLISH_TIMEOUT_MS,
+        { kind: 'publish_failed' } satisfies CameraStartError,
+      ).catch((err) => {
+        // Best-effort cleanup of a phantom publication that may arrive after
+        // the timeout sentinel already rejected.
+        publishPromise.then((pub) => {
+          room.localParticipant.unpublishTrack(pub?.track ?? capturedTrack).catch(() => {});
+        }).catch(() => {});
+        throw err;
+      });
+
+      this.localCameraPublication = publication;
+      this.localCameraMediaTrack = mediaTrack;
+      const trackId = publication?.trackSid ?? publication?.track?.sid ?? mediaTrack.id;
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera published', { trackId, trackSid: publication?.trackSid });
+      return { trackId };
+    } catch (error) {
+      if (mediaTrack) {
+        mediaTrack.stop();
+      }
+      this.localCameraPublication = null;
+      this.localCameraMediaTrack = null;
+      if (isCameraStartError(error)) {
+        if (DEBUG_VIDEO_FEED) console.warn(LOG, '[video-feed] publishCamera CameraStartError', error);
+        throw error;
+      }
+      if (mediaTrack) {
+        console.warn(LOG, 'publishCamera: publishTrack failed, classifying as publish_failed', error);
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+      console.warn(LOG, 'publishCamera: getUserMedia failed, classifying camera capture error', error);
+      throw classifyCameraCaptureError(error);
+    }
+  }
+
+  async unpublishCamera(): Promise<void> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const mediaTrack =
+      this.localCameraMediaTrack ??
+      publication?.track?.mediaStreamTrack ??
+      null;
+    // Prefer the LiveKit LocalTrack wrapper so the SDK can cleanly remove its own publication.
+    const localTrack = publication?.track ?? null;
+
+    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] unpublishCamera start', { hasPub: !!publication, hasLocalTrack: !!localTrack, hasMediaTrack: !!mediaTrack });
+    this.localCameraPublication = null;
+    this.localCameraMediaTrack = null;
+
+    try {
+      const trackToUnpublish = localTrack ?? mediaTrack;
+      if (this.room && trackToUnpublish) {
+        await this.room.localParticipant.unpublishTrack(trackToUnpublish);
+        if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] unpublishCamera unpublishTrack done');
+      }
+    } finally {
+      mediaTrack?.stop();
+    }
+  }
+
+  getLocalCameraTrack(): MediaStreamTrack | null {
+    return this.localCameraMediaTrack ?? this.localCameraPublication?.track?.mediaStreamTrack ?? null;
+  }
+
+  /**
+   * Subscribe only to remote cameras whose participant id is in `visibleParticipantIds`;
+   * unsubscribe the rest. Used to avoid pulling video bytes for cameras that voice-room
+   * is currently filtering out of the tile grid (e.g. participants in another sub-room).
+   *
+   * Pairs with the TrackSubscribed handler that force-enables every camera publication
+   * to defeat adaptiveStream — without this, hidden cameras would otherwise stay
+   * subscribed and continuously stream wasted bandwidth.
+   */
+  applyRemoteCameraVisibility(visibleParticipantIds: ReadonlySet<string>): void {
+    if (!this.room) return;
+    for (const participant of this.room.remoteParticipants.values()) {
+      const publication = participant.getTrackPublication(Track.Source.Camera);
+      if (!publication) continue;
+      const shouldSubscribe = visibleParticipantIds.has(participant.identity);
+      if (publication.isSubscribed !== shouldSubscribe) {
+        publication.setSubscribed(shouldSubscribe);
+        if (DEBUG_VIDEO_FEED) {
+          console.log(
+            LOG,
+            '[video-feed] applyRemoteCameraVisibility',
+            participant.identity,
+            'trackSid:',
+            publication.trackSid,
+            'subscribed:',
+            shouldSubscribe,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Update the encoding parameters of the currently-published camera track.
+   *
+   * Applies constraints to the capture-side MediaStreamTrack (resolution/fps)
+   * and updates the RTCRtpSender encoding (bitrate cap). Does NOT call
+   * `setPublishingLayers` — that is a simulcast pause/resume API and is a
+   * silent no-op for single-encoding VP8 publications.
+   *
+   * On `OverconstrainedError` (camera hardware can't satisfy the resolution
+   * constraint) the resolution constraint is dropped and only the fps/bitrate
+   * are applied, so quality still degrades gracefully on cheap webcams.
+   */
+  async setCameraQuality(quality: CameraQuality): Promise<void> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const localTrack = publication?.track ?? null;
+    const mediaTrack =
+      this.localCameraMediaTrack ??
+      localTrack?.mediaStreamTrack ??
+      null;
+
+    if (!publication || !mediaTrack) {
+      return;
+    }
+
+    try {
+      await mediaTrack.applyConstraints(buildCameraTrackConstraints(quality));
+    } catch (err) {
+      // OverconstrainedError means the camera can't satisfy the resolution
+      // constraint (common on cheap USB webcams). Retry with fps-only so the
+      // bitrate cap still applies and we don't loop-retry pointlessly.
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'OverconstrainedError') {
+        console.warn(LOG, '[video-feed] setCameraQuality: OverconstrainedError on resolution constraint, retrying fps-only', quality.tier);
+        await mediaTrack.applyConstraints({ frameRate: quality.maxFps });
+      } else {
+        throw err;
+      }
+    }
+
+    const sender = (localTrack as { sender?: RTCRtpSender | null } | null)?.sender ?? null;
+    if (sender) {
+      await sender.setParameters(buildCameraSenderParameters(quality));
+    }
+  }
+
+  /**
+   * Replace the underlying capture device without unpublishing — used when the
+   * user changes `Selected_Camera_Source` while published (Requirement 6.6).
+   *
+   * Opens the new device via `openCameraDevice` (AbortController-backed timeout),
+   * calls `LocalTrackPublication.replaceTrack` so the LiveKit publication keeps
+   * the same track id and source, then stops the old MediaStreamTrack only after
+   * the replace resolves (no flicker for remote viewers).
+   *
+   * On any failure the old track and publication are kept intact.
+   */
+  async replaceCameraDevice(deviceId: string | null): Promise<{ trackId: string }> {
+    const publication =
+      this.localCameraPublication ??
+      this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
+      null;
+    const localTrack = publication?.track ?? null;
+    const currentMediaTrack =
+      this.localCameraMediaTrack ??
+      localTrack?.mediaStreamTrack ??
+      null;
+
+    if (!publication || !localTrack || !currentMediaTrack) {
+      throw { kind: 'publish_failed' } satisfies CameraStartError;
+    }
+
+    let newMediaTrack: MediaStreamTrack | null = null;
+    try {
+      // openCameraDevice uses AbortController so a slow camera that resolves
+      // after the timeout doesn't leave an orphaned track with the LED on.
+      newMediaTrack = await openCameraDevice(deviceId).catch((err) => {
+        throw classifyCameraCaptureError(err);
+      });
+
+      const replaceableTrack = localTrack as LocalVideoTrack & {
+        replaceTrack?: (track: MediaStreamTrack, options?: { userProvidedTrack?: boolean }) => Promise<void>;
+      };
+      if (typeof replaceableTrack.replaceTrack !== 'function') {
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+
+      await replaceableTrack.replaceTrack(newMediaTrack, {
+        userProvidedTrack: true,
+      });
+
+      currentMediaTrack.stop();
+      this.localCameraPublication = publication;
+      this.localCameraMediaTrack = newMediaTrack;
+      const trackId = publication.trackSid ?? localTrack.sid ?? newMediaTrack.id;
+      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] replaceCameraDevice success', { oldId: currentMediaTrack.id, newId: newMediaTrack.id, trackId, deviceId });
+      return { trackId };
+    } catch (error) {
+      if (newMediaTrack) {
+        newMediaTrack.stop();
+      }
+      if (isCameraStartError(error)) {
+        throw error;
+      }
+      if (newMediaTrack) {
+        throw { kind: 'publish_failed' } satisfies CameraStartError;
+      }
+      throw classifyCameraCaptureError(error);
+    }
+  }
 
   /**
    * Start the WASAPI audio bridge: load an AudioWorklet, create a
@@ -4052,6 +4705,11 @@ export class LiveKitModule {
         // stream so remote subscribers can map it back to the publisher instead
         // of treating the browser-generated MediaStream UUID as a participant sid.
         stream: Track.Source.ScreenShare,
+        // System-audio share is typically continuous (music, video, app sound)
+        // so DTX rarely fires, but explicit defaults document intent and match
+        // the mic publish path. red is kept on for packet-loss resilience.
+        dtx: true,
+        red: true,
       } as TrackPublishOptionsWithAudioBitrate,
     );
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] ScreenShareAudio published, publication:', this.wasapiAudioPublication);
@@ -4822,7 +5480,7 @@ export class LiveKitModule {
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
-      this.sweepInactiveVideoTransceivers();
+      this.stopAllInactiveVideoTransceivers();
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,

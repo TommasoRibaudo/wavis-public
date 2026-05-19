@@ -767,7 +767,7 @@ mod tests {
                 "peer_left", "leave", "error", "participant_joined", "participant_left",
                 "room_state", "media_token", "kick_participant", "mute_participant",
                 "participant_kicked", "participant_muted",
-                "start_share", "share_started", "stop_share", "share_stopped",
+                "start_share", "share_started", "stop-share", "share_stopped",
                 "stop_all_shares", "share_state",
                 "create_room", "room_created",
                 "auth", "auth_success", "auth_failed",

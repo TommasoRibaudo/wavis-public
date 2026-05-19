@@ -55,6 +55,13 @@ resource "aws_security_group" "backend" {
   }
 }
 
+# IMPORTANT: In dev, the Fargate task ENI runs in a public subnet with a
+# public IP (see ecs_backend.tf -> aws_ecs_service.backend.network_configuration)
+# so it can reach the internet directly without a NAT Gateway. That means
+# this SG is the *only* thing keeping the task off the public internet.
+# DO NOT add 0.0.0.0/0 (or any wide-open CIDR) ingress to this SG. The only
+# ingress rule should remain the ALB-referenced one below. If you need to
+# expose a new port, reference aws_security_group.alb.id, not a CIDR.
 resource "aws_vpc_security_group_ingress_rule" "backend_from_alb" {
   security_group_id            = aws_security_group.backend.id
   referenced_security_group_id = aws_security_group.alb.id
@@ -137,6 +144,39 @@ resource "aws_vpc_security_group_ingress_rule" "livekit_ice_tcp" {
   to_port           = 7881
   ip_protocol       = "tcp"
   description       = "LiveKit ICE over TCP"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "livekit_turn_udp" {
+  count = var.create_livekit_instance ? 1 : 0
+
+  security_group_id = aws_security_group.livekit[0].id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 3478
+  to_port           = 3478
+  ip_protocol       = "udp"
+  description       = "LiveKit embedded TURN (UDP)"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "livekit_turn_tcp" {
+  count = var.create_livekit_instance ? 1 : 0
+
+  security_group_id = aws_security_group.livekit[0].id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 3478
+  to_port           = 3478
+  ip_protocol       = "tcp"
+  description       = "LiveKit embedded TURN (TCP)"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "livekit_turn_relay_udp" {
+  count = var.create_livekit_instance ? 1 : 0
+
+  security_group_id = aws_security_group.livekit[0].id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 30000
+  to_port           = 40000
+  ip_protocol       = "udp"
+  description       = "LiveKit embedded TURN relay allocations (UDP)"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "livekit_udp" {

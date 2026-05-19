@@ -99,6 +99,8 @@ resource "aws_cloudwatch_metric_alarm" "livekit_cpu" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "livekit_cpu_credit_balance_low" {
+  count = var.livekit_extra_alarms_enabled ? 1 : 0
+
   alarm_name          = "${local.project}-${local.env}-livekit-cpu-credits-low"
   alarm_description   = "LiveKit CPU credit balance is low on the burstable dev host"
   namespace           = "AWS/EC2"
@@ -121,6 +123,8 @@ resource "aws_cloudwatch_metric_alarm" "livekit_cpu_credit_balance_low" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "livekit_status_check" {
+  count = var.livekit_extra_alarms_enabled ? 1 : 0
+
   alarm_name          = "${local.project}-${local.env}-livekit-status-check"
   alarm_description   = "LiveKit EC2 instance failed status checks"
   namespace           = "AWS/EC2"
@@ -142,6 +146,8 @@ resource "aws_cloudwatch_metric_alarm" "livekit_status_check" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "livekit_network_out" {
+  count = var.livekit_extra_alarms_enabled ? 1 : 0
+
   alarm_name          = "${local.project}-${local.env}-livekit-network-out"
   alarm_description   = "LiveKit NetworkOut above expected threshold for 10 minutes"
   namespace           = "AWS/EC2"

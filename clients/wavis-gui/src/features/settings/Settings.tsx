@@ -8,9 +8,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
 import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
-import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getScreenShareCodec, setScreenShareCodec, type ScreenShareCodecOverride, DEFAULT_SCREEN_SHARE_CODEC } from './settings-store';
+import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getScreenShareCodec, setScreenShareCodec, type ScreenShareCodecOverride, DEFAULT_SCREEN_SHARE_CODEC, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, getState as getVoiceRoomState } from '@features/voice/voice-room';
+import { updateSessionProfileColor, getState as getVoiceRoomState, changeSelectedCamera } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -130,6 +130,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [selectedInputDevice, setSelectedInputDevice] = useState<string>('');
+  const [videoInputDevices, setVideoInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedVideoDevice, setSelectedVideoDevice] = useState<string | null>(null);
+  const supportedCapturePlatform = /Windows|Macintosh/.test(navigator.userAgent);
   const [selectedOutputDevice, setSelectedOutputDevice] = useState<string>('');
   const [volume, setVolume] = useState<number>(DEFAULT_VOLUME);
   const [accessToken, setAccessTokenVal] = useState<string | null>(null);
@@ -203,7 +206,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     invoke<AudioDevice[]>('list_audio_devices')
       .then(setAudioDevices)
       .catch(() => setAudioError('Failed to load audio devices'));
-  }, []);
+    getVideoInputDevice().then(setSelectedVideoDevice);
+    if (supportedCapturePlatform) {
+      navigator.mediaDevices.enumerateDevices()
+        .then((devs) => setVideoInputDevices(devs.filter((d) => d.kind === 'videoinput')))
+        .catch(() => {});
+    }
+  }, [supportedCapturePlatform]);
 
   // Startup sync: emit minimize-to-tray-changed to Rust after store loads
   useEffect(() => {
@@ -762,6 +771,60 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
+          {/* Video settings */}
+          <div className="mb-6">
+            <p className="text-sm text-wavis-text-secondary mb-2">VIDEO</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+              {!supportedCapturePlatform ? (
+                <p className="text-wavis-text-secondary text-xs">Camera capture is not supported on this platform.</p>
+              ) : videoInputDevices.length === 0 ? (
+                <>
+                  <p className="text-wavis-text-secondary text-xs">No camera detected.</p>
+                  <select
+                    disabled
+                    className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text-secondary font-mono text-sm px-2 py-1 outline-none opacity-50 cursor-not-allowed"
+                  >
+                    <option>No cameras available</option>
+                  </select>
+                </>
+              ) : videoInputDevices.length === 1 ? (
+                <div>
+                  <label className="text-wavis-text-secondary block mb-1">Camera</label>
+                  <div className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1">
+                    {videoInputDevices[0].label || 'Camera 1'}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="video-input" className="text-wavis-text-secondary block mb-1">Camera</label>
+                  <select
+                    id="video-input"
+                    value={selectedVideoDevice ?? ''}
+                    onChange={(e) => {
+                      const deviceId = e.target.value || null;
+                      setSelectedVideoDevice(deviceId);
+                      void setVideoInputDevice(deviceId);
+                      const voiceState = getVoiceRoomState();
+                      if (voiceState.cameraPublication === 'published') {
+                        void changeSelectedCamera(deviceId);
+                      }
+                    }}
+                    className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
+                  >
+                    <option value="">Default camera</option>
+                    {videoInputDevices.map((d, i) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || `Camera ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
+
           {/* Hotkeys */}
           <div className="mb-6">
             <p className="text-sm text-wavis-text-secondary mb-2">HOTKEYS</p>
@@ -934,6 +997,16 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   className="hover:text-wavis-accent hover:underline"
                 >
                   pixabay.com
+                </button>
+              </div>
+              <div>
+                <span className="text-wavis-text-secondary">icons: </span>
+                <span>video camera by Kiranshastry — </span>
+                <button
+                  onClick={() => open('https://www.flaticon.com/free-icons/video-camera')}
+                  className="hover:text-wavis-accent hover:underline"
+                >
+                  flaticon.com
                 </button>
               </div>
             </div>

@@ -45,6 +45,10 @@ interface MockLiveKitModule {
   connectCalls: Array<{ sfuUrl: string; token: string }>;
   disconnectCalls: number;
   setMicEnabledCalls: Array<boolean>;
+  publishCameraCalls: Array<{ deviceId: string | null; quality: { tier: string } }>;
+  unpublishCameraCalls: number;
+  setCameraQualityCalls: Array<{ tier: string }>;
+  replaceCameraDeviceCalls: Array<string | null>;
   setParticipantVolumeCalls: Array<{ id: string; vol: number }>;
   setMasterVolumeCalls: Array<number>;
   setScreenShareAudioVolumeCalls: Array<{ id: string; vol: number }>;
@@ -55,9 +59,16 @@ interface MockLiveKitModule {
   startScreenShareCalls: number;
   stopScreenShareCalls: number;
   activeScreenShares: Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
+  localCameraTrack: MediaStreamTrack | null;
   connect: (sfuUrl: string, token: string) => Promise<void>;
   disconnect: () => void;
   setMicEnabled: (enabled: boolean) => Promise<void>;
+  publishCamera: (opts: { deviceId: string | null; quality: { tier: string } }) => Promise<{ trackId: string }>;
+  unpublishCamera: () => Promise<void>;
+  setCameraQuality: (quality: { tier: string }) => Promise<void>;
+  replaceCameraDevice: (deviceId: string | null) => Promise<{ trackId: string }>;
+  getLocalCameraTrack: () => MediaStreamTrack | null;
+  applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
@@ -76,6 +87,10 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     connectCalls: [],
     disconnectCalls: 0,
     setMicEnabledCalls: [],
+    publishCameraCalls: [],
+    unpublishCameraCalls: 0,
+    setCameraQualityCalls: [],
+    replaceCameraDeviceCalls: [],
     setParticipantVolumeCalls: [],
     setMasterVolumeCalls: [],
     setScreenShareAudioVolumeCalls: [],
@@ -86,11 +101,37 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     startScreenShareCalls: 0,
     stopScreenShareCalls: 0,
     activeScreenShares: [],
+    localCameraTrack: null,
     connect: vi.fn(async (sfuUrl: string, token: string) => {
       mod.connectCalls.push({ sfuUrl, token });
     }),
     disconnect: vi.fn(() => { mod.disconnectCalls++; }),
     setMicEnabled: vi.fn(async (enabled: boolean) => { mod.setMicEnabledCalls.push(enabled); }),
+    publishCamera: vi.fn(async (opts: { deviceId: string | null; quality: { tier: string } }) => {
+      mod.publishCameraCalls.push(opts);
+      mod.localCameraTrack = {
+        id: `camera-${opts.quality.tier}`,
+        kind: 'video',
+      } as MediaStreamTrack;
+      return { trackId: `camera-${opts.quality.tier}` };
+    }),
+    unpublishCamera: vi.fn(async () => {
+      mod.unpublishCameraCalls += 1;
+      mod.localCameraTrack = null;
+    }),
+    setCameraQuality: vi.fn(async (quality: { tier: string }) => {
+      mod.setCameraQualityCalls.push(quality);
+    }),
+    replaceCameraDevice: vi.fn(async (deviceId: string | null) => {
+      mod.replaceCameraDeviceCalls.push(deviceId);
+      mod.localCameraTrack = {
+        id: `camera-${deviceId ?? 'default'}`,
+        kind: 'video',
+      } as MediaStreamTrack;
+      return { trackId: `camera-${deviceId ?? 'default'}` };
+    }),
+    getLocalCameraTrack: vi.fn(() => mod.localCameraTrack),
+    applyRemoteCameraVisibility: vi.fn(() => {}),
     setParticipantVolume: vi.fn((id: string, vol: number) => { mod.setParticipantVolumeCalls.push({ id, vol }); }),
     setMasterVolume: vi.fn((vol: number) => { mod.setMasterVolumeCalls.push(vol); }),
     setScreenShareAudioVolume: vi.fn((id: string, vol: number) => { mod.setScreenShareAudioVolumeCalls.push({ id, vol }); }),
@@ -188,6 +229,8 @@ vi.mock('@features/settings/settings-store', () => ({
   getProfileColor: vi.fn(async () => '#E06C75'),
   getChannelVolumes: vi.fn(async () => null),
   getWindowsSharePath: vi.fn(async () => 'browser'),
+  getVideoInputDevice: vi.fn(async () => null),
+  setVideoInputDevice: vi.fn(async () => {}),
   getNotificationVolume: vi.fn(async () => 100),
   getSoundVolumes: vi.fn(async () => ({})),
 }));
@@ -249,6 +292,7 @@ import {
   joinSubRoom,
   toggleSelfMute,
   toggleSelfDeafen,
+  toggleCameraIntent,
   reconnectMedia,
   resetMediaReconnectFailures,
   setScreenShareAudioVolume,
@@ -359,6 +403,52 @@ describe('VoiceRoom screen share audio delegation', () => {
     expect(lastLkModule).not.toBeNull();
     expect(lastLkModule!.attachScreenShareAudioCalls).toEqual(['alice']);
     expect(lastLkModule!.detachScreenShareAudioCalls).toEqual(['alice']);
+
+    leaveRoom();
+  });
+});
+
+describe('VoiceRoom camera orchestration', () => {
+  it('publishes camera at LOW quality when a same-room screen share is already active', async () => {
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: {
+        enumerateDevices: vi.fn(async () => [
+          { kind: 'videoinput', deviceId: 'camera-1', label: 'Camera 1' },
+        ]),
+      },
+    });
+    vi.spyOn(settingsStore, 'getVideoInputDevice').mockResolvedValue('camera-1');
+
+    await driveToActive();
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'share_started',
+      participantId: 'peer-2',
+      displayName: 'Alice',
+      shareType: 'screen_audio',
+    });
+    await tick();
+
+    await toggleCameraIntent();
+
+    expect(lastLkModule).not.toBeNull();
+    expect(lastLkModule!.publishCameraCalls).toHaveLength(1);
+    expect(lastLkModule!.publishCameraCalls[0].deviceId).toBe('camera-1');
+    expect(lastLkModule!.publishCameraCalls[0].quality.tier).toBe('low');
 
     leaveRoom();
   });
@@ -2143,7 +2233,7 @@ describe('Edge case unit tests', () => {
       await tick();
 
       expect(lastLkModule!.stopScreenShareCalls).toBe(1);
-      expect(sentMessages).toContainEqual({ type: 'stop_share' });
+      expect(sentMessages).toContainEqual({ type: 'stop-share' });
       expect(playNotificationSoundCalls).not.toContain('share-stop');
 
       messageHandler!({ type: 'share_stopped', participantId: 'self-peer', displayName: 'TestUser' });
@@ -2179,7 +2269,7 @@ describe('Edge case unit tests', () => {
       await tick();
 
       expect(lastLkModule!.stopScreenShareCalls).toBe(0);
-      expect(sentMessages.filter(m => m.type === 'stop_share')).toHaveLength(0);
+      expect(sentMessages.filter(m => m.type === 'stop-share')).toHaveLength(0);
 
       leaveRoom();
     });
@@ -2195,7 +2285,7 @@ describe('Edge case unit tests', () => {
       lastLkModule!.callbacks.onLocalScreenShareEnded();
       await tick();
 
-      const stopMessages = sentMessages.filter(m => m.type === 'stop_share');
+      const stopMessages = sentMessages.filter(m => m.type === 'stop-share');
       expect(stopMessages).toHaveLength(1);
 
       leaveRoom();

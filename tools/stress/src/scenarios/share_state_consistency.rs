@@ -127,7 +127,7 @@ impl Scenario for ShareStateConsistencyScenario {
             // This creates a window where the share_state snapshot might be inconsistent.
             sharers[0]
                 .0
-                .send_json(&serde_json::json!({ "type": "stop_share" }))
+                .send_json(&serde_json::json!({ "type": "stop-share" }))
                 .await
                 .ok();
 

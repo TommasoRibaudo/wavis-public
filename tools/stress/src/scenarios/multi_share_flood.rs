@@ -108,7 +108,7 @@ impl Scenario for MultiShareFloodScenario {
                                 .await
                                 .ok();
                         } else {
-                            c.send_json(&serde_json::json!({ "type": "stop_share" }))
+                            c.send_json(&serde_json::json!({ "type": "stop-share" }))
                                 .await
                                 .ok();
                         }

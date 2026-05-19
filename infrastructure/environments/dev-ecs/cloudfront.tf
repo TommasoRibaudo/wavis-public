@@ -9,9 +9,28 @@ resource "aws_cloudfront_distribution" "backend" {
   comment         = "Wavis ${local.env} ECS backend + LiveKit signaling"
   tags            = local.tags
 
-  # WAF is managed by CloudFront's bundled security plan — can't be removed via API
+  # When enable_waf = true, attach the Terraform-managed WebACL.
+  # When false (dev), the distribution runs without a WAF.
+  web_acl_id = var.enable_waf ? aws_wafv2_web_acl.cloudfront[0].arn : null
+
   lifecycle {
-    ignore_changes = [web_acl_id, price_class]
+    # price_class is left to AWS's CloudFront security plan defaults; we don't
+    # want Terraform fighting with console-side adjustments to it.
+    #
+    # web_acl_id is also ignored until the CloudFront pricing-plan subscription
+    # lapses (end of May 2026). While the subscription is active, AWS rejects
+    # any UpdateDistribution call that removes the WebACL, even if the call
+    # only intends to change tags. See doc/aws_costs/JUNE WAF DETACH.md for
+    # the planned removal of this ignore once the subscription expires.
+    ignore_changes = [price_class, web_acl_id]
+
+    # Prod safety net: refuse to plan if someone tries to deploy a prod
+    # environment with WAF disabled. Add new prod-like environment names
+    # (e.g. "staging" if it should follow the same rule) here.
+    precondition {
+      condition     = var.enable_waf || !contains(["prod", "production"], lower(var.environment_name))
+      error_message = "WAF must be enabled for prod/production environments. Set enable_waf = true (or remove the override) in terraform.tfvars."
+    }
   }
 
   origin {

@@ -247,7 +247,11 @@ mod tests {
             limiter.record_recovery_id("wvs-ABCD-EFGH", now);
         }
 
-        assert!(limiter.seconds_until_recovery_id("wvs-ABCD-EFGH", now).is_some());
+        assert!(
+            limiter
+                .seconds_until_recovery_id("wvs-ABCD-EFGH", now)
+                .is_some()
+        );
     }
 
     // Feature: user-identity-recovery, Property 10: Recovery rate limiter ceiling
