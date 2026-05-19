@@ -403,9 +403,15 @@ export default function ScreenSharePage() {
   }, [p]);
 
   const handleToggleMute = useCallback(() => {
-    const nextVolume = muted ? (volume > 0 ? volume : 50) : 0;
-    handleVolumeChange(nextVolume);
-  }, [handleVolumeChange, muted, volume]);
+    if (!p) return;
+    setMuted((prev) => {
+      const nextMuted = !prev;
+      // Use local-audio so the gain is set without writing 0 into shareVolumes.
+      // This lets Watch All re-open at the slider's actual position (not muted).
+      emit('screen-share:local-audio', { participantId: p.participantId, volume: nextMuted ? 0 : volume });
+      return nextMuted;
+    });
+  }, [p, volume]);
 
   const handleVoiceVolumeChange = useCallback((participantId: string, nextVolume: number) => {
     setVoiceParticipants((prev) =>
