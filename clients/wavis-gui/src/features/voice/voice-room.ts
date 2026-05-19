@@ -140,6 +140,7 @@ export interface RoomEvent {
   type: RoomEventType;
   message: string;
   participantId?: string;
+  shouldToast?: boolean;
 }
 
 export interface NetworkStats {
@@ -1920,6 +1921,29 @@ function playSubRoomMembershipSounds(
   }
 }
 
+function shouldToastJoinForLocalRoom(
+  participantId: string,
+  targetSubRoomId: string,
+): boolean {
+  return (
+    participantId !== state.selfParticipantId
+    && state.joinedSubRoomId !== null
+    && targetSubRoomId === state.joinedSubRoomId
+  );
+}
+
+function shouldToastLeaveFromLocalRoom(
+  participantId: string,
+  previousParticipantSubRoomById: Record<string, string>,
+  previousJoinedSubRoomId: string | null,
+): boolean {
+  return (
+    participantId !== state.selfParticipantId
+    && previousJoinedSubRoomId !== null
+    && previousParticipantSubRoomById[participantId] === previousJoinedSubRoomId
+  );
+}
+
 function reconcileDesiredSubRoomMembership(): void {
   syncDesiredSubRoomPreference();
   if (!client || client.status !== 'connected') return;
@@ -2772,7 +2796,14 @@ function dispatchMessage(raw: unknown): void {
         playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
         const plName = leftP?.displayName ?? displayNameCache.get(leftId) ?? leftId;
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: `${plName} left ${plRoomLabel}`, participantId: leftId });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'leave',
+          message: `${plName} left ${plRoomLabel}`,
+          participantId: leftId,
+          shouldToast: shouldToastLeaveFromLocalRoom(leftId, previousParticipantSubRoomById, previousJoinedSubRoomId),
+        });
       }
       speakingTracker.delete(leftId);
       if (leftId in remoteCameraTilesById) {
@@ -2882,7 +2913,14 @@ function dispatchMessage(raw: unknown): void {
         const srjMessage = srjIsSelf
           ? (srjWasInRoom ? `moved to ${srjRoomLabel}` : `joined ${srjRoomLabel}`)
           : (srjWasInRoom ? `${srjName} moved to ${srjRoomLabel}` : `${srjName} joined ${srjRoomLabel}`);
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'join', message: srjMessage, participantId });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'join',
+          message: srjMessage,
+          participantId,
+          shouldToast: shouldToastJoinForLocalRoom(participantId, subRoomId),
+        });
       }
       if (participantId === state.selfParticipantId) {
         flushBufferedMediaTokenIfReady();
@@ -2916,7 +2954,14 @@ function dispatchMessage(raw: unknown): void {
         const srlName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
         const srlIsSelf = participantId === state.selfParticipantId;
         const srlMessage = srlIsSelf ? `left ${srlRoomLabel}` : `${srlName} left ${srlRoomLabel}`;
-        appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'leave', message: srlMessage, participantId });
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'leave',
+          message: srlMessage,
+          participantId,
+          shouldToast: shouldToastLeaveFromLocalRoom(participantId, previousParticipantSubRoomById, previousJoinedSubRoomId),
+        });
       }
       void applyCameraQualityForShareState();
       notify();

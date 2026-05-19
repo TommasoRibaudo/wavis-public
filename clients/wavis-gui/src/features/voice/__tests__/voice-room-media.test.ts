@@ -1288,6 +1288,97 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
   });
 });
 
+describe('VoiceRoom room-scoped toast flags', () => {
+  it('does not mark join events toastable when another user joins a different room', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'participant_joined',
+      participantId: 'peer-3',
+      displayName: 'Bob',
+      userId: 'u3',
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-3',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'peer-3',
+      shouldToast: false,
+    });
+  });
+
+  it('marks join events toastable only when another user enters the local room', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'peer-2',
+      shouldToast: true,
+    });
+  });
+
+  it('does not mark self room joins toastable', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'self-peer',
+      shouldToast: false,
+    });
+  });
+});
+
 afterEach(() => {
   // Clean up any active session
   try { leaveRoom(); } catch { /* ignore */ }

@@ -593,6 +593,7 @@ export default function ActiveRoom() {
     if (prevLen === 0 || events.length <= prevLen) return;
     const newEvents = events.slice(prevLen);
     for (const ev of newEvents) {
+      if (ev.shouldToast === false) continue;
       const name = ev.message.split(' ')[0] ?? '';
       const msg = toastMessageForEvent(ev.type, name);
       if (!msg) continue;
