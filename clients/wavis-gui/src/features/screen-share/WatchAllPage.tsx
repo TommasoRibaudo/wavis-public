@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { Volume2 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
 import { computeGridLayout } from './watch-all-grid';
@@ -802,7 +801,7 @@ export default function WatchAllPage() {
         />
         <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">│</span>
         <FocusMainButton
-          onClick={() => { void WebviewWindow.getByLabel('main').then((win) => win?.setFocus()); }}
+          onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
         />
         <div className="flex-1" />
         <div className="relative flex items-center gap-1 shrink-0">

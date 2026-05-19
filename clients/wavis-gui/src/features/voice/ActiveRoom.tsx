@@ -1209,6 +1209,26 @@ export default function ActiveRoom() {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
+  // Child windows (watch-all, screen-share) emit this to restore and focus the
+  // main window. The main window restores itself — more reliable than calling
+  // unminimize/setFocus on another window from a child webview.
+  useEffect(() => {
+    console.log('[wavis:focus-main] registering focus-main-window listener');
+    const unlisten = listen('focus-main-window', async () => {
+      console.log('[wavis:focus-main] event received — calling unminimize + setFocus');
+      try {
+        const win = getCurrentWindow();
+        await win.unminimize();
+        console.log('[wavis:focus-main] unminimize done');
+        await win.setFocus();
+        console.log('[wavis:focus-main] setFocus done');
+      } catch (e) {
+        console.error('[wavis:focus-main] error:', e);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
   const openShareWindow = async (
     participantId: string,
@@ -1457,16 +1477,25 @@ export default function ActiveRoom() {
     }
   }, [getWatchAllScope, roomState, roomState?.joinedSubRoomId]);
 
-  /** Toggle the Watch All window open/closed. */
-  const toggleWatchAllWindow = () => {
-    if (watchAllOpen) {
-      closeWatchAllWindow(); // unconditional close (Req 6.3)
-    } else {
-      // Only open if the joined room has active remote shares.
+  /** Toggle the Watch All window:
+   *  - closed          → open + focus
+   *  - open + visible  → close
+   *  - open + minimized → restore + focus (don't close)
+   */
+  const toggleWatchAllWindow = async () => {
+    if (!watchAllWindowRef.current) {
       const hasShares = roomState ? getWatchAllScope(roomState).remoteSharers.length > 0 : false;
       if (hasShares) {
         openWatchAllWindow();
       }
+      return;
+    }
+    const minimized = await watchAllWindowRef.current.isMinimized();
+    if (minimized) {
+      await watchAllWindowRef.current.unminimize();
+      await watchAllWindowRef.current.setFocus();
+    } else {
+      closeWatchAllWindow();
     }
   };
 
@@ -1501,7 +1530,7 @@ export default function ActiveRoom() {
     getFocusMainHotkey().then((hotkey) => {
       if (cancelled) return;
       focusMainHotkeyRef.current = hotkey;
-      registerFocusMainHotkey(hotkey, () => { void getCurrentWindow().setFocus(); });
+      registerFocusMainHotkey(hotkey, () => { console.log('[wavis:focus-main] hotkey fired'); void getCurrentWindow().unminimize().then(() => getCurrentWindow().setFocus()).catch((e) => console.error('[wavis:focus-main] hotkey error:', e)); });
     });
 
     return () => {
