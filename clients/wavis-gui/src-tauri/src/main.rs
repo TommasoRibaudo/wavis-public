@@ -290,6 +290,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use serde_json::Value;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
 fn main() {
@@ -366,33 +367,62 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label();
-                let app = window.app_handle();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label();
+                    let app = window.app_handle();
 
-                // Only the main window gets minimize-to-tray behavior
-                if label == "main" {
-                    if let Some(webview_window) = app.get_webview_window(label) {
-                        if let (Some(flag), Some(vis)) = (
-                            app.try_state::<tray::MinimizeToTrayFlag>(),
-                            app.try_state::<tray::WindowVisibility>(),
-                        ) {
-                            if tray::handle_close_requested(&webview_window, &flag, &vis) {
-                                api.prevent_close();
-                                return;
+                    // Only the main window gets minimize-to-tray behavior
+                    if label == "main" {
+                        if let Some(webview_window) = app.get_webview_window(label) {
+                            if let (Some(flag), Some(vis)) = (
+                                app.try_state::<tray::MinimizeToTrayFlag>(),
+                                app.try_state::<tray::WindowVisibility>(),
+                            ) {
+                                if tray::handle_close_requested(&webview_window, &flag, &vis) {
+                                    api.prevent_close();
+                                    return;
+                                }
+                            }
+                        }
+                        // Main window is actually closing (not minimized to tray).
+                        // Notify the frontend so it can tear down the voice session
+                        // and close child windows before the window is destroyed.
+                        let _ = app.emit("main-window-closing", ());
+
+                        // Also emit voice-session:ended directly so pop-out windows
+                        // (ScreenSharePage) self-close even if the main window's JS
+                        // listener doesn't execute in time (race condition on destroy).
+                        let _ = app.emit("voice-session:ended", ());
+                    }
+                }
+                tauri::WindowEvent::Focused(focused) => {
+                    if window.label() == "main" {
+                        let app = window.app_handle();
+                        if let Some(vis) = app.try_state::<tray::WindowVisibility>() {
+                            // Skip if already hidden to tray — tray manages its own events
+                            if !vis.hidden.load(Ordering::SeqCst) {
+                                if *focused {
+                                    let _ = window.emit(
+                                        "window-visibility-changed",
+                                        tray::WindowVisibilityPayload { visible: true },
+                                    );
+                                } else {
+                                    // Only suppress notifications when actually minimized,
+                                    // not just when the user switches to another app.
+                                    let minimized = window.is_minimized().unwrap_or(false);
+                                    if minimized {
+                                        let _ = window.emit(
+                                            "window-visibility-changed",
+                                            tray::WindowVisibilityPayload { visible: false },
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
-                    // Main window is actually closing (not minimized to tray).
-                    // Notify the frontend so it can tear down the voice session
-                    // and close child windows before the window is destroyed.
-                    let _ = app.emit("main-window-closing", ());
-
-                    // Also emit voice-session:ended directly so pop-out windows
-                    // (ScreenSharePage) self-close even if the main window's JS
-                    // listener doesn't execute in time (race condition on destroy).
-                    let _ = app.emit("voice-session:ended", ());
                 }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

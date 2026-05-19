@@ -11,7 +11,6 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsConfig {
     pub enabled: bool,
-    pub notifications_enabled: bool,
     /// Polling interval in milliseconds (WAVIS_DIAGNOSTICS_POLL_MS, default 1000).
     pub poll_ms: u64,
     /// RSS warning threshold in MB (WAVIS_DIAGNOSTICS_MEMORY_WARN_MB, default 1200).
@@ -146,7 +145,6 @@ fn collect_process_tree_stats(sys: &System) -> (f64, f64, usize) {
 pub fn get_diagnostics_config() -> DiagnosticsConfig {
     DiagnosticsConfig {
         enabled: crate::debug_env::diagnostics_window_enabled(),
-        notifications_enabled: crate::debug_env::diagnostics_notifications_enabled(),
         poll_ms: env_u64("WAVIS_DIAGNOSTICS_POLL_MS", 1000),
         memory_warn_mb: env_f64("WAVIS_DIAGNOSTICS_MEMORY_WARN_MB", 1200.0),
         network_warn_mbps: env_f64("WAVIS_DIAGNOSTICS_NETWORK_WARN_MBPS", 20.0),

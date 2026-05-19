@@ -21,7 +21,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { RingBuffer } from '@shared/ring-buffer';
 import type { NetworkStats } from '@features/voice/voice-room';
 import type { ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
@@ -32,7 +31,6 @@ const LOG = '[wavis:diagnostics]';
 
 export interface DiagnosticsConfig {
   enabled: boolean;
-  notificationsEnabled: boolean;
   pollMs: number;
   memoryWarnMb: number;
   networkWarnMbps: number;
@@ -123,7 +121,6 @@ export interface WarningEntry {
 
 interface RustDiagnosticsConfig {
   enabled: boolean;
-  notificationsEnabled: boolean;
   pollMs: number;
   memoryWarnMb: number;
   networkWarnMbps: number;
@@ -175,8 +172,6 @@ let cachedVoiceStats: DiagnosticsVoiceStatsPayload | null = null;
 /** Unlisten function for the 'diagnostics:voice-stats' event listener. */
 let unlistenVoiceStats: UnlistenFn | null = null;
 
-const WARN_SUSTAIN_MS = 8_000;
-const WARN_COOLDOWN_MS = 60_000;
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -220,39 +215,13 @@ function checkWarning(
   key: string,
   message: string,
   condition: boolean,
-  notificationsEnabled: boolean,
 ): void {
   if (condition) {
     if (!warnings.has(key)) {
       warnings.set(key, { key, message, since: Date.now(), lastNotifiedAt: 0 });
-    } else {
-      const entry = warnings.get(key)!;
-      const sustainedMs = Date.now() - entry.since;
-      if (
-        notificationsEnabled &&
-        sustainedMs >= WARN_SUSTAIN_MS &&
-        Date.now() - entry.lastNotifiedAt >= WARN_COOLDOWN_MS
-      ) {
-        entry.lastNotifiedAt = Date.now();
-        fireNotification(message).catch(() => {});
-      }
     }
   } else {
     warnings.delete(key);
-  }
-}
-
-async function fireNotification(body: string): Promise<void> {
-  try {
-    let permitted = await isPermissionGranted();
-    if (!permitted) {
-      const result = await requestPermission();
-      permitted = result === 'granted';
-    }
-    if (!permitted) return;
-    sendNotification({ title: 'Wavis Diagnostics', body });
-  } catch {
-    // Silent failure on platforms where notifications are unavailable
   }
 }
 
@@ -271,7 +240,6 @@ export async function initDiagnostics(
   const raw = await invoke<RustDiagnosticsConfig>('get_diagnostics_config');
   config = {
     enabled: raw.enabled,
-    notificationsEnabled: raw.notificationsEnabled,
     pollMs: raw.pollMs,
     memoryWarnMb: raw.memoryWarnMb,
     networkWarnMbps: raw.networkWarnMbps,
@@ -608,54 +576,45 @@ async function poll(): Promise<void> {
   pollCount++;
 
   // 8. Warnings state machine
-  const notif = config.notificationsEnabled;
   checkWarning(
     'rss_high',
     `Process memory high (${Math.round(rss?.mb ?? 0)} MB > ${config.memoryWarnMb} MB)`,
     rss !== null && rss.mb > config.memoryWarnMb,
-    notif,
   );
   checkWarning(
     'network_loss_high',
     `Packet loss high (${network?.packetLossPercent.toFixed(1) ?? '?'}%)`,
     network !== null && network.packetLossPercent > 5,
-    notif,
   );
   checkWarning(
     'share_bw_limited',
     'Screen share is bandwidth-limited',
     share !== null && share.qualityLimitationReason === 'bandwidth',
-    notif,
   );
   checkWarning(
     'jitter_buffer_high',
     `Voice lag high — jitter buffer delay ${network?.jitterBufferDelayMs ?? 0} ms`,
     network !== null && network.jitterBufferDelayMs > 150,
-    notif,
   );
   checkWarning(
     'concealment_high',
     `Audio quality degraded — ${network?.concealmentEventsPerInterval ?? 0} concealment events`,
     network !== null && network.concealmentEventsPerInterval > 10,
-    notif,
   );
   checkWarning(
     'share_resolution_low',
     'Screen share quality reduced — resolution downgraded',
     share !== null && share.frameHeight > 0 && share.frameHeight < 720,
-    notif,
   );
   checkWarning(
     'video_recv_frozen',
     `Received video is freezing — ${snap.videoReceive?.freezeCount ?? 0} freeze events`,
     snap.videoReceive !== null && snap.videoReceive.freezeCount > 0,
-    notif,
   );
   checkWarning(
     'video_recv_loss_high',
     `Received video packet loss high (${snap.videoReceive?.packetLossPercent.toFixed(1) ?? '?'}%)`,
     snap.videoReceive !== null && snap.videoReceive.packetLossPercent > 5,
-    notif,
   );
 
   // Pass history snapshot to UI every 5th poll (~5s, matching chart resolution)
