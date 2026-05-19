@@ -1,4 +1,5 @@
 /* Shared quick action buttons (mute/deafen) used by StreamHoverBar and WatchAllPage. */
+import { useHotkeys } from '@shared/useHotkeys';
 
 const SELF_MUTE_ICON = '\u25cb';
 const DEAFEN_ICON = '\u00a4';
@@ -30,6 +31,7 @@ export default function QuickActionButtons({
   onToggleMute,
   onToggleDeafen,
 }: QuickActionButtonsProps) {
+  const hotkeys = useHotkeys();
   return (
     <div className="flex items-center leading-none shrink-0">
       <button
@@ -39,7 +41,7 @@ export default function QuickActionButtons({
         }}
         className="px-1.5 flex items-center justify-center hover:opacity-70 transition-opacity"
         style={{ color: isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-        title={quickActionMuteTitle(isMuted)}
+        title={`${quickActionMuteTitle(isMuted)} (${hotkeys.mute})`}
         aria-label={quickActionMuteAriaLabel(isMuted)}
       >
         {SELF_MUTE_ICON}

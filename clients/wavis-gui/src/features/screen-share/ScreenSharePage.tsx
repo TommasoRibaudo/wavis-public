@@ -8,7 +8,6 @@ import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
 import StreamHoverBar from '@shared/StreamHoverBar';
-import FocusMainButton from '@shared/FocusMainButton';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
@@ -542,7 +541,6 @@ export default function ScreenSharePage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
-          <FocusMainButton onClick={() => { void emitTo('main', 'focus-main-window', {}); }} />
           <button
             onClick={handleClose}
             className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"

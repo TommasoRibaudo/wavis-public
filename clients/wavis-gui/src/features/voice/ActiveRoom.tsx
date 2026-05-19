@@ -70,6 +70,7 @@ const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 import { registerWatchAllHotkey, unregisterWatchAllHotkey, registerFocusMainHotkey, unregisterFocusMainHotkey } from '@shared/hotkey-bridge';
+import { useHotkeys } from '@shared/useHotkeys';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
 import type { TrayAction } from './tray-bridge';
 import { useDebug } from '@shared/debug-context';
@@ -347,6 +348,7 @@ async function withPickerResize<T>(isMacPlatform: boolean, fn: () => Promise<T>)
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
 export default function ActiveRoom() {
+  const hotkeys = useHotkeys();
   const location = useLocation();
   const navigate = useNavigate();
   const { channelId, channelName, channelRole } =
@@ -2580,6 +2582,7 @@ export default function ActiveRoom() {
                       <button
                         type="button"
                         onClick={toggleWatchAllWindow}
+                        title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${hotkeys.watchAll})`}
                         className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                       >
                         {watchAllOpen ? '/close-all' : '/watch-all'}
@@ -2640,7 +2643,7 @@ export default function ActiveRoom() {
               disabled={!!selfP?.isHostMuted}
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: selfP?.isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-              title={selfP?.isMuted ? '/unmute' : '/mute'}
+              title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">○</span></button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
@@ -2689,7 +2692,7 @@ export default function ActiveRoom() {
         <div className="pt-2 pl-6 text-sm">
           <div className="flex flex-col gap-1 w-full">
             <div className="flex flex-col md:flex-row gap-1">
-              <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
+              <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
               <button onClick={toggleSelfDeafen} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{roomState.isDeafened ? '/undeafen' : '/deafen'}</button>
             </div>
             {showCameraButton && (
