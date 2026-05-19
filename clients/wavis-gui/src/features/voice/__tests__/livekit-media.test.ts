@@ -567,7 +567,7 @@ vi.stubGlobal('navigator', {
 
 // ─── Import module under test ──────────────────────────────────────
 
-import { LiveKitModule, type MediaCallbacks } from '../livekit-media';
+import { LiveKitModule, buildRtcConfiguration, isForceRelayEnabled, type MediaCallbacks } from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
 
 // ─── Callback Mock Helper ──────────────────────────────────────────
@@ -6048,4 +6048,162 @@ describe('Feature: turn-credentials-audit, Property 7: GUI force-relay override'
   // is an operator debug aid documented in the runbook
   // (`doc/turn_credentials_audit.md` § Forced-relay verification),
   // not part of the contract.
+});
+
+// ─── Feature: turn-relay-symmetric-nat-fix ────────────────────────────────────
+// Tests for buildRtcConfiguration and isForceRelayEnabled post-fix behavior.
+// Uses vi.stubEnv() directly (no vi.resetModules()) because isForceRelayEnabled
+// reads import.meta.env.VITE_WAVIS_FORCE_RELAY inside the function body, so
+// stubs are visible without a module reload.
+
+describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and isForceRelayEnabled', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // ─── Pinned Requirement 5 cases ──────────────────────────────────────────
+
+  it('buildRtcConfiguration_includes_turn_url_for_nonempty_payload', () => {
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'test-credential',
+    });
+    const hasTurn = rtcConfig.iceServers?.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(hasTurn).toBe(true);
+  });
+
+  it('buildRtcConfiguration_force_relay_on_leaves_iceServers_undefined', () => {
+    // R5.2 (revised): force-relay flag sets iceTransportPolicy:'relay' but must
+    // NOT populate iceServers when there is no payload. Supplying any iceServers
+    // array blocks livekit-client v2.17.2 Engine.makeRTCConfiguration's predicate
+    // `if (serverResponse.iceServers && !rtcConfig.iceServers)`, preventing SDK
+    // injection of TURN entries from JoinResponse.ice_servers. With
+    // iceTransportPolicy:'relay' and no TURN entries ICE fails immediately.
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    const rtcConfig = buildRtcConfiguration(undefined);
+    expect(rtcConfig.iceTransportPolicy).toBe('relay');
+    expect(rtcConfig.iceServers).toBeUndefined();
+  });
+
+  it('buildRtcConfiguration_omits_turn_when_credentials_missing', () => {
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: '',
+    });
+    const hasTurn = rtcConfig.iceServers?.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(hasTurn).toBeFalsy();
+  });
+
+  it('buildRtcConfiguration_force_relay_flag_sets_relay_policy', () => {
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'test-credential',
+    });
+    expect(rtcConfig.iceTransportPolicy).toBe('relay');
+  });
+
+  // ─── Property test — Requirement 2.4 ─────────────────────────────────────
+
+  it('buildRtcConfiguration_turn_credentials_passthrough_property', () => {
+    // Feature: turn-relay-symmetric-nat-fix, Property 1: TURN credential pass-through is shape-preserving
+    // Validates: Requirements 2.4
+    fc.assert(
+      fc.property(
+        fc.record({
+          stunUrls: fc.array(fc.webUrl()),
+          // Map to turn: scheme so the prefix filter below can distinguish
+          // the TURN entry from any STUN entries in the same iceServers array.
+          turnUrls: fc.array(
+            fc.webUrl().map((u) => u.replace(/^https?:\/\//, 'turn:')),
+            { minLength: 1 },
+          ),
+          turnUsername: fc.string({ minLength: 1 }),
+          turnCredential: fc.string({ minLength: 1 }),
+        }),
+        (payload) => {
+          const cfg = buildRtcConfiguration(payload);
+          // Filter by turn: prefix to find the TURN entry — this is the stronger
+          // check: it confirms the entry was wired as a TURN server, not a STUN
+          // server that happens to share the same array reference.
+          const turnEntries = (cfg.iceServers ?? []).filter((s) => {
+            const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+            return urls.some((u) => u.startsWith('turn:'));
+          });
+          // Reference equality on urls pins that the function does not slice or
+          // copy the array (design § Correctness Properties).
+          return (
+            turnEntries.length === 1
+            && turnEntries[0].urls === payload.turnUrls
+            && turnEntries[0].username === payload.turnUsername
+            && turnEntries[0].credential === payload.turnCredential
+          );
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  // ─── Additional design cases (R2.2, R2.5, R3.1) ──────────────────────────
+
+  it('buildRtcConfiguration_no_payload_no_force_relay_omits_iceServers', () => {
+    // Regression guard for the load-bearing fix: with force-relay off and no
+    // payload, iceServers must be undefined so livekit-client v2.17.2
+    // Engine.makeRTCConfiguration's predicate fires and injects
+    // JoinResponse.ice_servers (the LiveKit embedded TURN credential pair).
+    const result = buildRtcConfiguration(undefined);
+    expect(result.iceServers).toBeUndefined();
+    expect(result.iceTransportPolicy).toBe('all');
+  });
+
+  it('buildRtcConfiguration_logs_redacted_iceServers_in_connect_log', () => {
+    // Verify that the credential-redaction projection applied in the connect
+    // log (task 1.3) strips the credential field. We exercise the same map()
+    // expression here to guard against accidental reversion.
+    const payload = {
+      stunUrls: [],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'super-secret',
+    };
+    const rtcConfig = buildRtcConfiguration(payload);
+
+    // buildRtcConfiguration correctly passes credential to RTCPeerConnection
+    const turnEntry = rtcConfig.iceServers?.find((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(turnEntry?.credential).toBe('super-secret');
+
+    // The connect-log projection (task 1.3) omits credential
+    const redacted = rtcConfig.iceServers?.map((s) => ({
+      urls: s.urls,
+      username: s.username,
+    }));
+    expect(redacted?.every((s) => !('credential' in s))).toBe(true);
+  });
+
+  it('isForceRelayEnabled_ignores_unprefixed_env_var', () => {
+    // Unprefixed WAVIS_FORCE_RELAY is not exposed by Vite's import.meta.env —
+    // setting it alone must not activate force-relay mode.
+    vi.stubEnv('WAVIS_FORCE_RELAY', 'true');
+    expect(isForceRelayEnabled()).toBe(false);
+
+    // Only the VITE_*-prefixed variable activates the flag.
+    vi.unstubAllEnvs();
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    expect(isForceRelayEnabled()).toBe(true);
+  });
 });
