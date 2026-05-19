@@ -12,6 +12,10 @@ export type UpdateProgress = {
 };
 
 export async function checkForUpdate(): Promise<UpdateCheckResult> {
+  if (import.meta.env.DEV) {
+    return { kind: 'none' };
+  }
+
   try {
     const update = await check({ timeout: 15_000 });
     return update ? { kind: 'available', update } : { kind: 'none' };
