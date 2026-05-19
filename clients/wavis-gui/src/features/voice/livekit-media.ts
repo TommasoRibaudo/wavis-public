@@ -5138,7 +5138,8 @@ export class LiveKitModule {
     }
     const source = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(perceptualGain(70), ctx.currentTime);
+    const desiredVol = this.desiredParticipantVolumes.get(audioKey) ?? 70;
+    gain.gain.setValueAtTime(perceptualGain(desiredVol), ctx.currentTime);
     source.connect(gain);
     gain.connect(this.masterGain!);
     this.participantGains.set(audioKey, gain);
@@ -5156,6 +5157,10 @@ export class LiveKitModule {
     if (publication && typeof publication.setSubscribed === 'function') {
       publication.setSubscribed(false);
     }
+    // Delete synchronously so that a follow-up attachScreenShareAudio always
+    // goes through the pending path (fresh track from TrackSubscribed) rather
+    // than reusing a stale entry that TrackUnsubscribed will tear down later.
+    this.screenShareAudioTracks.delete(participantIdentity);
     this.cleanupParticipantAudio(`${participantIdentity}:screen-share`);
     console.log(LOG, `detached screen share audio for ${participantIdentity}`);
   }

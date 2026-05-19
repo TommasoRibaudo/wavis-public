@@ -126,6 +126,7 @@ function popOutTile(
   if (!tile) return { remainingTiles: tiles, payload: null };
   return {
     remainingTiles: removeTile(tiles, participantId),
+    // Send slider position (tile.volume); mute-toggle is local-only, not inherited by pop-out
     payload: { participantId, volume: tile.volume },
   };
 }
@@ -397,6 +398,53 @@ describe('WatchAllPage tile state management', () => {
 
     expect(tiles[0].volume).toBe(70);
     expect(tiles[0].muted).toBe(false);
+  });
+
+  it('mute toggle preserves slider position (volume field unchanged)', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 70);
+    expect(tiles[0].volume).toBe(70);
+
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(70); // slider position preserved
+
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(false);
+    expect(tiles[0].volume).toBe(70); // unmute restores to pre-mute level, not 50
+  });
+
+  it('restore-volume with 0 sets slider to 0 and mutes', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 60);
+
+    // Simulates slider explicitly dragged to 0 in another window (persisted via syncScreenShareVolume)
+    tiles = restoreTileVolume(tiles, { participantId: 'user-1', volume: 0 });
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(0); // slider follows the explicit 0
+  });
+
+  it('pop-out of muted tile sends slider position (toggle-mute is local-only)', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 80);
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(80);
+
+    const { payload } = popOutTile(tiles, 'user-1');
+    expect(payload?.volume).toBe(80); // slider position, not effective volume (mute is local)
+  });
+
+  it('pop-out of unmuted tile sends slider position', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 45);
+
+    const { payload } = popOutTile(tiles, 'user-1');
+    expect(payload?.volume).toBe(45);
   });
 
   it('volume persists across pop-out and pop-back', () => {
