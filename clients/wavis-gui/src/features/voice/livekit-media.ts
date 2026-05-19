@@ -62,11 +62,8 @@ const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
 // (and any future reload-based flow) can change the env between imports;
 // a top-level `const` here would freeze the value at the first import in
 // the worker and silently desync from `vi.stubEnv()` in subsequent tests.
-function isForceRelayEnabled(): boolean {
-  return (
-    import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true'
-    || import.meta.env.WAVIS_FORCE_RELAY === 'true'
-  );
+export function isForceRelayEnabled(): boolean {
+  return import.meta.env.VITE_WAVIS_FORCE_RELAY === 'true';
 }
 
 function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void {
@@ -292,13 +289,12 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
     }
   }
 
-  if (!rtcConfig.iceServers || rtcConfig.iceServers.length === 0) {
-    console.warn(LOG, 'No ICE configuration from backend - using fallback public STUN servers');
-    rtcConfig.iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ];
-  }
+  // Leave iceServers undefined in ALL no-payload cases (force-relay on or off).
+  // livekit-client v2.17.2 Engine.makeRTCConfiguration's predicate
+  // `if (serverResponse.iceServers && !rtcConfig.iceServers)` only fires when
+  // rtcConfig.iceServers is falsy — supplying any array blocks SDK injection.
+  // With iceTransportPolicy:'relay', a STUN-only array causes immediate ICE
+  // failure, which is worse than any silent regression in the injection path.
 
   if (forceRelay) {
     console.info(
@@ -306,7 +302,7 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
       'iceServersCount=',
       rtcConfig.iceServers?.length ?? 0,
       'turnUrls.length=',
-      payload?.turnUrls.length ?? 0,
+      payload?.turnUrls?.length ?? 0,
     );
   }
 
@@ -2170,7 +2166,11 @@ export class LiveKitModule {
         platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
         hasIceServers: !!rtcConfig.iceServers,
         iceServerCount: rtcConfig.iceServers?.length ?? 0,
-        iceServers: rtcConfig.iceServers,
+        iceServers: rtcConfig.iceServers?.map((s) => ({
+          urls: s.urls,
+          username: s.username,
+          // credential intentionally omitted — Requirement 2.5
+        })),
       });
 
       // 2. Create Room
