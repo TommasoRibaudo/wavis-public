@@ -412,7 +412,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
           }
           // Re-register new hotkey immediately so it works without reconnecting
           registerFocusMainHotkey(combo, () => {
-            void getCurrentWindow().setFocus();
+            void getCurrentWindow().unminimize().then(() => getCurrentWindow().setFocus());
           });
         }
       }).catch(() => {});
