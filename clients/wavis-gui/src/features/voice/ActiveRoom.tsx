@@ -789,7 +789,9 @@ export default function ActiveRoom() {
   }, []);
 
   const getSavedShareVolume = useCallback((participantId: string) => {
-    return shareVolumesRef.current.get(participantId) ?? watchAllVolumesRef.current.get(participantId) ?? 70;
+    // watchAllVolumesRef is updated synchronously by syncScreenShareVolume;
+    // shareVolumesRef lags by one render cycle (useEffect). Prefer the sync ref.
+    return watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? 70;
   }, []);
 
   const syncScreenShareVolume = useCallback((participantId: string, volume: number) => {
@@ -828,7 +830,7 @@ export default function ActiveRoom() {
         next.delete(participantId);
         setScreenShareAudioVolume(participantId, saved);
       } else {
-        const current = shareVolumesRef.current.get(participantId) ?? 70;
+        const current = watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? 70;
         next.set(participantId, current || 70);
         setScreenShareAudioVolume(participantId, 0);
       }
@@ -921,6 +923,15 @@ export default function ActiveRoom() {
     });
     emitWatchAllRestoreVolume(participantId);
     prevWatchAllStreamsRef.current.set(participantId, stream);
+    // Attach audio directly. If the tile already exists in Watch All,
+    // share-added is a no-op and viewer-ready never fires, so audio would be
+    // left unattached. This covers both the new-tile path (idempotent with
+    // the viewer-ready attach) and the existing-tile path.
+    if (!shareWindowsRef.current.has(participantId)) {
+      attachScreenShareAudio(participantId);
+      setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+      watchAllAttachedAudioRef.current.add(participantId);
+    }
   };
 
   const handleShareWindowClosed = (participantId: string) => {
@@ -928,7 +939,13 @@ export default function ActiveRoom() {
     // If another close path already removed it, skip duplicate cleanup.
     if (!shareWindowsRef.current.delete(participantId)) return;
     stopSending(participantId, `screen-share-${participantId}`);
-    detachScreenShareAudio(participantId);
+    // Skip detach when Watch All will take the stream back: detaching triggers
+    // setSubscribed(false/true) which can race TrackUnsubscribed/TrackSubscribed
+    // unpredictably. Keeping the gain node alive lets reAddStreamToWatchAll
+    // update volume immediately without any subscription churn.
+    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+      detachScreenShareAudio(participantId);
+    }
     setWatchingShareIds((prev) => {
       const next = new Set(prev);
       next.delete(participantId);
@@ -945,7 +962,9 @@ export default function ActiveRoom() {
       // delete() returns false and we skip to avoid double-add.
       if (!shareWindowsRef.current.delete(pid)) return;
       stopSending(pid, `screen-share-${pid}`);
-      detachScreenShareAudio(pid);
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        detachScreenShareAudio(pid);
+      }
       setWatchingShareIds((prev) => {
         const next = new Set(prev);
         next.delete(pid);
@@ -997,6 +1016,17 @@ export default function ActiveRoom() {
       listen<{ participantId: string; volume: number }>('screen-share:volume-change', (event) => {
         const { participantId, volume } = event.payload;
         syncScreenShareVolume(participantId, volume);
+      }),
+    );
+    // Local mute toggle: sets gain only, does not persist to shareVolumes/watchAllVolumesRef
+    cleanups.push(
+      listen<{ participantId: string; volume: number }>('watch-all:local-audio', (event) => {
+        setScreenShareAudioVolume(event.payload.participantId, event.payload.volume);
+      }),
+    );
+    cleanups.push(
+      listen<{ participantId: string; volume: number }>('screen-share:local-audio', (event) => {
+        setScreenShareAudioVolume(event.payload.participantId, event.payload.volume);
       }),
     );
     cleanups.push(
@@ -1340,9 +1370,11 @@ export default function ActiveRoom() {
       shareWindowsRef.current.set(participantId, { window: win, scope });
       setWatchingShareIds((prev) => new Set(prev).add(participantId));
 
-      // If Watch All is open, remove this tile from the grid — the pop-out owns it now
+      // If Watch All is open, remove this tile from the grid — the pop-out owns it now.
+      // Do NOT detach audio here: the gain node and subscription remain alive so the
+      // pop-out's handleViewerReady finds them intact and only needs to set the volume.
+      // closeShareWindow handles detach when the pop-out is actually closed.
       if (watchAllWindowRef.current && watchAllReadyRef.current) {
-        detachScreenShareAudio(participantId);
         watchAllAttachedAudioRef.current.delete(participantId);
         stopSending(participantId, 'watch-all');
         prevWatchAllStreamsRef.current.delete(participantId);
@@ -1356,7 +1388,9 @@ export default function ActiveRoom() {
   /** Close a specific screen share OS window and clean up the bridge. */
   const closeShareWindow = (participantId: string) => {
     stopSending(participantId, `screen-share-${participantId}`);
-    detachScreenShareAudio(participantId);
+    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+      detachScreenShareAudio(participantId);
+    }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
       // Delete BEFORE win.close() so the screen-share:closed handler

@@ -501,6 +501,7 @@ export default function WatchAllPage() {
             const next = prev.map((tile) => {
               if (tile.participantId !== participantId) return tile;
               found = true;
+              // volume=0 means muted; preserve the slider position so unmute restores correctly
               return { ...tile, volume, muted: volume === 0 };
             });
             if (!found) {
@@ -606,9 +607,10 @@ export default function WatchAllPage() {
       prev.map((t) => {
         if (t.participantId !== participantId) return t;
         const nextMuted = !t.muted;
-        const nextVolume = nextMuted ? 0 : (t.volume > 0 ? t.volume : 50);
-        emit('watch-all:volume-change', { participantId, volume: nextVolume });
-        return { ...t, muted: nextMuted, volume: nextVolume };
+        // Use local-audio so the gain is set without writing 0 into shareVolumes.
+        // This lets Watch All re-open at the slider's actual position (not muted).
+        emit('watch-all:local-audio', { participantId, volume: nextMuted ? 0 : t.volume });
+        return { ...t, muted: nextMuted };
       }),
     );
   }, []);
