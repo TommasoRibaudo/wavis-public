@@ -1575,6 +1575,7 @@ export default function ActiveRoom() {
         console.log('[wavis:active-room] watch-all:ready received, readyRef was:', watchAllReadyRef.current);
         if (watchAllReadyRef.current) return; // idempotent
         watchAllReadyRef.current = true;
+        watchAllWindowRef.current?.setFocus();
         // Read fresh roomState via ref — the closure captured at
         // openWatchAllWindow time may be stale by now.
         const rs = roomStateRef.current;
