@@ -228,6 +228,7 @@ vi.mock('@features/settings/settings-store', () => ({
   getMuteHotkey: vi.fn(async () => 'Ctrl+Shift+M'),
   getProfileColor: vi.fn(async () => '#E06C75'),
   getChannelVolumes: vi.fn(async () => null),
+  setChannelVolumes: vi.fn(async () => {}),
   getWindowsSharePath: vi.fn(async () => 'browser'),
   getVideoInputDevice: vi.fn(async () => null),
   setVideoInputDevice: vi.fn(async () => {}),
@@ -300,6 +301,8 @@ import {
   detachScreenShareAudio,
   startCustomShare,
   getState,
+  persistStreamVolume,
+  getPersistedStreamVolume,
 } from '../voice-room';
 import type { VoiceRoomState } from '../voice-room';
 import * as settingsStore from '@features/settings/settings-store';
@@ -2890,5 +2893,63 @@ describe('Property 10: Media reconnect cooldown enforcement', () => {
       ),
       { numRuns: 20 },
     );
+  });
+});
+
+describe('stream volume persistence', () => {
+  it('getPersistedStreamVolume returns null when no stream volumes have been saved', async () => {
+    await driveToActive();
+    expect(getPersistedStreamVolume('peer-2')).toBeNull();
+    leaveRoom();
+  });
+
+  it('persistStreamVolume stores volume keyed by userId, readable via getPersistedStreamVolume', async () => {
+    await driveToActive(); // peer-2 has userId u2
+
+    persistStreamVolume('peer-2', 40);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(40);
+    leaveRoom();
+  });
+
+  it('persistStreamVolume overwrites previous value for the same participant', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 40);
+    persistStreamVolume('peer-2', 80);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(80);
+    leaveRoom();
+  });
+
+  it('persistStreamVolume clamps volume to 0–100', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 150);
+    expect(getPersistedStreamVolume('peer-2')).toBe(100);
+
+    persistStreamVolume('peer-2', -10);
+    expect(getPersistedStreamVolume('peer-2')).toBe(0);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamVolume returns null for unknown participantId', async () => {
+    await driveToActive();
+    persistStreamVolume('peer-2', 55);
+    expect(getPersistedStreamVolume('unknown-peer')).toBeNull();
+    leaveRoom();
+  });
+
+  it('getPersistedStreamVolume returns saved value loaded from channel prefs on join', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 55 },
+    });
+
+    await driveToActive(); // peer-2 has userId u2
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(55);
+    leaveRoom();
   });
 });

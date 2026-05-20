@@ -2014,7 +2014,7 @@ function saveVolumesDebounced(): void {
         participantVols[p.userId] = p.volume;
       }
     }
-    const prefs: ChannelVolumePrefs = { master: state.masterVolume, participants: participantVols };
+    const prefs: ChannelVolumePrefs = { master: state.masterVolume, participants: participantVols, streams: { ...(channelVolumePrefs?.streams ?? {}) } };
     channelVolumePrefs = prefs;
     setChannelVolumes(state.channelId, prefs).catch((err) => {
       console.warn(LOG, 'failed to persist channel volumes:', err);
@@ -3762,6 +3762,25 @@ export function leaveRoom(): void {
   client = null;
   unsubscribe = null;
 
+  // Flush any pending volume save before state is reset — changes made within
+  // the 300ms debounce window (e.g. a slider moved right before leaving) would
+  // otherwise be silently dropped, causing the wrong volume on the next session.
+  if (volumeSaveTimer && channelVolumePrefs && state.channelId) {
+    clearTimeout(volumeSaveTimer);
+    volumeSaveTimer = null;
+    const flushParticipantVols: Record<string, number> = { ...(channelVolumePrefs.participants ?? {}) };
+    for (const p of state.participants) {
+      if (p.userId && p.id !== state.selfParticipantId) {
+        flushParticipantVols[p.userId] = p.volume;
+      }
+    }
+    setChannelVolumes(state.channelId, {
+      master: state.masterVolume,
+      participants: flushParticipantVols,
+      streams: { ...(channelVolumePrefs.streams ?? {}) },
+    }).catch(() => {});
+  }
+
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
   remoteCameraTilesById = {};
@@ -4512,6 +4531,28 @@ export function setScreenShareAudioVolume(participantId: string, volume: number)
   if (lkModule && 'setScreenShareAudioVolume' in lkModule) {
     (lkModule as LiveKitModule).setScreenShareAudioVolume(participantId, clamped);
   }
+}
+
+export function persistStreamVolume(participantId: string, volume: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (p?.userId) {
+    if (!channelVolumePrefs) {
+      channelVolumePrefs = { master: state.masterVolume, participants: {} };
+    }
+    channelVolumePrefs = {
+      ...channelVolumePrefs,
+      streams: { ...(channelVolumePrefs.streams ?? {}), [p.userId]: clamped },
+    };
+  }
+  saveVolumesDebounced();
+}
+
+export function getPersistedStreamVolume(participantId: string): number | null {
+  if (!channelVolumePrefs?.streams) return null;
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.userId) return null;
+  return channelVolumePrefs.streams[p.userId] ?? null;
 }
 
 export function kickParticipant(participantId: string): void {

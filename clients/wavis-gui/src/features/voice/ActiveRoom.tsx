@@ -44,6 +44,8 @@ import {
   attachScreenShareAudio,
   detachScreenShareAudio,
   setScreenShareAudioVolume,
+  persistStreamVolume,
+  getPersistedStreamVolume,
   activeShareType,
   computeStopRoute,
   isShareButtonDisabled,
@@ -791,7 +793,7 @@ export default function ActiveRoom() {
   const getSavedShareVolume = useCallback((participantId: string) => {
     // watchAllVolumesRef is updated synchronously by syncScreenShareVolume;
     // shareVolumesRef lags by one render cycle (useEffect). Prefer the sync ref.
-    return watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? 70;
+    return watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? getPersistedStreamVolume(participantId) ?? 70;
   }, []);
 
   const syncScreenShareVolume = useCallback((participantId: string, volume: number) => {
@@ -803,6 +805,7 @@ export default function ActiveRoom() {
     });
     watchAllVolumesRef.current.set(participantId, volume);
     setScreenShareAudioVolume(participantId, volume);
+    persistStreamVolume(participantId, volume);
     emit('watch-all:restore-volume', { participantId, volume });
     emit('screen-share:restore-volume', { participantId, volume });
   }, []);
