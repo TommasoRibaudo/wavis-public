@@ -5076,6 +5076,11 @@ export class LiveKitModule {
    * Called when the user opens the screen share viewer window.
    */
   attachScreenShareAudio(participantIdentity: string): void {
+    // Mark as pending immediately so any TrackSubscribed that fires after the
+    // in-flight setSubscribed(false) (from initial deferral) sees isPending=true
+    // and does not call setSubscribed(false) again, which would permanently
+    // silence the audio even after the viewer is open.
+    this.screenShareAudioPending.add(participantIdentity);
     const publication = this.screenShareAudioPublications.get(participantIdentity);
     if (publication && typeof publication.setSubscribed === 'function') {
       publication.setSubscribed(true);

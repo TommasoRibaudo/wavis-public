@@ -30,6 +30,7 @@ export interface NotificationToggles {
 export interface ChannelVolumePrefs {
   master: number;
   participants: Record<string, number>;
+  streams?: Record<string, number>;
 }
 
 export type WindowsSharePathPreference = 'browser' | 'native';
