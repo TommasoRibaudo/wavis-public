@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { computeGridLayout } from '../watch-all-grid';
+import { computeGridLayout, computeWatchAllLayout } from '../watch-all-grid';
 
 const shareCountArb = fc.integer({ min: 1, max: 6 });
 const containerWidthArb = fc.integer({ min: 480, max: 3840 });
@@ -58,6 +58,72 @@ describe('Property 2: Grid layout produces uniform tiles', () => {
 
         const emptyCells = result.columns * result.rows - shareCount;
         expect(emptyCells).toBeLessThan(result.columns);
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+/* ═══ computeWatchAllLayout properties ══════════════════════════════ */
+
+const aspectRatioArb = fc.float({ min: 0.5, max: 5.0, noNaN: true });
+const streamArb = fc.record({
+  id: fc.uuid(),
+  aspectRatio: aspectRatioArb,
+});
+const streamsArb = fc.array(streamArb, { minLength: 1, maxLength: 5 }).map((streams) => {
+  // Ensure unique ids
+  const seen = new Set<string>();
+  return streams.filter((s) => { if (seen.has(s.id)) return false; seen.add(s.id); return true; });
+}).filter((s) => s.length >= 1);
+
+describe('Property 3: computeWatchAllLayout — all streams appear exactly once', () => {
+  it('every input stream id appears in exactly one tile', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+        const allIds = result.rows.flatMap((r) => r.tiles.map((t) => t.id));
+
+        expect(allIds).toHaveLength(streams.length);
+        for (const s of streams) {
+          expect(allIds.filter((id) => id === s.id)).toHaveLength(1);
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('Property 4: computeWatchAllLayout — positive flex values', () => {
+  it('all row and tile flexGrow values are > 0', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+
+        for (const row of result.rows) {
+          expect(row.flexGrow).toBeGreaterThan(0);
+          for (const tile of row.tiles) {
+            expect(tile.flexGrow).toBeGreaterThan(0);
+          }
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('Property 5: computeWatchAllLayout — tile flexGrow matches aspect ratio', () => {
+  it('tile flexGrow equals its stream aspect ratio', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+
+        for (const row of result.rows) {
+          for (const tile of row.tiles) {
+            const stream = streams.find((s) => s.id === tile.id)!;
+            expect(tile.flexGrow).toBeCloseTo(stream.aspectRatio, 10);
+          }
+        }
       }),
       { numRuns: 200 },
     );

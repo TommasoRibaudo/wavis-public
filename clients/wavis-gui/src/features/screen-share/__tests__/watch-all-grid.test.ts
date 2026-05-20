@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeGridLayout } from '../watch-all-grid';
+import { computeGridLayout, computeWatchAllLayout } from '../watch-all-grid';
 
 describe('computeGridLayout - edge cases', () => {
   it('1 share -> columns=1, rows=1, tile fills container', () => {
@@ -129,5 +129,77 @@ describe('computeGridLayout - resize hysteresis simulation', () => {
 
     // c=1 is already optimal at 650 so it is returned regardless of threshold
     expect(resultAfterSwitch.columns).toBe(1);
+  });
+});
+
+/* ═══ computeWatchAllLayout ═════════════════════════════════════════ */
+
+describe('computeWatchAllLayout - edge cases', () => {
+  it('0 streams returns empty rows', () => {
+    const result = computeWatchAllLayout([], 1920, 1080);
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it('1 stream fills a single row', () => {
+    const result = computeWatchAllLayout([{ id: 'a', aspectRatio: 16 / 9 }], 1920, 1080);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].tiles).toHaveLength(1);
+    expect(result.rows[0].tiles[0].id).toBe('a');
+  });
+
+  it('2 identical 16:9 streams in 1920×1080 go side-by-side (1 row is closer to H)', () => {
+    // 1 row: T = 1920 / (16/9 + 16/9) = 1920 / 3.556 ≈ 540. score = |540 - 1080| = 540
+    // 2 rows: T = 1920/1.778 + 1920/1.778 ≈ 2160. score = |2160 - 1080| = 1080
+    // 1 row wins.
+    const streams = [
+      { id: 'a', aspectRatio: 16 / 9 },
+      { id: 'b', aspectRatio: 16 / 9 },
+    ];
+    const result = computeWatchAllLayout(streams, 1920, 1080);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].tiles).toHaveLength(2);
+  });
+
+  it('ultrawide + two 16:9 streams: ultrawide gets its own row', () => {
+    // 2 rows: [ultrawide | 16:9, 16:9]
+    // S1 = 21/9 ≈ 2.333 → h1 ≈ 823; S2 = 32/9 ≈ 3.556 → h2 ≈ 540. T ≈ 1363. score ≈ 283
+    // vs 1 row: S = 5.889, T = 326. score = 754
+    // vs 3 rows: T > 2000, score > 920
+    const streams = [
+      { id: 'wide', aspectRatio: 21 / 9 },
+      { id: 'hd1', aspectRatio: 16 / 9 },
+      { id: 'hd2', aspectRatio: 16 / 9 },
+    ];
+    const result = computeWatchAllLayout(streams, 1920, 1080);
+    expect(result.rows).toHaveLength(2);
+    // Ultrawide should be alone in a row
+    const aloneTile = result.rows.find((r) => r.tiles.length === 1);
+    expect(aloneTile).toBeDefined();
+    expect(aloneTile!.tiles[0].id).toBe('wide');
+  });
+
+  it('tile flexGrow values are proportional to aspect ratios within each row', () => {
+    const ar1 = 16 / 9;
+    const ar2 = 4 / 3;
+    const streams = [{ id: 'a', aspectRatio: ar1 }, { id: 'b', aspectRatio: ar2 }];
+    const result = computeWatchAllLayout(streams, 1920, 1080);
+    // If both tiles are in the same row, their flexGrow ratio should equal their AR ratio
+    if (result.rows.length === 1) {
+      const tileA = result.rows[0].tiles.find((t) => t.id === 'a')!;
+      const tileB = result.rows[0].tiles.find((t) => t.id === 'b')!;
+      expect(tileA.flexGrow / tileB.flexGrow).toBeCloseTo(ar1 / ar2, 5);
+    }
+  });
+
+  it('all streams accounted for — no tile is lost', () => {
+    const streams = [
+      { id: 'a', aspectRatio: 21 / 9 },
+      { id: 'b', aspectRatio: 16 / 9 },
+      { id: 'c', aspectRatio: 4 / 3 },
+      { id: 'd', aspectRatio: 16 / 9 },
+    ];
+    const result = computeWatchAllLayout(streams, 1920, 1080);
+    const allIds = result.rows.flatMap((r) => r.tiles.map((t) => t.id));
+    expect(allIds.sort()).toEqual(['a', 'b', 'c', 'd']);
   });
 });

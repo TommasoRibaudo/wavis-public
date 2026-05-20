@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { Volume2 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
-import { computeGridLayout } from './watch-all-grid';
+import { computeWatchAllLayout } from './watch-all-grid';
 import { useShareTransitionOverlay } from './share-transition';
 import { isPlaybackHealthyWithoutFreshFrames } from './useVideoStallDetector';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
@@ -38,6 +38,8 @@ interface ShareTileState {
   canvasFallback: boolean;
   muted: boolean;
   volume: number;
+  /** Detected width/height ratio; defaults to 16/9 until the stream connects. */
+  aspectRatio: number;
 }
 
 interface ShareUserState {
@@ -75,6 +77,7 @@ interface ShareTileProps {
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
   onPopOut: (participantId: string, volume: number) => void;
+  onAspectRatioDetected: (participantId: string, ratio: number) => void;
 }
 
 const ShareTile = memo(function ShareTile({
@@ -87,10 +90,13 @@ const ShareTile = memo(function ShareTile({
   onToggleMute,
   onVolumeChange,
   onPopOut,
+  onAspectRatioDetected,
 }: ShareTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const receiverRef = useRef<StreamReceiver | null>(null);
+  const onAspectRatioDetectedRef = useRef(onAspectRatioDetected);
+  onAspectRatioDetectedRef.current = onAspectRatioDetected;
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
@@ -194,13 +200,23 @@ const ShareTile = memo(function ShareTile({
     };
   }, [canvasFallback, participantId, requestSenderResync, retryCount, scheduleRetry]);
 
-  // Attach stream to video element
+  // Attach stream to video element and detect aspect ratio from metadata
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !stream) return;
     video.srcObject = stream;
+
+    const handleMetadata = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        onAspectRatioDetectedRef.current(participantId, video.videoWidth / video.videoHeight);
+      }
+    };
+
+    video.addEventListener('loadedmetadata', handleMetadata);
     video.play().catch(() => {});
-  }, [stream]);
+
+    return () => video.removeEventListener('loadedmetadata', handleMetadata);
+  }, [stream, participantId]);
 
   /* ── Canvas fallback (Linux) ── */
 
@@ -222,6 +238,9 @@ const ShareTile = memo(function ShareTile({
         if (canvas.width !== img.width || canvas.height !== img.height) {
           canvas.width = img.width;
           canvas.height = img.height;
+          if (img.width > 0 && img.height > 0) {
+            onAspectRatioDetectedRef.current(participantId, img.width / img.height);
+          }
         }
         ctx.drawImage(img, 0, 0);
         markFrameRendered();
@@ -425,7 +444,6 @@ export default function WatchAllPage() {
   const [tiles, setTiles] = useState<ShareTileState[]>([]);
   const pendingRestoreVolumesRef = useRef<Map<string, number>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
-  const previousLayoutRef = useRef<{ shareCount: number; columns: number } | null>(null);
   const [gridSize, setGridSize] = useState({ width: 0, height: 0 });
   const [userState, setUserState] = useState<ShareUserState>({
     isMuted: false,
@@ -460,7 +478,7 @@ export default function WatchAllPage() {
             if (restoredVolume !== undefined) {
               pendingRestoreVolumesRef.current.delete(participantId);
             }
-            const baseTile = { participantId, displayName, color, canvasFallback, muted: false, volume: 70 };
+            const baseTile = { participantId, displayName, color, canvasFallback, muted: false, volume: 70, aspectRatio: 16 / 9 };
             return [
               ...prev,
               restoredVolume === undefined
@@ -626,6 +644,14 @@ export default function WatchAllPage() {
     emit('watch-all:volume-change', { participantId, volume });
   }, []);
 
+  const handleAspectRatioDetected = useCallback((participantId: string, ratio: number) => {
+    setTiles((prev) => prev.map((t) =>
+      t.participantId === participantId && Math.abs(t.aspectRatio - ratio) > 0.01
+        ? { ...t, aspectRatio: ratio }
+        : t,
+    ));
+  }, []);
+
   const handleVoiceVolumeChange = useCallback((participantId: string, volume: number) => {
     setVoiceParticipants((prev) =>
       prev.map((participant) =>
@@ -696,15 +722,28 @@ export default function WatchAllPage() {
     getCurrentWindow().close();
   }, []);
 
-  /* ── Compute grid layout ── */
+  /* ── Compute layout ── */
 
-  const currentColumns = previousLayoutRef.current?.shareCount === tiles.length
-    ? previousLayoutRef.current.columns
-    : undefined;
-  const layout = tiles.length > 0 && gridSize.width > 0 && gridSize.height > 0
-    ? computeGridLayout(tiles.length, gridSize.width, gridSize.height, currentColumns)
-    : null;
-  const layoutColumns = layout?.columns ?? null;
+  // Layout is computed in two phases to keep the partition stable during resize.
+  //
+  // Phase 1 — partition: which streams share a row. Computed from a fixed 16:9
+  //   reference so the row grouping never changes when the panel is resized.
+  //   Stable partition = stable row keys = no ShareTile remounts = no WebRTC drops.
+  //
+  // Phase 2 — flex values: proportional row heights derived from the actual
+  //   container size. These are just CSS numbers; changing them never remounts tiles.
+  const layout = useMemo(() => {
+    if (tiles.length === 0 || gridSize.width <= 0 || gridSize.height <= 0) return null;
+    const streams = tiles.map((t) => ({ id: t.participantId, aspectRatio: t.aspectRatio }));
+    const { rows: baseRows } = computeWatchAllLayout(streams, 1920, 1080);
+    const arById = new Map(streams.map((s) => [s.id, s.aspectRatio]));
+    return {
+      rows: baseRows.map((row) => {
+        const S = row.tiles.reduce((sum, t) => sum + (arById.get(t.id) ?? 16 / 9), 0);
+        return { ...row, flexGrow: gridSize.width / S };
+      }),
+    };
+  }, [tiles, gridSize]);
   const bottomBarActive = bottomBarVisible || mixerOpen || voiceMixerOpen;
   const activeMixerPanelOrder = mixerPanelOrder.filter((panel) =>
     panel === 'voice' ? voiceMixerOpen : mixerOpen,
@@ -714,12 +753,6 @@ export default function WatchAllPage() {
       ? 'absolute bottom-full right-0 mb-1'
       : 'absolute bottom-full right-[228px] mb-1'
   );
-
-  useEffect(() => {
-    previousLayoutRef.current = layoutColumns === null
-      ? null
-      : { shareCount: tiles.length, columns: layoutColumns };
-  }, [layoutColumns, tiles.length]);
 
   /* ── Render ── */
 
@@ -762,28 +795,38 @@ export default function WatchAllPage() {
             no active shares
           </div>
         ) : layout ? (
-          /* Grid of tiles */
-          <div
-            className="w-full h-full"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `repeat(${layout.columns}, 1fr)`,
-              gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
-            }}
-          >
-            {tiles.map((tile) => (
-              <ShareTile
-                key={tile.participantId}
-                participantId={tile.participantId}
-                displayName={tile.displayName}
-                color={tile.color}
-                canvasFallback={tile.canvasFallback}
-                muted={tile.muted}
-                volume={tile.volume}
-                onToggleMute={handleToggleMute}
-                onVolumeChange={handleVolumeChange}
-                onPopOut={handlePopOut}
-              />
+          /* Justified rows — widths proportional to each stream's aspect ratio */
+          <div className="w-full h-full flex flex-col">
+            {layout.rows.map((row) => (
+              <div
+                key={row.tiles.map((t) => t.id).join('|')}
+                className="flex min-h-0"
+                style={{ flex: row.flexGrow }}
+              >
+                {row.tiles.map((tileDef) => {
+                  const tile = tiles.find((t) => t.participantId === tileDef.id)!;
+                  return (
+                    <div
+                      key={tileDef.id}
+                      className="min-w-0 overflow-hidden"
+                      style={{ flex: tileDef.flexGrow }}
+                    >
+                      <ShareTile
+                        participantId={tile.participantId}
+                        displayName={tile.displayName}
+                        color={tile.color}
+                        canvasFallback={tile.canvasFallback}
+                        muted={tile.muted}
+                        volume={tile.volume}
+                        onToggleMute={handleToggleMute}
+                        onVolumeChange={handleVolumeChange}
+                        onPopOut={handlePopOut}
+                        onAspectRatioDetected={handleAspectRatioDetected}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             ))}
           </div>
         ) : null}
