@@ -18,6 +18,8 @@ const MODES: { key: ShareMode; label: string; sourceType: ShareSourceType }[] = 
 ];
 
 const ECHO_WARNING_SUBSTRING = 'echo possible';
+const DEBUG_SCREEN_CAPTURE = import.meta.env.VITE_DEBUG_SCREEN_CAPTURE === 'true';
+const LOG = '[share-picker]';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -261,14 +263,16 @@ export default function SharePicker(props: SharePickerProps) {
     );
 
     for (const source of visualSources) {
+      if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'fetching thumbnail for', source.id, source.name);
       invoke<string | null>('fetch_source_thumbnail', { sourceId: source.id })
         .then((thumb) => {
+          if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'thumbnail result for', source.id, thumb ? `${thumb.length} bytes` : 'null');
           if (!cancelled && thumb) {
             setThumbnails((prev) => ({ ...prev, [source.id]: thumb }));
           }
         })
-        .catch(() => {
-          // Timeout or failure — keep placeholder (no-op)
+        .catch((err: unknown) => {
+          if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'thumbnail fetch failed for', source.id, err);
         });
     }
 

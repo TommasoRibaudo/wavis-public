@@ -49,7 +49,6 @@ import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge'
 import { playNotificationSound } from './notification-sounds';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const LOG = '[wavis:voice-room]';
@@ -3677,12 +3676,6 @@ export function leaveRoom(): void {
       if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
     }
     if (state.activeAudioShare) invoke('audio_share_stop').catch(() => { });
-    // Close ShareIndicator window
-    WebviewWindow.getByLabel('share-indicator')
-      .then((win) => {
-        if (win) win.close().catch(() => { });
-      })
-      .catch(() => { });
     // Send stop_share before leave for custom shares
     if (client && client.status === 'connected') {
       client.send({ type: 'stop-share' });
@@ -4329,15 +4322,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
     state.activeAudioShare = null;
   }
 
-  // 6. Update or close ShareIndicator
-  if (state.activeVideoShare || state.activeAudioShare) {
-    await updateShareIndicator();
-  } else {
-    try {
-      const indicatorWin = await WebviewWindow.getByLabel('share-indicator');
-      if (indicatorWin) await indicatorWin.close();
-    } catch { /* best-effort */ }
-  }
+  await updateShareIndicator();
 
   notify();
 
@@ -4350,40 +4335,9 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   });
 }
 
-/** Open or update the ShareIndicator window to reflect current share state. */
-async function updateShareIndicator(): Promise<void> {
-  const shares: Array<{ mode: ShareMode; sourceName: string }> = [];
-  if (state.activeVideoShare) {
-    shares.push({ mode: state.activeVideoShare.mode, sourceName: state.activeVideoShare.sourceName });
-  }
-  if (state.activeAudioShare) {
-    shares.push({ mode: 'audio_only', sourceName: state.activeAudioShare.sourceName });
-  }
-  if (shares.length === 0) return;
-
-  const indicatorParams = { shares };
-  const hash = encodeURIComponent(JSON.stringify(indicatorParams));
-
-  // Close existing indicator first (it may have stale data)
-  try {
-    const existing = await WebviewWindow.getByLabel('share-indicator');
-    if (existing) await existing.close();
-  } catch { /* best-effort */ }
-
-  // Small delay to let the old window fully close before creating a new one
-  await new Promise((r) => setTimeout(r, 50));
-
-  new WebviewWindow('share-indicator', {
-    url: `/share-indicator#${hash}`,
-    title: 'Wavis — Sharing',
-    width: 280,
-    height: shares.length > 1 ? 72 : 48,
-    resizable: false,
-    decorations: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-  });
-}
+/** No-op: share indicator window removed. Stop is accessible from the main room UI. */
+// eslint-disable-next-line @typescript-eslint/no-empty-function
+async function updateShareIndicator(): Promise<void> {}
 
 export async function stopShare(): Promise<void> {
   // Clear local sharing flag immediately for responsive UI
