@@ -2818,9 +2818,9 @@ export class LiveKitModule {
     this.nativeCaptureFrameHandler = null;
     this.nativeCaptureEarlyFrames = [];
     if (this.nativeCapturePublication) {
-      const track = this.nativeCapturePublication.track?.mediaStreamTrack;
-      if (track) track.stop();
-      this.nativeCapturePublication = null;
+      // Delegate to stopNativeCapture so unpublishTrack is called before
+      // room.disconnect() runs; it eagerly nulls nativeCapturePublication.
+      this.stopNativeCapture().catch(() => {});
     }
     if (this.nativeCaptureCanvas) {
       this.nativeCaptureCanvas.remove();

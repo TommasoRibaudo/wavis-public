@@ -386,14 +386,30 @@ fn main() {
                             }
                         }
                         // Main window is actually closing (not minimized to tray).
+                        // Prevent the close so JS can tear down LiveKit cleanly (send
+                        // the Leave signal to the SFU) before the webview is destroyed.
+                        api.prevent_close();
+
                         // Notify the frontend so it can tear down the voice session
-                        // and close child windows before the window is destroyed.
+                        // and close child windows. The JS listener must call
+                        // close_main_window when it's done; the safety timeout below
+                        // ensures the window closes even if the listener never fires.
                         let _ = app.emit("main-window-closing", ());
 
                         // Also emit voice-session:ended directly so pop-out windows
                         // (ScreenSharePage) self-close even if the main window's JS
                         // listener doesn't execute in time (race condition on destroy).
                         let _ = app.emit("voice-session:ended", ());
+
+                        // Safety timeout: close the window after 1.5 s regardless,
+                        // in case the JS listener crashes or never fires.
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.destroy();
+                            }
+                        });
                     }
                 }
                 tauri::WindowEvent::Focused(focused) => {
@@ -476,6 +492,7 @@ fn main() {
             native_mic::native_mic_stop,
             native_mic::native_mic_set_denoise_enabled,
             native_mic::native_mic_set_input_device,
+            close_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building wavis")
@@ -890,4 +907,13 @@ fn set_input_gain(gain: f32, state: tauri::State<'_, media::MediaState>) -> Resu
 #[tauri::command]
 fn is_window_visible(state: tauri::State<'_, tray::WindowVisibility>) -> bool {
     !state.hidden.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Called by the frontend after LiveKit cleanup to allow the main window to
+/// close. Pairs with the `prevent_close()` in the CloseRequested handler.
+#[tauri::command]
+fn close_main_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.destroy();
+    }
 }

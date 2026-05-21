@@ -247,6 +247,8 @@ export default function SharePicker(props: SharePickerProps) {
   const [withAudio, setWithAudio] = useState<boolean>(() =>
     initSources.length > 0 ? pickDefaultMode(initSources) === 'screen_audio' : true,
   );
+  // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
+  const [compatibilityMode, setCompatibilityMode] = useState(false);
 
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
 
@@ -280,6 +282,8 @@ export default function SharePicker(props: SharePickerProps) {
       cancelled = true;
     };
   }, [enumResult]);
+
+  const isWindowsPlatform = /Windows NT/i.test(navigator.userAgent || '');
 
   /* ── Derived ── */
   const sources = enumResult?.sources ?? [];
@@ -358,6 +362,8 @@ export default function SharePicker(props: SharePickerProps) {
       sourceId: selectedSource.id,
       sourceName: selectedSource.name,
       withAudio: activeMode === 'audio_only' ? false : withAudio,
+      sourceKind: selectedSource.source_type === 'window' ? 'window' : 'screen',
+      compatibilityMode,
     };
 
     if (isInline) {
@@ -368,7 +374,7 @@ export default function SharePicker(props: SharePickerProps) {
       await invoke('share_picker_select', { selection });
       await getCurrentWindow().close();
     }
-  }, [selectedSource, activeMode, withAudio, isInline, props]);
+  }, [selectedSource, activeMode, withAudio, compatibilityMode, isInline, props]);
 
   /* ── Cancel action ── */
   const handleCancel = useCallback(async () => {
@@ -508,6 +514,17 @@ export default function SharePicker(props: SharePickerProps) {
               >
                 System audio
               </span>
+            </label>
+          )}
+          {selectedSource?.source_type === 'window' && isWindowsPlatform && (
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={compatibilityMode}
+                onChange={(e) => setCompatibilityMode(e.target.checked)}
+                className="accent-wavis-accent"
+              />
+              <span className="text-wavis-text-secondary">Game compatibility mode</span>
             </label>
           )}
         </div>
