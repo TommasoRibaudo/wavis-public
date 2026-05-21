@@ -3027,7 +3027,7 @@ export class LiveKitModule {
     const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
     const nativeShareAudio = usesNativeScreenShareAudio();
-    console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
+    if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
       nativeShareAudio, profile.audio, navigator.userAgent.slice(0, 60));
 
     const captureOpts = {
