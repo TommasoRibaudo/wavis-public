@@ -1279,9 +1279,13 @@ export default function ActiveRoom() {
   // tear down the voice session and close all child windows so nothing
   // is orphaned. The Rust on_window_event handler emits this event.
   useEffect(() => {
-    const unlisten = listen('main-window-closing', () => {
+    const unlisten = listen('main-window-closing', async () => {
       closeAllShareWindows();
       leaveRoom();
+      // Give the JS event loop a tick so room.disconnect() can flush its
+      // WebSocket Leave signal to the LiveKit SFU before the webview is
+      // destroyed. The Rust side uses prevent_close() until this resolves.
+      await invoke('close_main_window').catch(() => {});
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);

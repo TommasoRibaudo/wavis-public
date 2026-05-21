@@ -83,4 +83,8 @@ export interface ShareSelection {
   sourceName: string;
   /** Whether system audio capture is enabled alongside video. */
   withAudio: boolean;
+  /** 'screen' = HMONITOR, 'window' = HWND. Avoids unsafe probe on Rust side. */
+  sourceKind?: 'screen' | 'window';
+  /** User opted into GDI polling capture to preserve game cursor visibility. */
+  compatibilityMode?: boolean;
 }

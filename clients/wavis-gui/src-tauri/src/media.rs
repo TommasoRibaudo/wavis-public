@@ -1250,10 +1250,12 @@ pub fn screen_share_start_source(
 pub fn screen_share_start_source(
     source_id: String,
     share_session_id: Option<String>,
+    compatibility_mode: Option<bool>,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
     use screen_capture::frame_processor::{cap_resolution, FrameThrottler};
+    use screen_capture::gdi_capture::{GdiCapture, GdiCaptureConfig};
     use screen_capture::win_capture::{WinCapture, WinCaptureConfig};
     use screen_capture::ScreenCapture;
 
@@ -1283,17 +1285,38 @@ pub fn screen_share_start_source(
     // The native-LK frame-feeding path lives in the Linux `screen_share_start()`
     // function (no `_source` suffix) which is #[cfg(target_os = "linux")].
 
-    // Create and start the Windows capture.
-    let capture = WinCapture::start(WinCaptureConfig {
-        source_id: source_id.clone(),
-        app_handle: app.clone(),
-    })
-    .map_err(|e| {
-        log::error!("{LOG} [diag] WinCapture::start() FAILED: {e}");
-        format!("{e}")
-    })?;
+    // Route to GDI or WGC capture backend.
+    let capture: Box<dyn ScreenCapture> = if compatibility_mode.unwrap_or(false) {
+        let handle_val: isize = source_id.parse().map_err(|_| {
+            format!("compatibility mode: invalid source id '{source_id}'")
+        })?;
+        let hwnd = windows::Win32::Foundation::HWND(handle_val as *mut _);
+        log::info!("{LOG} compatibility mode: using GDI capture for source {source_id}");
+        Box::new(
+            GdiCapture::start(GdiCaptureConfig {
+                hwnd,
+                app_handle: app.clone(),
+                target_fps: state.screen_share_config.max_fps(),
+            })
+            .map_err(|e| {
+                log::error!("{LOG} GdiCapture::start() FAILED: {e}");
+                format!("{e}")
+            })?,
+        )
+    } else {
+        Box::new(
+            WinCapture::start(WinCaptureConfig {
+                source_id: source_id.clone(),
+                app_handle: app.clone(),
+            })
+            .map_err(|e| {
+                log::error!("{LOG} [diag] WinCapture::start() FAILED: {e}");
+                format!("{e}")
+            })?,
+        )
+    };
 
-    log::info!("{LOG} [diag] WinCapture::start() returned OK");
+    log::info!("{LOG} [diag] capture backend started");
 
     let config = state.screen_share_config.clone();
     let native_share_leak_session = Arc::clone(&state.native_share_leak_session);
@@ -1473,7 +1496,7 @@ pub fn screen_share_start_source(
         .screen_capture
         .lock()
         .map_err(|e| format!("screen_capture lock: {e}"))?;
-    *sc_guard = Some(Box::new(capture));
+    *sc_guard = Some(capture);
 
     log::info!("{LOG} [diag] capture stored in MediaState, function complete");
 

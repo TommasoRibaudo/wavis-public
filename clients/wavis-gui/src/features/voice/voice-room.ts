@@ -3297,6 +3297,14 @@ function dispatchMessage(raw: unknown): void {
         ssp.isSharing = false;
         ssp.shareType = undefined;
       }
+      // Clear the stream reference immediately on signaling. The LiveKit
+      // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
+      // the sharer closes the app abruptly; without this the viewer's UI shows
+      // a stale frozen frame until the SFU eventually fires the event.
+      if (state.screenShareStreams.has(shareStopId)) {
+        state.screenShareStreams = new Map(state.screenShareStreams);
+        state.screenShareStreams.delete(shareStopId);
+      }
       // Cache the display name from the server payload
       if (shareStopName) {
         displayNameCache.set(shareStopId, shareStopName);
@@ -4137,6 +4145,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         await invoke('screen_share_start_source', {
           sourceId: selection.sourceId,
           shareSessionId,
+          compatibilityMode: selection.compatibilityMode ?? false,
         });
       }
       videoStarted = true;
