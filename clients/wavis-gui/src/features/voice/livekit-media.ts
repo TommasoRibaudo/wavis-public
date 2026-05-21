@@ -5494,6 +5494,7 @@ export class LiveKitModule {
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
+        stream: Track.Source.ScreenShare,
         videoCodec: pubOpts.videoCodec,
         backupCodec: pubOpts.backupCodec,
         simulcast: pubOpts.simulcast,
@@ -5556,6 +5557,16 @@ export class LiveKitModule {
     }
     if (pub && this.room) {
       const track = pub.track?.mediaStreamTrack;
+      // Capture the transceiver BEFORE unpublishing. After unpublish the sender's
+      // track is detached, making the transceiver hard to identify. We need to stop
+      // it explicitly afterwards to clear its MID from Chrome's active RTP extension
+      // ID namespace — without this the next publish collides (ERROR_CONTENT:
+      // "RTP extension ID reassignment not supported").
+      const peerConnection = this.getPublisherPeerConnection();
+      const screenShareTransceiver = track && peerConnection
+        ? peerConnection.getTransceivers().find((t) => t.sender.track === track) ?? null
+        : null;
+
       if (track) {
         if (leakSession) {
           leakSession.summary.cleanupFlags.unpublishAttempted = true;
@@ -5572,6 +5583,11 @@ export class LiveKitModule {
           leakSession.summary.cleanupFlags.trackStopped = true;
         }
         this.markNativeCaptureLeakStage('track_stopped');
+      }
+
+      // Stop the transceiver to free its MID from Chrome's extension ID tracking.
+      if (screenShareTransceiver) {
+        try { screenShareTransceiver.stop(); } catch { /* best-effort */ }
       }
     }
 

@@ -422,14 +422,17 @@ fn enumerate_window_audio_sources(
 fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC, DeleteObject,
-        GetMonitorInfoW, GetWindowDC, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+        GetDC, GetMonitorInfoW, GetWindowDC, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
 
     let handle_val: isize = match source_id.parse() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            crate::debug_eprintln!("[share-thumb] source_id '{}' is not an isize handle", source_id);
+            return Ok(None);
+        }
     };
 
     unsafe {
@@ -438,41 +441,48 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
         let got_rect = GetClientRect(hwnd, &mut client_rect);
 
         if got_rect.is_ok() {
+            crate::debug_eprintln!("[share-thumb] capturing window handle {}", handle_val);
             let mut win_rect = std::mem::zeroed();
             if GetWindowRect(hwnd, &mut win_rect).is_err() {
+                crate::debug_eprintln!("[share-thumb] GetWindowRect failed for handle {}", handle_val);
                 return Ok(None);
             }
             let w = (win_rect.right - win_rect.left) as u32;
             let h = (win_rect.bottom - win_rect.top) as u32;
             if w == 0 || h == 0 {
+                crate::debug_eprintln!("[share-thumb] window {}x{} has zero dimension", w, h);
                 return Ok(None);
             }
 
             let wnd_dc = GetWindowDC(hwnd);
             if wnd_dc.is_invalid() {
+                crate::debug_eprintln!("[share-thumb] GetWindowDC failed");
                 return Ok(None);
             }
 
             let mem_dc = CreateCompatibleDC(wnd_dc);
             if mem_dc.is_invalid() {
                 ReleaseDC(hwnd, wnd_dc);
+                crate::debug_eprintln!("[share-thumb] CreateCompatibleDC failed (window)");
                 return Ok(None);
             }
             let bitmap = CreateCompatibleBitmap(wnd_dc, w as i32, h as i32);
             if bitmap.is_invalid() {
                 let _ = DeleteDC(mem_dc);
                 let _ = ReleaseDC(hwnd, wnd_dc);
+                crate::debug_eprintln!("[share-thumb] CreateCompatibleBitmap failed (window)");
                 return Ok(None);
             }
             let old_bmp = SelectObject(mem_dc, bitmap);
-
             let _ = BitBlt(mem_dc, 0, 0, w as i32, h as i32, wnd_dc, 0, 0, SRCCOPY);
-
-            let rgba = read_bitmap_rgba(mem_dc, bitmap, wnd_dc, w, h);
+            // Deselect before GetDIBits — GDI requires the bitmap not be selected
+            // into any DC when GetDIBits reads its pixel data.
             SelectObject(mem_dc, old_bmp);
+            let rgba = read_bitmap_rgba(bitmap, wnd_dc, w, h);
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
             let _ = ReleaseDC(hwnd, wnd_dc);
+            crate::debug_eprintln!("[share-thumb] window capture {}x{}: rgba={}", w, h, rgba.is_some());
 
             return match rgba {
                 Some(data) => Ok(Some((data, w, h))),
@@ -480,42 +490,50 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             };
         }
 
+        // Not a window — try as monitor.
+        crate::debug_eprintln!("[share-thumb] capturing monitor handle {}", handle_val);
         let monitor = HMONITOR(handle_val as *mut _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..std::mem::zeroed()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+            crate::debug_eprintln!("[share-thumb] GetMonitorInfoW failed for handle {}", handle_val);
             return Ok(None);
         }
 
         let w = (mi.rcMonitor.right - mi.rcMonitor.left) as u32;
         let h = (mi.rcMonitor.bottom - mi.rcMonitor.top) as u32;
+        crate::debug_eprintln!("[share-thumb] monitor rect ({},{}) {}x{}", mi.rcMonitor.left, mi.rcMonitor.top, w, h);
         if w == 0 || h == 0 {
+            crate::debug_eprintln!("[share-thumb] monitor has zero dimension");
             return Ok(None);
         }
 
-        let screen_dc = CreateDCW(&windows::core::HSTRING::from("DISPLAY"), None, None, None);
+        // GetDC(NULL) returns a DC for the entire virtual screen (all monitors),
+        // which is required to BitBlt from secondary monitors at non-zero offsets.
+        let screen_dc = GetDC(HWND::default());
         if screen_dc.is_invalid() {
+            crate::debug_eprintln!("[share-thumb] GetDC(NULL) failed");
             return Ok(None);
         }
         let mem_dc = CreateCompatibleDC(screen_dc);
         if mem_dc.is_invalid() {
-            let _ = DeleteDC(screen_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            crate::debug_eprintln!("[share-thumb] CreateCompatibleDC failed (monitor)");
             return Ok(None);
         }
         let bitmap = CreateCompatibleBitmap(screen_dc, w as i32, h as i32);
         if bitmap.is_invalid() {
             let _ = DeleteDC(mem_dc);
-            let _ = DeleteDC(screen_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            crate::debug_eprintln!("[share-thumb] CreateCompatibleBitmap failed (monitor)");
             return Ok(None);
         }
         let old_bmp = SelectObject(mem_dc, bitmap);
-
         let _ = BitBlt(
             mem_dc,
-            0,
-            0,
+            0, 0,
             w as i32,
             h as i32,
             screen_dc,
@@ -523,12 +541,14 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             mi.rcMonitor.top,
             SRCCOPY,
         );
-
-        let rgba = read_bitmap_rgba(mem_dc, bitmap, screen_dc, w, h);
+        // Deselect before GetDIBits — GDI requires the bitmap not be selected
+        // into any DC when GetDIBits reads its pixel data.
         SelectObject(mem_dc, old_bmp);
+        let rgba = read_bitmap_rgba(bitmap, screen_dc, w, h);
         let _ = DeleteObject(bitmap);
         let _ = DeleteDC(mem_dc);
-        let _ = DeleteDC(screen_dc);
+        ReleaseDC(HWND::default(), screen_dc);
+        crate::debug_eprintln!("[share-thumb] monitor capture {}x{}: rgba={}", w, h, rgba.is_some());
 
         match rgba {
             Some(data) => Ok(Some((data, w, h))),
@@ -538,13 +558,14 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
 }
 
 /// Read BGRA pixel data from a GDI bitmap and convert it to RGBA.
+/// The bitmap must NOT be selected into any DC before this is called.
 unsafe fn read_bitmap_rgba(
-    _mem_dc: windows::Win32::Graphics::Gdi::HDC,
     bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-    screen_dc: windows::Win32::Graphics::Gdi::HDC,
+    dc: windows::Win32::Graphics::Gdi::HDC,
     w: u32,
     h: u32,
 ) -> Option<Vec<u8>> {
+    let screen_dc = dc;
     use windows::Win32::Graphics::Gdi::{
         GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
     };
@@ -563,6 +584,7 @@ unsafe fn read_bitmap_rgba(
     };
 
     let mut bgra = vec![0u8; (w * h * 4) as usize];
+    crate::debug_eprintln!("[share-thumb] GetDIBits: {}x{} ({} bytes)", w, h, bgra.len());
     let rows = GetDIBits(
         screen_dc,
         bitmap,
@@ -574,8 +596,10 @@ unsafe fn read_bitmap_rgba(
     );
 
     if rows == 0 {
+        crate::debug_eprintln!("[share-thumb] GetDIBits returned 0 rows for {}x{}", w, h);
         return None;
     }
+    crate::debug_eprintln!("[share-thumb] GetDIBits read {} rows for {}x{}", rows, w, h);
 
     for pixel in bgra.chunks_exact_mut(4) {
         pixel.swap(0, 2);
@@ -609,11 +633,11 @@ pub(super) fn fetch_thumbnail(source_id: &str) -> Result<Option<String>, String>
         Ok(Ok(Some((rgba, w, h)))) => encode_thumbnail_jpeg(&rgba, w, h),
         Ok(Ok(None)) => Ok(None),
         Ok(Err(e)) => {
-            log::debug!("thumbnail capture failed: {e}");
+            crate::debug_eprintln!("thumbnail capture failed: {e}");
             Ok(None)
         }
         Err(_) => {
-            log::debug!("thumbnail fetch timed out");
+            crate::debug_eprintln!("thumbnail fetch timed out");
             Ok(None)
         }
     }

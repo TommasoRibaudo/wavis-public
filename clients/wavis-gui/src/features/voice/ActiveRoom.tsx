@@ -56,6 +56,7 @@ import {
   resolveChatMessageDisplayColor,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
+import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -323,11 +324,11 @@ function StatusDot({ color, label }: { color: string; label: string }) {
 
 
 /**
- * Temporarily expands the Tauri window before a native getDisplayMedia picker
- * dialog opens so the picker's 2-column grid is never clipped on narrow windows,
- * then restores the original size when the dialog closes (or if it throws).
- * No-op on macOS — that platform opens getDisplayMedia as a system dialog
- * outside the WebView, so window width is irrelevant there.
+ * Temporarily expands the Tauri window before the macOS getDisplayMedia system
+ * picker opens so its grid is never clipped on narrow windows, then restores the
+ * original size when the dialog closes (or if it throws).
+ * No-op on macOS (system dialog ignores WebView width) and unused on Windows
+ * (Windows uses the inline SharePicker, not getDisplayMedia).
  */
 async function withPickerResize<T>(isMacPlatform: boolean, fn: () => Promise<T>): Promise<T> {
   const MIN_NATIVE_PICKER_WIDTH = 700;
@@ -702,8 +703,10 @@ export default function ActiveRoom() {
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
   const shareErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shareEnumerating = useRef(false);
-  // True while waiting for the OS screen picker to appear (macOS/Windows getDisplayMedia)
+  // True while waiting for the OS screen picker to appear (macOS getDisplayMedia)
   const [sharePickerLoading, setSharePickerLoading] = useState(false);
+  // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
+  const [winSharePicker, setWinSharePicker] = useState<{ enumResult: EnumerationResult; occupied: OccupiedSlots } | null>(null);
   // macOS audio driver install prompt state
   const [showDriverPrompt, setShowDriverPrompt] = useState(false);
   const pendingShareRef = useRef<boolean>(false);
@@ -1835,12 +1838,10 @@ export default function ActiveRoom() {
 
     try {
       if (!isLinuxPlatform) {
-        // Windows/macOS: use the browser/WebView getDisplayMedia path, not the
-        // custom native-source path below. If share diagnostics or leak logging
-        // are changed, this branch must be updated too — otherwise logs will only
-        // appear for Linux/native-picker flows and Windows repros will miss them.
-        //
-        // This path is what normal Windows `/share` currently exercises.
+        // macOS: uses getDisplayMedia() via startFallbackShare() below.
+        // Windows: intercepted below by isWindowsPlatform — uses native Rust
+        //   capture pipeline (inline SharePicker → WinCapture → startNativeCapture
+        //   + startWasapiAudioBridge). getDisplayMedia() is never called on Windows.
         if (isMacPlatform) {
           const access = await invoke<{
             authorized: boolean;
@@ -1874,6 +1875,24 @@ export default function ActiveRoom() {
           return;
         }
         skipDriverCheckRef.current = false;
+
+        // Windows: use native Rust source picker to avoid getDisplayMedia() and
+        // the WebView2 capture indicator bar it triggers.
+        if (isWindowsPlatform) {
+          try {
+            const enumResult = await invoke<EnumerationResult>('list_share_sources');
+            const occupied: OccupiedSlots = {
+              videoOccupied: roomState?.activeVideoShare !== null,
+              audioOccupied: roomState?.activeAudioShare !== null,
+            };
+            setWinSharePicker({ enumResult, occupied });
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            showTransientScreenShareError(`Screen sharing failed: ${detail}`);
+            toast.error(`Screen sharing failed: ${detail}`);
+          }
+          return;
+        }
 
         try {
           await withPickerResize(isMacPlatform, async () => {
@@ -3154,6 +3173,34 @@ export default function ActiveRoom() {
             }
           }}
         />
+      )}
+      {winSharePicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-bg/80 px-4">
+          <div className="w-[640px] max-w-[90vw] h-[480px] max-h-[80vh] border border-wavis-text-secondary shadow-xl overflow-hidden flex flex-col">
+            <SharePicker
+              enumResult={winSharePicker.enumResult}
+              occupied={winSharePicker.occupied}
+              onSelect={async (selection) => {
+                setWinSharePicker(null);
+                try {
+                  await startCustomShare(selection);
+                  if (selection.mode !== 'audio_only') {
+                    if (selection.withAudio) {
+                      setShareAudioOn(true);
+                    } else {
+                      setShowPostShareAudioPrompt(true);
+                    }
+                  }
+                } catch (err) {
+                  const detail = err instanceof Error ? err.message : String(err);
+                  showTransientScreenShareError(`Screen sharing failed: ${detail}`);
+                  toast.error(`Screen sharing failed: ${detail}`);
+                }
+              }}
+              onCancel={() => setWinSharePicker(null)}
+            />
+          </div>
+        </div>
       )}
       {showPostShareAudioPrompt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-bg/80 px-4">
