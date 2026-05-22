@@ -60,7 +60,8 @@ AGENTS.md
 CODEX.md
 codex-*.txt
 LINUX_AUDIO_SHARE_FIX_PLAN.md
-doc/
+doc/*
+!doc/noise_suppression.md
 peerA.log
 peerA.logclea
 /target-clippy-docsrs

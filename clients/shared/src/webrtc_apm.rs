@@ -23,10 +23,14 @@ use std::sync::Arc;
 pub(crate) struct ApmPipeline {
     audio_processor: RealAudioProcessor,
     denoise: Arc<DenoiseFilter>,
-    /// Tracks the previous denoise state for transition detection.
+    /// Tracks the previous custom suppressor state for transition detection.
     /// Sole owner of transition detection — detects changes and performs
     /// GRU state reset + APM NS toggle in one sequential block.
-    prev_denoise_enabled: bool,
+    prev_custom_suppressor_active: bool,
+}
+
+pub(crate) fn should_enable_apm_ns(custom_suppressor_active: bool) -> bool {
+    !custom_suppressor_active
 }
 
 impl ApmPipeline {
@@ -37,16 +41,16 @@ impl ApmPipeline {
     /// double-suppress on the very first frame.
     pub(crate) fn new(denoise: Arc<DenoiseFilter>) -> Self {
         let mut audio_processor = RealAudioProcessor::new();
-        let prev_denoise_enabled = denoise.is_enabled();
+        let prev_custom_suppressor_active = denoise.is_custom_suppressor_active();
 
-        if prev_denoise_enabled {
+        if !should_enable_apm_ns(prev_custom_suppressor_active) {
             audio_processor.set_ns_enabled(false);
         }
 
         Self {
             audio_processor,
             denoise,
-            prev_denoise_enabled,
+            prev_custom_suppressor_active,
         }
     }
 
@@ -62,9 +66,9 @@ impl ApmPipeline {
     /// exclusive, preferring a "neither" transient over a "both" transient
     /// to avoid double-suppression artifacts.
     pub(crate) fn apply_denoise(&mut self, pcm: &mut [f32]) {
-        let current_denoise = self.denoise.is_enabled();
-        if current_denoise != self.prev_denoise_enabled {
-            if current_denoise {
+        let current_custom_suppressor = self.denoise.is_custom_suppressor_active();
+        if current_custom_suppressor != self.prev_custom_suppressor_active {
+            if current_custom_suppressor {
                 // Enabling denoise: disable APM NS first (prefer "neither" transient),
                 // then reset GRU state for clean start.
                 self.audio_processor.set_ns_enabled(false);
@@ -73,7 +77,7 @@ impl ApmPipeline {
                 // Disabling denoise: re-enable APM NS first (prefer "neither" transient).
                 self.audio_processor.set_ns_enabled(true);
             }
-            self.prev_denoise_enabled = current_denoise;
+            self.prev_custom_suppressor_active = current_custom_suppressor;
         }
 
         // Apply denoise to the full 960-sample frame before APM chunking.
@@ -108,6 +112,47 @@ impl ApmPipeline {
             {
                 warn!("APM processing error: {}", e);
                 // Continue with unprocessed audio (graceful degradation).
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn rnnoise_active_disables_apm_ns() {
+        assert!(!should_enable_apm_ns(true));
+    }
+
+    #[test]
+    fn fake_custom_suppressor_active_disables_apm_ns() {
+        assert!(!should_enable_apm_ns(true));
+    }
+
+    #[test]
+    fn none_backend_allows_apm_ns() {
+        assert!(should_enable_apm_ns(false));
+    }
+
+    proptest! {
+        #[test]
+        fn no_transition_allows_apm_ns_and_custom_suppressor_overlap(
+            transitions in proptest::collection::vec(proptest::bool::ANY, 1..=50),
+        ) {
+            for custom_active in transitions {
+                let apm_ns_enabled = if custom_active {
+                    false
+                } else {
+                    should_enable_apm_ns(custom_active)
+                };
+
+                prop_assert!(
+                    !(apm_ns_enabled && custom_active),
+                    "APM NS and a custom suppressor overlapped"
+                );
             }
         }
     }

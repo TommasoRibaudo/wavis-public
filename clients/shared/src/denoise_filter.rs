@@ -39,6 +39,7 @@
 use nnnoiseless::DenoiseState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use thiserror::Error;
 
 use crate::audio_pipeline::FRAME_SAMPLES;
 
@@ -263,28 +264,221 @@ fn process_subframe(
 }
 
 // ---------------------------------------------------------------------------
-// DenoiseFilter — wraps nnnoiseless + gating state
+// Noise suppressor backends
+// ---------------------------------------------------------------------------
+
+/// All selectable noise-suppression backends, including experimental/fallible
+/// candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoiseSuppressorKind {
+    None,
+    Rnnoise,
+    DeepFilterNetExperimental,
+}
+
+/// Backends that can be built without failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfallibleNoiseSuppressorKind {
+    None,
+    Rnnoise,
+}
+
+impl From<InfallibleNoiseSuppressorKind> for NoiseSuppressorKind {
+    fn from(kind: InfallibleNoiseSuppressorKind) -> Self {
+        match kind {
+            InfallibleNoiseSuppressorKind::None => NoiseSuppressorKind::None,
+            InfallibleNoiseSuppressorKind::Rnnoise => NoiseSuppressorKind::Rnnoise,
+        }
+    }
+}
+
+/// Optional RNNoise gate behavior. The default is the current validated gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExperimentalGateMode {
+    #[default]
+    Current,
+    Soft,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum NoiseSuppressorError {
+    #[error("{kind:?} backend is not available: {reason}")]
+    BackendUnavailable {
+        kind: NoiseSuppressorKind,
+        reason: &'static str,
+    },
+}
+
+pub trait NoiseSuppressorBackend {
+    fn process_frame(&mut self, frame: &mut [f32]);
+    fn reset(&mut self);
+    fn is_suppressing(&self) -> bool;
+    fn kind(&self) -> NoiseSuppressorKind;
+    fn name(&self) -> &'static str;
+}
+
+#[derive(Default)]
+struct NoopBackend;
+
+impl NoiseSuppressorBackend for NoopBackend {
+    fn process_frame(&mut self, _frame: &mut [f32]) {}
+
+    fn reset(&mut self) {}
+
+    fn is_suppressing(&self) -> bool {
+        false
+    }
+
+    fn kind(&self) -> NoiseSuppressorKind {
+        NoiseSuppressorKind::None
+    }
+
+    fn name(&self) -> &'static str {
+        "none"
+    }
+}
+
+struct RnnoiseBackend {
+    state: Box<DenoiseState<'static>>,
+    gate: GateState,
+    gate_mode: ExperimentalGateMode,
+}
+
+impl RnnoiseBackend {
+    fn new() -> Self {
+        Self {
+            state: DenoiseState::new(),
+            gate: GateState::new(),
+            gate_mode: ExperimentalGateMode::Current,
+        }
+    }
+
+    fn reset_state(&mut self) {
+        self.state = DenoiseState::new();
+        self.gate = GateState::new();
+    }
+}
+
+impl NoiseSuppressorBackend for RnnoiseBackend {
+    fn process_frame(&mut self, frame: &mut [f32]) {
+        let mut tmp = [0.0f32; RNN_FRAME_SAMPLES];
+        let mut out = [0.0f32; RNN_FRAME_SAMPLES];
+
+        match self.gate_mode {
+            ExperimentalGateMode::Current | ExperimentalGateMode::Soft => {
+                process_subframe(
+                    &mut self.state,
+                    &mut self.gate,
+                    &mut frame[..RNN_FRAME_SAMPLES],
+                    &mut tmp,
+                    &mut out,
+                );
+                process_subframe(
+                    &mut self.state,
+                    &mut self.gate,
+                    &mut frame[RNN_FRAME_SAMPLES..],
+                    &mut tmp,
+                    &mut out,
+                );
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.reset_state();
+    }
+
+    fn is_suppressing(&self) -> bool {
+        true
+    }
+
+    fn kind(&self) -> NoiseSuppressorKind {
+        NoiseSuppressorKind::Rnnoise
+    }
+
+    fn name(&self) -> &'static str {
+        "rnnoise"
+    }
+}
+
+struct DeepFilterNetBackend;
+
+impl DeepFilterNetBackend {
+    fn new() -> Result<Self, NoiseSuppressorError> {
+        Err(NoiseSuppressorError::BackendUnavailable {
+            kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+            reason: "DeepFilterNet model/runtime wiring is not implemented yet",
+        })
+    }
+}
+
+impl NoiseSuppressorBackend for DeepFilterNetBackend {
+    fn process_frame(&mut self, _frame: &mut [f32]) {}
+
+    fn reset(&mut self) {}
+
+    fn is_suppressing(&self) -> bool {
+        true
+    }
+
+    fn kind(&self) -> NoiseSuppressorKind {
+        NoiseSuppressorKind::DeepFilterNetExperimental
+    }
+
+    fn name(&self) -> &'static str {
+        "deepfilternet-experimental"
+    }
+}
+
+fn build_backend(
+    kind: NoiseSuppressorKind,
+) -> Result<Box<dyn NoiseSuppressorBackend + Send>, NoiseSuppressorError> {
+    match kind {
+        NoiseSuppressorKind::None => Ok(Box::new(NoopBackend)),
+        NoiseSuppressorKind::Rnnoise => Ok(Box::new(RnnoiseBackend::new())),
+        NoiseSuppressorKind::DeepFilterNetExperimental => {
+            Ok(Box::new(DeepFilterNetBackend::new()?))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DenoiseFilter — backend host with stable call-site ergonomics
 // ---------------------------------------------------------------------------
 
 pub struct DenoiseFilter {
-    state: Mutex<Box<DenoiseState<'static>>>,
-    gate: Mutex<GateState>,
+    backend: Mutex<Box<dyn NoiseSuppressorBackend + Send>>,
     enabled: AtomicBool,
 }
 
 impl DenoiseFilter {
     /// Create a new `DenoiseFilter` with the given initial enabled state.
     ///
-    /// Allocates a `DenoiseState` configured for 48 kHz (the default).
+    /// Allocates the default RNNoise backend configured for 48 kHz.
     pub fn new(enabled: bool) -> Self {
+        Self::with_infallible_backend(InfallibleNoiseSuppressorKind::Rnnoise, enabled)
+    }
+
+    pub fn with_infallible_backend(kind: InfallibleNoiseSuppressorKind, enabled: bool) -> Self {
         Self {
-            state: Mutex::new(DenoiseState::new()),
-            gate: Mutex::new(GateState::new()),
+            backend: Mutex::new(
+                build_backend(kind.into()).expect("infallible backend construction failed"),
+            ),
             enabled: AtomicBool::new(enabled),
         }
     }
 
-    /// Process a 960-sample pipeline frame in-place through nnnoiseless.
+    pub fn try_with_backend(
+        kind: NoiseSuppressorKind,
+        enabled: bool,
+    ) -> Result<Self, NoiseSuppressorError> {
+        Ok(Self {
+            backend: Mutex::new(build_backend(kind)?),
+            enabled: AtomicBool::new(enabled),
+        })
+    }
+
+    /// Process a 960-sample pipeline frame in-place through the selected backend.
     ///
     /// Splits the frame into two consecutive 480-sample slices and runs
     /// `DenoiseState::process_frame()` on each in order. After each
@@ -297,8 +491,8 @@ impl DenoiseFilter {
     ///
     /// # Internal locking
     ///
-    /// This method acquires internal `Mutex`es to access the `DenoiseState`
-    /// and `GateState`. In practice only the send loop calls `process()`,
+    /// This method acquires an internal `Mutex` to access backend state.
+    /// In practice only the send loop calls `process()`,
     /// so the locks are uncontended. Do **not** call from multiple threads
     /// concurrently — the `Mutex`es exist solely to satisfy `Sync` for the
     /// `Arc<DenoiseFilter>` sharing pattern (IPC toggle path only touches
@@ -315,28 +509,7 @@ impl DenoiseFilter {
             return;
         }
 
-        let mut state = self.state.lock().unwrap();
-        let mut gate = self.gate.lock().unwrap();
-        let mut tmp = [0.0f32; RNN_FRAME_SAMPLES];
-        let mut out = [0.0f32; RNN_FRAME_SAMPLES];
-
-        // First half: frame[..480]
-        process_subframe(
-            &mut state,
-            &mut gate,
-            &mut frame[..RNN_FRAME_SAMPLES],
-            &mut tmp,
-            &mut out,
-        );
-
-        // Second half: frame[480..960]
-        process_subframe(
-            &mut state,
-            &mut gate,
-            &mut frame[RNN_FRAME_SAMPLES..],
-            &mut tmp,
-            &mut out,
-        );
+        self.backend.lock().unwrap().process_frame(frame);
     }
 
     /// Drop and reconstruct the internal `DenoiseState`, clearing stale
@@ -347,10 +520,7 @@ impl DenoiseFilter {
     /// Also resets the gate to fully open so the first frame after
     /// re-enable isn't attenuated by stale gate state.
     pub fn reset_state(&self) {
-        let mut state = self.state.lock().unwrap();
-        *state = DenoiseState::new();
-        let mut gate = self.gate.lock().unwrap();
-        *gate = GateState::new();
+        self.backend.lock().unwrap().reset();
     }
 
     /// Set the enabled flag. Uses `Ordering::Release` so that a subsequent
@@ -363,12 +533,61 @@ impl DenoiseFilter {
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
+
+    /// Returns whether a custom suppressor should be considered active for
+    /// APM coordination. `is_enabled()` is the raw user toggle; this method
+    /// additionally requires the selected backend to actually suppress audio.
+    pub fn is_custom_suppressor_active(&self) -> bool {
+        self.is_enabled() && self.backend.lock().unwrap().is_suppressing()
+    }
+
+    pub fn backend_kind(&self) -> NoiseSuppressorKind {
+        self.backend.lock().unwrap().kind()
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.lock().unwrap().name()
+    }
+
+    #[cfg(test)]
+    fn with_test_backend(backend: Box<dyn NoiseSuppressorBackend + Send>, enabled: bool) -> Self {
+        Self {
+            backend: Mutex::new(backend),
+            enabled: AtomicBool::new(enabled),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    struct FakeSuppressingBackend {
+        suppressing: bool,
+    }
+
+    impl NoiseSuppressorBackend for FakeSuppressingBackend {
+        fn process_frame(&mut self, frame: &mut [f32]) {
+            for sample in frame {
+                *sample *= 0.5;
+            }
+        }
+
+        fn reset(&mut self) {}
+
+        fn is_suppressing(&self) -> bool {
+            self.suppressing
+        }
+
+        fn kind(&self) -> NoiseSuppressorKind {
+            NoiseSuppressorKind::DeepFilterNetExperimental
+        }
+
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+    }
 
     /// Bitwise comparison for f32 slices. Uses `to_bits()` so that NaN and
     /// -0.0 are compared by their bit patterns, matching the design's
@@ -852,6 +1071,193 @@ mod tests {
     // DenoiseFilter integration tests (existing properties)
     // ===================================================================
 
+    #[test]
+    fn noop_backend_passthrough() {
+        let filter =
+            DenoiseFilter::with_infallible_backend(InfallibleNoiseSuppressorKind::None, true);
+        let mut frame = vec![0.25f32; FRAME_SAMPLES];
+        let original = frame.clone();
+
+        filter.process(&mut frame);
+
+        assert!(bitwise_eq(&frame, &original));
+        assert!(filter.is_enabled());
+        assert!(!filter.is_custom_suppressor_active());
+        assert_eq!(filter.backend_kind(), NoiseSuppressorKind::None);
+    }
+
+    #[test]
+    fn rnnoise_is_default_backend() {
+        let filter = DenoiseFilter::new(false);
+        assert_eq!(filter.backend_kind(), NoiseSuppressorKind::Rnnoise);
+        assert_eq!(filter.backend_name(), "rnnoise");
+    }
+
+    #[test]
+    fn explicit_none_backend_passthrough_even_when_enabled() {
+        let filter =
+            DenoiseFilter::with_infallible_backend(InfallibleNoiseSuppressorKind::None, true);
+        let mut frame: Vec<f32> = (0..FRAME_SAMPLES).map(|i| i as f32 / 1000.0).collect();
+        let original = frame.clone();
+
+        filter.process(&mut frame);
+
+        assert!(filter.is_enabled());
+        assert!(!filter.is_custom_suppressor_active());
+        assert!(bitwise_eq(&frame, &original));
+    }
+
+    #[test]
+    fn raw_toggle_differs_from_active_suppressor_for_none_backend() {
+        let filter =
+            DenoiseFilter::with_infallible_backend(InfallibleNoiseSuppressorKind::None, true);
+
+        assert!(filter.is_enabled(), "raw user toggle should remain enabled");
+        assert!(
+            !filter.is_custom_suppressor_active(),
+            "APM coordination should only treat suppressing backends as active"
+        );
+    }
+
+    #[test]
+    fn fake_suppressing_backend_is_active_when_enabled() {
+        let filter = DenoiseFilter::with_test_backend(
+            Box::new(FakeSuppressingBackend { suppressing: true }),
+            true,
+        );
+
+        assert!(filter.is_enabled());
+        assert!(filter.is_custom_suppressor_active());
+    }
+
+    #[test]
+    fn deepfilternet_experimental_returns_construction_error() {
+        let err = match DenoiseFilter::try_with_backend(
+            NoiseSuppressorKind::DeepFilterNetExperimental,
+            true,
+        ) {
+            Ok(_) => panic!("DeepFilterNet should not silently fall back to RNNoise"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err,
+            NoiseSuppressorError::BackendUnavailable {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason: "DeepFilterNet model/runtime wiring is not implemented yet",
+            }
+        );
+    }
+
+    #[test]
+    fn rnnoise_silence_stays_silent() {
+        let filter = DenoiseFilter::new(true);
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+
+        filter.process(&mut frame);
+
+        assert!(frame.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn rnnoise_stationary_noise_is_reduced() {
+        let filter = DenoiseFilter::new(true);
+        let mut frames = Vec::new();
+        let mut rng = 7u64;
+
+        for _ in 0..60 {
+            let mut frame = vec![0.0f32; FRAME_SAMPLES];
+            for sample in &mut frame {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let normalized = ((rng >> 33) as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                *sample = normalized * 0.08;
+            }
+            frames.push(frame);
+        }
+
+        let input_rms = frames.iter().map(|frame| rms(frame)).sum::<f64>() / frames.len() as f64;
+        for frame in &mut frames {
+            filter.process(frame);
+        }
+        let output_rms = frames.iter().map(|frame| rms(frame)).sum::<f64>() / frames.len() as f64;
+
+        assert!(
+            output_rms < input_rms,
+            "expected stationary noise reduction: input={input_rms}, output={output_rms}"
+        );
+    }
+
+    #[test]
+    fn speech_like_signal_is_not_fully_removed() {
+        let filter = DenoiseFilter::new(true);
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in frame.iter_mut().enumerate() {
+            let t = i as f32 / 48000.0;
+            *sample = 0.2 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                + 0.08 * (2.0 * std::f32::consts::PI * 660.0 * t).sin();
+        }
+
+        for _ in 0..10 {
+            let mut warmup = frame.clone();
+            filter.process(&mut warmup);
+        }
+        filter.process(&mut frame);
+
+        assert!(
+            rms(&frame) > 0.001,
+            "speech-like formant signal should retain non-trivial energy"
+        );
+    }
+
+    #[test]
+    fn attack_open_preserves_first_speech_frame_after_silence() {
+        let filter = DenoiseFilter::new(true);
+        let mut silence = vec![0.0f32; FRAME_SAMPLES];
+        for _ in 0..12 {
+            filter.process(&mut silence);
+        }
+
+        let mut speech = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in speech.iter_mut().enumerate() {
+            let t = i as f32 / 48000.0;
+            *sample = 0.25 * (2.0 * std::f32::consts::PI * 180.0 * t).sin();
+        }
+        filter.process(&mut speech);
+
+        assert!(
+            rms(&speech) > 0.0005,
+            "first speech-like frame after silence should not be fully suppressed"
+        );
+    }
+
+    #[test]
+    fn release_close_preserves_short_word_endings() {
+        let mut gate = GateState::new();
+        gate.gain = 1.0;
+
+        for _ in 0..GATE_CLOSE_HOLD_FRAMES {
+            let (_, end_gain) = gate.advance(true);
+            assert_eq!(end_gain, 1.0);
+        }
+    }
+
+    #[test]
+    fn rnnoise_output_has_no_nan_or_inf_and_reasonable_range() {
+        let filter = DenoiseFilter::new(true);
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in frame.iter_mut().enumerate() {
+            *sample = ((i % 37) as f32 / 37.0 - 0.5) * 0.8;
+        }
+
+        filter.process(&mut frame);
+
+        assert!(frame.iter().all(|sample| sample.is_finite()));
+        assert!(
+            frame.iter().all(|sample| sample.abs() <= 2.0),
+            "denoise output should remain within a reasonable f32 audio range"
+        );
+    }
+
     // -------------------------------------------------------------------
     // Property: Bypass Passthrough
     // -------------------------------------------------------------------
@@ -1008,23 +1414,23 @@ mod tests {
         ) {
             let denoise = DenoiseFilter::new(false);
             let mut apm_ns_enabled = true;
-            let mut prev_denoise_enabled = denoise.is_enabled();
+            let mut prev_custom_suppressor_active = denoise.is_custom_suppressor_active();
 
             for &toggle_value in &toggles {
                 denoise.set_enabled(toggle_value);
 
-                let current_denoise = denoise.is_enabled();
-                if current_denoise != prev_denoise_enabled {
-                    if current_denoise {
+                let current_custom_suppressor = denoise.is_custom_suppressor_active();
+                if current_custom_suppressor != prev_custom_suppressor_active {
+                    if current_custom_suppressor {
                         apm_ns_enabled = false;
                         denoise.reset_state();
                     } else {
                         apm_ns_enabled = true;
                     }
-                    prev_denoise_enabled = current_denoise;
+                    prev_custom_suppressor_active = current_custom_suppressor;
                 }
 
-                let denoise_on = denoise.is_enabled();
+                let denoise_on = denoise.is_custom_suppressor_active();
                 prop_assert!(
                     denoise_on ^ apm_ns_enabled,
                     "XOR violated after toggle to {}: denoise={}, apm_ns={}",
