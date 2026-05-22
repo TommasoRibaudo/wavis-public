@@ -4117,8 +4117,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     const needsAudio =
       selection.mode === 'audio_only' ||
       (isVideoShare && selection.withAudio);
-    console.log('[AUDIO-DEBUG] startCustomShare called:', selection.mode, 'withAudio:', selection.withAudio);
-    console.log(LOG, '[wasapi-diag] startCustomShare: mode=%s withAudio=%s needsVideo=%s needsAudio=%s',
+    if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startCustomShare: mode=%s withAudio=%s needsVideo=%s needsAudio=%s',
       selection.mode, selection.withAudio, needsVideo, needsAudio);
 
     // 3. Start video first (if needed)
@@ -4162,7 +4161,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
 
     // 4. Start audio (if needed)
     if (needsAudio) {
-      console.log('[AUDIO-DEBUG] needsAudio=true, resolving audio source...');
+      if (DEBUG_WASAPI) console.log(LOG, '[wasapi] needsAudio=true, resolving audio source...');
       try {
         let audioSourceId: string;
         if (selection.mode === 'audio_only') {

@@ -15,6 +15,11 @@ clients/wavis-gui/src-tauri/gen/
 clients/wavis-gui/src-tauri/target/
 infrastructure/wavis-backend-dev-jey.pem
 
+# Git worktree artifacts
+.wt/
+tauri-watchall-dev.log
+tauri-watchall-dev.err.log
+
 # Misc
 .DS_Store
 .nvimlog
