@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { Volume2 } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
@@ -23,6 +24,14 @@ import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const LOG = '[wavis:watch-all]';
+
+interface PolledScreenShareFrame {
+  identity: string;
+  frame: string;
+  width: number;
+  height: number;
+  seq: number;
+}
 
 const TITLE_BAR_HEIGHT = 32;
 const LABEL_FADE_DELAY_MS = 3000;
@@ -121,6 +130,7 @@ const ShareTile = memo(function ShareTile({
   onAspectRatioDetectedRef.current = onAspectRatioDetected;
   const isDiagnosticTest = kind === 'test';
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
   const [diagnosticViewport, setDiagnosticViewport] = useState({ width: 0, height: 0 });
@@ -297,43 +307,90 @@ const ShareTile = memo(function ShareTile({
   useEffect(() => {
     if (!canvasFallback || isDiagnosticTest) return;
     let cancelled = false;
+    setMjpegUrl(null);
 
-    const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }) => {
-      if (cancelled) return;
-      if (payload.identity && payload.identity !== participantId) return;
+    const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
+      if (cancelled) return Promise.resolve(false);
+      if (payload.identity && payload.identity !== participantId) return Promise.resolve(false);
 
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas) return Promise.resolve(false);
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) return Promise.resolve(false);
 
-      const img = new Image();
-      img.onload = () => {
-        if (canvas.width !== img.width || canvas.height !== img.height) {
-          canvas.width = img.width;
-          canvas.height = img.height;
-          if (img.width > 0 && img.height > 0) {
-            onAspectRatioDetectedRef.current(participantId, img.width / img.height);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          if (cancelled) {
+            resolve(false);
+            return;
           }
-        }
-        ctx.drawImage(img, 0, 0);
-        markFrameRendered();
-      };
-      img.src = `data:image/jpeg;base64,${payload.frame}`;
+          if (canvas.width !== img.width || canvas.height !== img.height) {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            if (img.width > 0 && img.height > 0) {
+              onAspectRatioDetectedRef.current(participantId, img.width / img.height);
+            }
+          }
+          ctx.drawImage(img, 0, 0);
+          markFrameRendered();
+          resolve(true);
+        };
+        img.onerror = () => resolve(false);
+        img.src = `data:image/jpeg;base64,${payload.frame}`;
+      });
     };
+
+    let pollFrameId: number | null = null;
+    let lastSeq: number | null = null;
+    let mjpegActive = false;
+    const pollLatestFrame = async () => {
+      if (cancelled || mjpegActive) return;
+      try {
+        const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
+          identity: participantId,
+          lastSeq,
+        });
+        if (frame && !cancelled) {
+          lastSeq = frame.seq;
+          await handleFrame(frame);
+        }
+      } catch {
+        // Non-Linux builds and older builds may not expose the polling command.
+      } finally {
+        if (!cancelled && !mjpegActive) {
+          pollFrameId = requestAnimationFrame(pollLatestFrame);
+        }
+      }
+    };
+    pollFrameId = requestAnimationFrame(pollLatestFrame);
+
+    invoke<string>('media_get_screen_share_stream_url', { identity: participantId })
+      .then((url) => {
+        if (cancelled) return;
+        mjpegActive = true;
+        if (pollFrameId !== null) {
+          cancelAnimationFrame(pollFrameId);
+          pollFrameId = null;
+        }
+        setMjpegUrl(`${url}&t=${Date.now()}`);
+      })
+      .catch(() => {
+        // Older/non-Linux builds use the polling fallback above.
+      });
 
     const unlistenLinux = listen<{ identity: string; frame: string }>(
       `ss-frame:${participantId}`,
-      (event) => handleFrame(event.payload),
+      (event) => { void handleFrame(event.payload); },
     );
     // Also listen for the generic event names (cross-platform compat)
     const unlistenGenericLinux = listen<{ identity: string; frame: string }>(
       'screen_share_frame',
-      (event) => handleFrame(event.payload),
+      (event) => { void handleFrame(event.payload); },
     );
     const unlistenGenericWin = listen<{ frame: string; width: number; height: number }>(
       'screen-share-frame',
-      (event) => handleFrame(event.payload),
+      (event) => { void handleFrame(event.payload); },
     );
     void emitTo('main', 'screen-share-viewer:ready', {
       participantId,
@@ -342,6 +399,7 @@ const ShareTile = memo(function ShareTile({
 
     return () => {
       cancelled = true;
+      if (pollFrameId !== null) cancelAnimationFrame(pollFrameId);
       unlistenLinux.then((fn) => fn());
       unlistenGenericLinux.then((fn) => fn());
       unlistenGenericWin.then((fn) => fn());
@@ -488,6 +546,20 @@ const ShareTile = memo(function ShareTile({
             </div>
           </div>
         </div>
+      ) : canvasFallback && mjpegUrl ? (
+        <img
+          src={mjpegUrl}
+          alt=""
+          draggable={false}
+          onLoad={(event) => {
+            const img = event.currentTarget;
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              onAspectRatioDetectedRef.current(participantId, img.naturalWidth / img.naturalHeight);
+            }
+            markFrameRendered();
+          }}
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        />
       ) : canvasFallback ? (
         <canvas
           ref={canvasRef}

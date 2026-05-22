@@ -10150,6 +10150,8 @@ dependencies = [
  "drm-fourcc",
  "fern",
  "gbm",
+ "gdk",
+ "gdk-pixbuf",
  "gtk",
  "image",
  "keyring",
