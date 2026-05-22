@@ -135,6 +135,32 @@ mod media {
     }
 
     #[tauri::command]
+    pub fn media_poll_screen_share_frame(
+        _identity: String,
+        _last_seq: Option<u64>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    #[tauri::command]
+    pub fn media_get_screen_share_stream_url(_identity: String) -> Result<String, String> {
+        Err("remote screen share stream URL is only available on Linux".to_string())
+    }
+
+    #[tauri::command]
+    pub fn media_open_native_screen_share_viewer(
+        _identity: String,
+        _title: String,
+    ) -> Result<(), String> {
+        Err("native screen share viewer is only available on Linux".to_string())
+    }
+
+    #[tauri::command]
+    pub fn media_close_native_screen_share_viewer(_identity: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
     pub fn media_set_screen_share_quality(_quality: u8) -> Result<(), String> {
         Ok(())
     }
@@ -467,6 +493,10 @@ fn main() {
             media::screen_share_start_source,
             media::screen_share_stop,
             media::screen_share_poll_frame,
+            media::media_poll_screen_share_frame,
+            media::media_get_screen_share_stream_url,
+            media::media_open_native_screen_share_viewer,
+            media::media_close_native_screen_share_viewer,
             media::media_set_screen_share_quality,
             is_window_visible,
             share_sources::list_share_sources,
