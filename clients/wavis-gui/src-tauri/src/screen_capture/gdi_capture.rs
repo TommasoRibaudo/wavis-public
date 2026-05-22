@@ -289,14 +289,15 @@ fn capture_loop(
                 if zero_start.is_none() {
                     zero_start = Some(Instant::now());
                 }
-                if !zero_warned {
-                    if zero_start.map_or(false, |t| Instant::now().duration_since(t) > Duration::from_secs(2)) {
-                        log::warn!(
-                            "{LOG} PrintWindow has produced all-zero frames for >2s on {hwnd:?} — \
-                             window may be exclusive-fullscreen or DWM-excluded"
-                        );
-                        zero_warned = true;
-                    }
+                if !zero_warned
+                    && zero_start
+                        .is_some_and(|t| Instant::now().duration_since(t) > Duration::from_secs(2))
+                {
+                    log::warn!(
+                        "{LOG} PrintWindow has produced all-zero frames for >2s on {hwnd:?} — \
+                         window may be exclusive-fullscreen or DWM-excluded"
+                    );
+                    zero_warned = true;
                 }
                 if zero_warned {
                     // Don't forward useless black frames after the warning.
