@@ -2381,33 +2381,7 @@ export class LiveKitModule {
             this.attachAudioTrack(participant, track);
           }
         } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
-          // Force the track to stay enabled — with adaptiveStream: true,
-          // LiveKit pauses video tracks not attached to a visible <video>
-          // element. We pipe screen shares through a WebRTC loopback bridge
-          // to a child window, so the track is never in the main window DOM.
-          publication.setEnabled(true);
-
-          const stream = new MediaStream([track.mediaStreamTrack]);
-
-          // Attach a hidden <video> element so LiveKit's adaptive stream
-          // considers this track "consumed" and keeps sending frames.
-          const dummyVideo = document.createElement('video');
-          dummyVideo.srcObject = stream;
-          dummyVideo.muted = true;
-          dummyVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
-          document.body.appendChild(dummyVideo);
-          dummyVideo.play().catch(() => {});
-
-          this.screenShareElements.set(participant.identity, {
-            stream,
-            startedAtMs: Date.now(),
-            trackSid: track.sid ?? '',
-            dummyVideo,
-            trackEndedCleanup: this.monitorScreenShareTrack(participant, publication, track),
-          });
-          if (DEBUG_CAPTURE) console.log(LOG, `screen share subscribed for ${participant.identity} — trackSid: ${track.sid}, readyState: ${track.mediaStreamTrack.readyState} [initial subscription]`);
-          this.callbacks.onScreenShareSubscribed(participant.identity, stream);
-          // Also mark participant as sharing (for late joiners who get TrackSubscribed before share_state)
+          this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
         }
       });
 
@@ -2498,6 +2472,20 @@ export class LiveKitModule {
           if (!this.screenShareAudioPending.has(participant.identity)) {
             screenShareAudioPub.setSubscribed(false);
           }
+        }
+        const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
+        const screenShareVideoTrack = screenShareVideoPub?.track;
+        if (
+          screenShareVideoPub &&
+          screenShareVideoTrack &&
+          screenShareVideoTrack.kind === Track.Kind.Video
+        ) {
+          this.attachRemoteScreenShareTrack(
+            participant,
+            screenShareVideoPub,
+            screenShareVideoTrack as RemoteTrack,
+            'participant_connected_recovery',
+          );
         }
         // Only act if we're already waiting for this participant's audio
         // (viewer window opened before TrackSubscribed could fire).
@@ -4966,6 +4954,59 @@ export class LiveKitModule {
 
     // Start the shared analyser polling interval if not already running
     this.startAnalyserPolling();
+  }
+
+  private attachRemoteScreenShareTrack(
+    participant: RemoteParticipant,
+    publication: RemoteTrackPublication,
+    track: RemoteTrack,
+    reason: 'track_subscribed' | 'participant_connected_recovery',
+  ): void {
+    // Force the track to stay enabled — with adaptiveStream: true,
+    // LiveKit pauses video tracks not attached to a visible <video>
+    // element. We pipe screen shares through a WebRTC loopback bridge
+    // to a child window, so the track is never in the main window DOM.
+    publication.setEnabled(true);
+
+    const nextTrackSid = track.sid ?? publication.trackSid ?? '';
+    const existing = this.screenShareElements.get(participant.identity);
+    if (existing?.trackSid === nextTrackSid) {
+      return;
+    }
+
+    if (existing) {
+      existing.trackEndedCleanup?.();
+      if (existing.dummyVideo) {
+        existing.dummyVideo.srcObject = null;
+        existing.dummyVideo.remove();
+      }
+    }
+
+    const stream = new MediaStream([track.mediaStreamTrack]);
+
+    // Attach a hidden <video> element so LiveKit's adaptive stream
+    // considers this track "consumed" and keeps sending frames.
+    const dummyVideo = document.createElement('video');
+    dummyVideo.srcObject = stream;
+    dummyVideo.muted = true;
+    dummyVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    document.body.appendChild(dummyVideo);
+    dummyVideo.play().catch(() => {});
+
+    this.screenShareElements.set(participant.identity, {
+      stream,
+      startedAtMs: existing?.startedAtMs ?? Date.now(),
+      trackSid: nextTrackSid,
+      dummyVideo,
+      trackEndedCleanup: this.monitorScreenShareTrack(participant, publication, track),
+    });
+    if (DEBUG_CAPTURE) {
+      console.log(
+        LOG,
+        `screen share subscribed for ${participant.identity} — trackSid: ${track.sid}, readyState: ${track.mediaStreamTrack.readyState} [${reason}]`,
+      );
+    }
+    this.callbacks.onScreenShareSubscribed(participant.identity, stream);
   }
 
   /**
