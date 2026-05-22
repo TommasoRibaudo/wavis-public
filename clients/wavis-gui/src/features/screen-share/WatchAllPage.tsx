@@ -6,6 +6,12 @@ import { StreamReceiver } from './screen-share-viewer';
 import { computeWatchAllLayout } from './watch-all-grid';
 import { useShareTransitionOverlay } from './share-transition';
 import { isPlaybackHealthyWithoutFreshFrames } from './useVideoStallDetector';
+import {
+  WATCH_ALL_TEST_READY_EVENT,
+  WATCH_ALL_TEST_STATE_EVENT,
+  type WatchAllParams,
+  type WatchAllTestState,
+} from './watch-all-test-mode';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixer';
@@ -27,17 +33,16 @@ const AUTO_RETRY_DELAY_MS = 1500;
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
-interface WatchAllParams {
-  channelName: string;
-}
-
 interface ShareTileState {
   participantId: string;
   displayName: string;
   color: string;
+  kind: 'live' | 'test';
   canvasFallback: boolean;
   muted: boolean;
   volume: number;
+  nativeWidth: number | null;
+  nativeHeight: number | null;
   /** Detected width/height ratio; defaults to 16/9 until the stream connects. */
   aspectRatio: number;
 }
@@ -71,9 +76,13 @@ interface ShareTileProps {
   participantId: string;
   displayName: string;
   color: string;
+  kind: 'live' | 'test';
   canvasFallback: boolean;
   muted: boolean;
   volume: number;
+  nativeWidth: number | null;
+  nativeHeight: number | null;
+  aspectRatio: number;
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
   onPopOut: (participantId: string, volume: number) => void;
@@ -84,9 +93,13 @@ const ShareTile = memo(function ShareTile({
   participantId,
   displayName,
   color,
+  kind,
   canvasFallback,
   muted,
   volume,
+  nativeWidth,
+  nativeHeight,
+  aspectRatio,
   onToggleMute,
   onVolumeChange,
   onPopOut,
@@ -95,16 +108,34 @@ const ShareTile = memo(function ShareTile({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const receiverRef = useRef<StreamReceiver | null>(null);
+  const diagnosticViewportRef = useRef<HTMLDivElement>(null);
   const onAspectRatioDetectedRef = useRef(onAspectRatioDetected);
   onAspectRatioDetectedRef.current = onAspectRatioDetected;
+  const isDiagnosticTest = kind === 'test';
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
+  const [diagnosticViewport, setDiagnosticViewport] = useState({ width: 0, height: 0 });
   const { isVisible: labelVisible, resetTimer: revealLabel } = useAutoHide({ delayMs: LABEL_FADE_DELAY_MS });
   const { isSwitching, markFrameRendered } = useShareTransitionOverlay({
-    hasSurface: canvasFallback || Boolean(stream),
+    hasSurface: isDiagnosticTest || canvasFallback || Boolean(stream),
     hasError: Boolean(error),
   });
+  const diagnosticSurfaceSize = useMemo(() => {
+    if (!isDiagnosticTest || diagnosticViewport.width <= 0 || diagnosticViewport.height <= 0) {
+      return null;
+    }
+
+    let width = diagnosticViewport.width;
+    let height = width / aspectRatio;
+
+    if (height > diagnosticViewport.height) {
+      height = diagnosticViewport.height;
+      width = height * aspectRatio;
+    }
+
+    return { width, height };
+  }, [aspectRatio, diagnosticViewport, isDiagnosticTest]);
 
   /* ── Label auto-fade ── */
 
@@ -120,6 +151,41 @@ const ShareTile = memo(function ShareTile({
   const handleMouseMove = useCallback(() => {
     revealLabel();
   }, [revealLabel]);
+
+  useEffect(() => {
+    if (!isDiagnosticTest) return;
+
+    const element = diagnosticViewportRef.current;
+    if (!element) return;
+
+    const updateViewport = (width: number, height: number) => {
+      setDiagnosticViewport((current) => {
+        if (
+          Math.abs(current.width - width) < 0.5 &&
+          Math.abs(current.height - height) < 0.5
+        ) {
+          return current;
+        }
+        return { width, height };
+      });
+    };
+
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      updateViewport(rect.width, rect.height);
+    };
+
+    measure();
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      updateViewport(entry.contentRect.width, entry.contentRect.height);
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [isDiagnosticTest]);
 
   /* ── Stream lifecycle ── */
 
@@ -145,7 +211,7 @@ const ShareTile = memo(function ShareTile({
   }, [participantId, requestSenderResync, retryCount]);
 
   useEffect(() => {
-    if (canvasFallback) return;
+    if (canvasFallback || isDiagnosticTest) return;
     let cancelled = false;
 
     // Stop the previous receiver before creating a fresh one (handles
@@ -198,12 +264,12 @@ const ShareTile = memo(function ShareTile({
         receiverRef.current = null;
       }
     };
-  }, [canvasFallback, participantId, requestSenderResync, retryCount, scheduleRetry]);
+  }, [canvasFallback, isDiagnosticTest, participantId, requestSenderResync, retryCount, scheduleRetry]);
 
   // Attach stream to video element and detect aspect ratio from metadata
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !stream) return;
+    if (!video || !stream || isDiagnosticTest) return;
     video.srcObject = stream;
 
     const handleMetadata = () => {
@@ -216,12 +282,12 @@ const ShareTile = memo(function ShareTile({
     video.play().catch(() => {});
 
     return () => video.removeEventListener('loadedmetadata', handleMetadata);
-  }, [stream, participantId]);
+  }, [isDiagnosticTest, stream, participantId]);
 
   /* ── Canvas fallback (Linux) ── */
 
   useEffect(() => {
-    if (!canvasFallback) return;
+    if (!canvasFallback || isDiagnosticTest) return;
     let cancelled = false;
 
     const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }) => {
@@ -272,11 +338,11 @@ const ShareTile = memo(function ShareTile({
       unlistenGenericLinux.then((fn) => fn());
       unlistenGenericWin.then((fn) => fn());
     };
-  }, [canvasFallback, participantId]);
+  }, [canvasFallback, isDiagnosticTest, participantId]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !stream || canvasFallback) return;
+    if (!video || !stream || canvasFallback || isDiagnosticTest) return;
 
     let disposed = false;
     const hasRvfc = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
@@ -312,7 +378,7 @@ const ShareTile = memo(function ShareTile({
         video.removeEventListener('timeupdate', timeupdateHandler);
       }
     };
-  }, [canvasFallback, markFrameRendered, stream]);
+  }, [canvasFallback, isDiagnosticTest, markFrameRendered, stream]);
 
   /* ── Retry handler ── */
 
@@ -336,8 +402,9 @@ const ShareTile = memo(function ShareTile({
   /* ── Double-click → pop out ── */
 
   const handleDoubleClick = useCallback(() => {
+    if (isDiagnosticTest) return;
     onPopOut(participantId, volume);
-  }, [onPopOut, participantId, volume]);
+  }, [isDiagnosticTest, onPopOut, participantId, volume]);
 
   /* ── Render ── */
 
@@ -361,6 +428,58 @@ const ShareTile = memo(function ShareTile({
             /retry
           </button>
         </div>
+      ) : isDiagnosticTest ? (
+        <div
+          className="h-full w-full relative overflow-hidden"
+          style={{
+            backgroundColor: '#050816',
+            backgroundImage: [
+              `radial-gradient(circle at top left, ${color}22, transparent 42%)`,
+              'linear-gradient(180deg, rgba(2, 6, 23, 0.98), rgba(2, 6, 23, 0.88))',
+            ].join(', '),
+          }}
+        >
+          <div
+            ref={diagnosticViewportRef}
+            className="absolute inset-0 flex items-center justify-center p-4"
+          >
+            <div
+              className="relative max-w-full max-h-full overflow-hidden rounded-md border shadow-[0_18px_40px_rgba(0,0,0,0.35)]"
+              style={{
+                aspectRatio: `${nativeWidth ?? 16}/${nativeHeight ?? 9}`,
+                width: diagnosticSurfaceSize ? `${diagnosticSurfaceSize.width}px` : undefined,
+                height: diagnosticSurfaceSize ? `${diagnosticSurfaceSize.height}px` : undefined,
+                maxWidth: '100%',
+                maxHeight: '100%',
+                borderColor: `${color}66`,
+                backgroundColor: '#0b1120',
+                backgroundImage: [
+                  `linear-gradient(135deg, ${color}22, rgba(15, 23, 42, 0.96) 55%)`,
+                  `repeating-linear-gradient(135deg, transparent 0 22px, ${color}18 22px 24px)`,
+                ].join(', '),
+              }}
+            >
+              <div className="absolute inset-x-0 top-0 h-8 border-b flex items-center justify-between px-3 text-[0.65rem]"
+                style={{ borderColor: `${color}40`, backgroundColor: 'rgba(2, 6, 23, 0.62)' }}>
+                <span className="uppercase tracking-[0.25em] text-wavis-text-secondary">test</span>
+                <span className="font-mono tabular-nums text-wavis-text-secondary">
+                  {nativeWidth}x{nativeHeight}
+                </span>
+              </div>
+              <div className="absolute inset-0 flex flex-col items-center justify-center px-4 pt-8 text-center">
+                <span className="text-xl font-semibold" style={{ color }}>
+                  {displayName}
+                </span>
+                <span className="mt-2 text-xs text-wavis-text-secondary">
+                  fixed height {nativeHeight ?? 1080}
+                </span>
+                <span className="mt-1 text-xs text-wavis-text-secondary">
+                  aspect {aspectRatio.toFixed(2)}:1
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : canvasFallback ? (
         <canvas
           ref={canvasRef}
@@ -382,7 +501,7 @@ const ShareTile = memo(function ShareTile({
       {isSwitching && <ShareSwitchingOverlay compact displayName={displayName} />}
 
       {/* Pop-out icon (top-right on hover) */}
-      {hovered && (
+      {hovered && !isDiagnosticTest && (
         <button
           className="absolute top-1 right-1 text-wavis-text hover:text-wavis-accent text-xs bg-wavis-overlay-base/60 px-1 py-0.5 rounded"
           onClick={(e) => { e.stopPropagation(); onPopOut(participantId, volume); }}
@@ -403,7 +522,7 @@ const ShareTile = memo(function ShareTile({
         <span className="truncate" style={{ color }}>{displayName}</span>
 
         {/* Mute toggle (hidden on canvas fallback — no audio available) */}
-        {!canvasFallback && (
+        {!canvasFallback && !isDiagnosticTest && (
           <div className="flex items-center gap-2 shrink-0 ml-2">
             {hovered && (
               <>
@@ -459,10 +578,45 @@ export default function WatchAllPage() {
   });
 
   const p = params.current;
+  const diagnosticsTestSessionId = p?.testSessionId ?? null;
+  const isDiagnosticsTestMode = diagnosticsTestSessionId !== null;
 
   /* ── Tile event listeners ── */
 
   useEffect(() => {
+    if (isDiagnosticsTestMode) {
+      let cleanup: (() => void) | null = null;
+      let mounted = true;
+
+      void listen<WatchAllTestState>(WATCH_ALL_TEST_STATE_EVENT, (event) => {
+        if (event.payload.sessionId !== diagnosticsTestSessionId) return;
+        setTiles(event.payload.tiles.map((tile) => ({
+          participantId: tile.participantId,
+          displayName: tile.displayName,
+          color: tile.color,
+          kind: 'test',
+          canvasFallback: false,
+          muted: false,
+          volume: 70,
+          nativeWidth: tile.width,
+          nativeHeight: tile.height,
+          aspectRatio: tile.width / tile.height,
+        })));
+      }).then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+        void emit(WATCH_ALL_TEST_READY_EVENT, { sessionId: diagnosticsTestSessionId });
+      });
+
+      return () => {
+        mounted = false;
+        cleanup?.();
+      };
+    }
+
     // Register ALL listeners first, then signal readiness to ActiveRoom.
     // ActiveRoom waits for watch-all:ready before emitting share-added events,
     // avoiding the race where events fire before listeners are registered.
@@ -478,7 +632,18 @@ export default function WatchAllPage() {
             if (restoredVolume !== undefined) {
               pendingRestoreVolumesRef.current.delete(participantId);
             }
-            const baseTile = { participantId, displayName, color, canvasFallback, muted: false, volume: 70, aspectRatio: 16 / 9 };
+            const baseTile = {
+              participantId,
+              displayName,
+              color,
+              kind: 'live' as const,
+              canvasFallback,
+              muted: false,
+              volume: 70,
+              nativeWidth: null,
+              nativeHeight: null,
+              aspectRatio: 16 / 9,
+            };
             return [
               ...prev,
               restoredVolume === undefined
@@ -543,9 +708,10 @@ export default function WatchAllPage() {
     return () => {
       for (const fn of cleanups) fn();
     };
-  }, []);
+  }, [diagnosticsTestSessionId, isDiagnosticsTestMode]);
 
   useEffect(() => {
+    if (isDiagnosticsTestMode) return;
     const unlisten = listen<ShareUserState>('share:user-state', (event) => {
       setUserState({
         isMuted: Boolean(event.payload.isMuted),
@@ -553,41 +719,45 @@ export default function WatchAllPage() {
       });
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  }, [isDiagnosticsTestMode]);
 
   useEffect(() => {
+    if (isDiagnosticsTestMode) return;
     const unlisten = listen<{ participants: MixerParticipant[] }>('watch-all:voice-participants', (event) => {
       setVoiceParticipants(event.payload.participants);
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  }, [isDiagnosticsTestMode]);
 
   /* ── Window close / self-close listeners ── */
 
   // Listen for close command from ActiveRoom (room leave)
   useEffect(() => {
+    if (isDiagnosticsTestMode) return;
     const unlisten = listen('watch-all:close', () => {
       getCurrentWindow().close();
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  }, [isDiagnosticsTestMode]);
 
   // Defense-in-depth: self-close when voice session ends
   useEffect(() => {
+    if (isDiagnosticsTestMode) return;
     const unlisten = listen('voice-session:ended', () => {
       getCurrentWindow().close();
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  }, [isDiagnosticsTestMode]);
 
   // Notify ActiveRoom when this window closes
   useEffect(() => {
+    if (isDiagnosticsTestMode) return;
     const win = getCurrentWindow();
     const unlisten = win.onCloseRequested(async () => {
       await emit('watch-all:closed', {});
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  }, [isDiagnosticsTestMode]);
 
   /* ── Grid resize tracking ── */
 
@@ -735,6 +905,9 @@ export default function WatchAllPage() {
   const layout = useMemo(() => {
     if (tiles.length === 0 || gridSize.width <= 0 || gridSize.height <= 0) return null;
     const streams = tiles.map((t) => ({ id: t.participantId, aspectRatio: t.aspectRatio }));
+    if (isDiagnosticsTestMode) {
+      return computeWatchAllLayout(streams, gridSize.width, gridSize.height);
+    }
     const { rows: baseRows } = computeWatchAllLayout(streams, 1920, 1080);
     const arById = new Map(streams.map((s) => [s.id, s.aspectRatio]));
     return {
@@ -743,7 +916,7 @@ export default function WatchAllPage() {
         return { ...row, flexGrow: gridSize.width / S };
       }),
     };
-  }, [tiles, gridSize]);
+  }, [gridSize, isDiagnosticsTestMode, tiles]);
   const bottomBarActive = bottomBarVisible || mixerOpen || voiceMixerOpen;
   const activeMixerPanelOrder = mixerPanelOrder.filter((panel) =>
     panel === 'voice' ? voiceMixerOpen : mixerOpen,
@@ -815,9 +988,13 @@ export default function WatchAllPage() {
                         participantId={tile.participantId}
                         displayName={tile.displayName}
                         color={tile.color}
+                        kind={tile.kind}
                         canvasFallback={tile.canvasFallback}
                         muted={tile.muted}
                         volume={tile.volume}
+                        nativeWidth={tile.nativeWidth}
+                        nativeHeight={tile.nativeHeight}
+                        aspectRatio={tile.aspectRatio}
                         onToggleMute={handleToggleMute}
                         onVolumeChange={handleVolumeChange}
                         onPopOut={handlePopOut}
@@ -831,6 +1008,19 @@ export default function WatchAllPage() {
           </div>
         ) : null}
       </div>
+      {isDiagnosticsTestMode ? (
+        <div className="bg-wavis-panel border-t border-wavis-text-secondary/20 px-3 py-1.5 flex items-center gap-2 text-xs">
+          <span className="text-wavis-text-secondary">diagnostics mode</span>
+          <span className="text-wavis-text-secondary opacity-30 select-none leading-none">|</span>
+          <span className="text-wavis-text">
+            {tiles.length} test stream{tiles.length === 1 ? '' : 's'}
+          </span>
+          <div className="flex-1" />
+          <FocusMainButton
+            onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
+          />
+        </div>
+      ) : (
       <div
         className="bg-wavis-panel border-t border-wavis-text-secondary/20 px-3 py-1.5 flex items-center gap-1 relative text-xs leading-none transition-opacity duration-700"
         style={{
@@ -911,6 +1101,7 @@ export default function WatchAllPage() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

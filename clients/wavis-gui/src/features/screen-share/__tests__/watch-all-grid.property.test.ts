@@ -43,6 +43,21 @@ describe('Property 1: Grid layout maximizes visible video area', () => {
   });
 });
 
+describe('Property 6: computeWatchAllLayout â€” maximizes occupied video area', () => {
+  it('returned partition area is >= every other candidate partition area', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+        const resultArea = computeOccupiedAreaForLayout(result, streams, width, height);
+        const bestPossibleArea = computeBestPartitionArea(streams, width, height);
+
+        expect(resultArea).toBeCloseTo(bestPossibleArea, 6);
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
 describe('Property 2: Grid layout produces uniform tiles', () => {
   // Feature: watch-all-streams, Property 2: Grid layout produces uniform tiles
   // Validates: Requirements 11.2
@@ -76,6 +91,60 @@ const streamsArb = fc.array(streamArb, { minLength: 1, maxLength: 5 }).map((stre
   const seen = new Set<string>();
   return streams.filter((s) => { if (seen.has(s.id)) return false; seen.add(s.id); return true; });
 }).filter((s) => s.length >= 1);
+
+function computeOccupiedAreaFromRowAspectSums(
+  rowAspectSums: number[],
+  width: number,
+  height: number,
+): number {
+  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + (width / sum), 0);
+  const scale = Math.min(1, height / naturalTotalHeight);
+  return rowAspectSums.reduce((acc, sum) => {
+    const rowHeight = (width / sum) * scale;
+    return acc + rowHeight * rowHeight * sum;
+  }, 0);
+}
+
+function computeOccupiedAreaForLayout(
+  layout: ReturnType<typeof computeWatchAllLayout>,
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const aspectRatioById = new Map(streams.map((stream) => [stream.id, stream.aspectRatio]));
+  const rowAspectSums = layout.rows.map((row) =>
+    row.tiles.reduce((sum, tile) => sum + (aspectRatioById.get(tile.id) ?? 0), 0),
+  );
+  return computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height);
+}
+
+function computeBestPartitionArea(
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const sorted = [...streams].sort((a, b) => a.aspectRatio - b.aspectRatio);
+  let bestArea = -1;
+
+  for (let mask = 0; mask < (1 << (sorted.length - 1)); mask++) {
+    const rowAspectSums: number[] = [];
+    let rowStart = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const splitAfter = i === sorted.length - 1 || ((mask >> i) & 1) === 1;
+      if (!splitAfter) continue;
+
+      rowAspectSums.push(
+        sorted.slice(rowStart, i + 1).reduce((sum, stream) => sum + stream.aspectRatio, 0),
+      );
+      rowStart = i + 1;
+    }
+
+    bestArea = Math.max(bestArea, computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height));
+  }
+
+  return bestArea;
+}
 
 describe('Property 3: computeWatchAllLayout — all streams appear exactly once', () => {
   it('every input stream id appears in exactly one tile', () => {

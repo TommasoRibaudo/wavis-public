@@ -7,6 +7,58 @@
 import { describe, it, expect } from 'vitest';
 import { computeGridLayout, computeWatchAllLayout } from '../watch-all-grid';
 
+function computeOccupiedAreaFromRowAspectSums(
+  rowAspectSums: number[],
+  width: number,
+  height: number,
+): number {
+  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + (width / sum), 0);
+  const scale = Math.min(1, height / naturalTotalHeight);
+  return rowAspectSums.reduce((acc, sum) => {
+    const rowHeight = (width / sum) * scale;
+    return acc + rowHeight * rowHeight * sum;
+  }, 0);
+}
+
+function computeOccupiedAreaForLayout(
+  layout: ReturnType<typeof computeWatchAllLayout>,
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const aspectRatioById = new Map(streams.map((stream) => [stream.id, stream.aspectRatio]));
+  const rowAspectSums = layout.rows.map((row) =>
+    row.tiles.reduce((sum, tile) => sum + (aspectRatioById.get(tile.id) ?? 0), 0),
+  );
+  return computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height);
+}
+
+function computeBestPartitionArea(
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const sorted = [...streams].sort((a, b) => a.aspectRatio - b.aspectRatio);
+  if (sorted.length === 0) return 0;
+
+  let bestArea = -1;
+  for (let mask = 0; mask < (1 << (sorted.length - 1)); mask++) {
+    const rowAspectSums: number[] = [];
+    let rowStart = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const splitAfter = i === sorted.length - 1 || ((mask >> i) & 1) === 1;
+      if (!splitAfter) continue;
+      rowAspectSums.push(
+        sorted.slice(rowStart, i + 1).reduce((sum, stream) => sum + stream.aspectRatio, 0),
+      );
+      rowStart = i + 1;
+    }
+    bestArea = Math.max(bestArea, computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height));
+  }
+
+  return bestArea;
+}
+
 describe('computeGridLayout - edge cases', () => {
   it('1 share -> columns=1, rows=1, tile fills container', () => {
     const result = computeGridLayout(1, 1920, 1080);
@@ -176,6 +228,38 @@ describe('computeWatchAllLayout - edge cases', () => {
     const aloneTile = result.rows.find((r) => r.tiles.length === 1);
     expect(aloneTile).toBeDefined();
     expect(aloneTile!.tiles[0].id).toBe('wide');
+  });
+
+  it('can reshuffle row partitions when the container shape changes', () => {
+    const streams = [
+      { id: 'wide', aspectRatio: 21 / 9 },
+      { id: 'hd1', aspectRatio: 16 / 9 },
+      { id: 'hd2', aspectRatio: 16 / 9 },
+    ];
+
+    const wideWindow = computeWatchAllLayout(streams, 1600, 700);
+    const tallWindow = computeWatchAllLayout(streams, 900, 1200);
+
+    expect(tallWindow.rows.length).toBeGreaterThan(1);
+    expect(tallWindow.rows.map((row) => row.tiles.map((t) => t.id))).not.toEqual(
+      wideWindow.rows.map((row) => row.tiles.map((t) => t.id)),
+    );
+  });
+
+  it('chooses the partition that maximizes occupied video area', () => {
+    const streams = [
+      { id: 'wide', aspectRatio: 21 / 9 },
+      { id: 'hd1', aspectRatio: 16 / 9 },
+      { id: 'hd2', aspectRatio: 16 / 9 },
+    ];
+
+    const width = 1600;
+    const height = 700;
+    const layout = computeWatchAllLayout(streams, width, height);
+    const resultArea = computeOccupiedAreaForLayout(layout, streams, width, height);
+    const bestPossibleArea = computeBestPartitionArea(streams, width, height);
+
+    expect(resultArea).toBeCloseTo(bestPossibleArea, 6);
   });
 
   it('tile flexGrow values are proportional to aspect ratios within each row', () => {
