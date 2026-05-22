@@ -52,6 +52,14 @@ interface ShareUserState {
   isDeafened: boolean;
 }
 
+interface AudioTileState {
+  participantId: string;
+  displayName: string;
+  color: string;
+  muted: boolean;
+  volume: number;
+}
+
 type MixerPanel = 'voice' | 'share';
 
 const STREAM_MUTED_ICON = '\u25cb';
@@ -556,11 +564,66 @@ const ShareTile = memo(function ShareTile({
   );
 });
 
+/* ─── AudioOnlyTile ─────────────────────────────────────────────── */
+
+interface AudioOnlyTileProps {
+  participantId: string;
+  displayName: string;
+  color: string;
+  muted: boolean;
+  volume: number;
+  onToggleMute: (participantId: string) => void;
+  onVolumeChange: (participantId: string, volume: number) => void;
+}
+
+const AudioOnlyTile = memo(function AudioOnlyTile({
+  participantId,
+  displayName,
+  color,
+  muted,
+  volume,
+  onToggleMute,
+  onVolumeChange,
+}: AudioOnlyTileProps) {
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 text-xs font-mono select-none">
+      <span style={{ color }} aria-hidden="true">{"♪"}</span>
+      <span className="truncate min-w-0" style={{ color }}>{displayName}</span>
+      <div className="flex items-center gap-2 ml-auto shrink-0">
+        <span className="text-wavis-text-secondary whitespace-nowrap hidden sm:block">audio vol</span>
+        <div
+          className="w-20"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <VolumeSlider
+            value={volume}
+            onChange={(v) => onVolumeChange(participantId, v)}
+            color={color}
+          />
+        </div>
+        <span className="text-wavis-text-secondary w-5 text-right tabular-nums">
+          {muted ? 0 : volume}
+        </span>
+        <button
+          className="shrink-0 hover:opacity-70 transition-opacity"
+          style={{ color: muted ? 'var(--wavis-text-secondary)' : color }}
+          onClick={() => onToggleMute(participantId)}
+          aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
+        >
+          {muted ? STREAM_MUTED_ICON : STREAM_UNMUTED_ICON}
+        </button>
+      </div>
+    </div>
+  );
+});
+
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
 export default function WatchAllPage() {
   const params = useRef(parseHashParams());
   const [tiles, setTiles] = useState<ShareTileState[]>([]);
+  const [audioTiles, setAudioTiles] = useState<AudioTileState[]>([]);
   const pendingRestoreVolumesRef = useRef<Map<string, number>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
   const [gridSize, setGridSize] = useState({ width: 0, height: 0 });
@@ -695,11 +758,29 @@ export default function WatchAllPage() {
         },
       );
 
+      const unlistenAudioAdded = await listen<{ participantId: string; displayName: string; color: string; volume: number }>(
+        'watch-all:audio-share-added',
+        (event) => {
+          const { participantId, displayName, color, volume } = event.payload;
+          setAudioTiles((prev) => {
+            if (prev.some((t) => t.participantId === participantId)) return prev;
+            return [...prev, { participantId, displayName, color, muted: false, volume }];
+          });
+        },
+      );
+
+      const unlistenAudioRemoved = await listen<{ participantId: string }>(
+        'watch-all:audio-share-removed',
+        (event) => {
+          setAudioTiles((prev) => prev.filter((t) => t.participantId !== event.payload.participantId));
+        },
+      );
+
       // All listeners registered — signal readiness to ActiveRoom
       console.log('[wavis:watch-all] emitting watch-all:ready');
       emit('watch-all:ready', {});
 
-      return [unlistenAdded, unlistenRemoved, unlistenUpdated, unlistenRestoreVolume];
+      return [unlistenAdded, unlistenRemoved, unlistenUpdated, unlistenRestoreVolume, unlistenAudioAdded, unlistenAudioRemoved];
     };
 
     let cleanups: Array<() => void> = [];
@@ -791,20 +872,39 @@ export default function WatchAllPage() {
   /* ── Mute toggle ── */
 
   const handleToggleMute = useCallback((participantId: string) => {
-    setTiles((prev) =>
-      prev.map((t) => {
+    // Try video tiles first, then audio-only tiles
+    let handled = false;
+    setTiles((prev) => {
+      const next = prev.map((t) => {
         if (t.participantId !== participantId) return t;
+        handled = true;
         const nextMuted = !t.muted;
-        // Use local-audio so the gain is set without writing 0 into shareVolumes.
-        // This lets Watch All re-open at the slider's actual position (not muted).
         emit('watch-all:local-audio', { participantId, volume: nextMuted ? 0 : t.volume });
         return { ...t, muted: nextMuted };
-      }),
-    );
+      });
+      return handled ? next : prev;
+    });
+    if (!handled) {
+      setAudioTiles((prev) =>
+        prev.map((t) => {
+          if (t.participantId !== participantId) return t;
+          const nextMuted = !t.muted;
+          emit('watch-all:local-audio', { participantId, volume: nextMuted ? 0 : t.volume });
+          return { ...t, muted: nextMuted };
+        }),
+      );
+    }
   }, []);
 
   const handleVolumeChange = useCallback((participantId: string, volume: number) => {
     setTiles((prev) =>
+      prev.map((t) =>
+        t.participantId === participantId
+          ? { ...t, volume, muted: volume === 0 }
+          : t,
+      ),
+    );
+    setAudioTiles((prev) =>
       prev.map((t) =>
         t.participantId === participantId
           ? { ...t, volume, muted: volume === 0 }
@@ -962,7 +1062,7 @@ export default function WatchAllPage() {
 
       {/* Grid container */}
       <div ref={gridRef} className="flex-1 overflow-hidden relative">
-        {tiles.length === 0 ? (
+        {tiles.length === 0 && audioTiles.length === 0 ? (
           /* Empty state */
           <div className="h-full flex items-center justify-center text-wavis-text-secondary text-sm">
             no active shares
@@ -1008,6 +1108,31 @@ export default function WatchAllPage() {
           </div>
         ) : null}
       </div>
+
+      {/* Audio-only shares strip — below video grid, above bottom bar. Auto-hides with the bottom bar. */}
+      {audioTiles.length > 0 && (
+        <div
+          className="shrink-0 border-t border-wavis-text-secondary/20 bg-wavis-panel divide-y divide-wavis-text-secondary/10 transition-opacity duration-700"
+          style={{
+            opacity: bottomBarActive ? 1 : 0,
+            pointerEvents: bottomBarActive ? 'auto' : 'none',
+          }}
+        >
+          {audioTiles.map((tile) => (
+            <AudioOnlyTile
+              key={tile.participantId}
+              participantId={tile.participantId}
+              displayName={tile.displayName}
+              color={tile.color}
+              muted={tile.muted}
+              volume={tile.volume}
+              onToggleMute={handleToggleMute}
+              onVolumeChange={handleVolumeChange}
+            />
+          ))}
+        </div>
+      )}
+
       {isDiagnosticsTestMode ? (
         <div className="bg-wavis-panel border-t border-wavis-text-secondary/20 px-3 py-1.5 flex items-center gap-2 text-xs">
           <span className="text-wavis-text-secondary">diagnostics mode</span>

@@ -66,6 +66,7 @@ peerA.logclea
 /target-clippy-docsrs
 /target-clippy-repro
 /target-clippy-workspace
+/target-short-107
 clippy-workspace.log
 *.tfvars
 *.tfvars.json

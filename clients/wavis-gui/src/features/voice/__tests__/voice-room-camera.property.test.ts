@@ -92,6 +92,7 @@ function makeState(overrides?: Partial<VoiceRoomState>): VoiceRoomState {
     videoTilesById: {},
     roomPanelManualOverride: null,
     roomPanelTab: 'logs',
+    audioOnlySharers: new Set(),
     ...overrides,
   };
 }

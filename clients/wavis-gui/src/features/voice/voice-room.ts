@@ -228,6 +228,8 @@ export interface VoiceRoomState {
   videoTilesById: Record<string, VideoTileViewModel>;
   roomPanelManualOverride: 'logs' | 'video' | null;
   roomPanelTab: 'logs' | 'video';
+  /** Identities of remote participants currently in audio-only share mode. */
+  audioOnlySharers: Set<string>;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -703,6 +705,10 @@ export function canStartShare(
   }
   // screen_audio or window
   if (videoShare) return { allowed: false, reason: 'video share already active' };
+  // Cannot add companion audio while an audio-only share is already using the audio device.
+  if (audioShare && selection.withAudio) {
+    return { allowed: false, reason: 'audio-only share active — start video without audio, or stop audio first' };
+  }
   return { allowed: true };
 }
 
@@ -765,13 +771,15 @@ export function computeStopRoute(
 
 /**
  * Pure logic for whether the share button should be disabled.
- * Disabled when any share is active — either custom or fallback.
+ * Disabled when video share is active (can't stack two video shares), or when
+ * the fallback (getDisplayMedia) share is running. Audio-only share does NOT
+ * disable the button — the user can layer a video share on top.
  */
 export function isShareButtonDisabled(
-  activeShareType: ShareMode | null,
+  activeVideoShare: VoiceRoomState['activeVideoShare'],
   selfSharing: boolean,
 ): boolean {
-  return activeShareType !== null || selfSharing;
+  return activeVideoShare !== null || selfSharing;
 }
 
 /**
@@ -1033,6 +1041,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   videoTilesById: {},
   roomPanelManualOverride: null,
   roomPanelTab: 'logs',
+  audioOnlySharers: new Set(),
 };
 
 let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
@@ -2528,6 +2537,16 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     },
     onNoiseSuppressionState: (active) => {
       state.noiseSuppressionActive = active;
+      notify();
+    },
+    onAudioOnlySharerAdded: (identity) => {
+      state.audioOnlySharers = new Set(state.audioOnlySharers);
+      state.audioOnlySharers.add(identity);
+      notify();
+    },
+    onAudioOnlySharerRemoved: (identity) => {
+      state.audioOnlySharers = new Set(state.audioOnlySharers);
+      state.audioOnlySharers.delete(identity);
       notify();
     },
   };
@@ -4092,6 +4111,12 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     isWindowsPlatform() ? 'native_custom_picker' : isMacPlatform() ? 'mac_custom_share' : 'linux_custom_share',
   );
 
+  // Capture whether any share was already active before this call.
+  // When the user layers a video share on top of an audio-only share (or vice
+  // versa), the backend already knows the participant is sharing — sending
+  // start_share again would be redundant and confuse the signaling state.
+  const wasAlreadySharing = state.activeVideoShare !== null || state.activeAudioShare !== null;
+
   // 2. Set state fields optimistically
   const isVideoShare = selection.mode === 'screen_audio' || selection.mode === 'window';
   if (isVideoShare) {
@@ -4221,8 +4246,9 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       }
     }
 
-    // 5. Send signaling on success
-    if (client) {
+    // 5. Send signaling on success — skip if we were already in a share session
+    // (layering a second stream on top of an existing one; backend state is unchanged).
+    if (client && !wasAlreadySharing) {
       client.send({ type: 'start_share', shareType: selection.mode });
     }
 
@@ -4314,8 +4340,12 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
     }
   }
 
-  // 4. Send stop_share signaling
-  if (client) {
+  // 4. Send stop_share signaling — only when the entire share session ends.
+  // If the other slot is still active the participant remains "sharing" on the backend.
+  const willStillBeSharing =
+    (target === 'video' && state.activeAudioShare !== null) ||
+    (target === 'audio' && state.activeVideoShare !== null);
+  if (client && !willStillBeSharing) {
     client.send({ type: 'stop-share' });
   }
 
