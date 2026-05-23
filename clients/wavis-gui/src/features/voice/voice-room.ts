@@ -4277,11 +4277,10 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
     console.error(LOG, 'startCustomShare failed:', err);
-    // Clean up pre-registered listener if startNativeCapture never ran
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      if (isVideoShare) {
-        lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
-      }
+    // Clean up pre-registered listener if startNativeCapture never ran.
+    // Only relevant for video shares — audio-only never calls prepareNativeCapture().
+    if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
+      lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await lkModule.stopNativeCapture();
     }
     if (isVideoShare) {

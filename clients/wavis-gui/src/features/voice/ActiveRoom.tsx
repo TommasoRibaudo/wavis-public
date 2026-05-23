@@ -48,7 +48,6 @@ import {
   getPersistedStreamVolume,
   activeShareType,
   computeStopRoute,
-  isShareButtonDisabled,
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
@@ -1827,6 +1826,9 @@ export default function ActiveRoom() {
   const selfP = roomState?.participants.find((p) => p.id === roomState.selfParticipantId);
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
+  // True when video capture (or fallback getDisplayMedia) is active — does NOT include audio-only share.
+  // Used to decide whether the ◉ compact button and the expanded /stopshare button should be in stop-mode.
+  const isVideoOrFallbackSharing = !!roomState?.activeVideoShare || (selfSharing && !roomState?.activeAudioShare);
   const voiceRoomConnected = roomState
     ? roomState.machineState === 'active' || roomState.machineState === 'reconnecting'
     : false;
@@ -2817,11 +2819,11 @@ export default function ActiveRoom() {
             )}
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
-              onClick={selfSharing ? stopShareAction : handleStartShare}
-              disabled={!selfSharing && (!shareEnabled || sharePickerLoading)}
+              onClick={isVideoOrFallbackSharing ? stopShareAction : handleStartShare}
+              disabled={!isVideoOrFallbackSharing && (!shareEnabled || sharePickerLoading)}
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
-              style={{ color: selfSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-              title={selfSharing ? '/stopshare' : '/share'}
+              style={{ color: isVideoOrFallbackSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
+              title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">◉</span></button>
           </div>
         )}
@@ -2841,16 +2843,110 @@ export default function ActiveRoom() {
                 {cameraLabel}
               </button>
             )}
-            {(selfSharing || !(roomState.activeVideoShare && roomState.activeAudioShare)) && (() => {
-              const shareDisabled = !shareEnabled || isShareButtonDisabled(roomState.activeVideoShare, selfSharing) || sharePickerLoading;
+            {(() => {
+              const isVideoActive = roomState.activeVideoShare !== null;
+              const isFallbackSharing = selfSharing && !isVideoActive && roomState.activeAudioShare === null;
+              if (isVideoActive || isFallbackSharing) {
+                return (
+                  <>
+                    <button
+                      onClick={stopShareAction}
+                      className="w-full py-0.5 px-1 text-xs text-center transition-colors border text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
+                    >
+                      /stopshare
+                    </button>
+                    {sharePickerLoading && (
+                      <div className="-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          {[0, 1, 2].map((bar) => (
+                            <span
+                              key={bar}
+                              className="inline-block w-1 bg-wavis-purple"
+                              style={{
+                                height: '0.55rem',
+                                animation: 'pulse 1.2s ease-in-out infinite',
+                                animationDelay: `${bar * 0.16}s`,
+                              }}
+                            />
+                          ))}
+                        </div>
+                        <span className="text-wavis-text-secondary">waiting for screen picker...</span>
+                      </div>
+                    )}
+                    {isVideoActive && (
+                      <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => { void withPickerResize(isMacPlatform, () => changeShareSource()); }}
+                            className="flex-1 py-0.5 px-1 text-xs text-center border border-wavis-text-secondary text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+                          >
+                            /window
+                          </button>
+                          {(() => {
+                            // Turning companion audio ON conflicts with a running audio-only share (same WASAPI device).
+                            const companionBlocked = !isMacPlatform && !shareAudioOn && roomState.activeAudioShare !== null;
+                            const companionDisabled = isMacPlatform || companionBlocked;
+                            return (
+                              <button
+                                onClick={async () => {
+                                  if (companionDisabled) return;
+                                  const next = !shareAudioOn;
+                                  const ok = await toggleShareAudio(next);
+                                  if (ok) setShareAudioOn(next);
+                                }}
+                                disabled={companionDisabled}
+                                title={companionBlocked ? 'audio device busy — stop your audio share first' : undefined}
+                                className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${companionDisabled
+                                  ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
+                                  : shareAudioOn
+                                    ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+                                    : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
+                                  }`}
+                              >
+                                {shareAudioOn ? '/audio on' : '/audio off'}
+                              </button>
+                            );
+                          })()}
+                        </div>
+                        <select
+                          value={shareQualityState}
+                          onChange={(e) => {
+                            const q = e.target.value as 'low' | 'high' | 'max';
+                            setShareQualityState(q);
+                            setShareQuality(q);
+                            e.currentTarget.blur();
+                          }}
+                          onClick={(e) => {
+                            if (e.currentTarget.dataset.open === 'true') {
+                              e.currentTarget.blur();
+                              e.currentTarget.dataset.open = 'false';
+                            } else if (document.activeElement === e.currentTarget) {
+                              e.currentTarget.dataset.open = 'true';
+                            }
+                          }}
+                          onBlur={(e) => { e.currentTarget.dataset.open = 'false'; }}
+                          onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
+                          className="w-full bg-wavis-panel border border-wavis-text-secondary text-wavis-text text-xs py-0.5 px-1 cursor-pointer"
+                        >
+                          {(['low', 'high', 'max'] as const).map((q) => {
+                            const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps';
+                            return <option key={q} value={q}>{label}</option>;
+                          })}
+                        </select>
+                      </div>
+                    )}
+                  </>
+                );
+              }
+              const shareDisabled = !shareEnabled || sharePickerLoading;
               return (
                 <>
                   <button
-                    onClick={selfSharing ? stopShareAction : handleStartShare}
-                    disabled={selfSharing ? false : shareDisabled}
-                    className={`w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfSharing ? 'text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg'}`}
+                    onClick={handleStartShare}
+                    disabled={shareDisabled}
+                    className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg"
                   >
-                    {shareButtonLabel(shareEnabled, selfSharing, roomState.sharePermission, isHost)}
+                    {shareButtonLabel(shareEnabled, false, roomState.sharePermission, isHost)}
                   </button>
                   {sharePickerLoading && (
                     <div className="-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
@@ -2870,63 +2966,19 @@ export default function ActiveRoom() {
                       <span className="text-wavis-text-secondary">waiting for screen picker...</span>
                     </div>
                   )}
-                  {selfSharing && (
-                    <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => { void withPickerResize(isMacPlatform, () => changeShareSource()); }}
-                          className="flex-1 py-0.5 px-1 text-xs text-center border border-wavis-text-secondary text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-                        >
-                          /window
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (isMacPlatform) return;
-                            const next = !shareAudioOn;
-                            setShareAudioOn(next);
-                            void toggleShareAudio(next);
-                          }}
-                          disabled={isMacPlatform}
-                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${isMacPlatform
-                            ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
-                            : shareAudioOn
-                              ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-                              : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-                            }`}
-                        >
-                          {shareAudioOn ? '/audio on' : '/audio off'}
-                        </button>
-                      </div>
-                      <select
-                        value={shareQualityState}
-                        onChange={(e) => {
-                          const q = e.target.value as 'low' | 'high' | 'max';
-                          setShareQualityState(q);
-                          setShareQuality(q);
-                          e.currentTarget.blur();
-                        }}
-                        onClick={(e) => {
-                          if (e.currentTarget.dataset.open === 'true') {
-                            e.currentTarget.blur();
-                            e.currentTarget.dataset.open = 'false';
-                          } else if (document.activeElement === e.currentTarget) {
-                            e.currentTarget.dataset.open = 'true';
-                          }
-                        }}
-                        onBlur={(e) => { e.currentTarget.dataset.open = 'false'; }}
-                        onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
-                        className="w-full bg-wavis-panel border border-wavis-text-secondary text-wavis-text text-xs py-0.5 px-1 cursor-pointer"
-                      >
-                        {(['low', 'high', 'max'] as const).map((q) => {
-                          const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps';
-                          return <option key={q} value={q}>{label}</option>;
-                        })}
-                      </select>
-                    </div>
-                  )}
                 </>
               );
             })()}
+            {roomState.activeVideoShare !== null && roomState.activeAudioShare === null && (
+              <button
+                onClick={handleStartShare}
+                disabled={!shareEnabled || sharePickerLoading || !!roomState.activeVideoShare.withAudio}
+                title={roomState.activeVideoShare.withAudio ? 'audio device busy — turn off /audio first' : undefined}
+                className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+              >
+                /share audio
+              </button>
+            )}
             {roomState.activeAudioShare !== null && (
               <button
                 onClick={() => { void stopCustomShare('audio'); }}
