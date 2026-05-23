@@ -2465,6 +2465,49 @@ describe('Screen share and device selection', () => {
       mod.disconnect();
     });
 
+    it('late join recovers an already-published screen share video on ParticipantConnected without duplicating the later TrackSubscribed event', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const track = createMockScreenShareTrack('screen-late-1', 'screen-late-sid');
+      const publication = {
+        source: 'screen_share',
+        track,
+        trackSid: 'screen-late-sid',
+        setEnabled: vi.fn(),
+      };
+      const participant = {
+        identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => (
+          source === 'screen_share' ? publication : undefined
+        )),
+        trackPublications: new Map([
+          ['screen-late-sid', publication],
+        ]),
+      };
+
+      emitRoomEvent('participantConnected', participant);
+
+      const subCallsAfterRecovery = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
+      expect(subCallsAfterRecovery).toHaveLength(1);
+      expect(subCallsAfterRecovery[0].args[0]).toBe('alice');
+      expect(publication.setEnabled).toHaveBeenCalledWith(true);
+
+      emitRoomEvent('trackSubscribed', track, publication, participant);
+
+      const subCallsAfterDuplicate = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
+      expect(subCallsAfterDuplicate).toHaveLength(1);
+
+      const screenShareElements = (mod as unknown as {
+        screenShareElements: Map<string, { trackSid: string }>;
+      }).screenShareElements;
+      expect(screenShareElements.get('alice')?.trackSid).toBe('screen-late-sid');
+
+      mod.disconnect();
+    });
+
     it('attachScreenShareAudio is a no-op for unknown participants', async () => {
       resetAll();
       const cbs = createMockCallbacks();
