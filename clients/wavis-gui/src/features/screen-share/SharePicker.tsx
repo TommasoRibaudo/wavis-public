@@ -291,7 +291,8 @@ export default function SharePicker(props: SharePickerProps) {
   const filteredSources = filterSourcesByMode(sources, activeMode);
   const isVisualMode = activeMode !== 'audio_only';
   const showAudioCheckbox = activeMode !== 'audio_only';
-  const audioCheckboxDisabled = false;
+  // Disable system audio checkbox when an audio-only share is already occupying the audio device.
+  const audioCheckboxDisabled = occupied.audioOccupied;
   const canShare = selectedSource !== null;
   const showFallback = enumResult !== null && shouldShowPortalFallback(enumResult.fallback_reason) && filteredSources.length === 0;
   const isEmpty = filteredSources.length === 0 && !showFallback;

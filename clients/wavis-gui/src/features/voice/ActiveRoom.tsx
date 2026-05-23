@@ -717,6 +717,7 @@ export default function ActiveRoom() {
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
   const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
+  const nativeShareViewersRef = useRef<Set<string>>(new Set());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -1137,6 +1138,7 @@ export default function ActiveRoom() {
 
   // Dynamic share tracking for Watch All window
   const prevWatchAllStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
+  const prevAudioOnlySharersRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!roomState || !watchAllOpen) {
       prevWatchAllStreamsRef.current = new Map();
@@ -1198,6 +1200,26 @@ export default function ActiveRoom() {
 
     prevWatchAllStreamsRef.current = new Map(currentStreams);
   }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
+
+  // Watch All: sync audio-only sharer additions/removals
+  useEffect(() => {
+    if (!roomState || !watchAllOpen || !watchAllReadyRef.current) return;
+    const curr = roomState.audioOnlySharers;
+    const prev = prevAudioOnlySharersRef.current;
+    for (const identity of curr) {
+      if (prev.has(identity)) continue;
+      const participant = roomState.participants.find((p) => p.id === identity);
+      if (!participant) continue;
+      const vol = getSavedShareVolume(identity);
+      setScreenShareAudioVolume(identity, vol);
+      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol });
+    }
+    for (const identity of prev) {
+      if (curr.has(identity)) continue;
+      void emit('watch-all:audio-share-removed', { participantId: identity });
+    }
+    prevAudioOnlySharersRef.current = new Set(curr);
+  }, [watchAllOpen, roomState?.audioOnlySharers, roomState?.participants, getSavedShareVolume]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -1317,6 +1339,10 @@ export default function ActiveRoom() {
     stream: MediaStream | null,
     scope: ShareViewerScope = 'direct',
   ) => {
+    if (nativeShareViewersRef.current.has(participantId)) {
+      closeShareWindow(participantId);
+    }
+
     // If already watching this participant, close it first and wait for Tauri to
     // destroy the webview before creating a new one with the same label.
     if (shareWindowsRef.current.has(participantId)) {
@@ -1341,6 +1367,25 @@ export default function ActiveRoom() {
     const windowLabel = `screen-share-${participantId}`;
 
     try {
+      if (stream === null) {
+        await invoke('media_open_native_screen_share_viewer', {
+          identity: participantId,
+          title: `${participant.displayName} — screen share`,
+        });
+
+        nativeShareViewersRef.current.add(participantId);
+        attachScreenShareAudio(participantId);
+        setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+        setWatchingShareIds((prev) => new Set(prev).add(participantId));
+
+        if (watchAllWindowRef.current && watchAllReadyRef.current) {
+          watchAllAttachedAudioRef.current.delete(participantId);
+          prevWatchAllStreamsRef.current.delete(participantId);
+          emit('watch-all:share-removed', { participantId });
+        }
+        return;
+      }
+
       const win = new WebviewWindow(windowLabel, {
         url: `/screen-share#${hash}`,
         title: `${participant.displayName} — screen share`,
@@ -1392,6 +1437,7 @@ export default function ActiveRoom() {
       }
     } catch (err) {
       console.error('[wavis:active-room] failed to open screen share window:', err);
+      showTransientScreenShareError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -1400,6 +1446,9 @@ export default function ActiveRoom() {
     stopSending(participantId, `screen-share-${participantId}`);
     if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
       detachScreenShareAudio(participantId);
+    }
+    if (nativeShareViewersRef.current.delete(participantId)) {
+      invoke('media_close_native_screen_share_viewer', { identity: participantId }).catch(() => {});
     }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
@@ -1421,6 +1470,11 @@ export default function ActiveRoom() {
     closeVideoPopoutWindow();
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
+    for (const pid of nativeShareViewersRef.current) {
+      detachScreenShareAudio(pid);
+      invoke('media_close_native_screen_share_viewer', { identity: pid }).catch(() => {});
+    }
+    nativeShareViewersRef.current.clear();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
       detachScreenShareAudio(pid);
       shareWindow.window.close().catch(() => { });
@@ -1615,6 +1669,15 @@ export default function ActiveRoom() {
         // Seed the dynamic tracking ref so the useEffect doesn't
         // re-emit these same shares as "new".
         prevWatchAllStreamsRef.current = new Map(scope.streams);
+        // Seed audio-only sharers into Watch All
+        for (const identity of rs.audioOnlySharers) {
+          const participant = scope.participants.find((p) => p.id === identity);
+          if (!participant) continue;
+          const vol = getSavedShareVolume(identity);
+          setScreenShareAudioVolume(identity, vol);
+          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol });
+        }
+        prevAudioOnlySharersRef.current = new Set(rs.audioOnlySharers);
       });
       watchAllReadyUnlistenRef.current = unlistenReady;
 
@@ -1786,8 +1849,11 @@ export default function ActiveRoom() {
     : null;
   const stopShareAction = () => {
     const route = computeStopRoute(currentShareType, selfSharing);
-    if (route === 'stop_custom') stopCustomShare('all');
-    else if (route === 'stop_fallback') stopShare();
+    if (route === 'stop_custom') {
+      // Stop only the video share when video is active — audio-only share stays running.
+      // Stopping both is handled by /stop-audio for the audio slot.
+      void stopCustomShare(roomState?.activeVideoShare !== null ? 'video' : 'audio');
+    } else if (route === 'stop_fallback') stopShare();
   };
   shareUserStateRef.current = {
     isMuted: selfP?.isMuted ?? false,
@@ -2403,12 +2469,24 @@ export default function ActiveRoom() {
               <span
                 className="text-sm leading-none"
                 style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
-                title="you are sharing"
+                title={roomState.activeAudioShare && !roomState.activeVideoShare ? 'you are sharing audio' : 'you are sharing'}
               >
-                {"\u25C9"}
+                {roomState.activeAudioShare && !roomState.activeVideoShare ? "\u266A" : "\u25C9"}
               </span>
             )}
             {!isSelf && p.isSharing && (() => {
+              const isAudioOnly = roomState.audioOnlySharers.has(p.id);
+              if (isAudioOnly) {
+                return (
+                  <span
+                    className="text-sm leading-none"
+                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
+                    title="sharing audio"
+                  >
+                    {"\u266A"}
+                  </span>
+                );
+              }
               const hasStream = roomState.screenShareStreams.has(p.id);
               const isWatching = watchingShareIds.has(p.id);
               return (
@@ -2764,7 +2842,7 @@ export default function ActiveRoom() {
               </button>
             )}
             {(selfSharing || !(roomState.activeVideoShare && roomState.activeAudioShare)) && (() => {
-              const shareDisabled = !shareEnabled || isShareButtonDisabled(currentShareType, selfSharing) || sharePickerLoading;
+              const shareDisabled = !shareEnabled || isShareButtonDisabled(roomState.activeVideoShare, selfSharing) || sharePickerLoading;
               return (
                 <>
                   <button
@@ -2849,6 +2927,14 @@ export default function ActiveRoom() {
                 </>
               );
             })()}
+            {roomState.activeAudioShare !== null && (
+              <button
+                onClick={() => { void stopCustomShare('audio'); }}
+                className="w-full py-0.5 px-1 text-xs text-center transition-colors border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
+              >
+                /stop-audio
+              </button>
+            )}
             <div className="mt-4 flex flex-col gap-1">
               <button onClick={() => { setShowSettings(true); setChannelSwitcherOpen(false); }} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
             </div>

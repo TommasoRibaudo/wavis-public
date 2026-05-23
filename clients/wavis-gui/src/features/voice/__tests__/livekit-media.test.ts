@@ -2331,12 +2331,14 @@ describe('Screen share and device selection', () => {
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
 
+      // Alice is a video sharer — her screen_share_audio should be deferred until the viewer attaches it.
+      const aliceWithVideo = { identity: 'alice', getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined), trackPublications: new Map() };
       const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } };
       emitRoomEvent(
         'trackSubscribed',
         remoteTrack,
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        aliceWithVideo,
       );
 
       const deferredMap = (mod as unknown as {
@@ -2376,9 +2378,10 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       const setSubscribed = vi.fn();
+      // Alice is a video sharer — audio should be deferred until the viewer window opens.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn(() => undefined),
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map(),
       };
 
@@ -2411,9 +2414,10 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       const setSubscribed = vi.fn();
+      // Alice is a video sharer — audio track arriving before the viewer must be deferred.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn(() => undefined),
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map(),
       };
 
@@ -2532,7 +2536,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
@@ -2558,7 +2562,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
@@ -2589,7 +2593,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 0);
@@ -2622,7 +2626,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
 
       mod.attachScreenShareAudio('alice');
@@ -2655,8 +2659,10 @@ describe('Screen share and device selection', () => {
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
 
+      // Alice is a video sharer — the second audio track (Linux WebKit path) should also be deferred.
       const participant = {
         identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map([
           ['share-video', { source: 'screen_share' }],
         ]),
@@ -2706,7 +2712,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 
@@ -2744,7 +2750,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 
@@ -2778,12 +2784,12 @@ describe('Screen share and device selection', () => {
         { identity: 'alice' },
       );
 
-      // Subscribe alice's sys-audio track and attach it (simulates viewer clicking Watch)
+      // Subscribe alice's sys-audio track (audio-only share — auto-attaches immediately)
       emitRoomEvent(
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-alice' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 

@@ -78,6 +78,8 @@ drm-fourcc = "2"
 
 # GTK3 bindings — needed for test_pw debug binary to simulate Tauri's GTK init.
 gtk = "0.18"
+gdk = "0.18"
+gdk-pixbuf = "0.18"
 
 # WebKitGTK — needed for test_pw debug binary to simulate Tauri's webview.
 webkit2gtk = "2.0"
