@@ -701,14 +701,12 @@ export function canStartShare(
 ): { allowed: boolean; reason?: string } {
   if (selection.mode === 'audio_only') {
     if (audioShare) return { allowed: false, reason: 'audio-only share already active' };
+    // Companion audio holds the same WASAPI device — both cannot run simultaneously.
+    if (videoShare?.withAudio) return { allowed: false, reason: 'companion audio is active — turn off /audio first, then share audio' };
     return { allowed: true };
   }
   // screen_audio or window
   if (videoShare) return { allowed: false, reason: 'video share already active' };
-  // Cannot add companion audio while an audio-only share is already using the audio device.
-  if (audioShare && selection.withAudio) {
-    return { allowed: false, reason: 'audio-only share active — start video without audio, or stop audio first' };
-  }
   return { allowed: true };
 }
 
@@ -4239,8 +4237,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
             message: `system audio unavailable: ${audioErr instanceof Error ? audioErr.message : String(audioErr)}`,
           });
         } else {
-          // Audio-only mode failed — no video to keep, propagate error.
-          toast.error(audioErr instanceof Error ? audioErr.message : String(audioErr));
+          // Audio-only mode failed — no video to keep, propagate to caller for error display.
           throw audioErr;
         }
       }
@@ -4277,11 +4274,10 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
     console.error(LOG, 'startCustomShare failed:', err);
-    // Clean up pre-registered listener if startNativeCapture never ran
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      if (isVideoShare) {
-        lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
-      }
+    // Clean up pre-registered listener if startNativeCapture never ran.
+    // Only relevant for video shares — audio-only never calls prepareNativeCapture().
+    if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
+      lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await lkModule.stopNativeCapture();
     }
     if (isVideoShare) {

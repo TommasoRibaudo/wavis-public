@@ -2882,23 +2882,31 @@ export default function ActiveRoom() {
                           >
                             /window
                           </button>
-                          <button
-                            onClick={() => {
-                              if (isMacPlatform) return;
-                              const next = !shareAudioOn;
-                              setShareAudioOn(next);
-                              void toggleShareAudio(next);
-                            }}
-                            disabled={isMacPlatform}
-                            className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${isMacPlatform
-                              ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
-                              : shareAudioOn
-                                ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-                                : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-                              }`}
-                          >
-                            {shareAudioOn ? '/audio on' : '/audio off'}
-                          </button>
+                          {(() => {
+                            // Turning companion audio ON conflicts with a running audio-only share (same WASAPI device).
+                            const companionBlocked = !isMacPlatform && !shareAudioOn && roomState.activeAudioShare !== null;
+                            const companionDisabled = isMacPlatform || companionBlocked;
+                            return (
+                              <button
+                                onClick={async () => {
+                                  if (companionDisabled) return;
+                                  const next = !shareAudioOn;
+                                  const ok = await toggleShareAudio(next);
+                                  if (ok) setShareAudioOn(next);
+                                }}
+                                disabled={companionDisabled}
+                                title={companionBlocked ? 'audio device busy — stop your audio share first' : undefined}
+                                className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${companionDisabled
+                                  ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
+                                  : shareAudioOn
+                                    ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+                                    : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
+                                  }`}
+                              >
+                                {shareAudioOn ? '/audio on' : '/audio off'}
+                              </button>
+                            );
+                          })()}
                         </div>
                         <select
                           value={shareQualityState}
@@ -2964,7 +2972,8 @@ export default function ActiveRoom() {
             {roomState.activeVideoShare !== null && roomState.activeAudioShare === null && (
               <button
                 onClick={handleStartShare}
-                disabled={!shareEnabled || sharePickerLoading}
+                disabled={!shareEnabled || sharePickerLoading || !!roomState.activeVideoShare.withAudio}
+                title={roomState.activeVideoShare.withAudio ? 'audio device busy — turn off /audio first' : undefined}
                 className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
               >
                 /share audio
