@@ -37,8 +37,14 @@
 //! "cleaned up" later without re-validating the native Linux speech path.
 
 use nnnoiseless::DenoiseState;
+#[cfg(feature = "deepfilternet-backend")]
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "deepfilternet-backend")]
+use std::sync::mpsc;
 use std::sync::Mutex;
+#[cfg(feature = "deepfilternet-backend")]
+use std::thread;
 use thiserror::Error;
 
 use crate::audio_pipeline::FRAME_SAMPLES;
@@ -307,6 +313,11 @@ pub enum NoiseSuppressorError {
         kind: NoiseSuppressorKind,
         reason: &'static str,
     },
+    #[error("{kind:?} backend failed to initialize: {reason}")]
+    BackendInitFailed {
+        kind: NoiseSuppressorKind,
+        reason: String,
+    },
 }
 
 pub trait NoiseSuppressorBackend {
@@ -315,6 +326,12 @@ pub trait NoiseSuppressorBackend {
     fn is_suppressing(&self) -> bool;
     fn kind(&self) -> NoiseSuppressorKind;
     fn name(&self) -> &'static str;
+    fn algorithmic_latency_samples(&self) -> usize {
+        0
+    }
+    fn stream_startup_latency_samples(&self) -> usize {
+        self.algorithmic_latency_samples()
+    }
 }
 
 #[derive(Default)]
@@ -401,8 +418,235 @@ impl NoiseSuppressorBackend for RnnoiseBackend {
     }
 }
 
+#[cfg(feature = "deepfilternet-backend")]
+struct DeepFilterNetBackend {
+    request_tx: mpsc::Sender<DeepFilterNetRequest>,
+    response_rx: mpsc::Receiver<DeepFilterNetResponse>,
+    hop_size: usize,
+    output_delay_samples: usize,
+    initial_delay_discard_remaining: usize,
+    pending_input: Vec<f32>,
+    pending_output: VecDeque<f32>,
+    scratch_in: Vec<f32>,
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+enum DeepFilterNetRequest {
+    Process(Vec<f32>),
+    Reset,
+    Shutdown,
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+type DeepFilterNetResponse = Result<Vec<f32>, String>;
+
+#[cfg(feature = "deepfilternet-backend")]
+#[derive(Debug, Clone, Copy)]
+struct DeepFilterNetInit {
+    sample_rate: usize,
+    hop_size: usize,
+    fft_size: usize,
+    lookahead: usize,
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+impl DeepFilterNetInit {
+    fn output_delay_samples(self) -> Option<usize> {
+        let stft_delay = self.fft_size.checked_sub(self.hop_size)?;
+        Some(stft_delay + self.lookahead * self.hop_size)
+    }
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+impl DeepFilterNetBackend {
+    fn new() -> Result<Self, NoiseSuppressorError> {
+        Self::new_with_atten_lim_db(None)
+    }
+
+    fn new_with_atten_lim_db(atten_lim_db: Option<f32>) -> Result<Self, NoiseSuppressorError> {
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        let (init_tx, init_rx) = mpsc::channel();
+
+        thread::Builder::new()
+            .name("wavis-deepfilternet".to_string())
+            .spawn(move || deepfilternet_worker(request_rx, response_tx, init_tx, atten_lim_db))
+            .map_err(|err| NoiseSuppressorError::BackendInitFailed {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason: err.to_string(),
+            })?;
+
+        let init = init_rx
+            .recv()
+            .map_err(|err| NoiseSuppressorError::BackendInitFailed {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason: err.to_string(),
+            })?
+            .map_err(|reason| NoiseSuppressorError::BackendInitFailed {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason,
+            })?;
+
+        if init.sample_rate != 48_000 {
+            return Err(NoiseSuppressorError::BackendUnavailable {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason: "DeepFilterNet model sample rate is not 48 kHz",
+            });
+        }
+
+        if init.hop_size == 0 || init.hop_size > FRAME_SAMPLES {
+            return Err(NoiseSuppressorError::BackendUnavailable {
+                kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                reason: "DeepFilterNet model hop size is unsupported",
+            });
+        }
+
+        let output_delay_samples =
+            init.output_delay_samples()
+                .ok_or(NoiseSuppressorError::BackendUnavailable {
+                    kind: NoiseSuppressorKind::DeepFilterNetExperimental,
+                    reason: "DeepFilterNet model FFT/hop delay is unsupported",
+                })?;
+
+        Ok(Self {
+            request_tx,
+            response_rx,
+            hop_size: init.hop_size,
+            output_delay_samples,
+            initial_delay_discard_remaining: output_delay_samples,
+            pending_input: Vec::with_capacity(FRAME_SAMPLES + init.hop_size),
+            pending_output: VecDeque::with_capacity(FRAME_SAMPLES + output_delay_samples),
+            scratch_in: vec![0.0; init.hop_size],
+        })
+    }
+
+    fn process_available_hops(&mut self) {
+        while self.pending_input.len() >= self.hop_size {
+            self.scratch_in
+                .copy_from_slice(&self.pending_input[..self.hop_size]);
+            self.pending_input.drain(..self.hop_size);
+
+            let output = match self
+                .request_tx
+                .send(DeepFilterNetRequest::Process(self.scratch_in.clone()))
+            {
+                Ok(()) => match self.response_rx.recv() {
+                    Ok(Ok(output)) => output,
+                    Ok(Err(err)) => {
+                        log::error!("DeepFilterNet processing failed: {err}");
+                        self.scratch_in.clone()
+                    }
+                    Err(err) => {
+                        log::error!("DeepFilterNet worker response failed: {err}");
+                        self.scratch_in.clone()
+                    }
+                },
+                Err(err) => {
+                    log::error!("DeepFilterNet worker unavailable: {err}");
+                    self.scratch_in.clone()
+                }
+            };
+
+            self.pending_output.extend(output);
+        }
+    }
+
+    fn discard_initial_delay(&mut self) {
+        let to_discard = self
+            .initial_delay_discard_remaining
+            .min(self.pending_output.len());
+        self.pending_output.drain(..to_discard);
+        self.initial_delay_discard_remaining -= to_discard;
+    }
+
+    fn frame_aligned_startup_latency_samples(&self) -> usize {
+        if self.output_delay_samples == 0 {
+            0
+        } else {
+            self.output_delay_samples.div_ceil(FRAME_SAMPLES) * FRAME_SAMPLES
+        }
+    }
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+fn deepfilternet_worker(
+    request_rx: mpsc::Receiver<DeepFilterNetRequest>,
+    response_tx: mpsc::Sender<DeepFilterNetResponse>,
+    init_tx: mpsc::Sender<Result<DeepFilterNetInit, String>>,
+    atten_lim_db: Option<f32>,
+) {
+    let params = df::tract::DfParams::default();
+    let runtime = match atten_lim_db {
+        Some(atten_lim_db) => {
+            df::tract::RuntimeParams::default_with_ch(1).with_atten_lim(atten_lim_db)
+        }
+        None => df::tract::RuntimeParams::default_with_ch(1),
+    };
+    let mut model = match df::tract::DfTract::new(params, &runtime) {
+        Ok(model) => model,
+        Err(err) => {
+            let _ = init_tx.send(Err(err.to_string()));
+            return;
+        }
+    };
+
+    let init = DeepFilterNetInit {
+        sample_rate: model.sr,
+        hop_size: model.hop_size,
+        fft_size: model.fft_size,
+        lookahead: model.lookahead,
+    };
+    let hop_size = init.hop_size;
+    if init_tx.send(Ok(init)).is_err() {
+        return;
+    }
+
+    while let Ok(request) = request_rx.recv() {
+        match request {
+            DeepFilterNetRequest::Process(input) => {
+                let mut output = vec![0.0; hop_size];
+                let result = process_deepfilternet_hop(&mut model, hop_size, &input, &mut output)
+                    .map(|()| output)
+                    .map_err(|err| err.to_string());
+                if response_tx.send(result).is_err() {
+                    return;
+                }
+            }
+            DeepFilterNetRequest::Reset => {
+                let result = model
+                    .init()
+                    .map(|()| Vec::new())
+                    .map_err(|err| err.to_string());
+                if response_tx.send(result).is_err() {
+                    return;
+                }
+            }
+            DeepFilterNetRequest::Shutdown => return,
+        }
+    }
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+fn process_deepfilternet_hop(
+    model: &mut df::tract::DfTract,
+    hop_size: usize,
+    input: &[f32],
+    output: &mut [f32],
+) -> Result<(), String> {
+    let input =
+        ndarray::ArrayView2::from_shape((1, hop_size), input).map_err(|err| err.to_string())?;
+    let output =
+        ndarray::ArrayViewMut2::from_shape((1, hop_size), output).map_err(|err| err.to_string())?;
+    model
+        .process(input, output)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(feature = "deepfilternet-backend"))]
 struct DeepFilterNetBackend;
 
+#[cfg(not(feature = "deepfilternet-backend"))]
 impl DeepFilterNetBackend {
     fn new() -> Result<Self, NoiseSuppressorError> {
         Err(NoiseSuppressorError::BackendUnavailable {
@@ -412,6 +656,70 @@ impl DeepFilterNetBackend {
     }
 }
 
+#[cfg(feature = "deepfilternet-backend")]
+impl NoiseSuppressorBackend for DeepFilterNetBackend {
+    fn process_frame(&mut self, frame: &mut [f32]) {
+        self.pending_input.extend_from_slice(frame);
+        self.process_available_hops();
+        self.discard_initial_delay();
+
+        if self.pending_output.len() < FRAME_SAMPLES {
+            frame.fill(0.0);
+            return;
+        }
+
+        for sample in frame.iter_mut().take(FRAME_SAMPLES) {
+            *sample = self
+                .pending_output
+                .pop_front()
+                .expect("pending_output length checked above");
+        }
+    }
+
+    fn reset(&mut self) {
+        self.pending_input.clear();
+        self.pending_output.clear();
+        self.scratch_in.fill(0.0);
+        self.initial_delay_discard_remaining = self.output_delay_samples;
+        match self.request_tx.send(DeepFilterNetRequest::Reset) {
+            Ok(()) => match self.response_rx.recv() {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => log::error!("DeepFilterNet reset failed: {err}"),
+                Err(err) => log::error!("DeepFilterNet worker response failed during reset: {err}"),
+            },
+            Err(err) => log::error!("DeepFilterNet worker unavailable during reset: {err}"),
+        }
+    }
+
+    fn is_suppressing(&self) -> bool {
+        true
+    }
+
+    fn kind(&self) -> NoiseSuppressorKind {
+        NoiseSuppressorKind::DeepFilterNetExperimental
+    }
+
+    fn name(&self) -> &'static str {
+        "deepfilternet-experimental"
+    }
+
+    fn algorithmic_latency_samples(&self) -> usize {
+        self.output_delay_samples
+    }
+
+    fn stream_startup_latency_samples(&self) -> usize {
+        self.frame_aligned_startup_latency_samples()
+    }
+}
+
+#[cfg(feature = "deepfilternet-backend")]
+impl Drop for DeepFilterNetBackend {
+    fn drop(&mut self) {
+        let _ = self.request_tx.send(DeepFilterNetRequest::Shutdown);
+    }
+}
+
+#[cfg(not(feature = "deepfilternet-backend"))]
 impl NoiseSuppressorBackend for DeepFilterNetBackend {
     fn process_frame(&mut self, _frame: &mut [f32]) {}
 
@@ -547,6 +855,27 @@ impl DenoiseFilter {
 
     pub fn backend_name(&self) -> &'static str {
         self.backend.lock().unwrap().name()
+    }
+
+    pub fn algorithmic_latency_samples(&self) -> usize {
+        self.backend.lock().unwrap().algorithmic_latency_samples()
+    }
+
+    pub fn stream_startup_latency_samples(&self) -> usize {
+        self.backend.lock().unwrap().stream_startup_latency_samples()
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    pub fn try_deepfilternet_with_atten_lim_db(
+        atten_lim_db: f32,
+        enabled: bool,
+    ) -> Result<Self, NoiseSuppressorError> {
+        Ok(Self {
+            backend: Mutex::new(Box::new(DeepFilterNetBackend::new_with_atten_lim_db(
+                Some(atten_lim_db),
+            )?)),
+            enabled: AtomicBool::new(enabled),
+        })
     }
 
     #[cfg(test)]
@@ -1130,6 +1459,7 @@ mod tests {
         assert!(filter.is_custom_suppressor_active());
     }
 
+    #[cfg(not(feature = "deepfilternet-backend"))]
     #[test]
     fn deepfilternet_experimental_returns_construction_error() {
         let err = match DenoiseFilter::try_with_backend(
@@ -1146,6 +1476,136 @@ mod tests {
                 kind: NoiseSuppressorKind::DeepFilterNetExperimental,
                 reason: "DeepFilterNet model/runtime wiring is not implemented yet",
             }
+        );
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_experimental_constructs_with_feature() {
+        let filter =
+            DenoiseFilter::try_with_backend(NoiseSuppressorKind::DeepFilterNetExperimental, true)
+                .expect("DeepFilterNet should construct when the backend feature is enabled");
+
+        assert_eq!(
+            filter.backend_kind(),
+            NoiseSuppressorKind::DeepFilterNetExperimental
+        );
+        assert!(filter.is_custom_suppressor_active());
+        assert!(
+            filter.algorithmic_latency_samples() > 0,
+            "DeepFilterNet should report its STFT/lookahead latency for harness diagnostics"
+        );
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_output_is_finite_and_keeps_frame_length() {
+        let filter =
+            DenoiseFilter::try_with_backend(NoiseSuppressorKind::DeepFilterNetExperimental, true)
+                .expect("DeepFilterNet should construct when the backend feature is enabled");
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in frame.iter_mut().enumerate() {
+            let t = i as f32 / 48_000.0;
+            *sample = 0.12 * (2.0 * std::f32::consts::PI * 180.0 * t).sin()
+                + 0.03 * ((i % 17) as f32 / 17.0 - 0.5);
+        }
+
+        filter.process(&mut frame);
+
+        assert_eq!(frame.len(), FRAME_SAMPLES);
+        assert!(frame.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_delay_formula_matches_upstream_compensation() {
+        let init = DeepFilterNetInit {
+            sample_rate: 48_000,
+            hop_size: 480,
+            fft_size: 960,
+            lookahead: 2,
+        };
+
+        assert_eq!(init.output_delay_samples(), Some(1440));
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_reports_frame_aligned_stream_startup_latency() {
+        let filter =
+            DenoiseFilter::try_with_backend(NoiseSuppressorKind::DeepFilterNetExperimental, true)
+                .expect("DeepFilterNet should construct when the backend feature is enabled");
+
+        assert_eq!(filter.algorithmic_latency_samples(), 1440);
+        assert_eq!(filter.stream_startup_latency_samples(), 1920);
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_startup_emits_silence_until_full_compensated_frame_is_ready() {
+        let filter =
+            DenoiseFilter::try_with_backend(NoiseSuppressorKind::DeepFilterNetExperimental, true)
+                .expect("DeepFilterNet should construct when the backend feature is enabled");
+
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in frame.iter_mut().enumerate() {
+            let t = i as f32 / 48_000.0;
+            *sample = 0.2 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                + 0.08 * (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+        }
+
+        let mut first = frame.clone();
+        filter.process(&mut first);
+        let mut second = frame.clone();
+        filter.process(&mut second);
+        let mut third = frame;
+        filter.process(&mut third);
+
+        assert!(
+            first.iter().all(|sample| *sample == 0.0),
+            "first startup frame should be all silence"
+        );
+        assert!(
+            second.iter().all(|sample| *sample == 0.0),
+            "second startup frame should be all silence, not partial compensated audio plus zero-fill"
+        );
+        assert!(
+            third.iter().all(|sample| sample.is_finite()),
+            "first emitted compensated frame must remain finite"
+        );
+        assert!(
+            rms(&third) > 0.0001,
+            "third frame should contain a full frame of compensated output"
+        );
+    }
+
+    #[cfg(feature = "deepfilternet-backend")]
+    #[test]
+    fn deepfilternet_reset_restores_delay_compensation() {
+        let filter =
+            DenoiseFilter::try_with_backend(NoiseSuppressorKind::DeepFilterNetExperimental, true)
+                .expect("DeepFilterNet should construct when the backend feature is enabled");
+        let latency = filter.algorithmic_latency_samples();
+        assert!(latency > 0);
+
+        let mut speech = vec![0.0f32; FRAME_SAMPLES];
+        for (i, sample) in speech.iter_mut().enumerate() {
+            let t = i as f32 / 48_000.0;
+            *sample = 0.18 * (2.0 * std::f32::consts::PI * 190.0 * t).sin();
+        }
+
+        let mut first = speech.clone();
+        filter.process(&mut first);
+        filter.reset_state();
+        let mut after_reset = speech;
+        filter.process(&mut after_reset);
+
+        assert_eq!(first.len(), after_reset.len());
+        assert!(first.iter().all(|sample| sample.is_finite()));
+        assert!(after_reset.iter().all(|sample| sample.is_finite()));
+        assert!(
+            rms(&first) < 0.001 && rms(&after_reset) < 0.001,
+            "first frame after construction/reset should be delayed compensation silence"
         );
     }
 

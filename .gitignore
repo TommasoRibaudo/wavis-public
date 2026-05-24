@@ -25,6 +25,10 @@ tauri-watchall-dev.err.log
 .nvimlog
 body.json
 bug-reports/
+phase6-audio/input/*
+!phase6-audio/input/.gitkeep
+phase6-audio/output/*
+!phase6-audio/output/.gitkeep
 review-output.txt
 tasks.md
 multi-room-voice-plan.md
