@@ -96,7 +96,7 @@ import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
-import { cameraButtonLabel, shouldMountCameraButton } from './active-room-camera';
+import { cameraButtonLabel, hasBrowserCameraMediaSupport, shouldMountCameraButton } from './active-room-camera';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
 import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
@@ -1814,7 +1814,7 @@ export default function ActiveRoom() {
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
   const isWindowsPlatform = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent);
-  const supportedCapturePlatform = isWindowsPlatform || isMacPlatform;
+  const supportedCapturePlatform = isWindowsPlatform || isMacPlatform || isLinuxPlatform || hasBrowserCameraMediaSupport();
   const macShareAudioDisabledMessage =
     'System audio on macOS requires the WavisAudioTap driver — stop sharing and restart to enable audio.';
 

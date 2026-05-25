@@ -295,6 +295,8 @@ impl LiveKitConnection for RealLiveKitConnection {
         let audio_cb = Arc::clone(&self.audio_cb);
         let video_frame_cb = Arc::clone(&self.video.video_frame_cb);
         let video_track_ended_cb = Arc::clone(&self.video.video_track_ended_cb);
+        let camera_frame_cb = Arc::clone(&self.video.camera_frame_cb);
+        let camera_track_ended_cb = Arc::clone(&self.video.camera_track_ended_cb);
         let connected = Arc::clone(&self.connected);
         let closing = Arc::clone(&self.closing);
         #[cfg(feature = "real-backends")]
@@ -388,34 +390,58 @@ impl LiveKitConnection for RealLiveKitConnection {
                     }
                     livekit::RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Video(video_track),
+                        publication,
                         participant,
                         ..
                     } => {
+                        use livekit::track::TrackSource;
                         use livekit::webrtc::video_stream::native::NativeVideoStream;
 
                         let rtc_track = video_track.rtc_track();
                         let stream = NativeVideoStream::new(rtc_track);
                         let participant_id = participant.identity().to_string();
+                        let source = publication.source();
                         log::info!(
-                            "livekit_video: subscribed to video track from {participant_id}"
+                            "livekit_video: subscribed to video track from {participant_id}, source={source:?}"
                         );
+                        let (frame_cb, ended_cb) = if source == TrackSource::Camera {
+                            (
+                                Arc::clone(&camera_frame_cb),
+                                Arc::clone(&camera_track_ended_cb),
+                            )
+                        } else {
+                            (
+                                Arc::clone(&video_frame_cb),
+                                Arc::clone(&video_track_ended_cb),
+                            )
+                        };
 
                         tokio::spawn(super::livekit_video::run_video_receiver_task(
                             stream,
                             participant_id,
-                            Arc::clone(&video_frame_cb),
-                            Arc::clone(&video_track_ended_cb),
+                            frame_cb,
+                            ended_cb,
                             Arc::clone(&closing),
                         ));
                     }
                     livekit::RoomEvent::TrackUnsubscribed {
                         track: RemoteTrack::Video(_),
+                        publication,
                         participant,
                         ..
                     } => {
+                        use livekit::track::TrackSource;
+
                         let participant_id = participant.identity().to_string();
-                        log::info!("livekit_video: video track unsubscribed from {participant_id}");
-                        if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
+                        let source = publication.source();
+                        log::info!(
+                            "livekit_video: video track unsubscribed from {participant_id}, source={source:?}"
+                        );
+                        if source == TrackSource::Camera {
+                            if let Some(cb) = camera_track_ended_cb.lock().unwrap().as_ref() {
+                                cb(&participant_id);
+                            }
+                        } else if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
                             cb(&participant_id);
                         }
                     }
@@ -423,6 +449,9 @@ impl LiveKitConnection for RealLiveKitConnection {
                         let participant_id = participant.identity().to_string();
                         log::info!("livekit_video: participant disconnected: {participant_id}");
                         if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
+                            cb(&participant_id);
+                        }
+                        if let Some(cb) = camera_track_ended_cb.lock().unwrap().as_ref() {
                             cb(&participant_id);
                         }
                     }
@@ -552,6 +581,8 @@ impl LiveKitConnection for RealLiveKitConnection {
         *self.published_track.lock().unwrap() = None;
         *self.video.published_video_track.lock().unwrap() = None;
         *self.video.video_source.lock().unwrap() = None;
+        *self.video.published_camera_track.lock().unwrap() = None;
+        *self.video.camera_source.lock().unwrap() = None;
         *self.published_screen_audio_track.lock().unwrap() = None;
         *self.screen_audio_source.lock().unwrap() = None;
         #[cfg(feature = "real-backends")]
@@ -573,6 +604,14 @@ impl LiveKitConnection for RealLiveKitConnection {
 
     fn on_video_track_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
         *self.video.video_track_ended_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_camera_frame(&self, cb: Box<dyn Fn(&str, &[u8], u32, u32) + Send + 'static>) {
+        *self.video.camera_frame_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_camera_track_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.video.camera_track_ended_cb.lock().unwrap() = Some(cb);
     }
 
     // Task 4.3
@@ -981,6 +1020,134 @@ impl LiveKitConnection for RealLiveKitConnection {
         }
 
         log::info!("unpublish_video: screen share track unpublished");
+        Ok(())
+    }
+
+    fn publish_camera_video(&self, width: u32, height: u32) -> Result<(), RoomError> {
+        use livekit::options::TrackPublishOptions;
+        use livekit::webrtc::video_source::native::NativeVideoSource;
+        use livekit::webrtc::video_source::RtcVideoSource;
+        use livekit::webrtc::video_source::VideoResolution;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        if !self.connected.load(SeqCst) {
+            return Err(RoomError::NotInRoom);
+        }
+
+        if self.video.published_camera_track.lock().unwrap().is_some() {
+            log::debug!("publish_camera_video: already publishing, returning Ok");
+            return Ok(());
+        }
+
+        let room_guard = self.room.lock().unwrap();
+        let room = room_guard.as_ref().ok_or(RoomError::NotInRoom)?;
+
+        let resolution = VideoResolution { width, height };
+        let source = NativeVideoSource::new(resolution, false);
+        let rtc_source = RtcVideoSource::Native(source.clone());
+        let lk_track = livekit::track::LocalVideoTrack::create_video_track("camera", rtc_source);
+
+        let publish_opts = TrackPublishOptions {
+            source: TrackSource::Camera,
+            video_codec: livekit::options::VideoCodec::VP8,
+            video_encoding: Some(livekit::options::VideoEncoding {
+                max_bitrate: 500_000,
+                max_framerate: 15.0,
+            }),
+            simulcast: false,
+            ..Default::default()
+        };
+
+        log::info!("publish_camera_video: publishing {width}x{height} camera track");
+        self.video
+            .next_camera_timestamp_us
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+
+        tokio::task::block_in_place(|| {
+            self.rt_handle.block_on(async {
+                room.local_participant()
+                    .publish_track(
+                        livekit::track::LocalTrack::Video(lk_track.clone()),
+                        publish_opts,
+                    )
+                    .await
+                    .map_err(map_publish_error)
+            })
+        })?;
+
+        *self.video.published_camera_track.lock().unwrap() = Some(lk_track);
+        *self.video.camera_source.lock().unwrap() = Some(source);
+
+        log::info!("publish_camera_video: camera track published successfully");
+        Ok(())
+    }
+
+    fn feed_camera_frame(&self, data: &[u8], width: u32, height: u32) -> Result<(), RoomError> {
+        use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let source_guard = self.video.camera_source.lock().unwrap();
+        let source = source_guard.as_ref().ok_or_else(|| {
+            RoomError::PublishFailed(
+                "no camera source — call publish_camera_video first".to_string(),
+            )
+        })?;
+
+        let expected_len = (width as usize) * (height as usize) * 4;
+        if data.len() != expected_len {
+            return Err(RoomError::PublishFailed(format!(
+                "camera RGBA data length mismatch: expected {} bytes ({}x{}x4), got {}",
+                expected_len,
+                width,
+                height,
+                data.len()
+            )));
+        }
+
+        let i420 = rgba_to_i420(data, width, height);
+        let timestamp_us = self
+            .video
+            .next_camera_timestamp_us
+            .fetch_add(66_666, Relaxed);
+
+        let frame = VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            buffer: i420,
+            timestamp_us,
+        };
+
+        source.capture_frame(&frame);
+        Ok(())
+    }
+
+    fn unpublish_camera_video(&self) -> Result<(), RoomError> {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        *self.video.camera_source.lock().unwrap() = None;
+
+        let camera_track = self.video.published_camera_track.lock().unwrap().take();
+        if camera_track.is_none() {
+            return Ok(());
+        }
+
+        if !self.connected.load(SeqCst) {
+            return Ok(());
+        }
+
+        let room_guard = self.room.lock().unwrap();
+        if let Some(room) = room_guard.as_ref() {
+            let track_sid = camera_track.as_ref().unwrap().sid();
+
+            tokio::task::block_in_place(|| {
+                self.rt_handle.block_on(async {
+                    if let Err(e) = room.local_participant().unpublish_track(&track_sid).await {
+                        warn!("unpublish_camera_video: failed to unpublish track: {e}");
+                    }
+                })
+            });
+        }
+
+        log::info!("unpublish_camera_video: camera track unpublished");
         Ok(())
     }
 
