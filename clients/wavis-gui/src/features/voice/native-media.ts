@@ -10,6 +10,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
+import type { CameraQuality } from './camera-types';
 import { getDenoiseEnabled, inputVolumeToGain } from '@features/settings/settings-store';
 
 const LOG = '[wavis:native-media]';
@@ -28,12 +29,36 @@ interface ScreenShareEndedPayload {
   identity: string;
 }
 
+interface CameraAvailablePayload {
+  identity: string;
+}
+
+interface CameraEndedPayload {
+  identity: string;
+}
+
+interface PolledCameraFrame {
+  identity: string;
+  frame: string;
+  width: number;
+  height: number;
+  seq: number;
+}
+
 /* ─── Active Share Tracking ─────────────────────────────────────── */
 
 interface ActiveShareEntry {
   stream: MediaStream | null;
   canvas: HTMLCanvasElement | null;
   startedAtMs: number;
+}
+
+interface ActiveCameraEntry {
+  stream: MediaStream;
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  pollInterval: ReturnType<typeof setInterval> | null;
+  lastSeq: number | null;
 }
 
 export type ActiveShareInfo = {
@@ -101,8 +126,13 @@ export class NativeMediaModule {
   private unlistenFrame: UnlistenFn | null = null;
   private unlistenAvailable: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
+  private unlistenCameraAvailable: UnlistenFn | null = null;
+  private unlistenCameraEnded: UnlistenFn | null = null;
   private disposed = false;
   private activeShares = new Map<string, ActiveShareEntry>();
+  private activeCameras = new Map<string, ActiveCameraEntry>();
+  private localCamera: ActiveCameraEntry | null = null;
+  private localCameraTrack: MediaStreamTrack | null = null;
 
   constructor(callbacks: MediaCallbacks) {
     this.callbacks = callbacks;
@@ -196,7 +226,20 @@ export class NativeMediaModule {
       this.handleScreenShareEnded(event.payload.identity);
     });
 
-    // 5. Tell Rust to connect
+    // 5. Subscribe to remote camera availability events. The Rust native
+    // LiveKit path decodes camera frames, and this module paints them into a
+    // canvas-backed MediaStreamTrack so the existing VideoTile UI can render.
+    this.unlistenCameraAvailable = await listen<CameraAvailablePayload>('camera_available', (event) => {
+      if (this.disposed) return;
+      this.handleCameraAvailable(event.payload.identity);
+    });
+
+    this.unlistenCameraEnded = await listen<CameraEndedPayload>('camera_ended', (event) => {
+      if (this.disposed) return;
+      this.handleCameraEnded(event.payload.identity);
+    });
+
+    // 6. Tell Rust to connect
     try {
       const denoiseEnabled = await getDenoiseEnabled();
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
@@ -217,11 +260,17 @@ export class NativeMediaModule {
     if (this.unlistenFrame) { this.unlistenFrame(); this.unlistenFrame = null; }
     if (this.unlistenAvailable) { this.unlistenAvailable(); this.unlistenAvailable = null; }
     if (this.unlistenEnded) { this.unlistenEnded(); this.unlistenEnded = null; }
+    if (this.unlistenCameraAvailable) { this.unlistenCameraAvailable(); this.unlistenCameraAvailable = null; }
+    if (this.unlistenCameraEnded) { this.unlistenCameraEnded(); this.unlistenCameraEnded = null; }
 
     // Clean up all active shares
     for (const identity of [...this.activeShares.keys()]) {
       this.disposeShareEntry(identity);
     }
+    for (const identity of [...this.activeCameras.keys()]) {
+      this.disposeCameraEntry(identity);
+    }
+    this.disposeLocalCameraEntry();
 
     invoke('media_disconnect').catch((err) => {
       console.warn(LOG, 'disconnect error:', err);
@@ -341,6 +390,75 @@ export class NativeMediaModule {
     await invoke('set_input_gain', { gain: inputVolumeToGain(volume) });
   }
 
+  async publishCamera(opts: {
+    deviceId: string | null;
+    quality: CameraQuality;
+  }): Promise<{ trackId: string }> {
+    const entry = this.createCameraCanvasEntry('local');
+    if (!entry) {
+      throw { kind: 'device_unavailable' };
+    }
+
+    const track = entry.stream.getVideoTracks()[0] ?? null;
+    if (!track) {
+      this.disposeCameraCanvasEntry(entry);
+      throw { kind: 'device_unavailable' };
+    }
+
+    try {
+      await invoke('media_camera_start', {
+        deviceId: opts.deviceId,
+        width: opts.quality.width,
+        height: opts.quality.height,
+        fps: opts.quality.maxFps,
+      });
+    } catch (err) {
+      this.disposeCameraCanvasEntry(entry);
+      throw this.classifyNativeCameraError(err);
+    }
+
+    this.localCamera = entry;
+    this.localCameraTrack = track;
+    entry.pollInterval = setInterval(() => {
+      void this.pollLocalCameraFrame();
+    }, 66);
+    void this.pollLocalCameraFrame();
+    return { trackId: 'native-linux-camera' };
+  }
+
+  async unpublishCamera(): Promise<void> {
+    await invoke('media_camera_stop').catch(() => {});
+    this.disposeLocalCameraEntry();
+  }
+
+  getLocalCameraTrack(): MediaStreamTrack | null {
+    return this.localCameraTrack;
+  }
+
+  applyRemoteCameraVisibility(_visibleParticipantIds: ReadonlySet<string>): void {
+    // Native Rust LiveKit subscribes to remote tracks itself. Visibility is
+    // enforced in voice-room by deciding which canvas-backed tracks are exposed.
+  }
+
+  async setCameraQuality(_quality: CameraQuality): Promise<void> {
+    // The ffmpeg/v4l2 native path is fixed at publish time for now.
+  }
+
+  async replaceCameraDevice(deviceId: string | null): Promise<{ trackId: string }> {
+    await this.unpublishCamera();
+    return this.publishCamera({
+      deviceId,
+      quality: {
+        tier: 'low',
+        width: 320,
+        height: 240,
+        maxFps: 15,
+        maxBitrate: 120_000,
+        codec: 'vp8',
+      },
+    });
+  }
+
   /** Return active remote screen shares. */
   getActiveScreenShares(): ActiveShareInfo[] {
     const result: ActiveShareInfo[] = [];
@@ -405,5 +523,152 @@ export class NativeMediaModule {
     }
 
     this.activeShares.delete(identity);
+  }
+
+  private handleCameraAvailable(identity: string): void {
+    if (this.activeCameras.has(identity)) return;
+    const entry = this.createCameraCanvasEntry(identity);
+    const track = entry?.stream.getVideoTracks()[0] ?? null;
+    if (!entry || !track) {
+      console.warn(LOG, `remote camera unavailable: canvas captureStream unsupported for ${identity}`);
+      return;
+    }
+    entry.pollInterval = setInterval(() => {
+      void this.pollCameraFrame(identity);
+    }, 66);
+    this.activeCameras.set(identity, entry);
+
+    console.log(LOG, `camera available (native viewer path): ${identity}`);
+    this.callbacks.onRemoteCameraPublished?.(identity);
+    this.callbacks.onRemoteCameraReady?.(identity, track);
+    void this.pollCameraFrame(identity);
+  }
+
+  private handleCameraEnded(identity: string): void {
+    console.log(LOG, `camera ended: ${identity}`);
+    this.disposeCameraEntry(identity);
+    this.callbacks.onRemoteCameraUnpublished?.(identity);
+  }
+
+  private async pollCameraFrame(identity: string): Promise<void> {
+    if (this.disposed) return;
+    const entry = this.activeCameras.get(identity);
+    if (!entry) return;
+
+    let payload: PolledCameraFrame | null = null;
+    try {
+      payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
+        identity,
+        lastSeq: entry.lastSeq,
+      });
+    } catch (err) {
+      console.warn(LOG, `camera frame poll failed for ${identity}:`, err);
+      return;
+    }
+    if (!payload || payload.seq === entry.lastSeq) return;
+    this.paintCameraPayload(entry, payload);
+  }
+
+  private async pollLocalCameraFrame(): Promise<void> {
+    if (this.disposed || !this.localCamera) return;
+    const entry = this.localCamera;
+    let payload: PolledCameraFrame | null = null;
+    try {
+      payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
+        lastSeq: entry.lastSeq,
+      });
+    } catch (err) {
+      console.warn(LOG, 'local camera frame poll failed:', err);
+      return;
+    }
+    if (!payload || payload.seq === entry.lastSeq) return;
+    this.paintCameraPayload(entry, payload);
+  }
+
+  private createCameraCanvasEntry(_identity: string): ActiveCameraEntry | null {
+    if (typeof document === 'undefined') return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 240;
+    canvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    const context = canvas.getContext('2d');
+    const stream = typeof canvas.captureStream === 'function'
+      ? canvas.captureStream(15)
+      : null;
+    if (!context || !stream || stream.getVideoTracks().length === 0) {
+      return null;
+    }
+    document.body.appendChild(canvas);
+    context.fillStyle = '#11111f';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    return {
+      stream,
+      canvas,
+      context,
+      pollInterval: null,
+      lastSeq: null,
+    };
+  }
+
+  private paintCameraPayload(entry: ActiveCameraEntry, payload: PolledCameraFrame): void {
+    entry.lastSeq = payload.seq;
+    if (entry.canvas.width !== payload.width || entry.canvas.height !== payload.height) {
+      entry.canvas.width = payload.width;
+      entry.canvas.height = payload.height;
+    }
+
+    const image = new Image();
+    image.onload = () => {
+      if (entry.lastSeq !== payload.seq) return;
+      entry.context.drawImage(image, 0, 0, payload.width, payload.height);
+    };
+    image.src = `data:image/jpeg;base64,${payload.frame}`;
+  }
+
+  private disposeCameraEntry(identity: string): void {
+    const entry = this.activeCameras.get(identity);
+    if (!entry) return;
+
+    if (entry.pollInterval) clearInterval(entry.pollInterval);
+    for (const track of entry.stream.getTracks()) {
+      track.stop();
+    }
+    if (entry.canvas.parentNode) {
+      entry.canvas.parentNode.removeChild(entry.canvas);
+    }
+    this.activeCameras.delete(identity);
+  }
+
+  private disposeLocalCameraEntry(): void {
+    if (this.localCamera) {
+      this.disposeCameraCanvasEntry(this.localCamera);
+    }
+    this.localCamera = null;
+    this.localCameraTrack = null;
+  }
+
+  private disposeCameraCanvasEntry(entry: ActiveCameraEntry): void {
+    if (entry.pollInterval) clearInterval(entry.pollInterval);
+    for (const track of entry.stream.getTracks()) {
+      track.stop();
+    }
+    if (entry.canvas.parentNode) {
+      entry.canvas.parentNode.removeChild(entry.canvas);
+    }
+  }
+
+  private classifyNativeCameraError(err: unknown): { kind: string } {
+    const message = String(err ?? '').toLowerCase();
+    if (message.includes('no camera') || message.includes('/dev/video')) {
+      return { kind: 'no_camera_configured' };
+    }
+    if (message.includes('permission') || message.includes('denied')) {
+      return { kind: 'permission_denied' };
+    }
+    if (message.includes('busy') || message.includes('in use')) {
+      return { kind: 'device_in_use' };
+    }
+    return { kind: 'device_unavailable' };
   }
 }

@@ -1154,8 +1154,9 @@ function startAutoSwitchPoll(): () => void {
 /**
  * Platform detection: use the native Rust media path when the webview
  * lacks usable WebRTC support. Do not force Linux into the native path:
- * some Linux/Tauri environments expose working WebRTC + getDisplayMedia,
- * and that path is more stable than the Rust PipeWire backend on Hyprland.
+ * some Linux/Tauri environments expose working WebRTC + getUserMedia even
+ * when getDisplayMedia is absent. Camera publish/receive only needs those
+ * browser media APIs; Linux screen sharing still has the native portal path.
  */
 function shouldUseNativeMedia(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return true;
@@ -1171,12 +1172,8 @@ function shouldUseNativeMedia(): boolean {
     'mediaDevices' in navigator &&
     navigator.mediaDevices !== undefined &&
     typeof navigator.mediaDevices.getUserMedia === 'function';
-  const hasGetDisplayMedia =
-    'mediaDevices' in navigator &&
-    navigator.mediaDevices !== undefined &&
-    typeof navigator.mediaDevices.getDisplayMedia === 'function';
 
-  return !(hasRtc && hasGetUserMedia && hasGetDisplayMedia);
+  return !(hasRtc && hasGetUserMedia);
 }
 
 function isWindowsPlatform(): boolean {
@@ -1627,8 +1624,8 @@ function notify(): void {
   }
 }
 
-function getCameraMediaModule(): LiveKitModule | null {
-  return lkModule instanceof LiveKitModule ? lkModule : null;
+function getCameraMediaModule(): MediaModule | null {
+  return lkModule;
 }
 
 function resetCameraQualityController(): void {
@@ -2117,7 +2114,7 @@ export async function applyCameraQualityForShareState(): Promise<void> {
 
 async function publishLocalCamera(): Promise<void> {
   const cameraModule = getCameraMediaModule();
-  if (!cameraModule || !(isWindowsPlatform() || isMacPlatform())) {
+  if (!cameraModule) {
     state.cameraIntent = false;
     state.cameraPublication = 'idle';
     rebuildVideoTiles();
@@ -2125,11 +2122,15 @@ async function publishLocalCamera(): Promise<void> {
     return;
   }
 
-  const selectedDeviceId = await getVideoInputDevice();
+  const selectedDeviceId = isLinuxPlatform() && cameraModule instanceof NativeMediaModule
+    ? null
+    : await getVideoInputDevice();
   state.cameraSelectedDeviceId = selectedDeviceId;
 
   try {
-    const { effectiveDeviceId, warning } = await resolveCameraDeviceSelection(selectedDeviceId);
+    const { effectiveDeviceId, warning } = isLinuxPlatform() && cameraModule instanceof NativeMediaModule
+      ? { effectiveDeviceId: null, warning: null }
+      : await resolveCameraDeviceSelection(selectedDeviceId);
     if (warning) {
       surfaceCameraWarning(warning);
     }
@@ -2188,10 +2189,11 @@ async function restorePublishedCameraAfterReconnect(): Promise<void> {
 }
 
 export async function toggleCameraIntent(): Promise<void> {
-  if (!(isWindowsPlatform() || isMacPlatform())) {
-    return;
-  }
-  if (!lkModule || state.mediaState === 'disconnected' || state.mediaState === 'failed') {
+  if (
+    !getCameraMediaModule()
+    || state.mediaState === 'disconnected'
+    || state.mediaState === 'failed'
+  ) {
     return;
   }
 
@@ -2200,7 +2202,11 @@ export async function toggleCameraIntent(): Promise<void> {
   cameraToggleChain = cameraToggleChain.then(async () => {
     // Re-check lkModule and mediaState inside the chain — state may have
     // changed while we were waiting for the previous toggle to finish.
-    if (!lkModule || state.mediaState === 'disconnected' || state.mediaState === 'failed') {
+    if (
+      !getCameraMediaModule()
+      || state.mediaState === 'disconnected'
+      || state.mediaState === 'failed'
+    ) {
       return;
     }
 

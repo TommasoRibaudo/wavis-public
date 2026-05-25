@@ -26,10 +26,16 @@ pub(super) struct VideoState {
     pub(super) published_video_track: Arc<Mutex<Option<LocalVideoTrack>>>,
     /// Video source handle for feeding captured RGBA frames into the LiveKit SDK.
     pub(super) video_source: Arc<Mutex<Option<NativeVideoSource>>>,
+    /// Published local camera track handle.
+    pub(super) published_camera_track: Arc<Mutex<Option<LocalVideoTrack>>>,
+    /// Video source handle for feeding local camera RGBA frames.
+    pub(super) camera_source: Arc<Mutex<Option<NativeVideoSource>>>,
     /// Monotonic timestamp for locally fed video frames. The Rust LiveKit path
     /// must advance timestamps itself; constant timestamps can stall outbound
     /// screen-share delivery for repeated frames.
     pub(super) next_timestamp_us: Arc<AtomicI64>,
+    /// Monotonic timestamp for locally fed camera frames.
+    pub(super) next_camera_timestamp_us: Arc<AtomicI64>,
     /// Callback for receiving decoded video frames from remote screen shares.
     /// Receives (identity, rgba_data, width, height).
     #[allow(clippy::type_complexity)]
@@ -39,6 +45,15 @@ pub(super) struct VideoState {
     /// Receives (identity).
     #[allow(clippy::type_complexity)]
     pub(super) video_track_ended_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
+    /// Callback for receiving decoded video frames from remote camera tracks.
+    /// Receives (identity, rgba_data, width, height).
+    #[allow(clippy::type_complexity)]
+    pub(super) camera_frame_cb:
+        Arc<Mutex<Option<Box<dyn Fn(&str, &[u8], u32, u32) + Send + 'static>>>>,
+    /// Callback for when a remote camera video track ends.
+    /// Receives (identity).
+    #[allow(clippy::type_complexity)]
+    pub(super) camera_track_ended_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
 }
 
 impl VideoState {
@@ -46,9 +61,14 @@ impl VideoState {
         Self {
             published_video_track: Arc::new(Mutex::new(None)),
             video_source: Arc::new(Mutex::new(None)),
+            published_camera_track: Arc::new(Mutex::new(None)),
+            camera_source: Arc::new(Mutex::new(None)),
             next_timestamp_us: Arc::new(AtomicI64::new(1)),
+            next_camera_timestamp_us: Arc::new(AtomicI64::new(1)),
             video_frame_cb: Arc::new(Mutex::new(None)),
             video_track_ended_cb: Arc::new(Mutex::new(None)),
+            camera_frame_cb: Arc::new(Mutex::new(None)),
+            camera_track_ended_cb: Arc::new(Mutex::new(None)),
         }
     }
 }

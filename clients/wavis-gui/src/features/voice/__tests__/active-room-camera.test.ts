@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { cameraButtonLabel, shouldMountCameraButton } from '../active-room-camera';
+import { cameraButtonLabel, hasBrowserCameraMediaSupport, shouldMountCameraButton } from '../active-room-camera';
 
 /* ─── Button ordering logic ─────────────────────────────────────── */
 
@@ -32,6 +32,35 @@ describe('Feature: video-feed — button stays mounted during media reconnect (R
 
   it('shouldMountCameraButton is false when voice room is not connected', () => {
     expect(shouldMountCameraButton(false, true)).toBe(false);
+  });
+});
+
+describe('Feature: video-feed — Linux browser media support', () => {
+  it('detects RTCPeerConnection + getUserMedia as camera-capable browser media', () => {
+    const originalWindow = globalThis.window;
+    const originalNavigator = globalThis.navigator;
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { RTCPeerConnection: function RTCPeerConnection() {} },
+    });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { mediaDevices: { getUserMedia: async () => ({}) } },
+    });
+
+    try {
+      expect(hasBrowserCameraMediaSupport()).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: originalWindow,
+      });
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
   });
 });
 

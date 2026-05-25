@@ -489,11 +489,15 @@ fn main() {
             media::media_detach_screen_share_audio,
             media::media_set_master_volume,
             media::media_is_connected,
+            media::media_camera_start,
+            media::media_camera_stop,
             media::screen_share_start,
             media::screen_share_start_source,
             media::screen_share_stop,
             media::screen_share_poll_frame,
             media::media_poll_screen_share_frame,
+            media::media_poll_camera_frame,
+            media::media_poll_local_camera_frame,
             media::media_get_screen_share_stream_url,
             media::media_open_native_screen_share_viewer,
             media::media_close_native_screen_share_viewer,
@@ -809,8 +813,11 @@ async fn store_token(
     let key_for_keyring = key.clone();
     let value_for_keyring = value.clone();
     run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
-        entry.set_password(&value_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        entry
+            .set_password(&value_for_keyring)
+            .map_err(|e| e.to_string())?;
         Ok(())
     })
     .await?;
@@ -833,7 +840,8 @@ async fn get_token(
     // Cache miss — read from keychain once and populate the cache.
     let key_for_keyring = key.clone();
     let result = run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(val) => Ok(Some(val)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -848,14 +856,12 @@ async fn get_token(
 }
 
 #[tauri::command]
-async fn delete_token(
-    key: String,
-    cache: tauri::State<'_, KeyringCache>,
-) -> Result<(), String> {
+async fn delete_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<(), String> {
     cache.0.lock().unwrap().remove(&key);
     let key_for_keyring = key.clone();
     run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent
