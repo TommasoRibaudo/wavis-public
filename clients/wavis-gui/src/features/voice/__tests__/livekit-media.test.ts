@@ -204,6 +204,11 @@ vi.mock('livekit-client', () => ({
     Poor: 'poor',
     Lost: 'lost',
   },
+  VideoQuality: {
+    LOW: 0,
+    MEDIUM: 1,
+    HIGH: 2,
+  },
 }));
 
 // ─── Mock Web Audio API ────────────────────────────────────────────
