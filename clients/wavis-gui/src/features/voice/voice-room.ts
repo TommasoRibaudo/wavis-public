@@ -4161,6 +4161,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   notify();
 
   let videoStarted = false;
+  let nativeAudioStarted = false;
   const shareSessionId = isVideoShare ? makeShareSessionId() : null;
 
   try {
@@ -4224,6 +4225,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);
         const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+        nativeAudioStarted = true;
         emitAudioCaptureSelection(audioStartResult);
         maybeNoticeMacCaptureFallback(audioStartResult);
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio_share_start result:', audioStartResult);
@@ -4244,11 +4246,27 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
             if (DEBUG_WASAPI) console.log(LOG, '[wasapi] bridge fully active');
           } catch (bridgeErr) {
             console.warn(LOG, '[wasapi] WASAPI audio bridge failed:', bridgeErr);
+            throw bridgeErr;
           }
         } else {
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] skipping bridge — not a LiveKitModule or lkModule null');
         }
       } catch (audioErr) {
+        if (nativeAudioStarted) {
+          if (lkModule && lkModule instanceof LiveKitModule) {
+            try {
+              await lkModule.stopWasapiAudioBridge();
+            } catch (bridgeStopErr) {
+              console.warn(LOG, 'best-effort stopWasapiAudioBridge after audio start failure failed:', bridgeStopErr);
+            }
+          }
+          try {
+            await invoke('audio_share_stop');
+          } catch (audioStopErr) {
+            console.warn(LOG, 'best-effort audio_share_stop after audio start failure failed:', audioStopErr);
+          }
+          nativeAudioStarted = false;
+        }
         if (videoStarted) {
           // Audio failed but video is already running. On Windows (JS SDK path),
           // system audio sharing may not be available yet — downgrade to video-only
@@ -4303,6 +4321,20 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
     console.error(LOG, 'startCustomShare failed:', err);
+    if (nativeAudioStarted) {
+      if (lkModule && lkModule instanceof LiveKitModule) {
+        try {
+          await lkModule.stopWasapiAudioBridge();
+        } catch (bridgeStopErr) {
+          console.warn(LOG, 'best-effort stopWasapiAudioBridge during startCustomShare rollback failed:', bridgeStopErr);
+        }
+      }
+      try {
+        await invoke('audio_share_stop');
+      } catch (audioStopErr) {
+        console.warn(LOG, 'best-effort audio_share_stop during startCustomShare rollback failed:', audioStopErr);
+      }
+    }
     // Clean up pre-registered listener if startNativeCapture never ran.
     // Only relevant for video shares — audio-only never calls prepareNativeCapture().
     if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {

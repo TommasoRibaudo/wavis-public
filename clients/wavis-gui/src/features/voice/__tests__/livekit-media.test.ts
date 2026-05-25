@@ -1038,6 +1038,65 @@ describe('camera publish/unpublish', () => {
     });
   });
 
+  it('setCameraQuality preserves required sender parameter fields when updating encodings', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-merged-params');
+    const existingParameters: RTCRtpSendParameters = {
+      codecs: [{ mimeType: 'video/VP8' }] as unknown as RTCRtpCodecParameters[],
+      headerExtensions: [{ uri: 'urn:ietf:params:rtp-hdrext:sdes:mid' }] as unknown as RTCRtpHeaderExtensionParameters[],
+      rtcp: { cname: 'camera-cname' },
+      transactionId: 'camera-params-1',
+      encodings: [],
+    };
+    const sender = {
+      getParameters: vi.fn(() => ({ ...existingParameters })),
+      setParameters: vi.fn(async () => {}),
+    };
+    const publication = {
+      trackSid: 'camera-quality-merged',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-quality-merged',
+        mediaStreamTrack: mediaTrack,
+        sender,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-quality-merged', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-merged',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    await mod.setCameraQuality(CAMERA_QUALITY_HIGH);
+
+    expect(sender.getParameters).toHaveBeenCalled();
+    expect(sender.setParameters).toHaveBeenCalledWith({
+      codecs: existingParameters.codecs,
+      headerExtensions: existingParameters.headerExtensions,
+      rtcp: existingParameters.rtcp,
+      transactionId: existingParameters.transactionId,
+      encodings: [{
+        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+      }],
+    });
+  });
+
   // Bug 6 regression: cheap webcams that can't satisfy 1280x720 throw
   // OverconstrainedError on applyConstraints. The module must transparently
   // retry with fps-only so the bitrate cap still applies and the upstream

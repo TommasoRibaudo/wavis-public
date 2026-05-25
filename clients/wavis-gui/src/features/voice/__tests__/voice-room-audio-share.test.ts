@@ -28,6 +28,7 @@ const _typeCheck: AssertNoWarning = true; // eslint-disable-line @typescript-esl
 /* ─── Mock State ────────────────────────────────────────────────── */
 
 let lkConstructorCalls: Array<Record<string, unknown>>;
+let lastLkModule: Record<string, unknown> | null;
 let sentMessages: Array<Record<string, unknown>>;
 let messageHandler: ((msg: unknown) => void) | null;
 
@@ -74,6 +75,7 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     startNativeCapture: vi.fn(async () => {}),
     stopNativeCapture: vi.fn(async () => {}),
     startWasapiAudioBridge: vi.fn(async () => {}),
+    stopWasapiAudioBridge: vi.fn(async () => {}),
     restartScreenShareWithAudio: vi.fn(async () => true),
   };
   return mod;
@@ -84,6 +86,7 @@ vi.mock('../livekit-media', () => ({
     const mod = createMockLkModule(callbacks);
     lkConstructorCalls.push(callbacks);
     Object.assign(this, mod);
+    lastLkModule = this;
     return this;
   }),
 }));
@@ -225,6 +228,7 @@ const tick = () => new Promise<void>(r => setTimeout(r, 0));
 
 function resetAll() {
   lkConstructorCalls = [];
+  lastLkModule = null;
   sentMessages = [];
   messageHandler = null;
   invokeCalls = [];
@@ -506,6 +510,41 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
 
     await expect(startCustomShare(selection)).rejects.toThrow(errorMsg);
     expect(mockToastError).toHaveBeenCalledWith(errorMsg);
+  });
+
+  it('stops native audio capture if the WASAPI bridge fails during audio-only start', async () => {
+    resetAll();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: {
+        getUserMedia: vi.fn(),
+        getDisplayMedia: vi.fn(),
+      },
+    });
+    await driveToActive();
+
+    expect(lastLkModule).not.toBeNull();
+    (lastLkModule!.startWasapiAudioBridge as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('bridge boot failed'),
+    );
+
+    const selection: ShareSelection = {
+      mode: 'audio_only',
+      sourceId: 'pid:123',
+      sourceName: 'Edge',
+      withAudio: false,
+    };
+
+    await expect(startCustomShare(selection)).rejects.toThrow('bridge boot failed');
+
+    expect(invokeCalls).toContainEqual({
+      command: 'audio_share_stop',
+      args: undefined,
+    });
+    expect(lastLkModule!.stopWasapiAudioBridge).toHaveBeenCalled();
+    expect(getState().activeAudioShare).toBeNull();
   });
 });
 

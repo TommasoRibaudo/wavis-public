@@ -4593,7 +4593,12 @@ export class LiveKitModule {
 
     const sender = (localTrack as { sender?: RTCRtpSender | null } | null)?.sender ?? null;
     if (sender) {
-      await sender.setParameters(buildCameraSenderParameters(quality));
+      const nextParameters =
+        typeof sender.getParameters === 'function'
+          ? sender.getParameters()
+          : {} as RTCRtpSendParameters;
+      nextParameters.encodings = buildCameraSenderParameters(quality).encodings;
+      await sender.setParameters(nextParameters);
     }
   }
 
