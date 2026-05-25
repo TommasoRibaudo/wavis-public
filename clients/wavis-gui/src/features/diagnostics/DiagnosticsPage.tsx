@@ -41,6 +41,12 @@ import {
   type DiagnosticsBaseline,
   type WarningEntry,
 } from './diagnostics';
+import {
+  DEFAULT_SCREEN_SHARE_CODEC,
+  getScreenShareCodec,
+  setScreenShareCodec,
+  type ScreenShareCodecOverride,
+} from '@features/settings/settings-store';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
 import {
   WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL,
@@ -102,6 +108,8 @@ const WATCH_ALL_TEST_PRESETS = [
   { label: 'ultrawide', width: 2520, height: 1080, color: '#a78bfa' },
   { label: 'mobile', width: 608, height: 1080, color: '#f472b6' },
 ] as const;
+
+const SCREEN_SHARE_CODEC_OPTIONS: ScreenShareCodecOverride[] = ['auto', 'vp9', 'vp8', 'av1'];
 
 function waitForWatchAllTestReady(sessionId: string): Promise<void> {
   return new Promise((resolve) => {
@@ -286,6 +294,7 @@ export default function DiagnosticsPage() {
   const [activeWarnings, setActiveWarnings] = useState<WarningEntry[]>([]);
   const [history, setHistory] = useState<DiagnosticsSnapshot[]>([]);
   const [openCharts, setOpenCharts] = useState<Set<string>>(new Set());
+  const [screenShareCodec, setScreenShareCodecState] = useState<ScreenShareCodecOverride>(DEFAULT_SCREEN_SHARE_CODEC);
   const [watchAllTestTiles, setWatchAllTestTiles] = useState<WatchAllTestTile[]>([]);
   const [copy, copied] = useCopyToClipboardFeedback({
     feedbackMs: 1500,
@@ -442,6 +451,12 @@ export default function DiagnosticsPage() {
         console.error('[wavis:diagnostics] init failed:', err);
       });
 
+    getScreenShareCodec()
+      .then((codec) => {
+        if (mounted) setScreenShareCodecState(codec);
+      })
+      .catch(() => {});
+
     return () => {
       mounted = false;
       destroyDiagnostics();
@@ -509,6 +524,11 @@ export default function DiagnosticsPage() {
 
   const handleCopySnapshot = () => {
     void copy(exportSnapshot(snap));
+  };
+
+  const handleScreenShareCodecChange = (codec: ScreenShareCodecOverride) => {
+    setScreenShareCodecState(codec);
+    void setScreenShareCodec(codec);
   };
 
   /* ── Render ──────────────────────────────────────────────────── */
@@ -703,6 +723,29 @@ export default function DiagnosticsPage() {
               : `Started ${snap.shareStartedAt}`}
           </div>
         )}
+      </Section>
+
+      <Section>
+        <SectionHeader>Screen Share Override</SectionHeader>
+        <MetricRow label="Codec" value={screenShareCodec.toUpperCase()} />
+        <div className="grid grid-cols-4 gap-1 mt-1">
+          {SCREEN_SHARE_CODEC_OPTIONS.map((codec) => (
+            <button
+              key={codec}
+              onClick={() => { handleScreenShareCodecChange(codec); }}
+              className={`px-2 py-1 border text-[0.65rem] transition-colors ${
+                screenShareCodec === codec
+                  ? 'border-wavis-accent text-wavis-accent'
+                  : 'border-wavis-text-secondary/40 text-wavis-text-secondary hover:border-wavis-text-secondary hover:text-wavis-text'
+              }`}
+            >
+              {codec.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <div className="text-[0.6rem] text-wavis-text-secondary/60 mt-1">
+          Auto uses the W4 shootout winner. Override only for testing.
+        </div>
       </Section>
 
       {/* Screen Share (Received) — viewer perspective, only shown when watching a share */}

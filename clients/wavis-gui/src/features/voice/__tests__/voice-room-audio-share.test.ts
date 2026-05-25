@@ -73,6 +73,8 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     prepareNativeCapture: vi.fn(),
     startNativeCapture: vi.fn(async () => {}),
     stopNativeCapture: vi.fn(async () => {}),
+    startWasapiAudioBridge: vi.fn(async () => {}),
+    restartScreenShareWithAudio: vi.fn(async () => true),
   };
   return mod;
 }
@@ -213,6 +215,7 @@ import {
   getState,
   startCustomShare,
   startPortalShare,
+  toggleShareAudio,
 } from '../voice-room';
 import type { ShareSelection } from '@features/screen-share/share-types';
 
@@ -503,5 +506,41 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
 
     await expect(startCustomShare(selection)).rejects.toThrow(errorMsg);
     expect(mockToastError).toHaveBeenCalledWith(errorMsg);
+  });
+});
+
+describe('Windows companion audio toggle state', () => {
+  beforeEach(async () => {
+    resetAll();
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+    await driveToActive();
+  });
+
+  afterEach(() => {
+    try { leaveRoom(); } catch { /* ignore */ }
+    vi.unstubAllGlobals();
+  });
+
+  it('clears the video share audio flag after turning companion audio off', async () => {
+    await startCustomShare({
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      withAudio: true,
+    });
+
+    expect(getState().activeVideoShare).toMatchObject({
+      withAudio: true,
+      audioSourceId: 'default-monitor',
+    });
+
+    await expect(toggleShareAudio(false)).resolves.toBe(true);
+
+    expect(getState().activeVideoShare).toMatchObject({
+      mode: 'screen_audio',
+      sourceName: 'Display 1',
+      withAudio: false,
+      audioSourceId: null,
+    });
   });
 });

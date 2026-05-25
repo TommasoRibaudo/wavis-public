@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { filterSourcesByMode } from '../SharePicker';
+import { defaultWithAudioForMode, filterSourcesByMode, pickInitialMode } from '../SharePicker';
 import type {
   ShareMode,
   ShareSource,
@@ -94,6 +94,62 @@ describe('Property 3: Mode-based source filtering', () => {
 /* ═══ Property 4: Share button requires valid selection ══════════════ */
 // Feature: custom-share-picker, Property 4: Share button requires valid selection
 // **Validates: Requirements 2.6**
+
+describe('SharePicker initial mode selection', () => {
+  it('prefers audio_only when video tabs are blocked but audio_only is available', () => {
+    const sources: ShareSource[] = [
+      { id: 'screen-1', name: 'Display 1', source_type: 'screen', thumbnail: null, app_name: null },
+      { id: 'audio-1', name: 'System Audio', source_type: 'system_audio', thumbnail: null, app_name: null },
+    ];
+
+    expect(
+      pickInitialMode(sources, { videoOccupied: true, audioOccupied: false }),
+    ).toBe('audio_only');
+  });
+
+  it('disables companion audio defaults when the audio slot is already occupied', () => {
+    expect(
+      defaultWithAudioForMode('screen_audio', { videoOccupied: false, audioOccupied: true }),
+    ).toBe(false);
+    expect(
+      defaultWithAudioForMode('window', { videoOccupied: false, audioOccupied: true }),
+    ).toBe(false);
+    expect(
+      defaultWithAudioForMode('audio_only', { videoOccupied: false, audioOccupied: true }),
+    ).toBe(false);
+  });
+
+  it('keeps existing defaults when the audio slot is free', () => {
+    expect(
+      defaultWithAudioForMode('screen_audio', { videoOccupied: false, audioOccupied: false }),
+    ).toBe(true);
+    expect(
+      defaultWithAudioForMode('window', { videoOccupied: false, audioOccupied: false }),
+    ).toBe(false);
+    expect(
+      defaultWithAudioForMode('audio_only', { videoOccupied: false, audioOccupied: false }),
+    ).toBe(false);
+  });
+
+  it('never returns a blocked mode when an unblocked sourced mode exists', () => {
+    fc.assert(
+      fc.property(fc.array(arbShareSource, { minLength: 1, maxLength: 20 }), fc.boolean(), fc.boolean(), (sources, videoOccupied, audioOccupied) => {
+        const mode = pickInitialMode(sources, { videoOccupied, audioOccupied });
+        const blocked = mode === 'audio_only' ? audioOccupied : videoOccupied;
+        const hasUnblockedSourcedMode = (['screen_audio', 'window', 'audio_only'] as ShareMode[]).some((candidate) => {
+          const candidateBlocked = candidate === 'audio_only' ? audioOccupied : videoOccupied;
+          const candidateType = MODE_TO_SOURCE_TYPE[candidate];
+          return !candidateBlocked && sources.some((s) => s.source_type === candidateType);
+        });
+
+        if (hasUnblockedSourcedMode) {
+          expect(blocked).toBe(false);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
 
 describe('Property 4: Share button requires valid selection', () => {
   it('button is disabled when selectedSource is null', () => {

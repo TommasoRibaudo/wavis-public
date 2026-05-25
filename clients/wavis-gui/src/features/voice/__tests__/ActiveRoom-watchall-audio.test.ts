@@ -93,14 +93,53 @@ function onViewerReady(
   deps.setScreenShareAudioVolume(event.participantId, state.savedVolumes.get(event.participantId) ?? 70);
 }
 
+function onDirectViewerStreamChanged(
+  state: ViewerAudioState,
+  participantId: string,
+  stream: MediaStream | null,
+  prevStream: MediaStream | null,
+  deps: {
+    resendStream: (participantId: string, windowLabel: string, stream: MediaStream) => void;
+    attachScreenShareAudio: (participantId: string) => void;
+    setScreenShareAudioVolume: (participantId: string, volume: number) => void;
+  },
+): void {
+  const currentWindowLabel = state.shareWindows.get(participantId);
+  if (!currentWindowLabel || !stream || stream === prevStream) return;
+  deps.resendStream(participantId, currentWindowLabel, stream);
+  deps.attachScreenShareAudio(participantId);
+  deps.setScreenShareAudioVolume(participantId, state.savedVolumes.get(participantId) ?? 70);
+}
+
+function onWatchAllViewerStreamChanged(
+  state: ViewerAudioState,
+  participantId: string,
+  stream: MediaStream | null,
+  prevStream: MediaStream | null,
+  deps: {
+    resendStream: (participantId: string, windowLabel: string, stream: MediaStream) => void;
+    attachScreenShareAudio: (participantId: string) => void;
+    setScreenShareAudioVolume: (participantId: string, volume: number) => void;
+  },
+): void {
+  if (!state.watchAllOpen || !state.watchAllReady) return;
+  if (state.shareWindows.has(participantId) || !stream || stream === prevStream) return;
+  deps.resendStream(participantId, 'watch-all', stream);
+  deps.attachScreenShareAudio(participantId);
+  deps.setScreenShareAudioVolume(participantId, state.savedVolumes.get(participantId) ?? 70);
+  state.watchAllAttachedAudio.add(participantId);
+}
+
 describe('ActiveRoom viewer audio orchestration', () => {
   const startSending = vi.fn();
+  const resendStream = vi.fn();
   const attachScreenShareAudio = vi.fn();
   const setScreenShareAudioVolume = vi.fn();
   const emit = vi.fn();
 
   beforeEach(() => {
     startSending.mockReset();
+    resendStream.mockReset();
     attachScreenShareAudio.mockReset();
     setScreenShareAudioVolume.mockReset();
     emit.mockReset();
@@ -206,5 +245,45 @@ describe('ActiveRoom viewer audio orchestration', () => {
 
     expect(attachScreenShareAudio).not.toHaveBeenCalled();
     expect(setScreenShareAudioVolume).not.toHaveBeenCalled();
+  });
+
+  it('re-attaches direct viewer audio when the watched stream instance refreshes', () => {
+    const state = createState({
+      shareWindows: new Map([['user-1', 'screen-share-user-1']]),
+      savedVolumes: new Map([['user-1', 61]]),
+    });
+    const prevStream = new MediaStream();
+    const nextStream = new MediaStream();
+
+    onDirectViewerStreamChanged(state, 'user-1', nextStream, prevStream, {
+      resendStream,
+      attachScreenShareAudio,
+      setScreenShareAudioVolume,
+    });
+
+    expect(resendStream).toHaveBeenCalledWith('user-1', 'screen-share-user-1', nextStream);
+    expect(attachScreenShareAudio).toHaveBeenCalledWith('user-1');
+    expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 61);
+  });
+
+  it('re-attaches watch-all audio when an existing tile gets a fresh stream', () => {
+    const state = createState({
+      watchAllOpen: true,
+      watchAllReady: true,
+      savedVolumes: new Map([['user-1', 44]]),
+    });
+    const prevStream = new MediaStream();
+    const nextStream = new MediaStream();
+
+    onWatchAllViewerStreamChanged(state, 'user-1', nextStream, prevStream, {
+      resendStream,
+      attachScreenShareAudio,
+      setScreenShareAudioVolume,
+    });
+
+    expect(resendStream).toHaveBeenCalledWith('user-1', 'watch-all', nextStream);
+    expect(attachScreenShareAudio).toHaveBeenCalledWith('user-1');
+    expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 44);
+    expect(state.watchAllAttachedAudio.has('user-1')).toBe(true);
   });
 });

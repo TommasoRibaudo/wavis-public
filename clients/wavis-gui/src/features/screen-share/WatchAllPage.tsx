@@ -247,8 +247,15 @@ const ShareTile = memo(function ShareTile({
     // pc.onconnectionstatechange synchronously — before any await — which
     // closes the race window where a failure could arrive before the
     // manual pc.addEventListener() call after start() resolved (old code).
-    requestSenderResync();
-    receiver.start(scheduleRetry)
+    //
+    // requestSenderResync is passed as onListenersReady: the main window's
+    // resendStream() fires only after this receiver has registered its offer +
+    // ICE listeners. Calling it before start() (old pattern) created a race —
+    // startSending() in main raced to register its receiver-ready listener
+    // while the receiver was still registering its offer listener, and with 2
+    // concurrent streams the double-miss probability was high enough to cause
+    // persistent blank screens.
+    receiver.start(scheduleRetry, requestSenderResync)
       .then((s) => {
         if (cancelled) return;
         if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver.start() resolved — participantId: ${participantId}, retryCount: ${retryCount}`);
