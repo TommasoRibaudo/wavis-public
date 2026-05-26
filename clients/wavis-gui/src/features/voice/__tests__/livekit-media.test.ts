@@ -2275,7 +2275,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-track-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
@@ -2324,6 +2324,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2366,6 +2367,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2541,6 +2543,7 @@ describe('Screen share and device selection', () => {
         track,
         trackSid: 'screen-late-sid',
         setEnabled: vi.fn(),
+        setVideoQuality: vi.fn(),
       };
       const participant = {
         identity: 'alice',
@@ -2697,13 +2700,13 @@ describe('Screen share and device selection', () => {
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-1'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-2'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       mod.attachScreenShareAudio('alice');
@@ -2908,7 +2911,7 @@ describe('Screen share and device selection', () => {
 
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${s.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: `sid-${s.identity}` },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: s.identity },
               );
 
@@ -2969,7 +2972,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
