@@ -270,6 +270,7 @@ mod screen_recording_auth {
     }
 }
 mod bug_report;
+mod crash_handler;
 mod debug_env;
 mod diagnostics;
 #[cfg(target_os = "windows")]
@@ -344,6 +345,7 @@ fn main() {
 
     // Create the shared Rust log buffer for bug report diagnostics.
     let log_buffer = bug_report::new_shared_buffer(200);
+    crash_handler::install(log_buffer.clone());
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
 
     tauri::Builder::default()
@@ -373,6 +375,7 @@ fn main() {
             sysinfo::System::new(),
         )))
         .setup(|app| {
+            crash_handler::register_app_handle(app.handle().clone());
             #[cfg(desktop)]
             {
                 if let Err(err) = app
@@ -527,9 +530,10 @@ fn main() {
             native_mic::native_mic_set_denoise_enabled,
             native_mic::native_mic_set_input_device,
             close_main_window,
-        ])
-        .build(tauri::generate_context!())
-        .expect("error while building wavis")
+            #[cfg(debug_assertions)]
+            panic_now,
+            ])
+                .build(tauri::generate_context!())        .expect("error while building wavis")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Stop any active screen capture so the OS overlay is removed
@@ -952,4 +956,10 @@ fn close_main_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.destroy();
     }
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn panic_now() {
+    panic!("Manual panic triggered via panic_now command");
 }
