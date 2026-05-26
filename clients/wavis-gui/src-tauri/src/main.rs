@@ -270,6 +270,7 @@ mod screen_recording_auth {
     }
 }
 mod bug_report;
+mod crash_handler;
 mod debug_env;
 mod diagnostics;
 #[cfg(target_os = "windows")]
@@ -344,12 +345,27 @@ fn main() {
 
     // Create the shared Rust log buffer for bug report diagnostics.
     let log_buffer = bug_report::new_shared_buffer(200);
+    crash_handler::install(log_buffer.clone());
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
 
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(debug_env::tauri_log_level())
+                // Global minimum is always Info so the ring buffer captures
+                // voice/WebRTC/room activity for crash reports and bug reports,
+                // even without debug flags. The Stdout target filters independently
+                // so console output stays quiet in normal operation.
+                .level(log::LevelFilter::Info)
+                .clear_targets()
+                .target(
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
+                        .filter({
+                            let min = debug_env::tauri_log_level()
+                                .to_level()
+                                .unwrap_or(log::Level::Warn);
+                            move |metadata| metadata.level() <= min
+                        }),
+                )
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Dispatch(log_layer),
                 ))
@@ -373,6 +389,7 @@ fn main() {
             sysinfo::System::new(),
         )))
         .setup(|app| {
+            crash_handler::register_app_handle(app.handle().clone());
             #[cfg(desktop)]
             {
                 if let Err(err) = app
@@ -527,6 +544,8 @@ fn main() {
             native_mic::native_mic_set_denoise_enabled,
             native_mic::native_mic_set_input_device,
             close_main_window,
+            #[cfg(debug_assertions)]
+            panic_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while building wavis")
@@ -952,4 +971,10 @@ fn close_main_window(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.destroy();
     }
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn panic_now() {
+    panic!("Manual panic triggered via panic_now command");
 }
