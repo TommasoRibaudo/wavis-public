@@ -289,6 +289,8 @@ vi.mock('../native-media', () => ({
 import {
   initSession,
   leaveRoom,
+  scheduleLeaveRoom,
+  BACKGROUND_LEAVE_DISCONNECT_MS,
   leaveSubRoom,
   joinSubRoom,
   toggleSelfMute,
@@ -1223,6 +1225,58 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(sentMessages).toContainEqual({ type: 'leave' });
+  });
+
+  it('keeps the room connected until the background leave timeout elapses', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    sentMessages = [];
+    vi.useFakeTimers();
+    try {
+      scheduleLeaveRoom();
+
+      await vi.advanceTimersByTimeAsync(BACKGROUND_LEAVE_DISCONNECT_MS - 1);
+
+      expect(getState().machineState).toBe('active');
+      expect(lastLkModule!.disconnectCalls).toBe(0);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(getState().machineState).toBe('idle');
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the background leave timer when a hard leave happens first', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    sentMessages = [];
+    vi.useFakeTimers();
+    try {
+      scheduleLeaveRoom();
+      leaveRoom();
+
+      expect(getState().machineState).toBe('idle');
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(BACKGROUND_LEAVE_DISCONNECT_MS);
+
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('plays one leave sound when the local participant is kicked', async () => {

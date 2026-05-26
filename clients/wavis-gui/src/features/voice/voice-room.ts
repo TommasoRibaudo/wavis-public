@@ -1430,12 +1430,14 @@ let preDeafenSelfMuted: boolean | null = null;
 let localStopShareSent = false;
 let localSourceChanging = false;
 let externalShareHelperActive = false;
+export const BACKGROUND_LEAVE_DISCONNECT_MS = 15 * 60_000;
 const RECONNECT_MEDIA_COOLDOWN_MS = 3000;
 /** Slow periodic media retry interval (ms) after fast retries are exhausted. */
 const PERIODIC_MEDIA_RETRY_MS = 30_000;
 let periodicMediaRetryTimer: ReturnType<typeof setInterval> | null = null;
 const COLD_START_RETRY_MS = 30_000;
 let coldStartRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let backgroundLeaveTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_AUTH_REFRESH_RETRIES = 2;
 let authRefreshRetries = 0;
 let wasReconnecting = false;
@@ -2285,6 +2287,13 @@ function stopColdStartRetry(): void {
   if (coldStartRetryTimer) {
     clearTimeout(coldStartRetryTimer);
     coldStartRetryTimer = null;
+  }
+}
+
+function clearBackgroundLeaveTimer(): void {
+  if (backgroundLeaveTimer) {
+    clearTimeout(backgroundLeaveTimer);
+    backgroundLeaveTimer = null;
   }
 }
 
@@ -3692,7 +3701,24 @@ export function initSession(
   });
 }
 
+export function scheduleLeaveRoom(delayMs = BACKGROUND_LEAVE_DISCONNECT_MS): void {
+  if (!client || state.machineState === 'idle') {
+    leaveRoom();
+    return;
+  }
+
+  playLocalDisconnectSoundOnce();
+  clearBackgroundLeaveTimer();
+  // The room screen is about to unmount, so stop pushing state into a stale React callback.
+  onChange = null;
+  backgroundLeaveTimer = setTimeout(() => {
+    backgroundLeaveTimer = null;
+    leaveRoom();
+  }, Math.max(0, delayMs));
+}
+
 export function leaveRoom(): void {
+  clearBackgroundLeaveTimer();
   playLocalDisconnectSoundOnce();
 
   // Clean up custom share captures (best-effort, fire-and-forget)
@@ -4141,6 +4167,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   notify();
 
   let videoStarted = false;
+  let nativeAudioStarted = false;
   const shareSessionId = isVideoShare ? makeShareSessionId() : null;
 
   try {
@@ -4204,6 +4231,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);
         const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+        nativeAudioStarted = true;
         emitAudioCaptureSelection(audioStartResult);
         maybeNoticeMacCaptureFallback(audioStartResult);
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio_share_start result:', audioStartResult);
@@ -4224,11 +4252,27 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
             if (DEBUG_WASAPI) console.log(LOG, '[wasapi] bridge fully active');
           } catch (bridgeErr) {
             console.warn(LOG, '[wasapi] WASAPI audio bridge failed:', bridgeErr);
+            throw bridgeErr;
           }
         } else {
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] skipping bridge — not a LiveKitModule or lkModule null');
         }
       } catch (audioErr) {
+        if (nativeAudioStarted) {
+          if (lkModule && lkModule instanceof LiveKitModule) {
+            try {
+              await lkModule.stopWasapiAudioBridge();
+            } catch (bridgeStopErr) {
+              console.warn(LOG, 'best-effort stopWasapiAudioBridge after audio start failure failed:', bridgeStopErr);
+            }
+          }
+          try {
+            await invoke('audio_share_stop');
+          } catch (audioStopErr) {
+            console.warn(LOG, 'best-effort audio_share_stop after audio start failure failed:', audioStopErr);
+          }
+          nativeAudioStarted = false;
+        }
         if (videoStarted) {
           // Audio failed but video is already running. On Windows (JS SDK path),
           // system audio sharing may not be available yet — downgrade to video-only
@@ -4283,6 +4327,20 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
     console.error(LOG, 'startCustomShare failed:', err);
+    if (nativeAudioStarted) {
+      if (lkModule && lkModule instanceof LiveKitModule) {
+        try {
+          await lkModule.stopWasapiAudioBridge();
+        } catch (bridgeStopErr) {
+          console.warn(LOG, 'best-effort stopWasapiAudioBridge during startCustomShare rollback failed:', bridgeStopErr);
+        }
+      }
+      try {
+        await invoke('audio_share_stop');
+      } catch (audioStopErr) {
+        console.warn(LOG, 'best-effort audio_share_stop during startCustomShare rollback failed:', audioStopErr);
+      }
+    }
     // Clean up pre-registered listener if startNativeCapture never ran.
     // Only relevant for video shares — audio-only never calls prepareNativeCapture().
     if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
@@ -4307,11 +4365,18 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   if (plan.stopVideo) {
     // Stop the native capture bridge on Windows (LiveKit JS SDK path)
     if (lkModule && lkModule instanceof LiveKitModule) {
+      // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
+      // unpublishTrack await inside stopNativeCapture and triggers
+      // onLocalScreenShareEnded, which would send a duplicate stop-share.
+      localStopShareSent = true;
       try {
         await lkModule.stopNativeCapture();
       } catch (err) {
         console.error(LOG, 'best-effort stopNativeCapture failed:', err);
       }
+      // Reset defensively: onLocalScreenShareEnded resets it when it fires;
+      // if it didn't fire (no active track), ensure flag is clear for future stops.
+      localStopShareSent = false;
     }
     try {
       await invoke('screen_share_stop');
@@ -4426,10 +4491,20 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
   }
   if (lkModule && 'restartScreenShareWithAudio' in lkModule) {
     localSourceChanging = true;
-    const result = await (lkModule as LiveKitModule).restartScreenShareWithAudio(withAudio);
-    localSourceChanging = false;
-    if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] toggleShareAudio result:', result);
-    return result;
+    try {
+      const result = await (lkModule as LiveKitModule).restartScreenShareWithAudio(withAudio);
+      if (result && state.activeVideoShare) {
+        state.activeVideoShare.withAudio = withAudio;
+        if (!withAudio) {
+          state.activeVideoShare.audioSourceId = null;
+        }
+        notify();
+      }
+      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] toggleShareAudio result:', result);
+      return result;
+    } finally {
+      localSourceChanging = false;
+    }
   }
   return false;
 }

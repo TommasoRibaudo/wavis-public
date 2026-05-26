@@ -16,6 +16,7 @@ import type { MediaState } from './livekit-media';
 import {
   initSession,
   leaveRoom,
+  scheduleLeaveRoom,
   toggleSelfMute,
   toggleSelfDeafen,
   toggleCameraIntent,
@@ -390,6 +391,7 @@ export default function ActiveRoom() {
   }
   const initRef = useRef(false);
   const allowNavigationRef = useRef(false);
+  const skipUnmountLeaveRef = useRef(false);
   const chatThrottledRef = useRef(false);
   const [cliFocused, setCliFocused] = useState(false);
   const cliHistoryRef = useRef<string[]>([]);
@@ -429,10 +431,21 @@ export default function ActiveRoom() {
       allowNavigationRef.current,
     ));
 
+  const leaveNavigationMode = roomState && (
+    roomState.machineState === 'active'
+    || roomState.machineState === 'reconnecting'
+  ) ? 'deferred' : 'immediate';
+
   const navigateAwayFromRoom = useCallback(
-    (target: string, shouldLeave = false) => {
+    (target: string, leaveMode: 'none' | 'immediate' | 'deferred' = 'none') => {
       allowNavigationRef.current = true;
-      if (shouldLeave) leaveRoom();
+      if (leaveMode === 'deferred') {
+        skipUnmountLeaveRef.current = true;
+        scheduleLeaveRoom();
+      } else {
+        skipUnmountLeaveRef.current = false;
+        if (leaveMode === 'immediate') leaveRoom();
+      }
       navigate(target);
     },
     [navigate],
@@ -496,9 +509,13 @@ export default function ActiveRoom() {
     if (!channelId || initRef.current) return;
     initRef.current = true;
     allowNavigationRef.current = false;
+    skipUnmountLeaveRef.current = false;
     initSession(channelId, channelName, channelRole, setRoomState);
     return () => {
-      leaveRoom();
+      if (!skipUnmountLeaveRef.current) {
+        leaveRoom();
+      }
+      skipUnmountLeaveRef.current = false;
       initRef.current = false;
       prevEventsLenRef.current = 0;
     };
@@ -560,7 +577,7 @@ export default function ActiveRoom() {
           toggleSelfMute();
           break;
         case 'leave':
-          navigateAwayFromRoom('/', true);
+          navigateAwayFromRoom('/', leaveNavigationMode);
           break;
         case 'show':
           // handled by Rust side (window.show + set_focus)
@@ -568,7 +585,7 @@ export default function ActiveRoom() {
       }
     });
     return cleanup;
-  }, [channelId, navigateAwayFromRoom]);
+  }, [channelId, leaveNavigationMode, navigateAwayFromRoom]);
 
   // Tray state sync: update tray menu items when voice/mute state changes
   useEffect(() => {
@@ -705,7 +722,7 @@ export default function ActiveRoom() {
   // True while waiting for the OS screen picker to appear (macOS getDisplayMedia)
   const [sharePickerLoading, setSharePickerLoading] = useState(false);
   // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
-  const [winSharePicker, setWinSharePicker] = useState<{ enumResult: EnumerationResult; occupied: OccupiedSlots } | null>(null);
+  const [winSharePicker, setWinSharePicker] = useState<{ enumResult: EnumerationResult; occupied: OccupiedSlots; isChangingSource?: boolean } | null>(null);
   // macOS audio driver install prompt state
   const [showDriverPrompt, setShowDriverPrompt] = useState(false);
   const pendingShareRef = useRef<boolean>(false);
@@ -781,6 +798,13 @@ export default function ActiveRoom() {
       if (current && current !== prev) {
         console.log(LOG_SS, `resendStream(${id}, screen-share-${id}) — stream: ${current?.id}, prevStream: ${prev?.id ?? 'none'}, active: ${current?.active}, ts: ${Date.now()}`);
         resendStream(id, `screen-share-${id}`, current);
+        attachScreenShareAudio(id);
+        const volume =
+          watchAllVolumesRef.current.get(id) ??
+          shareVolumesRef.current.get(id) ??
+          getPersistedStreamVolume(id) ??
+          70;
+        setScreenShareAudioVolume(id, volume);
       }
     }
     prevStreamsRef.current = new Map(roomState.screenShareStreams);
@@ -890,8 +914,15 @@ export default function ActiveRoom() {
     if (!rs || !rs.screenShareStreams.has(participantId)) return;
 
     if (windowLabel === 'watch-all') {
-      if (!watchAllWindowRef.current || !watchAllReadyRef.current) return;
-      if (shareWindowsRef.current.has(participantId)) return;
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        console.log('[wavis:active-room] handleViewerReady: watch-all skipped — window:', !!watchAllWindowRef.current, 'ready:', watchAllReadyRef.current);
+        return;
+      }
+      if (shareWindowsRef.current.has(participantId)) {
+        console.log('[wavis:active-room] handleViewerReady: watch-all skipped — pop-out window exists for', participantId);
+        return;
+      }
+      console.log('[wavis:active-room] handleViewerReady: attaching watch-all audio for', participantId);
       attachScreenShareAudio(participantId);
       setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
       watchAllAttachedAudioRef.current.add(participantId);
@@ -1009,7 +1040,21 @@ export default function ActiveRoom() {
     );
     cleanups.push(
       listen('screen-share:change-source', async () => {
-        await withPickerResize(isMacPlatform, () => changeShareSource());
+        if (isWindowsPlatform) {
+          try {
+            const enumResult = await invoke<EnumerationResult>('list_share_sources');
+            setWinSharePicker({
+              enumResult,
+              occupied: { videoOccupied: false, audioOccupied: roomStateRef.current?.activeAudioShare !== null },
+              isChangingSource: true,
+            });
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            toast.error(`Screen sharing failed: ${detail}`);
+          }
+        } else {
+          await withPickerResize(isMacPlatform, () => changeShareSource());
+        }
       }),
     );
     cleanups.push(
@@ -1183,6 +1228,9 @@ export default function ActiveRoom() {
         if (stream && stream !== prevStream) {
           console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
           resendStream(pid, 'watch-all', stream);
+          attachScreenShareAudio(pid);
+          setScreenShareAudioVolume(pid, getSavedShareVolume(pid));
+          watchAllAttachedAudioRef.current.add(pid);
         }
       }
     }
@@ -2128,7 +2176,7 @@ export default function ActiveRoom() {
           </div>
           <button
             className="mt-3 text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors"
-            onClick={() => navigateAwayFromRoom(`/channel/${channelId}`, true)}
+            onClick={() => navigateAwayFromRoom(`/channel/${channelId}`, 'immediate')}
           >
             /back
           </button>
@@ -2163,7 +2211,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.error}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', true); }}>/leave</button>
+              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', leaveNavigationMode); }}>/leave</button>
             </div>
           </div>
         </div>
@@ -2178,7 +2226,7 @@ export default function ActiveRoom() {
         <span>you were kicked from the room</span>
         <button
           className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-          onClick={() => navigateAwayFromRoom('/', false)}
+          onClick={() => navigateAwayFromRoom('/')}
         >/back</button>
       </div>
     );
@@ -2187,7 +2235,7 @@ export default function ActiveRoom() {
   /* ── Actions ── */
   const handleLeave = () => {
     setLeaving(true);
-    navigateAwayFromRoom('/', true);
+    navigateAwayFromRoom('/', leaveNavigationMode);
   };
 
   const handleChannelSwitch = async (ch: Channel) => {
@@ -2468,13 +2516,26 @@ export default function ActiveRoom() {
               />
             )}
             {isSelf && p.isSharing && (
-              <span
-                className="text-sm leading-none"
-                style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
-                title={roomState.activeAudioShare && !roomState.activeVideoShare ? 'you are sharing audio' : 'you are sharing'}
-              >
-                {roomState.activeAudioShare && !roomState.activeVideoShare ? "\u266A" : "\u25C9"}
-              </span>
+              <>
+                {(roomState.activeVideoShare !== null || roomState.activeAudioShare === null) && (
+                  <span
+                    className="text-sm leading-none"
+                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
+                    title="you are sharing"
+                  >
+                    {"\u25C9"}
+                  </span>
+                )}
+                {roomState.activeAudioShare !== null && (
+                  <span
+                    className="text-sm leading-none"
+                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
+                    title="you are sharing audio"
+                  >
+                    {"\u266A"}
+                  </span>
+                )}
+              </>
             )}
             {!isSelf && p.isSharing && (() => {
               const isAudioOnly = roomState.audioOnlySharers.has(p.id);
@@ -2877,7 +2938,25 @@ export default function ActiveRoom() {
                       <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
                         <div className="flex gap-1">
                           <button
-                            onClick={() => { void withPickerResize(isMacPlatform, () => changeShareSource()); }}
+                            onClick={() => {
+                              if (isWindowsPlatform) {
+                                void (async () => {
+                                  try {
+                                    const enumResult = await invoke<EnumerationResult>('list_share_sources');
+                                    setWinSharePicker({
+                                      enumResult,
+                                      occupied: { videoOccupied: false, audioOccupied: roomState.activeAudioShare !== null },
+                                      isChangingSource: true,
+                                    });
+                                  } catch (err) {
+                                    const detail = err instanceof Error ? err.message : String(err);
+                                    toast.error(`Screen sharing failed: ${detail}`);
+                                  }
+                                })();
+                              } else {
+                                void withPickerResize(isMacPlatform, () => changeShareSource());
+                              }
+                            }}
                             className="flex-1 py-0.5 px-1 text-xs text-center border border-wavis-text-secondary text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
                           >
                             /window
@@ -3323,15 +3402,18 @@ export default function ActiveRoom() {
               enumResult={winSharePicker.enumResult}
               occupied={winSharePicker.occupied}
               onSelect={async (selection) => {
+                const wasChangingSource = winSharePicker.isChangingSource ?? false;
                 setWinSharePicker(null);
                 try {
+                  if (wasChangingSource) {
+                    await stopCustomShare('video');
+                  }
                   await startCustomShare(selection);
+                  setShowPostShareAudioPrompt(false);
                   if (selection.mode !== 'audio_only') {
-                    if (selection.withAudio) {
-                      setShareAudioOn(true);
-                    } else {
-                      setShowPostShareAudioPrompt(true);
-                    }
+                    setShareAudioOn(selection.withAudio);
+                  } else {
+                    setShareAudioOn(false);
                   }
                 } catch (err) {
                   const detail = err instanceof Error ? err.message : String(err);

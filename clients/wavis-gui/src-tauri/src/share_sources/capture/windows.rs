@@ -13,6 +13,34 @@ use super::super::{
 /// picker stays responsive even if one Win32 call stalls.
 const WIN_ENUM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
+fn measure_window_area(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+
+    unsafe {
+        let mut client_rect = RECT::default();
+        if GetClientRect(hwnd, &mut client_rect).is_ok() {
+            let width = (client_rect.right - client_rect.left).max(0) as u32;
+            let height = (client_rect.bottom - client_rect.top).max(0) as u32;
+            let client_area = width.saturating_mul(height);
+            if client_area > 0 {
+                return client_area;
+            }
+        }
+
+        // Some Chromium-family windows intermittently report a zero client rect
+        // during enumeration even though the top-level window is visible.
+        let mut window_rect = RECT::default();
+        if GetWindowRect(hwnd, &mut window_rect).is_ok() {
+            let width = (window_rect.right - window_rect.left).max(0) as u32;
+            let height = (window_rect.bottom - window_rect.top).max(0) as u32;
+            return width.saturating_mul(height);
+        }
+    }
+
+    0
+}
+
 /// Check whether the Windows Graphics Capture API is available.
 fn check_graphics_capture_available() -> bool {
     use windows::Graphics::Capture::GraphicsCaptureSession;
@@ -109,7 +137,7 @@ fn enumerate_windows(deadline: std::time::Instant) -> Result<Vec<ShareSource>, S
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+        EnumWindows, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
@@ -153,18 +181,13 @@ fn enumerate_windows(deadline: std::time::Instant) -> Result<Vec<ShareSource>, S
             return BOOL(1);
         }
 
-        let mut rect = std::mem::zeroed();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left) as u32;
-        let height = (rect.bottom - rect.top) as u32;
-
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
         let descriptor = WindowDescriptor {
             is_visible,
             is_minimized,
-            client_area: width.saturating_mul(height),
+            client_area: measure_window_area(hwnd),
             process_id: pid,
         };
         if !should_include_window(&descriptor, state.self_pid) {
@@ -261,7 +284,7 @@ fn enumerate_window_audio_sources(
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+        EnumWindows, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
@@ -305,11 +328,6 @@ fn enumerate_window_audio_sources(
             return BOOL(1);
         }
 
-        let mut rect = std::mem::zeroed();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left) as u32;
-        let height = (rect.bottom - rect.top) as u32;
-
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
@@ -319,7 +337,7 @@ fn enumerate_window_audio_sources(
         let descriptor = WindowDescriptor {
             is_visible,
             is_minimized,
-            client_area: width.saturating_mul(height),
+            client_area: measure_window_area(hwnd),
             process_id: pid,
         };
         if !should_include_window(&descriptor, state.self_pid) {
@@ -604,6 +622,15 @@ unsafe fn read_bitmap_rgba(
     for pixel in bgra.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
+    }
+
+    // GDI BitBlt returns a valid (non-zero row count) but all-black bitmap for
+    // GPU/DirectX-rendered windows it cannot read. Treat a fully-black frame as
+    // a capture failure so callers show the name fallback instead.
+    let is_all_black = bgra.chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
+    if is_all_black {
+        crate::debug_eprintln!("[share-thumb] all-black frame detected, treating as capture failure");
+        return None;
     }
 
     Some(bgra)

@@ -46,8 +46,12 @@ __pycache__/
 wavis-deploy-key*
 infrastructure/environments/dev/wavis-deploy-key*
 
+# Agent memory tooling (local-only, never pushed)
+tools/agent-memory/
+
 # AI tool configs and local assistant artifacts
 .kiro/
+.kiro/steering/.learning.lock
 *.kiro
 *.kiro.*
 .gemini/

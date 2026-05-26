@@ -204,6 +204,11 @@ vi.mock('livekit-client', () => ({
     Poor: 'poor',
     Lost: 'lost',
   },
+  VideoQuality: {
+    LOW: 0,
+    MEDIUM: 1,
+    HIGH: 2,
+  },
 }));
 
 // ─── Mock Web Audio API ────────────────────────────────────────────
@@ -1031,6 +1036,65 @@ describe('camera publish/unpublish', () => {
       frameRate: CAMERA_QUALITY_HIGH.maxFps,
     });
     expect(sender.setParameters).toHaveBeenCalledWith({
+      encodings: [{
+        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+      }],
+    });
+  });
+
+  it('setCameraQuality preserves required sender parameter fields when updating encodings', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-merged-params');
+    const existingParameters: RTCRtpSendParameters = {
+      codecs: [{ mimeType: 'video/VP8' }] as unknown as RTCRtpCodecParameters[],
+      headerExtensions: [{ uri: 'urn:ietf:params:rtp-hdrext:sdes:mid' }] as unknown as RTCRtpHeaderExtensionParameters[],
+      rtcp: { cname: 'camera-cname' },
+      transactionId: 'camera-params-1',
+      encodings: [],
+    };
+    const sender = {
+      getParameters: vi.fn(() => ({ ...existingParameters })),
+      setParameters: vi.fn(async () => {}),
+    };
+    const publication = {
+      trackSid: 'camera-quality-merged',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-quality-merged',
+        mediaStreamTrack: mediaTrack,
+        sender,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-quality-merged', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-merged',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    await mod.setCameraQuality(CAMERA_QUALITY_HIGH);
+
+    expect(sender.getParameters).toHaveBeenCalled();
+    expect(sender.setParameters).toHaveBeenCalledWith({
+      codecs: existingParameters.codecs,
+      headerExtensions: existingParameters.headerExtensions,
+      rtcp: existingParameters.rtcp,
+      transactionId: existingParameters.transactionId,
       encodings: [{
         maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
         maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
@@ -2211,7 +2275,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-track-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
@@ -2260,6 +2324,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2302,6 +2367,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2477,6 +2543,7 @@ describe('Screen share and device selection', () => {
         track,
         trackSid: 'screen-late-sid',
         setEnabled: vi.fn(),
+        setVideoQuality: vi.fn(),
       };
       const participant = {
         identity: 'alice',
@@ -2633,13 +2700,13 @@ describe('Screen share and device selection', () => {
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-1'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-2'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       mod.attachScreenShareAudio('alice');
@@ -2844,7 +2911,7 @@ describe('Screen share and device selection', () => {
 
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${s.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: `sid-${s.identity}` },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: s.identity },
               );
 
@@ -2905,7 +2972,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }

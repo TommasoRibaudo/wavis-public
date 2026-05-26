@@ -247,8 +247,15 @@ const ShareTile = memo(function ShareTile({
     // pc.onconnectionstatechange synchronously — before any await — which
     // closes the race window where a failure could arrive before the
     // manual pc.addEventListener() call after start() resolved (old code).
-    requestSenderResync();
-    receiver.start(scheduleRetry)
+    //
+    // requestSenderResync is passed as onListenersReady: the main window's
+    // resendStream() fires only after this receiver has registered its offer +
+    // ICE listeners. Calling it before start() (old pattern) created a race —
+    // startSending() in main raced to register its receiver-ready listener
+    // while the receiver was still registering its offer listener, and with 2
+    // concurrent streams the double-miss probability was high enough to cause
+    // persistent blank screens.
+    receiver.start(scheduleRetry, requestSenderResync)
       .then((s) => {
         if (cancelled) return;
         if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver.start() resolved — participantId: ${participantId}, retryCount: ${retryCount}`);
@@ -1089,6 +1096,34 @@ export default function WatchAllPage() {
       }),
     };
   }, [gridSize, isDiagnosticsTestMode, tiles]);
+  const tilePositions = useMemo(() => {
+    if (!layout) return new Map<string, { left: string; top: string; width: string; height: string }>();
+
+    const positions = new Map<string, { left: string; top: string; width: string; height: string }>();
+    const totalRowFlex = layout.rows.reduce((sum, row) => sum + row.flexGrow, 0);
+    let top = 0;
+
+    for (const row of layout.rows) {
+      const rowHeight = totalRowFlex > 0 ? (row.flexGrow / totalRowFlex) * 100 : 0;
+      const totalTileFlex = row.tiles.reduce((sum, tile) => sum + tile.flexGrow, 0);
+      let left = 0;
+
+      for (const tile of row.tiles) {
+        const tileWidth = totalTileFlex > 0 ? (tile.flexGrow / totalTileFlex) * 100 : 0;
+        positions.set(tile.id, {
+          left: `${left}%`,
+          top: `${top}%`,
+          width: `${tileWidth}%`,
+          height: `${rowHeight}%`,
+        });
+        left += tileWidth;
+      }
+
+      top += rowHeight;
+    }
+
+    return positions;
+  }, [layout]);
   const bottomBarActive = bottomBarVisible || mixerOpen || voiceMixerOpen;
   const activeMixerPanelOrder = mixerPanelOrder.filter((panel) =>
     panel === 'voice' ? voiceMixerOpen : mixerOpen,
@@ -1140,43 +1175,38 @@ export default function WatchAllPage() {
             no active shares
           </div>
         ) : layout ? (
-          /* Justified rows — widths proportional to each stream's aspect ratio */
-          <div className="w-full h-full flex flex-col">
-            {layout.rows.map((row) => (
-              <div
-                key={row.tiles.map((t) => t.id).join('|')}
-                className="flex min-h-0"
-                style={{ flex: row.flexGrow }}
-              >
-                {row.tiles.map((tileDef) => {
-                  const tile = tiles.find((t) => t.participantId === tileDef.id)!;
-                  return (
-                    <div
-                      key={tileDef.id}
-                      className="min-w-0 overflow-hidden"
-                      style={{ flex: tileDef.flexGrow }}
-                    >
-                      <ShareTile
-                        participantId={tile.participantId}
-                        displayName={tile.displayName}
-                        color={tile.color}
-                        kind={tile.kind}
-                        canvasFallback={tile.canvasFallback}
-                        muted={tile.muted}
-                        volume={tile.volume}
-                        nativeWidth={tile.nativeWidth}
-                        nativeHeight={tile.nativeHeight}
-                        aspectRatio={tile.aspectRatio}
-                        onToggleMute={handleToggleMute}
-                        onVolumeChange={handleVolumeChange}
-                        onPopOut={handlePopOut}
-                        onAspectRatioDetected={handleAspectRatioDetected}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
+          /* Keep ShareTile nodes flat and keyed only by participantId so
+             layout churn never remounts live WebRTC receivers. */
+          <div className="relative w-full h-full">
+            {tiles.map((tile) => {
+              const position = tilePositions.get(tile.participantId);
+              if (!position) return null;
+
+              return (
+                <div
+                  key={tile.participantId}
+                  className="absolute min-w-0 overflow-hidden"
+                  style={position}
+                >
+                  <ShareTile
+                    participantId={tile.participantId}
+                    displayName={tile.displayName}
+                    color={tile.color}
+                    kind={tile.kind}
+                    canvasFallback={tile.canvasFallback}
+                    muted={tile.muted}
+                    volume={tile.volume}
+                    nativeWidth={tile.nativeWidth}
+                    nativeHeight={tile.nativeHeight}
+                    aspectRatio={tile.aspectRatio}
+                    onToggleMute={handleToggleMute}
+                    onVolumeChange={handleVolumeChange}
+                    onPopOut={handlePopOut}
+                    onAspectRatioDetected={handleAspectRatioDetected}
+                  />
+                </div>
+              );
+            })}
           </div>
         ) : null}
       </div>

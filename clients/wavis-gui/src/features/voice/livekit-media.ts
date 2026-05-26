@@ -8,7 +8,7 @@
  */ 
 
 import {
-  Room, RoomEvent, Track,
+  Room, RoomEvent, Track, VideoQuality,
   RemoteTrack, RemoteTrackPublication, RemoteParticipant,
   LocalParticipant, LocalTrackPublication, LocalAudioTrack, Participant,
   VideoPreset, TrackPublication,
@@ -1131,6 +1131,7 @@ export class LiveKitModule {
   private wasapiWorkletNode: AudioWorkletNode | null = null;
   private wasapiDestNode: MediaStreamAudioDestinationNode | null = null;
   private wasapiAudioPublication: LocalTrackPublication | null = null;
+  private wasapiAudioTransceiver: RTCRtpTransceiver | null = null;
   private wasapiFrameUnlisten: (() => void) | null = null;
   private wasapiStoppedUnlisten: (() => void) | null = null;
 
@@ -1631,6 +1632,15 @@ export class LiveKitModule {
       return;
     }
     for (const transceiver of peerConnection.getTransceivers()) {
+      // Preserve the previous screen share transceiver so livekit-fix can
+      // reuse its MID in the upcoming publish, avoiding the Chrome extension
+      // ID collision that occurs when a new m-section is added while the old
+      // one is still active in the remote SDP. stopAllInactiveVideoTransceivers
+      // is called right before the publishTrack that will consume this slot;
+      // the reference is cleared immediately after this sweep returns.
+      if (transceiver === this.screenShareTransceiverForReuse) {
+        continue;
+      }
       if (isInactiveVideoLeakCandidate(transceiver)) {
         try {
           transceiver.stop();
@@ -2666,16 +2676,22 @@ export class LiveKitModule {
             console.log(LOG, `screen share paused for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`);
             if (DEBUG_CAPTURE) console.log(LOG, `screen share paused — enabled: ${publication.isEnabled}`);
             publication.setEnabled(true);
+            publication.setVideoQuality(VideoQuality.HIGH);
             // Don't re-emit the stream here — wait for Active state to confirm
             // the track actually resumed. Re-emitting a paused stream causes
             // the viewer to attach a dead MediaStream.
           } else if (streamState === Track.StreamState.Active) {
             console.log(LOG, `screen share resumed for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`);
-            // Track is confirmed active — re-emit so the viewer can re-attach
             const entry = this.screenShareElements.get(participant.identity);
             if (entry) {
-              if (DEBUG_CAPTURE) console.log(LOG, `screen share resumed — streamId: ${entry.stream.id}, re-emitting onScreenShareSubscribed`);
-              this.callbacks.onScreenShareSubscribed(participant.identity, entry.stream);
+              // Wrap in a fresh MediaStream so downstream reference-equality
+              // checks (Watch All effect: stream !== prevStream) detect the
+              // change and call resendStream with the now-active track.
+              const freshStream = new MediaStream(entry.stream.getTracks());
+              this.screenShareElements.set(participant.identity, { ...entry, stream: freshStream });
+              if (entry.dummyVideo) entry.dummyVideo.srcObject = freshStream;
+              if (DEBUG_CAPTURE) console.log(LOG, `screen share resumed — new streamId: ${freshStream.id}`);
+              this.callbacks.onScreenShareSubscribed(participant.identity, freshStream);
             }
           }
         }
@@ -4577,7 +4593,12 @@ export class LiveKitModule {
 
     const sender = (localTrack as { sender?: RTCRtpSender | null } | null)?.sender ?? null;
     if (sender) {
-      await sender.setParameters(buildCameraSenderParameters(quality));
+      const nextParameters =
+        typeof sender.getParameters === 'function'
+          ? sender.getParameters()
+          : {} as RTCRtpSendParameters;
+      nextParameters.encodings = buildCameraSenderParameters(quality).encodings;
+      await sender.setParameters(nextParameters);
     }
   }
 
@@ -4709,6 +4730,12 @@ export class LiveKitModule {
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio tracks on dest stream:', this.wasapiDestNode.stream.getAudioTracks().length, 'track:', audioTrack);
     if (!audioTrack) throw new Error('no audio track from WASAPI worklet destination');
 
+    // Snapshot transceivers before publish so we can identify the new one by set-difference.
+    // We cannot use sender.track identity after publish — LiveKit may wrap/clone the track,
+    // and AudioContext.close() at stop time would null sender.track anyway.
+    const pcBeforePublish = this.getPublisherPeerConnection();
+    const transceiversBeforePublish = new Set(pcBeforePublish?.getTransceivers() ?? []);
+
     // Publish as ScreenShareAudio via LiveKit.
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] publishing ScreenShareAudio track via LiveKit');
     this.wasapiAudioPublication = await this.room.localParticipant.publishTrack(
@@ -4728,6 +4755,12 @@ export class LiveKitModule {
         red: true,
       } as TrackPublishOptionsWithAudioBitrate,
     );
+    // Find the transceiver that was added by publishTrack via set-difference.
+    // This survives AudioContext.close() (which nulls sender.track) and is unaffected
+    // by any LiveKit-internal track cloning that would break a sender.track identity check.
+    const pcAfterPublish = this.getPublisherPeerConnection();
+    const transceiversAfterPublish = pcAfterPublish?.getTransceivers() ?? [];
+    this.wasapiAudioTransceiver = transceiversAfterPublish.find(t => !transceiversBeforePublish.has(t)) ?? null;
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] ScreenShareAudio published, publication:', this.wasapiAudioPublication);
     if (DEBUG_MAC_SHARE_AUDIO) {
       const pub = this.wasapiAudioPublication;
@@ -4830,6 +4863,12 @@ export class LiveKitModule {
    * and send a poison pill to the worklet to stop processing.
    */
   async stopWasapiAudioBridge(): Promise<void> {
+    // Grab the stored transceiver reference immediately, before any teardown.
+    // AudioContext.close() nulls sender.track synchronously, so a stop-time
+    // transceiver search is unreliable — we capture it at publish time instead.
+    const audioTransceiverToStop = this.wasapiAudioTransceiver;
+    this.wasapiAudioTransceiver = null;
+
     if (DEBUG_MAC_SHARE_AUDIO) {
       const hasWorklet = !!this.wasapiWorkletNode;
       const hasPub = !!this.wasapiAudioPublication;
@@ -4861,6 +4900,14 @@ export class LiveKitModule {
           await this.room.localParticipant.unpublishTrack(screenAudioPub.track);
         } catch { /* best-effort */ }
       }
+    }
+    // Stop the audio transceiver to free its MID from Chrome's global RTP
+    // extension ID namespace. Without this, accumulated active audio transceivers
+    // cause ERROR_CONTENT collisions when subsequent video shares try to reuse IDs.
+    if (audioTransceiverToStop) {
+      try {
+        audioTransceiverToStop.stop();
+      } catch { /* best-effort */ }
     }
     this.wasapiAudioPublication = null;
     if (this.wasapiWorkletNode) {
@@ -4990,11 +5037,16 @@ export class LiveKitModule {
     track: RemoteTrack,
     reason: 'track_subscribed' | 'participant_connected_recovery',
   ): void {
-    // Force the track to stay enabled — with adaptiveStream: true,
-    // LiveKit pauses video tracks not attached to a visible <video>
-    // element. We pipe screen shares through a WebRTC loopback bridge
-    // to a child window, so the track is never in the main window DOM.
+    // Force the track to stay enabled and pin it at HIGH quality.
+    // With adaptiveStream:true and dynacast:true, the server chooses which
+    // simulcast layer to deliver based on subscriber quality preferences.
+    // The dummyVideo below is created via srcObject (not track.attach()), so
+    // LiveKit's element observer never fires for it — without an explicit
+    // setVideoQuality call, the server has no demand signal and dynacast may
+    // pause or drop the HIGH layer entirely. Pinning HIGH here fixes that
+    // without disabling dynacast globally.
     publication.setEnabled(true);
+    publication.setVideoQuality(VideoQuality.HIGH);
 
     const nextTrackSid = track.sid ?? publication.trackSid ?? '';
     const existing = this.screenShareElements.get(participant.identity);
@@ -5017,7 +5069,11 @@ export class LiveKitModule {
     const dummyVideo = document.createElement('video');
     dummyVideo.srcObject = stream;
     dummyVideo.muted = true;
-    dummyVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    // position:fixed bottom:0 right:0 keeps the element inside the viewport so
+    // adaptiveStream's IntersectionObserver reports ratio > 0 and does not pause
+    // the track. top/left:-9999px would be outside the viewport (ratio=0) and
+    // cause adaptiveStream to repeatedly fight our setEnabled(true) calls.
+    dummyVideo.style.cssText = 'position:fixed;bottom:0;right:0;width:1px;height:1px;pointer-events:none;opacity:0;z-index:-9999;';
     document.body.appendChild(dummyVideo);
     dummyVideo.play().catch(() => {});
 
@@ -5035,6 +5091,27 @@ export class LiveKitModule {
       );
     }
     this.callbacks.onScreenShareSubscribed(participant.identity, stream);
+
+    // If the track is already muted at subscription time (SFU paused it before
+    // we joined), TrackStreamStateChanged never fires a Paused→Active transition.
+    // Listen for the native unmute event as a direct fallback: when the SFU
+    // resumes sending (after our setEnabled(true) above), emit a fresh stream
+    // so Watch All's reference-equality check detects the change and reattaches.
+    if (track.mediaStreamTrack.muted) {
+      const mst = track.mediaStreamTrack;
+      const onUnmute = () => {
+        mst.removeEventListener('unmute', onUnmute);
+        const currentEntry = this.screenShareElements.get(participant.identity);
+        if (!currentEntry || !currentEntry.stream.getTracks().some((t) => t === mst)) return;
+        const freshStream = new MediaStream(currentEntry.stream.getTracks());
+        this.screenShareElements.set(participant.identity, { ...currentEntry, stream: freshStream });
+        if (currentEntry.dummyVideo) currentEntry.dummyVideo.srcObject = freshStream;
+        console.log(LOG, `screen share track unmuted for ${participant.identity} — emitting fresh stream ${freshStream.id}`);
+        this.callbacks.onScreenShareSubscribed(participant.identity, freshStream);
+      };
+      mst.addEventListener('unmute', onUnmute);
+    }
+
     // If this participant was previously audio-only, they've now added video.
     // Remove them from audioOnlySharers — their audio keeps playing but is no
     // longer treated as an isolated audio-only stream.
@@ -5180,14 +5257,19 @@ export class LiveKitModule {
       }
     }
     if (!entry) {
-      // Track not yet available — remember to attach when it arrives
+      // Track not yet available — remember to attach when it arrives.
+      // If publication is also missing the sharer likely did not enable audio capture.
+      console.log(LOG, `[screen-share-audio] no track for ${participantIdentity} — publication: ${publication ? 'found (setSubscribed(true) called)' : 'missing (sharer may have no audio)'}, pending until TrackSubscribed fires`);
       this.screenShareAudioPending.add(participantIdentity);
       return;
     }
 
     const audioKey = `${participantIdentity}:screen-share`;
     // Avoid double-attach
-    if (this.audioElementMap.has(audioKey)) return;
+    if (this.audioElementMap.has(audioKey)) {
+      console.log(LOG, `[screen-share-audio] already attached for ${participantIdentity}, skipping`);
+      return;
+    }
 
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
@@ -5265,6 +5347,16 @@ export class LiveKitModule {
   private nativeCapturePollInterval: ReturnType<typeof setInterval> | null = null;
   /** Last seen sequence number from poll — used to skip duplicate frames. */
   private nativeCapturePollLastSeq = 0;
+  /**
+   * Transceiver used by the most recent screen share session, preserved after
+   * unpublish so that the next session's livekit-fix can reuse the same MID.
+   * Reusing the MID avoids adding a new m-section to the SDP bundle while the
+   * old section is still "active" in Chrome's extension ID namespace (which
+   * causes: "RTP extension ID reassignment not supported, collision on active MID X").
+   * Cleared right after stopAllInactiveVideoTransceivers() in startNativeCapture
+   * so the livekit-fix can still claim it.
+   */
+  private screenShareTransceiverForReuse: RTCRtpTransceiver | null = null;
 
   /**
    * Pre-register the frame buffering handler so that frames arriving via
@@ -5566,6 +5658,9 @@ export class LiveKitModule {
     let publication;
     try {
       this.stopAllInactiveVideoTransceivers();
+      // Release the preserved transceiver reference so livekit-fix can find
+      // and reuse it via getTransceivers() inside publishTrack below.
+      this.screenShareTransceiverForReuse = null;
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
@@ -5660,9 +5755,15 @@ export class LiveKitModule {
         this.markNativeCaptureLeakStage('track_stopped');
       }
 
-      // Stop the transceiver to free its MID from Chrome's extension ID tracking.
+      // Preserve the inactive transceiver for the next session to reuse (same
+      // MID). Do NOT call .stop() here: stopping requires a completed SDP
+      // renegotiation before Chrome frees the MID from its extension ID map.
+      // If a new m-section is added before that renegotiation completes, Chrome
+      // throws "RTP extension ID reassignment not supported". By keeping the
+      // transceiver at direction='inactive', livekit-fix can reuse the same MID
+      // in the next publish, completely sidestepping the collision.
       if (screenShareTransceiver) {
-        try { screenShareTransceiver.stop(); } catch { /* best-effort */ }
+        this.screenShareTransceiverForReuse = screenShareTransceiver;
       }
     }
 

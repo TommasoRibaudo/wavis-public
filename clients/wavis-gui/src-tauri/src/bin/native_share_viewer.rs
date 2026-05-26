@@ -116,6 +116,7 @@ fn main() {
     gtk::main();
 }
 
+#[cfg(target_os = "linux")]
 fn stream_frames(url: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
     let parsed = parse_local_url(url)?;
     let mut stream = TcpStream::connect(("127.0.0.1", parsed.port))
@@ -142,11 +143,13 @@ fn stream_frames(url: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct ParsedUrl {
     port: u16,
     target: String,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_local_url(url: &str) -> Result<ParsedUrl, String> {
     let rest = url
         .strip_prefix("http://127.0.0.1:")
@@ -163,6 +166,7 @@ fn parse_local_url(url: &str) -> Result<ParsedUrl, String> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn read_until_headers(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<(), String> {
     loop {
         if let Some(end) = find_header_end(buffer) {
@@ -173,6 +177,7 @@ fn read_until_headers(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<()
     }
 }
 
+#[cfg(target_os = "linux")]
 fn read_multipart_frame(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<Vec<u8>, String> {
     loop {
         if let Some(boundary) = find_bytes(buffer, b"--wavisframe") {
@@ -213,6 +218,7 @@ fn read_multipart_frame(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<
     Ok(frame)
 }
 
+#[cfg(target_os = "linux")]
 fn read_more(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<(), String> {
     let mut chunk = [0u8; 64 * 1024];
     let read = stream
@@ -225,16 +231,19 @@ fn read_more(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
     find_bytes(bytes, b"\r\n\r\n")
 }
 
+#[cfg(target_os = "linux")]
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
 }
 
+#[cfg(target_os = "linux")]
 fn decode_jpeg(bytes: &[u8]) -> Option<gdk_pixbuf::Pixbuf> {
     let loader = PixbufLoader::new();
     loader.write(bytes).ok()?;
