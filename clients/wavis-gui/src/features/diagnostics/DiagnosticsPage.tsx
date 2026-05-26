@@ -16,6 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -877,6 +878,45 @@ export default function DiagnosticsPage() {
           Baseline set {new Date(bl.capturedAt).toLocaleTimeString()}
         </div>
       )}
+
+      {import.meta.env.DEV && <CrashTestSection />}
     </div>
+  );
+}
+
+function CrashTestSection() {
+  const [armed, setArmed] = useState(false);
+
+  const handleTrigger = () => {
+    void invoke('panic_now');
+  };
+
+  return (
+    <Section>
+      <SectionHeader>Crash Report Test (dev only)</SectionHeader>
+      <div className="text-[0.6rem] text-wavis-text-secondary/60 mb-1">
+        Triggers a Rust panic. The app will crash and write a crash-report-*.txt to app data.
+      </div>
+      {armed ? (
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={handleTrigger}
+            className="text-xs border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-white px-2 py-0.5 transition-colors"
+          >
+            Confirm — crash now
+          </button>
+          <button
+            onClick={() => { setArmed(false); }}
+            className="text-xs border border-wavis-text-secondary/40 text-wavis-text-secondary hover:border-wavis-text hover:text-wavis-text px-2 py-0.5 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <ActionButton onClick={() => { setArmed(true); }}>
+          Trigger Panic
+        </ActionButton>
+      )}
+    </Section>
   );
 }

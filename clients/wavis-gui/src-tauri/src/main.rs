@@ -351,7 +351,21 @@ fn main() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(debug_env::tauri_log_level())
+                // Global minimum is always Info so the ring buffer captures
+                // voice/WebRTC/room activity for crash reports and bug reports,
+                // even without debug flags. The Stdout target filters independently
+                // so console output stays quiet in normal operation.
+                .level(log::LevelFilter::Info)
+                .clear_targets()
+                .target(
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
+                        .filter({
+                            let min = debug_env::tauri_log_level()
+                                .to_level()
+                                .unwrap_or(log::Level::Warn);
+                            move |metadata| metadata.level() <= min
+                        }),
+                )
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Dispatch(log_layer),
                 ))
@@ -532,8 +546,9 @@ fn main() {
             close_main_window,
             #[cfg(debug_assertions)]
             panic_now,
-            ])
-                .build(tauri::generate_context!())        .expect("error while building wavis")
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building wavis")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Stop any active screen capture so the OS overlay is removed
