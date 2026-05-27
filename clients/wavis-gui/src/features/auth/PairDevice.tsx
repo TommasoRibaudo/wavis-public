@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import { startPairing, approvePairing, finishPairing, setUsername, fetchMyUsername } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
-import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 
 
