@@ -429,6 +429,7 @@ mod tests {
                         SignalingMessage::LeaveSubRoom(_) |
                         SignalingMessage::SetPassthrough(_) |
                         SignalingMessage::ClearPassthrough(_) |
+                        SignalingMessage::SetPassthroughVolume(_) |
                         SignalingMessage::SubRoomState(_) |
                         SignalingMessage::SubRoomCreated(_) |
                         SignalingMessage::SubRoomJoined(_) |

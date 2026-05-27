@@ -2455,6 +2455,7 @@ pub fn media_get_screen_share_stream_url(_identity: String) -> Result<String, St
     Err("remote screen share stream URL is only available on Linux".to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn native_share_viewer_path() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot determine current exe: {e}"))?;
     let dir = exe
