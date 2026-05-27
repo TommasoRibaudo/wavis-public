@@ -309,6 +309,14 @@ fn handle_remote_screen_share_stream(
         .and_then(|(_, query)| query_param(query, "identity"))
         .and_then(|value| percent_decode(&value))
         .ok_or_else(|| "missing identity query".to_string())?;
+    let use_raw_stream = target
+        .split_once('?')
+        .and_then(|(_, query)| query_param(query, "format"))
+        .is_some_and(|value| value == "raw");
+
+    if use_raw_stream {
+        return handle_remote_screen_share_raw_stream(stream, frames, identity);
+    }
 
     let header = concat!(
         "HTTP/1.1 200 OK\r\n",
@@ -353,6 +361,60 @@ fn handle_remote_screen_share_stream(
             .and_then(|_| stream.write_all(&jpeg))
             .and_then(|_| stream.write_all(b"\r\n"))
             .map_err(|e| format!("stream frame write failed: {e}"))?;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn handle_remote_screen_share_raw_stream(
+    mut stream: TcpStream,
+    frames: Arc<Mutex<std::collections::HashMap<String, LatestRemoteScreenShareFrame>>>,
+    identity: String,
+) -> Result<(), String> {
+    let header = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: application/octet-stream\r\n",
+        "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n",
+        "Pragma: no-cache\r\n",
+        "Connection: close\r\n",
+        "Access-Control-Allow-Origin: *\r\n",
+        "\r\n"
+    );
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| format!("raw stream header write failed: {e}"))?;
+
+    let mut last_seq = 0u64;
+    loop {
+        let latest = {
+            let frames = frames
+                .lock()
+                .map_err(|e| format!("remote_screen_share_frames lock: {e}"))?;
+            frames.get(&identity).cloned()
+        };
+
+        let Some(latest) = latest else {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        };
+
+        if latest.seq == last_seq {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        last_seq = latest.seq;
+
+        let len = u32::try_from(latest.data.len())
+            .map_err(|_| "raw frame too large to stream".to_string())?;
+        let mut frame_header = [0u8; 20];
+        frame_header[0..4].copy_from_slice(&latest.width.to_le_bytes());
+        frame_header[4..8].copy_from_slice(&latest.height.to_le_bytes());
+        frame_header[8..16].copy_from_slice(&latest.seq.to_le_bytes());
+        frame_header[16..20].copy_from_slice(&len.to_le_bytes());
+
+        stream
+            .write_all(&frame_header)
+            .and_then(|_| stream.write_all(latest.data.as_slice()))
+            .map_err(|e| format!("raw stream frame write failed: {e}"))?;
     }
 }
 
@@ -2448,6 +2510,21 @@ pub fn media_get_screen_share_stream_url(
     ))
 }
 
+#[cfg(target_os = "linux")]
+fn media_get_screen_share_raw_stream_url(
+    identity: String,
+    state: State<'_, MediaState>,
+) -> Result<String, String> {
+    if state.remote_screen_share_stream_port == 0 {
+        return Err("remote screen share stream server is unavailable".to_string());
+    }
+    Ok(format!(
+        "http://127.0.0.1:{}/screen-share.raw?identity={}&format=raw",
+        state.remote_screen_share_stream_port,
+        percent_encode(&identity)
+    ))
+}
+
 /// Non-Linux stub for `media_get_screen_share_stream_url`.
 #[tauri::command]
 #[cfg(not(target_os = "linux"))]
@@ -2480,7 +2557,7 @@ pub fn media_open_native_screen_share_viewer(
     title: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
-    let url = media_get_screen_share_stream_url(identity.clone(), state.clone())?;
+    let url = media_get_screen_share_raw_stream_url(identity.clone(), state.clone())?;
     let viewer = native_share_viewer_path()?;
 
     let mut viewers = state
@@ -2540,8 +2617,8 @@ pub fn media_close_native_screen_share_viewer(_identity: String) -> Result<(), S
 /// next captured frame — no need to restart the capture pipeline.
 ///
 /// Preset values:
-/// - `low`:  1920×1080 @ 30fps, JPEG 85
-/// - `high`: 2560×1440 @ 30fps, JPEG 92
+/// - `low`:  1920×1080 @ 60fps, JPEG 85
+/// - `high`: 2560×1440 @ 60fps, JPEG 92
 /// - `max`:  2560×1440 @ 60fps, JPEG 95
 #[tauri::command]
 #[cfg(any(target_os = "linux", target_os = "windows"))]

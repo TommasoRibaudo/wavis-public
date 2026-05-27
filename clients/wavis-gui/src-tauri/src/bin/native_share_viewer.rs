@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use gdk_pixbuf::PixbufLoader;
+use gdk_pixbuf::{Colorspace, PixbufLoader};
 #[cfg(target_os = "linux")]
 use gtk::glib::translate::ToGlibPtr;
 #[cfg(target_os = "linux")]
@@ -89,7 +89,7 @@ fn main() {
         gtk::main_quit();
     });
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::channel::<ViewerFrame>();
     std::thread::Builder::new()
         .name("native-share-viewer-stream".into())
         .spawn(move || {
@@ -104,8 +104,8 @@ fn main() {
         while let Ok(bytes) = rx.try_recv() {
             latest = Some(bytes);
         }
-        if let Some(bytes) = latest {
-            if let Some(pixbuf) = decode_jpeg(&bytes) {
+        if let Some(frame) = latest {
+            if let Some(pixbuf) = frame.into_pixbuf() {
                 *latest_pixbuf.borrow_mut() = Some(pixbuf);
                 drawing_area.queue_draw();
             }
@@ -117,7 +117,47 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn stream_frames(url: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
+struct ViewerFrame {
+    width: u32,
+    height: u32,
+    data: ViewerFrameData,
+}
+
+#[cfg(target_os = "linux")]
+enum ViewerFrameData {
+    Jpeg(Vec<u8>),
+    Rgba(Vec<u8>),
+}
+
+#[cfg(target_os = "linux")]
+impl ViewerFrame {
+    fn into_pixbuf(self) -> Option<gdk_pixbuf::Pixbuf> {
+        match self.data {
+            ViewerFrameData::Jpeg(bytes) => decode_jpeg(&bytes),
+            ViewerFrameData::Rgba(bytes) => {
+                if self.width == 0 || self.height == 0 {
+                    return None;
+                }
+                let expected_len = self.width as usize * self.height as usize * 4;
+                if bytes.len() != expected_len {
+                    return None;
+                }
+                Some(gdk_pixbuf::Pixbuf::from_mut_slice(
+                    bytes,
+                    Colorspace::Rgb,
+                    true,
+                    8,
+                    self.width as i32,
+                    self.height as i32,
+                    self.width as i32 * 4,
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stream_frames(url: &str, tx: mpsc::Sender<ViewerFrame>) -> Result<(), String> {
     let parsed = parse_local_url(url)?;
     let mut stream = TcpStream::connect(("127.0.0.1", parsed.port))
         .map_err(|e| format!("connect failed: {e}"))?;
@@ -135,8 +175,20 @@ fn stream_frames(url: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
 
     let mut buffer = Vec::<u8>::with_capacity(512 * 1024);
     read_until_headers(&mut stream, &mut buffer)?;
+    if parsed.raw {
+        loop {
+            let frame = read_raw_frame(&mut stream, &mut buffer)?;
+            if tx.send(frame).is_err() {
+                return Ok(());
+            }
+        }
+    }
     loop {
-        let frame = read_multipart_frame(&mut stream, &mut buffer)?;
+        let frame = ViewerFrame {
+            width: 0,
+            height: 0,
+            data: ViewerFrameData::Jpeg(read_multipart_frame(&mut stream, &mut buffer)?),
+        };
         if tx.send(frame).is_err() {
             return Ok(());
         }
@@ -147,6 +199,7 @@ fn stream_frames(url: &str, tx: mpsc::Sender<Vec<u8>>) -> Result<(), String> {
 struct ParsedUrl {
     port: u16,
     target: String,
+    raw: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -162,7 +215,38 @@ fn parse_local_url(url: &str) -> Result<ParsedUrl, String> {
         .map_err(|e| format!("invalid port: {e}"))?;
     Ok(ParsedUrl {
         port,
+        raw: target.contains("format=raw"),
         target: format!("/{target}"),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_raw_frame(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<ViewerFrame, String> {
+    while buffer.len() < 20 {
+        read_more(stream, buffer)?;
+    }
+    let width = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+    let height = u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
+    let _seq = u64::from_le_bytes([
+        buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14],
+        buffer[15],
+    ]);
+    let len = u32::from_le_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]) as usize;
+    buffer.drain(..20);
+
+    let expected_len = width as usize * height as usize * 4;
+    if width == 0 || height == 0 || len != expected_len || len > 100_000_000 {
+        return Err(format!("invalid raw frame header: {width}x{height} len={len}"));
+    }
+
+    while buffer.len() < len {
+        read_more(stream, buffer)?;
+    }
+
+    Ok(ViewerFrame {
+        width,
+        height,
+        data: ViewerFrameData::Rgba(buffer.drain(..len).collect()),
     })
 }
 
