@@ -6,11 +6,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
-import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
+import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUsername, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, getState as getVoiceRoomState, changeSelectedCamera } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -124,7 +124,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [loggingOut, setLoggingOut] = useState(false);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [displayName, setDisplayNameVal] = useState<string | null>(null);
+  const [username, setUsernameState] = useState<string>('');
+  const [usernameSaving, setUsernameSaving] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
   const [selectedColor, setSelectedColor] = useState<string>(PROFILE_COLORS[0]);
   const [tlsEnabled, setTlsEnabled] = useState(true);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
@@ -178,7 +180,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   useEffect(() => {
     getServerUrl().then(setServerUrl);
     getDeviceId().then(setDeviceId);
-    getDisplayName().then(setDisplayNameVal);
+    getUsername().then((name) => setUsernameState(name ?? ''));
     getProfileColor().then(setSelectedColor);
     getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
     getDefaultVolume().then(setVolume);
@@ -243,6 +245,29 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     await invoke('media_set_denoise_enabled', { enabled: checked });
     await setMediaDenoiseEnabled(checked);
   }, []);
+
+  const handleUsernameSave = useCallback(async () => {
+    const trimmed = username.trim();
+    if (!trimmed) {
+      setUsernameError('username is required');
+      return;
+    }
+    if (trimmed.length > 64) {
+      setUsernameError('username must be 64 characters or less');
+      return;
+    }
+    setUsernameSaving(true);
+    setUsernameError(null);
+    try {
+      await updateUsername(trimmed);
+      setUsernameState(trimmed);
+      updateSessionUsername(trimmed);
+    } catch {
+      setUsernameError('failed to save username');
+    } finally {
+      setUsernameSaving(false);
+    }
+  }, [username]);
 
   // Hotkey recording: capture keydown events when in recording mode
   useEffect(() => {
@@ -461,13 +486,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
           <h2>settings</h2>
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-          {/* Device info */}
+          {/* Account info */}
           <div className="mb-6">
-            <p className="text-sm text-wavis-text-secondary mb-2">DEVICE</p>
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
-                <span className="text-wavis-text-secondary">name: </span>
-                <span>{displayName ?? '—'}</span>
+                <span className="text-wavis-text-secondary">username: </span>
+                <span>{username || '—'}</span>
               </div>
               <div>
                 <span className="text-wavis-text-secondary">server: </span>
@@ -530,22 +555,50 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
           {/* Profile color picker */}
           <div className="mb-6">
             <p className="text-sm text-wavis-text-secondary mb-2">PROFILE</p>
-            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary">
-              <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
-              <div className="flex flex-wrap gap-2">
-                {PROFILE_COLORS.map((color) => (
-                  <button
-                    key={color}
-                    className={`w-8 h-8 rounded${selectedColor === color ? ' ring-2 ring-wavis-accent' : ''}`}
-                    style={{ backgroundColor: color }}
-                    onClick={() => {
-                      setSelectedColor(color);
-                      setProfileColor(color);
-                      updateSessionProfileColor(color);
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3">
+              <div>
+                <label htmlFor="username" className="text-sm text-wavis-text-secondary block mb-1">Username</label>
+                <div className="flex gap-2">
+                  <input
+                    id="username"
+                    value={username}
+                    maxLength={64}
+                    onChange={(e) => {
+                      setUsernameState(e.target.value);
+                      setUsernameError(null);
                     }}
-                    aria-label={`Select color ${color}`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleUsernameSave();
+                    }}
+                    className="flex-1 min-w-0 bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                   />
-                ))}
+                  <button
+                    onClick={() => { void handleUsernameSave(); }}
+                    disabled={usernameSaving}
+                    className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-3 py-1 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {usernameSaving ? 'saving...' : '/save'}
+                  </button>
+                </div>
+                {usernameError && <p className="text-xs text-wavis-danger mt-1">{usernameError}</p>}
+              </div>
+              <div>
+                <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
+                <div className="flex flex-wrap gap-2">
+                  {PROFILE_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      className={`w-8 h-8 rounded${selectedColor === color ? ' ring-2 ring-wavis-accent' : ''}`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => {
+                        setSelectedColor(color);
+                        setProfileColor(color);
+                        updateSessionProfileColor(color);
+                      }}
+                      aria-label={`Select color ${color}`}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           </div>

@@ -185,16 +185,12 @@ pub async fn get_channel_detail(
         }
     }
 
-    // Query all non-banned members with display name from their most recent active device
+    // Query all non-banned members with their account username.
     let member_rows = sqlx::query(
         "SELECT cm.user_id, cm.role, cm.joined_at, \
-                COALESCE(d.device_name, '') AS display_name \
+                COALESCE(u.username, '') AS display_name \
          FROM channel_memberships cm \
-         LEFT JOIN LATERAL ( \
-             SELECT device_name FROM devices \
-             WHERE devices.user_id = cm.user_id AND revoked_at IS NULL \
-             ORDER BY created_at DESC LIMIT 1 \
-         ) d ON true \
+         LEFT JOIN users u ON u.user_id = cm.user_id \
          WHERE cm.channel_id = $1 AND cm.banned_at IS NULL",
     )
     .bind(channel_id)

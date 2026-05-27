@@ -4,7 +4,7 @@ import {
   type AuthLogEntry,
   validateServerUrl,
   registerUser,
-  setDisplayName,
+  setUsername,
   INSECURE_TLS_ALLOWED,
 } from './auth';
 import { logEntryColor } from './authLog';
@@ -19,7 +19,7 @@ export default function DeviceSetup() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [serverUrl, setServerUrl] = useState('');
-  const [displayName, setDisplayNameValue] = useState('');
+  const [username, setUsernameValue] = useState('');
   const [phrase, setPhrase] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [registering, setRegistering] = useState(false);
@@ -39,12 +39,12 @@ export default function DeviceSetup() {
   }, []);
 
   const handleContinue = useCallback(async () => {
-    const trimmedName = displayName.trim();
+    const trimmedName = username.trim();
     if (trimmedName) {
-      await setDisplayName(trimmedName);
+      await setUsername(trimmedName);
     }
     navigate('/', { replace: true });
-  }, [displayName, navigate]);
+  }, [username, navigate]);
 
   const handleSubmit = useCallback(async () => {
     if (registering) return;
@@ -55,13 +55,13 @@ export default function DeviceSetup() {
     setRegisterError(null);
     setShowRetry(false);
 
-    const trimmedName = displayName.trim();
+    const trimmedName = username.trim();
     if (!trimmedName || trimmedName.length < 1) {
-      setNameError('display name is required');
+      setNameError('username is required');
       return;
     }
-    if (trimmedName.length > 32) {
-      setNameError('display name must be 32 characters or less');
+    if (trimmedName.length > 64) {
+      setNameError('username must be 64 characters or less');
       return;
     }
 
@@ -98,7 +98,7 @@ export default function DeviceSetup() {
       setRegisterError('Registration failed — please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, displayName, phrase, insecureTls, registering]);
+  }, [serverUrl, username, phrase, insecureTls, registering]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -182,21 +182,21 @@ export default function DeviceSetup() {
 
   return (
     <AuthShell
-      subtitle={<div className="mt-2 text-wavis-text-secondary text-sm">First-launch device registration</div>}
+      subtitle={<div className="mt-2 text-wavis-text-secondary text-sm">First-launch account setup</div>}
     >
       <div className="px-4 sm:px-6 py-4">
         <AuthFieldRow
-          label="Display name:"
+          label="Username:"
           placeholder="your name"
-          value={displayName}
+          value={username}
           onChange={(value) => {
-            setDisplayNameValue(value);
+            setUsernameValue(value);
             setNameError(null);
           }}
           onKeyDown={handleKeyDown}
           error={nameError}
           disabled={registering}
-          maxLength={32}
+          maxLength={64}
           inputRef={inputRef}
           autoFocus
         />

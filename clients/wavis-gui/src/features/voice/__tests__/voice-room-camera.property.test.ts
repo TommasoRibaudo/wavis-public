@@ -336,6 +336,7 @@ async function loadVoiceRoomIntegrationHarness() {
   vi.doMock('@features/auth/auth', () => ({
     getServerUrl: vi.fn(async () => 'https://test.wavis.dev'),
     getDisplayName: vi.fn(async () => 'TestUser'),
+    getUsername: vi.fn(async () => 'TestUser'),
     getAccessToken: vi.fn(async () => 'mock-token'),
     isTokenExpired: vi.fn(async () => false),
     refreshTokens: vi.fn(async () => true),
