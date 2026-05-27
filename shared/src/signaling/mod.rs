@@ -217,6 +217,8 @@ pub enum SignalingMessage {
     SetPassthrough(SetPassthroughPayload),
     /// Client -> server request to clear the active passthrough pair.
     ClearPassthrough(ClearPassthroughPayload),
+    /// Client -> server (admin/owner) request to set the passthrough volume for all participants.
+    SetPassthroughVolume(SetPassthroughVolumePayload),
     /// Server -> client snapshot of the synchronized sub-room layout.
     SubRoomState(SubRoomStatePayload),
     /// Server -> client broadcast that a new sub-room was created.
@@ -794,6 +796,13 @@ pub struct SetPassthroughPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClearPassthroughPayload {}
 
+/// Client (admin/owner) sets the passthrough volume for all participants (0–100).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughVolumePayload {
+    /// Passthrough volume as a percentage (0–100). Clamped server-side.
+    pub volume: u8,
+}
+
 /// Authoritative passthrough pair included in synchronized sub-room snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PassthroughStatePayload {
@@ -816,6 +825,13 @@ pub struct SubRoomStatePayload {
     /// Optional active passthrough pair for the voice session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<PassthroughStatePayload>,
+    /// Passthrough volume as a percentage (0–100). Defaults to 20 if absent (backward compat).
+    #[serde(rename = "passthroughVolumePercent", default = "default_passthrough_volume")]
+    pub passthrough_volume_percent: u8,
+}
+
+fn default_passthrough_volume() -> u8 {
+    20
 }
 
 /// Server announces a newly created sub-room.

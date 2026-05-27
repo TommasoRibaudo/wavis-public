@@ -218,6 +218,7 @@ vi.mock('../audio-devices', () => ({
 let mockMaxRetries = 10;
 
 vi.mock('@features/settings/settings-store', () => ({
+  DEFAULT_PASSTHROUGH_VOLUME: 20,
   getDefaultVolume: vi.fn(async () => 70),
   getReconnectConfig: vi.fn(async () => ({
     strategy: 'exponential' as const,

@@ -89,6 +89,7 @@ const notificationEventArb = fc.constantFrom<(keyof NotificationToggles)[]>(
   'participantKicked',
   'participantMutedByHost',
   'inviteReceived',
+  'passthroughChanged',
 );
 
 /* ═══ Property Tests ════════════════════════════════════════════════ */
@@ -197,6 +198,7 @@ describe('Notification toggle round-trip', () => {
       participantKicked: true,
       participantMutedByHost: true,
       inviteReceived: true,
+      passthroughChanged: true,
     });
   });
 });

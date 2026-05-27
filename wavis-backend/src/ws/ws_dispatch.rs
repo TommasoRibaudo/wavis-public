@@ -208,6 +208,54 @@ pub(crate) enum DispatchOutcome {
     Break,
 }
 
+/// Lazily re-query the caller's channel role and verify they are a Host (Owner or Admin).
+///
+/// Used by passthrough and share-permission actions that require admin/owner access.
+/// Returns `Ok(())` if the role check passes. On any failure it sends an `Error` message
+/// to the caller and returns `Err(())` — the caller should `return DispatchOutcome::Continue`.
+///
+/// Takes only `&AppState` (not `&DispatchContext`) so the future stays `Send` across the await.
+async fn require_host_role(
+    app_state: &AppState,
+    caller_id: &str,
+    channel_id: &str,
+    user_id_uuid: Uuid,
+    op_name: &str,
+) -> Result<(), ()> {
+    let role = match voice_orchestrator::get_current_channel_role(
+        &app_state.db_pool,
+        channel_id,
+        &user_id_uuid,
+    )
+    .await
+    {
+        Ok(Some(r)) => voice_orchestrator::map_channel_role(r),
+        Ok(None) => {
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload { message: "not authorized".to_string() }),
+            );
+            return Err(());
+        }
+        Err(e) => {
+            error!(caller_id = %caller_id, op = %op_name, error = %e, "DB error during role check");
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload { message: "internal error".to_string() }),
+            );
+            return Err(());
+        }
+    };
+    if role != ParticipantRole::Host {
+        app_state.connections.send_to(
+            caller_id,
+            &SignalingMessage::Error(ErrorPayload { message: "unauthorized".to_string() }),
+        );
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Route a parsed `SignalingMessage` to the appropriate domain function.
 ///
 /// Contains the entire `match message { ... }` block previously in `handle_socket`.
@@ -2629,7 +2677,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            if session_ref.channel_id.is_none() {
+            let Some(ref channel_id) = session_ref.channel_id.clone() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2637,8 +2685,14 @@ pub(crate) async fn dispatch_message(
                     }),
                 );
                 return DispatchOutcome::Continue;
-            }
+            };
             if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref.user_id.as_ref().expect("channel session always has user_id"),
+            ).expect("session user_id is always a valid UUID");
+            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough").await.is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -2669,7 +2723,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            if session_ref.channel_id.is_none() {
+            let Some(ref channel_id) = session_ref.channel_id.clone() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2677,8 +2731,14 @@ pub(crate) async fn dispatch_message(
                     }),
                 );
                 return DispatchOutcome::Continue;
-            }
+            };
             if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref.user_id.as_ref().expect("channel session always has user_id"),
+            ).expect("session user_id is always a valid UUID");
+            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "clear_passthrough").await.is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -2702,6 +2762,42 @@ pub(crate) async fn dispatch_message(
                     );
                 }
             }
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::SetPassthroughVolume(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            let Some(ref channel_id) = session_ref.channel_id.clone() else {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "set_passthrough_volume requires a channel voice session".to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            };
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref.user_id.as_ref().expect("channel session always has user_id"),
+            ).expect("session user_id is always a valid UUID");
+            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough_volume").await.is_err() {
+                return DispatchOutcome::Continue;
+            }
+
+            let result = voice_orchestrator::set_passthrough_volume(
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                payload.volume,
+            );
+            dispatch_signals(
+                result.signals,
+                &session_ref.room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
             DispatchOutcome::Continue
         }
         SignalingMessage::SubRoomState(_)
@@ -3012,6 +3108,7 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::LeaveSubRoom(_)
         | SignalingMessage::SetPassthrough(_)
         | SignalingMessage::ClearPassthrough(_)
+        | SignalingMessage::SetPassthroughVolume(_)
         | SignalingMessage::SubRoomState(_)
         | SignalingMessage::SubRoomCreated(_)
         | SignalingMessage::SubRoomJoined(_)
