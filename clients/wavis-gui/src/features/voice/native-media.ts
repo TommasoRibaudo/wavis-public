@@ -117,6 +117,8 @@ export class NativeMediaModule {
   private unlistenEnded: UnlistenFn | null = null;
   private disposed = false;
   private activeShares = new Map<string, ActiveShareEntry>();
+  private pendingFrames = new Map<string, string>();
+  private decodingShares = new Set<string>();
 
   constructor(callbacks: MediaCallbacks) {
     this.callbacks = callbacks;
@@ -375,10 +377,14 @@ export class NativeMediaModule {
   private handleScreenShareFrame(payload: ScreenShareFramePayload): void {
     const { identity, frame } = payload;
 
-    if (hasOffscreenCaptureStream) {
-      this.handleFramePrimary(identity, frame);
-    } else {
-      this.handleFrameFallback(identity, frame);
+    if (!hasOffscreenCaptureStream) {
+      this.handleFrameFallback(identity);
+      return;
+    }
+
+    this.pendingFrames.set(identity, frame);
+    if (!this.decodingShares.has(identity)) {
+      this.decodeNextFrame(identity);
     }
   }
 
@@ -386,13 +392,37 @@ export class NativeMediaModule {
    * Primary path — OffscreenCanvas + captureStream (WebKitGTK ≥ 2.44).
    * Creates a synthetic MediaStream and feeds into the loopback bridge.
    */
-  private handleFramePrimary(identity: string, frameData: string): void {
+  private decodeNextFrame(identity: string): void {
+    const frameData = this.pendingFrames.get(identity);
+    if (!frameData || this.disposed) {
+      this.pendingFrames.delete(identity);
+      this.decodingShares.delete(identity);
+      return;
+    }
+
+    this.pendingFrames.delete(identity);
+    this.decodingShares.add(identity);
+    this.handleFramePrimary(identity, frameData)
+      .catch((err) => {
+        console.warn(LOG, `frame decode failed for ${identity}:`, err);
+      })
+      .finally(() => {
+        if (this.pendingFrames.has(identity) && !this.disposed) {
+          queueMicrotask(() => this.decodeNextFrame(identity));
+        } else {
+          this.decodingShares.delete(identity);
+        }
+      });
+  }
+
+  private async handleFramePrimary(identity: string, frameData: string): Promise<void> {
     const binary = atob(frameData);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     const blob = new Blob([bytes], { type: 'image/jpeg' });
 
-    createImageBitmap(blob).then((bitmap) => {
+    const bitmap = await createImageBitmap(blob);
+    try {
       let entry = this.activeShares.get(identity);
 
       if (!entry) {
@@ -434,51 +464,36 @@ export class NativeMediaModule {
           (tracks[0] as unknown as { requestFrame(): void }).requestFrame();
         }
       }
+    } finally {
       bitmap.close();
-    }).catch((err) => {
-      console.warn(LOG, `frame decode failed for ${identity}:`, err);
-    });
+    }
   }
 
   /**
    * Fallback path — visible <canvas> element (WebKitGTK < 2.44).
    * No MediaStream — canvas is rendered directly in ScreenShareWindow.
    */
-  private handleFrameFallback(identity: string, frameData: string): void {
-    let entry = this.activeShares.get(identity);
+  private handleFrameFallback(identity: string): void {
+    const entry = this.activeShares.get(identity);
 
     if (!entry) {
-      // First frame — create visible canvas
+      // First frame — create visible canvas marker. Popout/watch-all windows
+      // listen to the frame event directly, so the main webview must not also
+      // decode every frame.
       const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
 
-      entry = {
+      const newEntry = {
         stream: null,
         canvas,
-        ctx,
+        ctx: null,
         startedAtMs: Date.now(),
       };
-      this.activeShares.set(identity, entry);
+      this.activeShares.set(identity, newEntry);
 
       console.log(LOG, `screen share subscribed (canvas fallback): ${identity}`);
       // Pass null stream — ScreenShareWindow will use the canvas directly
       this.callbacks.onScreenShareSubscribed(identity, null as unknown as MediaStream);
     }
-
-    // Decode base64 JPEG and paint onto canvas
-    const img = new Image();
-    img.onload = () => {
-      if (!entry) return;
-      // Resize canvas to match frame dimensions
-      if (entry.canvas && (entry.canvas.width !== img.width || entry.canvas.height !== img.height)) {
-        entry.canvas.width = img.width;
-        entry.canvas.height = img.height;
-      }
-      if (entry.ctx) {
-        (entry.ctx as CanvasRenderingContext2D).drawImage(img, 0, 0);
-      }
-    };
-    img.src = `data:image/jpeg;base64,${frameData}`;
   }
 
   /** Handle screen_share_ended event — clean up and notify. */
@@ -506,5 +521,7 @@ export class NativeMediaModule {
     }
 
     this.activeShares.delete(identity);
+    this.pendingFrames.delete(identity);
+    this.decodingShares.delete(identity);
   }
 }

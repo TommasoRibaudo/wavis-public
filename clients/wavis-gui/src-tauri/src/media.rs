@@ -624,15 +624,11 @@ pub fn media_connect(
     // Only compiled on Linux where the image + base64 crates are available.
     #[cfg(target_os = "linux")]
     {
-        // Per-identity emit-rate cap. The Linux pipeline JPEG-encodes + base64s
-        // every remote screen-share frame, then ships it to the webview as a
-        // JSON Tauri event. Under load (multiple shares, large resolutions)
-        // this saturates CPU and lets libwebrtc's native frame queue grow
-        // unbounded — eventually segfaulting. Capping the visible refresh at
-        // 10 fps keeps the screen share usable while preventing the
-        // overload regime that triggered the crashes we observed.
-        const VIEWER_MIN_FRAME_INTERVAL: std::time::Duration =
-            std::time::Duration::from_millis(100); // 10 fps
+        // Per-identity emit-rate cap. Keep this tied to the configured screen
+        // share FPS so the receiver is not artificially limited below the
+        // sender's requested fluidity. The webview side coalesces decode work
+        // to the newest frame, so a 60 fps target does not create an unbounded
+        // queue when rendering falls behind.
         let last_emit_per_identity: Arc<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
 
@@ -653,8 +649,11 @@ pub fn media_connect(
                     Ok(g) => g,
                     Err(_) => return, // poisoned: bail rather than panic in callback
                 };
+                let min_frame_interval = std::time::Duration::from_nanos(
+                    1_000_000_000 / viewer_config.max_fps().max(1) as u64,
+                );
                 if let Some(last) = map.get(identity) {
-                    if now.duration_since(*last) < VIEWER_MIN_FRAME_INTERVAL {
+                    if now.duration_since(*last) < min_frame_interval {
                         return;
                     }
                 }
@@ -1581,8 +1580,8 @@ pub fn screen_share_poll_frame() -> Result<Option<()>, String> {
 /// next captured frame — no need to restart the capture pipeline.
 ///
 /// Preset values:
-/// - `low`:  1920×1080 @ 30fps, JPEG 85
-/// - `high`: 2560×1440 @ 30fps, JPEG 92
+/// - `low`:  1920×1080 @ 60fps, JPEG 85
+/// - `high`: 2560×1440 @ 60fps, JPEG 92
 /// - `max`:  2560×1440 @ 60fps, JPEG 95
 #[tauri::command]
 #[cfg(any(target_os = "linux", target_os = "windows"))]
