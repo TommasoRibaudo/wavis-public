@@ -16,10 +16,11 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project    = "wavis"
-      Owner      = "wavis"
-      CostCenter = "wavis"
-      ManagedBy  = "terraform"
+      Project     = "wavis"
+      Environment = "shared"
+      Owner       = "wavis"
+      CostCenter  = "wavis"
+      ManagedBy   = "terraform"
     }
   }
 }

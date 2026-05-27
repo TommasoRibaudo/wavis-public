@@ -502,7 +502,7 @@ async fn test18c_stop_share_by_owner() {
     drain(&mut r_guest).await;
 
     // Owner stops share
-    ws_send(&mut s_host, json!({"type":"stop_share"})).await;
+    ws_send(&mut s_host, json!({"type":"stop-share"})).await;
     let stopped_host = recv_type(&mut r_host, "share_stopped").await;
     assert_eq!(stopped_host["participantId"], host_id);
 
@@ -546,7 +546,7 @@ async fn test18d_stop_share_host_override() {
     // Host stops guest's share (override)
     ws_send(
         &mut s_host,
-        json!({"type":"stop_share","targetParticipantId": &guest_id}),
+        json!({"type":"stop-share","targetParticipantId": &guest_id}),
     )
     .await;
     let stopped = recv_type(&mut r_host, "share_stopped").await;
@@ -588,7 +588,7 @@ async fn test18e_stop_share_non_owner_noop() {
     drain(&mut r_guest).await;
 
     // Guest tries to stop â€” should be silent no-op (no error, no share_stopped)
-    ws_send(&mut s_guest, json!({"type":"stop_share"})).await;
+    ws_send(&mut s_guest, json!({"type":"stop-share"})).await;
 
     // Verify no share_stopped or error arrives for the guest within a short window
     let response = try_recv_type(&mut r_guest, "share_stopped", 500).await;
@@ -924,7 +924,7 @@ async fn test21c_oversized_participant_id_in_stop_share() {
     let long_id = "x".repeat(200);
     ws_send(
         &mut sink,
-        json!({"type":"stop_share","targetParticipantId": long_id}),
+        json!({"type":"stop-share","targetParticipantId": long_id}),
     )
     .await;
     let err = recv_type(&mut stream, "error").await;
@@ -968,7 +968,7 @@ async fn test22a_start_share_before_auth() {
     assert_eq!(err["message"], "not authenticated");
 
     // Connection should still be open
-    ws_send(&mut sink, json!({"type":"stop_share"})).await;
+    ws_send(&mut sink, json!({"type":"stop-share"})).await;
     let err2 = recv_type(&mut stream, "error").await;
     assert_eq!(err2["message"], "not authenticated");
 }

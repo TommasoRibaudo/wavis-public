@@ -309,6 +309,9 @@ impl WinCapture {
         };
 
         // Disable the yellow capture border if the API supports it.
+        // Cursor capture is enabled so viewers see the cursor in the stream.
+        // Cursor visibility for the streamer is preserved by using monitor
+        // capture (not window capture) in create_capture_item above.
         let _ = session.SetIsCursorCaptureEnabled(true);
         let _ = session.SetIsBorderRequired(false);
 

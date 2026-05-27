@@ -71,25 +71,6 @@ resource "aws_subnet" "private_data" {
   })
 }
 
-resource "aws_eip" "nat" {
-  domain = "vpc"
-
-  tags = merge(local.tags, {
-    Name = "${local.project}-${local.env}-nat-eip"
-  })
-}
-
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = values(aws_subnet.public)[0].id
-
-  tags = merge(local.tags, {
-    Name = "${local.project}-${local.env}-nat"
-  })
-
-  depends_on = [aws_internet_gateway.main]
-}
-
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -111,18 +92,18 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# Private route table is intentionally retained with no 0.0.0.0/0 route.
+# In dev we run Fargate tasks in public subnets to avoid NAT Gateway costs
+# (~$33/mo). The empty private_app / private_data subnets and this route
+# table cost nothing on their own and let us re-introduce a NAT Gateway by
+# adding back aws_eip.nat, aws_nat_gateway.main, and aws_route.private_nat.
+# See doc/aws_costs/runbook.md (Tier 3) for the rationale.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   tags = merge(local.tags, {
     Name = "${local.project}-${local.env}-private-rt"
   })
-}
-
-resource "aws_route" "private_nat" {
-  route_table_id         = aws_route_table.private.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main.id
 }
 
 resource "aws_route_table_association" "private_app" {

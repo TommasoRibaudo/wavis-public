@@ -260,6 +260,12 @@ variable "livekit_network_out_alarm_threshold_bytes" {
   default     = 2000000000
 }
 
+variable "livekit_extra_alarms_enabled" {
+  description = "Enable the optional LiveKit-host alarms (CPU credits, NetworkOut, status checks). The primary CPU alarm is always on. Disable in dev to save ~$0.30/mo."
+  type        = bool
+  default     = true
+}
+
 variable "cloudfront_5xx_error_rate_alarm_threshold" {
   description = "CloudFront 5XX error rate threshold percentage"
   type        = number
@@ -276,4 +282,10 @@ variable "cloudfront_web_acl_id" {
   description = "WAF WebACL ARN attached to the CloudFront distribution (required by CF Security Bundle pricing plan)"
   type        = string
   default     = ""
+}
+
+variable "enable_waf" {
+  description = "Whether Terraform creates and attaches an AWS WAFv2 WebACL to the CloudFront distribution. Default true so prod is protected by default; set false in dev to save the per-WebACL/per-rule charges."
+  type        = bool
+  default     = true
 }

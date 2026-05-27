@@ -120,7 +120,8 @@ pub fn get_rust_log_buffer(state: tauri::State<'_, RustLogBufferState>) -> Vec<S
 ///
 /// - Windows: Uses Win32 GDI APIs (GetWindowRect, BitBlt) to capture the window content.
 /// - macOS: Uses CGWindowListCreateImage to capture the window.
-/// - Linux: Returns an error — descoped to follow-up.
+/// - Linux: Uses xdg-desktop-portal Screenshot (works on Wayland, X11, XWayland);
+///   returns the full screen — bug-report redactor handles cropping/masking.
 #[tauri::command]
 pub fn capture_window_screenshot(window: tauri::Window) -> Result<Vec<u8>, String> {
     capture_window_screenshot_impl(window)
@@ -359,5 +360,36 @@ extern "C" {
 
 #[cfg(target_os = "linux")]
 fn capture_window_screenshot_impl(_window: tauri::Window) -> Result<Vec<u8>, String> {
-    Err("Screenshot capture not available on Linux".to_string())
+    // xdg-desktop-portal Screenshot API — works on Wayland, X11, and XWayland.
+    // Returns the full screen; the bug-report redactor handles any cropping
+    // or sensitive-area masking client-side.
+    if let Ok(h) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(move || h.block_on(capture_via_portal_async()))
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime build failed: {e}"))?;
+        rt.block_on(capture_via_portal_async())
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_via_portal_async() -> Result<Vec<u8>, String> {
+    use ashpd::desktop::screenshot::Screenshot;
+
+    let response = Screenshot::request()
+        .interactive(false)
+        .modal(false)
+        .send()
+        .await
+        .map_err(|e| format!("portal Screenshot request failed: {e}"))?
+        .response()
+        .map_err(|e| format!("portal Screenshot response failed: {e}"))?;
+
+    let uri = response.uri();
+    let path = uri
+        .to_file_path()
+        .map_err(|_| format!("portal returned non-file URI: {uri}"))?;
+    std::fs::read(&path).map_err(|e| format!("read portal screenshot {path:?}: {e}"))
 }

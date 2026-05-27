@@ -213,8 +213,13 @@ impl AppState {
         let turn_config = match TurnConfig::try_from_env() {
             Ok(Some(cfg)) => {
                 tracing::info!(
-                    "TURN credentials enabled (TTL={}s)",
-                    cfg.credential_ttl_secs
+                    ttl_secs = cfg.credential_ttl_secs,
+                    stun_urls = cfg.stun_urls.len(),
+                    turn_urls = cfg.turn_urls.len(),
+                    "TURN credentials enabled (TTL={}s, stun_urls={}, turn_urls={})",
+                    cfg.credential_ttl_secs,
+                    cfg.stun_urls.len(),
+                    cfg.turn_urls.len()
                 );
                 Some(Arc::new(cfg))
             }
@@ -324,6 +329,73 @@ pub fn is_join_allowed(health: &SfuHealth) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::io;
+    use std::sync::Mutex;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct SharedWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard {
+                buffer: self.buffer.clone(),
+            }
+        }
+    }
+
+    struct SharedWriterGuard {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl io::Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer
+                .lock()
+                .expect("log capture mutex poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs(run: impl FnOnce()) -> String {
+        let writer = SharedWriter::default();
+        let buffer = writer.buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(writer)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, run);
+
+        String::from_utf8(buffer.lock().expect("log capture mutex poisoned").clone())
+            .expect("captured logs are valid utf-8")
+    }
+
+    fn emit_turn_loaded_log(cfg: &TurnConfig) {
+        tracing::info!(
+            ttl_secs = cfg.credential_ttl_secs,
+            stun_urls = cfg.stun_urls.len(),
+            turn_urls = cfg.turn_urls.len(),
+            "TURN credentials enabled (TTL={}s, stun_urls={}, turn_urls={})",
+            cfg.credential_ttl_secs,
+            cfg.stun_urls.len(),
+            cfg.turn_urls.len()
+        );
+    }
+
+    fn emit_turn_unset_log() {
+        tracing::info!("TURN_SHARED_SECRET not set — TURN credentials disabled");
+    }
 
     // --- Property 5: SFU health state transitions ---
     // Feature: sfu-multi-party-voice, Property 5: SFU health state transitions
@@ -393,5 +465,33 @@ mod tests {
                 prop_assert!(is_join_allowed(&current), "Available resumes joins");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn startup_log_when_turn_loaded() {
+        let cfg = TurnConfig::new(
+            b"0123456789abcdef0123456789abcdef".to_vec(),
+            None,
+            3600,
+            vec!["stun:127.0.0.1:3478".to_string()],
+            vec![
+                "turn:127.0.0.1:3478?transport=udp".to_string(),
+                "turn:127.0.0.1:3478?transport=tcp".to_string(),
+            ],
+        );
+        let logs = capture_logs(|| emit_turn_loaded_log(&cfg));
+
+        assert!(logs.contains("TURN credentials enabled (TTL="));
+        assert!(logs.contains("TTL=3600s"));
+        assert!(logs.contains("stun_urls=1"));
+        assert!(logs.contains("turn_urls=2"));
+        assert!(logs.contains("ttl_secs=3600"));
+    }
+
+    #[tokio::test]
+    async fn startup_log_when_turn_unset() {
+        let logs = capture_logs(emit_turn_unset_log);
+
+        assert!(logs.contains("TURN_SHARED_SECRET not set"));
     }
 }

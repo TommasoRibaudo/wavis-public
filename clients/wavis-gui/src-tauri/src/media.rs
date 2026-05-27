@@ -11,6 +11,13 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle as StdJoinHandle;
+#[cfg(target_os = "linux")]
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::{Builder, Runtime};
 use tokio::task::JoinHandle;
@@ -160,6 +167,275 @@ struct HeartbeatFrame {
     height: u32,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct LatestRemoteScreenShareFrame {
+    data: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    seq: u64,
+}
+
+#[cfg(target_os = "linux")]
+struct LocalCameraCapture {
+    active: Arc<AtomicBool>,
+    child: Arc<Mutex<Option<Child>>>,
+    thread: Option<StdJoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+impl LocalCameraCapture {
+    fn stop(mut self) {
+        self.active.store(false, Ordering::Relaxed);
+        if let Ok(mut child_guard) = self.child.lock() {
+            if let Some(child) = child_guard.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+pub struct PolledScreenShareFrame {
+    pub identity: String,
+    pub frame: String,
+    pub width: u32,
+    pub height: u32,
+    pub seq: u64,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+struct ScreenShareAvailablePayload {
+    identity: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+pub struct PolledCameraFrame {
+    pub identity: String,
+    pub frame: String,
+    pub width: u32,
+    pub height: u32,
+    pub seq: u64,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
+struct CameraAvailablePayload {
+    identity: String,
+}
+
+#[cfg(target_os = "linux")]
+fn start_remote_screen_share_stream_server(
+    frames: Arc<Mutex<std::collections::HashMap<String, LatestRemoteScreenShareFrame>>>,
+    config: Arc<screen_capture::frame_processor::ScreenShareConfig>,
+) -> Option<u16> {
+    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+        Ok(listener) => listener,
+        Err(err) => {
+            log::warn!("{LOG} failed to bind remote screen share stream server: {err}");
+            return None;
+        }
+    };
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(err) => {
+            log::warn!("{LOG} failed to read remote screen share stream server port: {err}");
+            return None;
+        }
+    };
+
+    std::thread::Builder::new()
+        .name("remote-share-mjpeg".into())
+        .spawn(move || {
+            log::info!("{LOG} remote screen share stream server listening on 127.0.0.1:{port}");
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else {
+                    continue;
+                };
+                let frames = Arc::clone(&frames);
+                let config = Arc::clone(&config);
+                let _ = std::thread::Builder::new()
+                    .name("remote-share-mjpeg-client".into())
+                    .spawn(move || {
+                        if let Err(err) = handle_remote_screen_share_stream(stream, frames, config)
+                        {
+                            log::debug!("{LOG} remote screen share stream ended: {err}");
+                        }
+                    });
+            }
+        })
+        .ok()?;
+
+    Some(port)
+}
+
+#[cfg(target_os = "linux")]
+fn handle_remote_screen_share_stream(
+    mut stream: TcpStream,
+    frames: Arc<Mutex<std::collections::HashMap<String, LatestRemoteScreenShareFrame>>>,
+    config: Arc<screen_capture::frame_processor::ScreenShareConfig>,
+) -> Result<(), String> {
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("set_nodelay failed: {e}"))?;
+
+    let mut req = Vec::with_capacity(4096);
+    while !req.windows(4).any(|window| window == b"\r\n\r\n") && req.len() < 16 * 1024 {
+        let mut chunk = [0u8; 1024];
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|e| format!("stream request read failed: {e}"))?;
+        if read == 0 {
+            return Ok(());
+        }
+        req.extend_from_slice(&chunk[..read]);
+    }
+
+    let request = String::from_utf8_lossy(&req);
+    let target = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let identity = target
+        .split_once('?')
+        .and_then(|(_, query)| query_param(query, "identity"))
+        .and_then(|value| percent_decode(&value))
+        .ok_or_else(|| "missing identity query".to_string())?;
+
+    let header = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: multipart/x-mixed-replace; boundary=wavisframe\r\n",
+        "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n",
+        "Pragma: no-cache\r\n",
+        "Connection: close\r\n",
+        "Access-Control-Allow-Origin: *\r\n",
+        "\r\n"
+    );
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| format!("stream header write failed: {e}"))?;
+
+    let mut last_seq = 0u64;
+    loop {
+        let latest = {
+            let frames = frames
+                .lock()
+                .map_err(|e| format!("remote_screen_share_frames lock: {e}"))?;
+            frames.get(&identity).cloned()
+        };
+
+        let Some(latest) = latest else {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        };
+
+        if latest.seq == last_seq {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        last_seq = latest.seq;
+
+        let jpeg = encode_remote_frame_jpeg(&latest, config.jpeg_quality())?;
+        let part_header = format!(
+            "--wavisframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+            jpeg.len()
+        );
+        stream
+            .write_all(part_header.as_bytes())
+            .and_then(|_| stream.write_all(&jpeg))
+            .and_then(|_| stream.write_all(b"\r\n"))
+            .map_err(|e| format!("stream frame write failed: {e}"))?;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn encode_remote_frame_jpeg(
+    frame: &LatestRemoteScreenShareFrame,
+    jpeg_quality: u8,
+) -> Result<Vec<u8>, String> {
+    use image::codecs::jpeg::JpegEncoder;
+    use std::io::Cursor;
+
+    let pixel_count = (frame.width * frame.height) as usize;
+    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
+    for rgba in frame.data.chunks_exact(4) {
+        rgb_data.push(rgba[0]);
+        rgb_data.push(rgba[1]);
+        rgb_data.push(rgba[2]);
+    }
+
+    let mut jpeg_buf = Cursor::new(Vec::with_capacity(256 * 1024));
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
+    encoder
+        .encode(
+            &rgb_data,
+            frame.width,
+            frame.height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| format!("remote JPEG encode failed: {e}"))?;
+    Ok(jpeg_buf.into_inner())
+}
+
+#[cfg(target_os = "linux")]
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        if k == key {
+            Some(v.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16)?;
+                let lo = (bytes[i + 2] as char).to_digit(16)?;
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 // ─── Managed State ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
@@ -214,6 +490,31 @@ pub struct MediaState {
     native_screen_share_heartbeat_active: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     native_screen_share_heartbeat_thread: Mutex<Option<StdJoinHandle<()>>>,
+    /// Latest raw remote screen-share frame per participant. The LiveKit
+    /// callback writes here; the webview polls and encodes only the newest
+    /// frame it is ready to render.
+    #[cfg(target_os = "linux")]
+    remote_screen_share_frames:
+        Arc<Mutex<std::collections::HashMap<String, LatestRemoteScreenShareFrame>>>,
+    #[cfg(target_os = "linux")]
+    remote_screen_share_seq: Arc<AtomicU64>,
+    /// Latest raw remote camera frame per participant. Camera frames are kept
+    /// separate from screen-share frames because a participant may publish both.
+    #[cfg(target_os = "linux")]
+    remote_camera_frames:
+        Arc<Mutex<std::collections::HashMap<String, LatestRemoteScreenShareFrame>>>,
+    #[cfg(target_os = "linux")]
+    remote_camera_seq: Arc<AtomicU64>,
+    #[cfg(target_os = "linux")]
+    local_camera_frame: Arc<Mutex<Option<LatestRemoteScreenShareFrame>>>,
+    #[cfg(target_os = "linux")]
+    local_camera_seq: Arc<AtomicU64>,
+    #[cfg(target_os = "linux")]
+    local_camera_capture: Mutex<Option<LocalCameraCapture>>,
+    #[cfg(target_os = "linux")]
+    remote_screen_share_stream_port: u16,
+    #[cfg(target_os = "linux")]
+    native_screen_share_viewers: Arc<Mutex<std::collections::HashMap<String, std::process::Child>>>,
     /// Active screen capture backend (Windows).
     #[cfg(target_os = "windows")]
     pub(crate) screen_capture: Mutex<Option<Box<dyn screen_capture::ScreenCapture>>>,
@@ -233,6 +534,28 @@ pub struct MediaState {
 
 impl MediaState {
     pub fn new() -> Self {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let screen_share_config =
+            Arc::new(screen_capture::frame_processor::ScreenShareConfig::new());
+        #[cfg(target_os = "linux")]
+        let remote_screen_share_frames = Arc::new(Mutex::new(std::collections::HashMap::<
+            String,
+            LatestRemoteScreenShareFrame,
+        >::new()));
+        #[cfg(target_os = "linux")]
+        let remote_screen_share_stream_port = start_remote_screen_share_stream_server(
+            Arc::clone(&remote_screen_share_frames),
+            Arc::clone(&screen_share_config),
+        )
+        .unwrap_or(0);
+        #[cfg(target_os = "linux")]
+        let remote_camera_frames = Arc::new(Mutex::new(std::collections::HashMap::<
+            String,
+            LatestRemoteScreenShareFrame,
+        >::new()));
+        #[cfg(target_os = "linux")]
+        let local_camera_frame = Arc::new(Mutex::new(None));
+
         Self {
             runtime: Builder::new_multi_thread()
                 .enable_all()
@@ -255,10 +578,28 @@ impl MediaState {
             native_screen_share_heartbeat_active: Arc::new(AtomicBool::new(false)),
             #[cfg(target_os = "linux")]
             native_screen_share_heartbeat_thread: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            remote_screen_share_frames,
+            #[cfg(target_os = "linux")]
+            remote_screen_share_seq: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "linux")]
+            remote_camera_frames,
+            #[cfg(target_os = "linux")]
+            remote_camera_seq: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "linux")]
+            local_camera_frame,
+            #[cfg(target_os = "linux")]
+            local_camera_seq: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "linux")]
+            local_camera_capture: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            remote_screen_share_stream_port,
+            #[cfg(target_os = "linux")]
+            native_screen_share_viewers: Arc::new(Mutex::new(std::collections::HashMap::new())),
             #[cfg(target_os = "windows")]
             screen_capture: Mutex::new(None),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
-            screen_share_config: Arc::new(screen_capture::frame_processor::ScreenShareConfig::new()),
+            screen_share_config,
             #[cfg(target_os = "windows")]
             latest_frame: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "windows")]
@@ -620,88 +961,108 @@ pub fn media_connect(
         );
     }));
 
-    // Wire video frame callback → encode JPEG, base64, emit screen_share_frame event.
-    // Only compiled on Linux where the image + base64 crates are available.
+    // Wire video frame callback → store the newest raw frame per participant.
+    // The webview polls this buffer when it is ready to render. That preserves
+    // smoothness when the machine can keep up, but prevents stale frame events
+    // from piling up behind the UI thread.
     #[cfg(target_os = "linux")]
     {
-        // Per-identity emit-rate cap. Keep this tied to the configured screen
-        // share FPS so the receiver is not artificially limited below the
-        // sender's requested fluidity. The webview side coalesces decode work
-        // to the newest frame, so a 60 fps target does not create an unbounded
-        // queue when rendering falls behind.
-        let last_emit_per_identity: Arc<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-            Arc::new(Mutex::new(std::collections::HashMap::new()));
-
         let app_video = app.clone();
-        let viewer_config = state.screen_share_config.clone();
-        let throttle_state = Arc::clone(&last_emit_per_identity);
+        let latest_remote_frames = Arc::clone(&state.remote_screen_share_frames);
+        let remote_seq = Arc::clone(&state.remote_screen_share_seq);
         conn.on_video_frame(Box::new(move |identity, rgba_data, width, height| {
-            use base64::Engine;
-            use image::codecs::jpeg::JpegEncoder;
-            use std::io::Cursor;
-
-            // Drop the frame if we emitted one for this identity too recently.
-            // Cheap path: lock, look up, compare, update — no allocations on
-            // the throttled path.
-            {
-                let now = std::time::Instant::now();
-                let mut map = match throttle_state.lock() {
+            let seq = remote_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let identity_owned = identity.to_string();
+            let was_new_share = {
+                let mut frames = match latest_remote_frames.lock() {
                     Ok(g) => g,
-                    Err(_) => return, // poisoned: bail rather than panic in callback
+                    Err(_) => return,
                 };
-                let min_frame_interval = std::time::Duration::from_nanos(
-                    1_000_000_000 / viewer_config.max_fps().max(1) as u64,
+                let was_new = !frames.contains_key(identity);
+                frames.insert(
+                    identity_owned.clone(),
+                    LatestRemoteScreenShareFrame {
+                        data: Arc::new(rgba_data.to_vec()),
+                        width,
+                        height,
+                        seq,
+                    },
                 );
-                if let Some(last) = map.get(identity) {
-                    if now.duration_since(*last) < min_frame_interval {
-                        return;
-                    }
-                }
-                map.insert(identity.to_string(), now);
+                was_new
+            };
+
+            if was_new_share {
+                let _ = app_video.emit_to(
+                    "main",
+                    "screen_share_available",
+                    ScreenShareAvailablePayload {
+                        identity: identity_owned,
+                    },
+                );
             }
-
-            // Read JPEG quality from the shared config (runtime-adjustable).
-            let jpeg_quality = viewer_config.jpeg_quality();
-
-            // Encode RGBA → JPEG (strip alpha — JPEG only supports RGB).
-            let rgb_data: Vec<u8> = rgba_data
-                .chunks_exact(4)
-                .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
-                .collect();
-            let mut jpeg_buf = Cursor::new(Vec::with_capacity(128 * 1024));
-            let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
-            if let Err(e) = encoder.encode(&rgb_data, width, height, image::ExtendedColorType::Rgb8)
-            {
-                log::warn!("{LOG} JPEG encode failed: {e}");
-                return;
-            }
-
-            // Base64-encode the JPEG.
-            let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
-
-            // Emit screen_share_frame Tauri event.
-            let _ = app_video.emit_to(
-                "main",
-                "screen_share_frame",
-                serde_json::json!({
-                    "identity": identity,
-                    "frame": b64,
-                }),
-            );
         }));
 
         let app_ended = app.clone();
-        let throttle_state_cleanup = Arc::clone(&last_emit_per_identity);
+        let latest_remote_frames_cleanup = Arc::clone(&state.remote_screen_share_frames);
         conn.on_video_track_ended(Box::new(move |identity| {
             log::info!("{LOG} remote screen share ended: {identity}");
-            // Drop this identity's throttle entry so the map doesn't grow
-            // unbounded as participants come and go.
-            if let Ok(mut map) = throttle_state_cleanup.lock() {
+            if let Ok(mut map) = latest_remote_frames_cleanup.lock() {
                 map.remove(identity);
             }
             let _ = app_ended.emit_to(
                 "main",
                 "screen_share_ended",
+                serde_json::json!({
+                    "identity": identity,
+                }),
+            );
+        }));
+
+        let app_camera = app.clone();
+        let latest_remote_camera_frames = Arc::clone(&state.remote_camera_frames);
+        let remote_camera_seq = Arc::clone(&state.remote_camera_seq);
+        conn.on_camera_frame(Box::new(move |identity, rgba_data, width, height| {
+            let seq = remote_camera_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let identity_owned = identity.to_string();
+            let was_new_camera = {
+                let mut frames = match latest_remote_camera_frames.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let was_new = !frames.contains_key(identity);
+                frames.insert(
+                    identity_owned.clone(),
+                    LatestRemoteScreenShareFrame {
+                        data: Arc::new(rgba_data.to_vec()),
+                        width,
+                        height,
+                        seq,
+                    },
+                );
+                was_new
+            };
+
+            if was_new_camera {
+                let _ = app_camera.emit_to(
+                    "main",
+                    "camera_available",
+                    CameraAvailablePayload {
+                        identity: identity_owned,
+                    },
+                );
+            }
+        }));
+
+        let app_camera_ended = app.clone();
+        let latest_remote_camera_cleanup = Arc::clone(&state.remote_camera_frames);
+        conn.on_camera_track_ended(Box::new(move |identity| {
+            log::info!("{LOG} remote camera ended: {identity}");
+            if let Ok(mut map) = latest_remote_camera_cleanup.lock() {
+                map.remove(identity);
+            }
+            let _ = app_camera_ended.emit_to(
+                "main",
+                "camera_ended",
                 serde_json::json!({
                     "identity": identity,
                 }),
@@ -724,7 +1085,7 @@ pub fn media_connect(
                 .map_err(|err| format!("{err}"))
             });
             if let Err(err) = publish_result {
-                let reason = format!("{err}");
+                let reason = err.to_string();
                 log::error!("{LOG} publish failed: {reason}");
                 let _ = state.runtime.block_on(async { conn.disconnect() });
                 let _ = app_failed.emit(
@@ -771,6 +1132,17 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
     #[cfg(target_os = "linux")]
     {
         state.stop_native_screen_share_stats();
+        let camera_capture = {
+            let mut camera_guard = state
+                .local_camera_capture
+                .lock()
+                .map_err(|e| format!("local_camera_capture lock: {e}"))?;
+            camera_guard.take()
+        };
+        if let Some(capture) = camera_capture {
+            capture.stop();
+            log::info!("{LOG} media_disconnect: stopped active camera capture");
+        }
         let capture = {
             let mut sc_guard = state
                 .screen_capture
@@ -791,6 +1163,18 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
     // Clear the denoise filter — no session active.
     if let Ok(mut dn_guard) = state.denoise.lock() {
         *dn_guard = None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(mut frames) = state.remote_screen_share_frames.lock() {
+            frames.clear();
+        }
+        if let Ok(mut frames) = state.remote_camera_frames.lock() {
+            frames.clear();
+        }
+        if let Ok(mut frame) = state.local_camera_frame.lock() {
+            *frame = None;
+        }
     }
     if let Ok(mut task_guard) = state.local_meter_task.lock() {
         if let Some(task) = task_guard.take() {
@@ -819,6 +1203,245 @@ pub fn media_set_mic_enabled(enabled: bool, state: State<'_, MediaState>) -> Res
         conn.set_mic_enabled(enabled)
             .map_err(|e| format!("failed to set mic enabled: {e}"))?;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn default_linux_camera_device() -> Result<String, String> {
+    for idx in 0..10 {
+        let path = format!("/dev/video{idx}");
+        if std::path::Path::new(&path).exists() {
+            return Ok(path);
+        }
+    }
+    Err("no camera device found under /dev/video*".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_camera_device(device_id: Option<String>) -> Result<String, String> {
+    match device_id.filter(|value| !value.trim().is_empty()) {
+        Some(value) => {
+            if value.starts_with("/dev/video") {
+                Ok(value)
+            } else {
+                Err(format!("unsupported native camera device id: {value}"))
+            }
+        }
+        None => default_linux_camera_device(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_ffmpeg_camera_capture(
+    device: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+    force_input_mode: bool,
+) -> std::io::Result<Child> {
+    let mut command = Command::new("ffmpeg");
+    command.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
+    command.args(["-fflags", "nobuffer", "-flags", "low_delay"]);
+    command.args(["-f", "v4l2"]);
+    if force_input_mode {
+        command.args([
+            "-framerate",
+            &fps.to_string(),
+            "-video_size",
+            &format!("{width}x{height}"),
+        ]);
+    }
+    command.args(["-i", device]);
+    command.args([
+        "-an",
+        "-vf",
+        &format!(
+            "fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=rgba"
+        ),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-s",
+        &format!("{width}x{height}"),
+        "-",
+    ]);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+/// Start local Linux webcam capture and publish it as a LiveKit Camera track.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_camera_start(
+    device_id: Option<String>,
+    width: u32,
+    height: u32,
+    fps: u32,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    let width = width.clamp(160, 1280);
+    let height = height.clamp(120, 720);
+    let fps = fps.clamp(5, 30);
+    let device = resolve_linux_camera_device(device_id)?;
+
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return Err(
+            "Linux native camera capture requires ffmpeg with v4l2 support in PATH".to_string(),
+        );
+    }
+
+    let conn = {
+        let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
+        lk_guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "media is not connected".to_string())?
+    };
+
+    {
+        let mut existing = state
+            .local_camera_capture
+            .lock()
+            .map_err(|e| format!("local_camera_capture lock: {e}"))?;
+        if let Some(capture) = existing.take() {
+            capture.stop();
+        }
+    }
+    if let Ok(mut frame) = state.local_camera_frame.lock() {
+        *frame = None;
+    }
+
+    state
+        .runtime
+        .block_on(async { conn.publish_camera_video(width, height) })
+        .map_err(|e| format!("{e}"))?;
+
+    let active = Arc::new(AtomicBool::new(true));
+    let child_slot: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let local_frame = Arc::clone(&state.local_camera_frame);
+    let local_seq = Arc::clone(&state.local_camera_seq);
+    let active_thread = Arc::clone(&active);
+    let child_thread = Arc::clone(&child_slot);
+    let conn_thread = Arc::clone(&conn);
+    let frame_len = (width as usize) * (height as usize) * 4;
+
+    let thread = std::thread::spawn(move || {
+        let mut child = match spawn_ffmpeg_camera_capture(&device, width, height, fps, true)
+            .or_else(|_| spawn_ffmpeg_camera_capture(&device, width, height, fps, false))
+        {
+            Ok(child) => child,
+            Err(err) => {
+                log::warn!("{LOG} failed to start ffmpeg camera capture: {err}");
+                let _ = conn_thread.unpublish_camera_video();
+                return;
+            }
+        };
+
+        let mut stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                log::warn!("{LOG} ffmpeg camera capture had no stdout");
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = conn_thread.unpublish_camera_video();
+                return;
+            }
+        };
+
+        if let Ok(mut slot) = child_thread.lock() {
+            *slot = Some(child);
+        }
+
+        let mut frame = vec![0u8; frame_len];
+        while active_thread.load(Ordering::Relaxed) {
+            if let Err(err) = stdout.read_exact(&mut frame) {
+                if active_thread.load(Ordering::Relaxed) {
+                    log::warn!("{LOG} camera frame read failed: {err}");
+                }
+                break;
+            }
+
+            let rgba = frame.clone();
+            let seq = local_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Ok(mut latest) = local_frame.lock() {
+                *latest = Some(LatestRemoteScreenShareFrame {
+                    data: Arc::new(rgba.clone()),
+                    width,
+                    height,
+                    seq,
+                });
+            }
+            if let Err(err) = conn_thread.feed_camera_frame(&rgba, width, height) {
+                log::warn!("{LOG} feed_camera_frame failed: {err}");
+                break;
+            }
+        }
+
+        if let Ok(mut slot) = child_thread.lock() {
+            if let Some(mut child) = slot.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        let _ = conn_thread.unpublish_camera_video();
+    });
+
+    *state
+        .local_camera_capture
+        .lock()
+        .map_err(|e| format!("local_camera_capture lock: {e}"))? = Some(LocalCameraCapture {
+        active,
+        child: child_slot,
+        thread: Some(thread),
+    });
+
+    log::info!("{LOG} linux camera capture started");
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_camera_start(
+    _device_id: Option<String>,
+    _width: u32,
+    _height: u32,
+    _fps: u32,
+) -> Result<(), String> {
+    Err("native camera capture is only available on Linux".to_string())
+}
+
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_camera_stop(state: State<'_, MediaState>) -> Result<(), String> {
+    let capture = {
+        let mut guard = state
+            .local_camera_capture
+            .lock()
+            .map_err(|e| format!("local_camera_capture lock: {e}"))?;
+        guard.take()
+    };
+    if let Some(capture) = capture {
+        capture.stop();
+    } else if let Ok(lk_guard) = state.lk.lock() {
+        if let Some(conn) = lk_guard.as_ref() {
+            let _ = state
+                .runtime
+                .block_on(async { conn.unpublish_camera_video() });
+        }
+    }
+    if let Ok(mut frame) = state.local_camera_frame.lock() {
+        *frame = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_camera_stop() -> Result<(), String> {
     Ok(())
 }
 
@@ -1249,10 +1872,12 @@ pub fn screen_share_start_source(
 pub fn screen_share_start_source(
     source_id: String,
     share_session_id: Option<String>,
+    compatibility_mode: Option<bool>,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
     use screen_capture::frame_processor::{cap_resolution, FrameThrottler};
+    use screen_capture::gdi_capture::{GdiCapture, GdiCaptureConfig};
     use screen_capture::win_capture::{WinCapture, WinCaptureConfig};
     use screen_capture::ScreenCapture;
 
@@ -1282,17 +1907,38 @@ pub fn screen_share_start_source(
     // The native-LK frame-feeding path lives in the Linux `screen_share_start()`
     // function (no `_source` suffix) which is #[cfg(target_os = "linux")].
 
-    // Create and start the Windows capture.
-    let capture = WinCapture::start(WinCaptureConfig {
-        source_id: source_id.clone(),
-        app_handle: app.clone(),
-    })
-    .map_err(|e| {
-        log::error!("{LOG} [diag] WinCapture::start() FAILED: {e}");
-        format!("{e}")
-    })?;
+    // Route to GDI or WGC capture backend.
+    let capture: Box<dyn ScreenCapture> = if compatibility_mode.unwrap_or(false) {
+        let handle_val: isize = source_id
+            .parse()
+            .map_err(|_| format!("compatibility mode: invalid source id '{source_id}'"))?;
+        let hwnd = windows::Win32::Foundation::HWND(handle_val as *mut _);
+        log::info!("{LOG} compatibility mode: using GDI capture for source {source_id}");
+        Box::new(
+            GdiCapture::start(GdiCaptureConfig {
+                hwnd,
+                app_handle: app.clone(),
+                target_fps: state.screen_share_config.max_fps(),
+            })
+            .map_err(|e| {
+                log::error!("{LOG} GdiCapture::start() FAILED: {e}");
+                format!("{e}")
+            })?,
+        )
+    } else {
+        Box::new(
+            WinCapture::start(WinCaptureConfig {
+                source_id: source_id.clone(),
+                app_handle: app.clone(),
+            })
+            .map_err(|e| {
+                log::error!("{LOG} [diag] WinCapture::start() FAILED: {e}");
+                format!("{e}")
+            })?,
+        )
+    };
 
-    log::info!("{LOG} [diag] WinCapture::start() returned OK");
+    log::info!("{LOG} [diag] capture backend started");
 
     let config = state.screen_share_config.clone();
     let native_share_leak_session = Arc::clone(&state.native_share_leak_session);
@@ -1472,7 +2118,7 @@ pub fn screen_share_start_source(
         .screen_capture
         .lock()
         .map_err(|e| format!("screen_capture lock: {e}"))?;
-    *sc_guard = Some(Box::new(capture));
+    *sc_guard = Some(capture);
 
     log::info!("{LOG} [diag] capture stored in MediaState, function complete");
 
@@ -1572,6 +2218,319 @@ pub fn screen_share_poll_frame(
 #[cfg(not(target_os = "windows"))]
 pub fn screen_share_poll_frame() -> Result<Option<()>, String> {
     Ok(None)
+}
+
+/// Poll the latest remote screen-share frame for a participant (Linux viewer path).
+///
+/// The LiveKit callback stores raw RGBA frames in `remote_screen_share_frames`.
+/// This command encodes only the newest frame requested by the webview. If the
+/// caller already rendered `last_seq`, returns `None` without encoding.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_poll_screen_share_frame(
+    identity: String,
+    last_seq: Option<u64>,
+    state: State<'_, MediaState>,
+) -> Result<Option<PolledScreenShareFrame>, String> {
+    use base64::Engine;
+    use image::codecs::jpeg::JpegEncoder;
+    use std::io::Cursor;
+
+    let latest = {
+        let frames = state
+            .remote_screen_share_frames
+            .lock()
+            .map_err(|e| format!("remote_screen_share_frames lock: {e}"))?;
+        frames.get(&identity).cloned()
+    };
+
+    let Some(latest) = latest else {
+        return Ok(None);
+    };
+
+    if last_seq == Some(latest.seq) {
+        return Ok(None);
+    }
+
+    let pixel_count = (latest.width * latest.height) as usize;
+    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
+    for rgba in latest.data.chunks_exact(4) {
+        rgb_data.push(rgba[0]);
+        rgb_data.push(rgba[1]);
+        rgb_data.push(rgba[2]);
+    }
+
+    let jpeg_quality = state.screen_share_config.jpeg_quality();
+    let mut jpeg_buf = Cursor::new(Vec::with_capacity(256 * 1024));
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
+    if let Err(e) = encoder.encode(
+        &rgb_data,
+        latest.width,
+        latest.height,
+        image::ExtendedColorType::Rgb8,
+    ) {
+        log::warn!("{LOG} remote JPEG encode failed: {e}");
+        return Ok(None);
+    }
+
+    let frame = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+    Ok(Some(PolledScreenShareFrame {
+        identity,
+        frame,
+        width: latest.width,
+        height: latest.height,
+        seq: latest.seq,
+    }))
+}
+
+/// Poll the latest remote camera frame for a participant (Linux native path).
+///
+/// Camera frames are decoded in Rust from LiveKit Camera tracks and exposed as
+/// JPEGs so the webview can paint them to a canvas-backed MediaStreamTrack.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_poll_camera_frame(
+    identity: String,
+    last_seq: Option<u64>,
+    state: State<'_, MediaState>,
+) -> Result<Option<PolledCameraFrame>, String> {
+    use base64::Engine;
+    use image::codecs::jpeg::JpegEncoder;
+    use std::io::Cursor;
+
+    let latest = {
+        let frames = state
+            .remote_camera_frames
+            .lock()
+            .map_err(|e| format!("remote_camera_frames lock: {e}"))?;
+        frames.get(&identity).cloned()
+    };
+
+    let Some(latest) = latest else {
+        return Ok(None);
+    };
+
+    if last_seq == Some(latest.seq) {
+        return Ok(None);
+    }
+
+    let pixel_count = (latest.width * latest.height) as usize;
+    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
+    for rgba in latest.data.chunks_exact(4) {
+        rgb_data.push(rgba[0]);
+        rgb_data.push(rgba[1]);
+        rgb_data.push(rgba[2]);
+    }
+
+    let jpeg_quality = state.screen_share_config.jpeg_quality();
+    let mut jpeg_buf = Cursor::new(Vec::with_capacity(128 * 1024));
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
+    if let Err(e) = encoder.encode(
+        &rgb_data,
+        latest.width,
+        latest.height,
+        image::ExtendedColorType::Rgb8,
+    ) {
+        log::warn!("{LOG} remote camera JPEG encode failed: {e}");
+        return Ok(None);
+    }
+
+    let frame = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+    Ok(Some(PolledCameraFrame {
+        identity,
+        frame,
+        width: latest.width,
+        height: latest.height,
+        seq: latest.seq,
+    }))
+}
+
+/// Poll the latest local camera preview frame for Linux native publishing.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_poll_local_camera_frame(
+    last_seq: Option<u64>,
+    state: State<'_, MediaState>,
+) -> Result<Option<PolledCameraFrame>, String> {
+    use base64::Engine;
+    use image::codecs::jpeg::JpegEncoder;
+    use std::io::Cursor;
+
+    let latest = {
+        let frame = state
+            .local_camera_frame
+            .lock()
+            .map_err(|e| format!("local_camera_frame lock: {e}"))?;
+        frame.clone()
+    };
+
+    let Some(latest) = latest else {
+        return Ok(None);
+    };
+
+    if last_seq == Some(latest.seq) {
+        return Ok(None);
+    }
+
+    let pixel_count = (latest.width * latest.height) as usize;
+    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
+    for rgba in latest.data.chunks_exact(4) {
+        rgb_data.push(rgba[0]);
+        rgb_data.push(rgba[1]);
+        rgb_data.push(rgba[2]);
+    }
+
+    let mut jpeg_buf = Cursor::new(Vec::with_capacity(128 * 1024));
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, 80);
+    if let Err(e) = encoder.encode(
+        &rgb_data,
+        latest.width,
+        latest.height,
+        image::ExtendedColorType::Rgb8,
+    ) {
+        log::warn!("{LOG} local camera JPEG encode failed: {e}");
+        return Ok(None);
+    }
+
+    let frame = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+    Ok(Some(PolledCameraFrame {
+        identity: "self".to_string(),
+        frame,
+        width: latest.width,
+        height: latest.height,
+        seq: latest.seq,
+    }))
+}
+
+/// Non-Linux stub for `media_poll_screen_share_frame`.
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_poll_screen_share_frame(
+    _identity: String,
+    _last_seq: Option<u64>,
+) -> Result<Option<()>, String> {
+    Ok(None)
+}
+
+/// Non-Linux stub for `media_poll_camera_frame`.
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_poll_camera_frame(
+    _identity: String,
+    _last_seq: Option<u64>,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(None)
+}
+
+/// Non-Linux stub for `media_poll_local_camera_frame`.
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_poll_local_camera_frame(
+    _last_seq: Option<u64>,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(None)
+}
+
+/// Return a browser-native MJPEG stream URL for Linux remote screen-share viewing.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_get_screen_share_stream_url(
+    identity: String,
+    state: State<'_, MediaState>,
+) -> Result<String, String> {
+    if state.remote_screen_share_stream_port == 0 {
+        return Err("remote screen share stream server is unavailable".to_string());
+    }
+    Ok(format!(
+        "http://127.0.0.1:{}/screen-share.mjpeg?identity={}",
+        state.remote_screen_share_stream_port,
+        percent_encode(&identity)
+    ))
+}
+
+/// Non-Linux stub for `media_get_screen_share_stream_url`.
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_get_screen_share_stream_url(_identity: String) -> Result<String, String> {
+    Err("remote screen share stream URL is only available on Linux".to_string())
+}
+
+fn native_share_viewer_path() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot determine current exe: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "cannot determine exe directory".to_string())?;
+    let viewer = dir.join("native_share_viewer");
+    if viewer.exists() {
+        Ok(viewer)
+    } else {
+        Err(format!(
+            "native_share_viewer not found at {}",
+            viewer.display()
+        ))
+    }
+}
+
+/// Open a native GTK viewer for a remote Linux screen share, bypassing WebKit rendering.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_open_native_screen_share_viewer(
+    identity: String,
+    title: String,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    let url = media_get_screen_share_stream_url(identity.clone(), state.clone())?;
+    let viewer = native_share_viewer_path()?;
+
+    let mut viewers = state
+        .native_screen_share_viewers
+        .lock()
+        .map_err(|e| format!("native_screen_share_viewers lock: {e}"))?;
+    if let Some(mut old) = viewers.remove(&identity) {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
+
+    let child = std::process::Command::new(viewer)
+        .arg(url)
+        .arg(title)
+        .spawn()
+        .map_err(|e| format!("failed to spawn native screen share viewer: {e}"))?;
+    viewers.insert(identity, child);
+    Ok(())
+}
+
+/// Close a native GTK viewer opened by `media_open_native_screen_share_viewer`.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn media_close_native_screen_share_viewer(
+    identity: String,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    let mut viewers = state
+        .native_screen_share_viewers
+        .lock()
+        .map_err(|e| format!("native_screen_share_viewers lock: {e}"))?;
+    if let Some(mut child) = viewers.remove(&identity) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_open_native_screen_share_viewer(
+    _identity: String,
+    _title: String,
+) -> Result<(), String> {
+    Err("native screen share viewer is only available on Linux".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn media_close_native_screen_share_viewer(_identity: String) -> Result<(), String> {
+    Ok(())
 }
 
 /// Apply a screen share quality preset to the native capture pipeline.

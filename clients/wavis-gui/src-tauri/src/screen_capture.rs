@@ -12,6 +12,8 @@ pub mod pipewire_capture;
 #[cfg(target_os = "linux")]
 pub mod source_capture;
 #[cfg(target_os = "windows")]
+pub mod gdi_capture;
+#[cfg(target_os = "windows")]
 pub mod win_capture;
 #[cfg(target_os = "linux")]
 pub mod x11_capture;

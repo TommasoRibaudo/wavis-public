@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ShareQualityInfo } from '../livekit-media';
+import type { VoiceRoomState } from '../voice-room';
 
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 
@@ -61,6 +62,24 @@ function formatQualityIndicator(
   return `${shareQualityInfo.height}p @ ${Math.round(shareQualityInfo.frameRate)}fps`;
 }
 
+function selfShareBadges(
+  isSelf: boolean,
+  isSharing: boolean,
+  activeVideoShare: VoiceRoomState['activeVideoShare'],
+  activeAudioShare: VoiceRoomState['activeAudioShare'],
+): string[] {
+  if (!isSelf || !isSharing) return [];
+
+  const badges: string[] = [];
+  if (activeVideoShare !== null || activeAudioShare === null) {
+    badges.push('\u25C9');
+  }
+  if (activeAudioShare !== null) {
+    badges.push('\u266A');
+  }
+  return badges;
+}
+
 /* ─── System Audio Warning State Machine ────────────────────────── */
 
 /**
@@ -100,6 +119,21 @@ function handleFallbackShareStarted(
 ): ShareAudioUiState {
   if (!shareStarted || !isPromptPlatform) return state;
   return { ...state, showAudioWarning: false, showPostShareAudioPrompt: true };
+}
+
+function handleCustomShareStarted(
+  _state: ShareAudioUiState,
+  selection: { mode: 'screen_audio' | 'window' | 'audio_only'; withAudio: boolean },
+): ShareAudioUiState {
+  if (selection.mode === 'audio_only') {
+    return { showAudioWarning: false, showPostShareAudioPrompt: false, shareAudioOn: false };
+  }
+
+  return {
+    showAudioWarning: false,
+    showPostShareAudioPrompt: false,
+    shareAudioOn: selection.withAudio,
+  };
 }
 
 /** Simulates accepting the post-share audio prompt. */
@@ -187,6 +221,41 @@ describe('Quality Indicator Rendering', () => {
 
   it('returns null when not self share and info is null', () => {
     expect(formatQualityIndicator(false, null)).toBeNull();
+  });
+});
+
+describe('Self Share Badges', () => {
+  it('shows both sharer and music badges when video and audio-only slots are both active', () => {
+    expect(
+      selfShareBadges(
+        true,
+        true,
+        {
+          mode: 'screen_audio',
+          sourceName: 'Display 1',
+          withAudio: false,
+          audioSourceId: null,
+        },
+        {
+          sourceId: 'audio-2',
+          sourceName: 'Spotify',
+        },
+      ),
+    ).toEqual(['\u25C9', '\u266A']);
+  });
+
+  it('shows only the music badge for audio-only sharing', () => {
+    expect(
+      selfShareBadges(
+        true,
+        true,
+        null,
+        {
+          sourceId: 'audio-1',
+          sourceName: 'Spotify',
+        },
+      ),
+    ).toEqual(['\u266A']);
   });
 });
 
@@ -289,6 +358,17 @@ describe('Share Audio UX', () => {
     let state = initialShareAudioUiState();
 
     state = handleFallbackShareStarted(state, true, false);
+
+    expect(state.showAudioWarning).toBe(false);
+    expect(state.showPostShareAudioPrompt).toBe(false);
+    expect(state.shareAudioOn).toBe(false);
+    expect(mockToggleShareAudio).not.toHaveBeenCalled();
+  });
+
+  it('explicit custom video-only share does not show the post-share audio prompt', () => {
+    let state = initialShareAudioUiState();
+
+    state = handleCustomShareStarted(state, { mode: 'screen_audio', withAudio: false });
 
     expect(state.showAudioWarning).toBe(false);
     expect(state.showPostShareAudioPrompt).toBe(false);

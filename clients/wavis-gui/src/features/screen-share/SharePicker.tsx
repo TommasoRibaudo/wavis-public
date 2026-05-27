@@ -18,6 +18,8 @@ const MODES: { key: ShareMode; label: string; sourceType: ShareSourceType }[] = 
 ];
 
 const ECHO_WARNING_SUBSTRING = 'echo possible';
+const DEBUG_SCREEN_CAPTURE = import.meta.env.VITE_DEBUG_SCREEN_CAPTURE === 'true';
+const LOG = '[share-picker]';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -76,6 +78,23 @@ function pickDefaultMode(sources: ShareSource[]): ShareMode {
     if (sources.some((s) => s.source_type === m.sourceType)) return m.key;
   }
   return 'screen_audio';
+}
+
+/** Pick the first mode that has sources and is not blocked by an occupied slot. */
+export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
+  for (const m of MODES) {
+    const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
+    if (!blocked && sources.some((s) => s.source_type === m.sourceType)) {
+      return m.key;
+    }
+  }
+  return pickDefaultMode(sources);
+}
+
+export function defaultWithAudioForMode(mode: ShareMode, occupied: OccupiedSlots): boolean {
+  if (mode === 'audio_only') return false;
+  if (occupied.audioOccupied) return false;
+  return mode === 'screen_audio';
 }
 
 /** Check if warnings indicate echo is possible (loopback exclusion unavailable). */
@@ -148,14 +167,18 @@ function SourceItem({
   onSelect,
   isVisual,
   resolvedThumbnail,
+  isThumbnailLoading,
   showEchoWarning,
+  onThumbnailError,
 }: {
   source: ShareSource;
   selected: boolean;
   onSelect: (s: ShareSource) => void;
   isVisual: boolean;
   resolvedThumbnail?: string;
+  isThumbnailLoading?: boolean;
   showEchoWarning?: boolean;
+  onThumbnailError?: () => void;
 }) {
   const thumb = resolvedThumbnail ?? source.thumbnail;
   return (
@@ -185,6 +208,12 @@ function SourceItem({
               src={`data:image/jpeg;base64,${thumb}`}
               alt={source.name}
               className="w-full h-full object-cover"
+              onError={onThumbnailError}
+            />
+          ) : isThumbnailLoading ? (
+            <div
+              className="w-5 h-5 rounded-full border-2 border-wavis-text-secondary border-t-wavis-accent animate-spin"
+              aria-label="Loading thumbnail"
             />
           ) : (
             <span className="text-wavis-text-secondary text-[0.625rem] text-center px-1 truncate">
@@ -237,16 +266,20 @@ export default function SharePicker(props: SharePickerProps) {
     : (parsed?.occupied ?? { videoOccupied: false, audioOccupied: false });
 
   const initSources = enumResult?.sources ?? [];
+  const initialMode = pickInitialMode(initSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
-    initSources.length > 0 ? pickDefaultMode(initSources) : 'screen_audio',
+    initSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
   const [withAudio, setWithAudio] = useState<boolean>(() =>
-    initSources.length > 0 ? pickDefaultMode(initSources) === 'screen_audio' : true,
+    defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
   );
+  // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
+  const [compatibilityMode, setCompatibilityMode] = useState(false);
 
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  const [thumbnailsLoading, setThumbnailsLoading] = useState(new Set<string>());
 
   const listboxRef = useRef<HTMLDivElement>(null);
   const activeIndexRef = useRef<number>(-1);
@@ -260,15 +293,25 @@ export default function SharePicker(props: SharePickerProps) {
       (s) => s.source_type === 'screen' || s.source_type === 'window',
     );
 
+    if (visualSources.length > 0) {
+      setThumbnailsLoading(new Set(visualSources.map((s) => s.id)));
+    }
+
     for (const source of visualSources) {
+      if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'fetching thumbnail for', source.id, source.name);
       invoke<string | null>('fetch_source_thumbnail', { sourceId: source.id })
         .then((thumb) => {
-          if (!cancelled && thumb) {
-            setThumbnails((prev) => ({ ...prev, [source.id]: thumb }));
+          if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'thumbnail result for', source.id, thumb ? `${thumb.length} bytes` : 'null');
+          if (!cancelled) {
+            setThumbnailsLoading((prev) => { const next = new Set(prev); next.delete(source.id); return next; });
+            if (thumb) setThumbnails((prev) => ({ ...prev, [source.id]: thumb }));
           }
         })
-        .catch(() => {
-          // Timeout or failure — keep placeholder (no-op)
+        .catch((err: unknown) => {
+          if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'thumbnail fetch failed for', source.id, err);
+          if (!cancelled) {
+            setThumbnailsLoading((prev) => { const next = new Set(prev); next.delete(source.id); return next; });
+          }
         });
     }
 
@@ -277,17 +320,26 @@ export default function SharePicker(props: SharePickerProps) {
     };
   }, [enumResult]);
 
+  const isWindowsPlatform = /Windows NT/i.test(navigator.userAgent || '');
+
   /* ── Derived ── */
   const sources = enumResult?.sources ?? [];
   const warnings = enumResult?.warnings ?? [];
   const filteredSources = filterSourcesByMode(sources, activeMode);
   const isVisualMode = activeMode !== 'audio_only';
   const showAudioCheckbox = activeMode !== 'audio_only';
-  const audioCheckboxDisabled = false;
+  // Disable system audio checkbox when an audio-only share is already occupying the audio device.
+  const audioCheckboxDisabled = occupied.audioOccupied;
   const canShare = selectedSource !== null;
   const showFallback = enumResult !== null && shouldShowPortalFallback(enumResult.fallback_reason) && filteredSources.length === 0;
   const isEmpty = filteredSources.length === 0 && !showFallback;
   const echoWarningActive = hasEchoWarning(warnings);
+
+  useEffect(() => {
+    if (audioCheckboxDisabled && withAudio) {
+      setWithAudio(false);
+    }
+  }, [audioCheckboxDisabled, withAudio]);
 
   /** Check if a mode tab should be disabled due to occupied slot. */
   const isModeDisabled = (mode: ShareMode): boolean => {
@@ -301,13 +353,17 @@ export default function SharePicker(props: SharePickerProps) {
       setActiveMode(mode);
       setSelectedSource(null);
       activeIndexRef.current = -1;
-      if (mode === 'screen_audio') {
-        setWithAudio(true);
-      } else if (mode === 'audio_only') {
-        setWithAudio(false);
-      }
+      setWithAudio((current) => {
+        if (mode === 'audio_only' || occupied.audioOccupied) {
+          return false;
+        }
+        if (mode === 'screen_audio') {
+          return true;
+        }
+        return current;
+      });
     },
-    [],
+    [occupied.audioOccupied],
   );
 
   /* ── Source selection ── */
@@ -354,6 +410,8 @@ export default function SharePicker(props: SharePickerProps) {
       sourceId: selectedSource.id,
       sourceName: selectedSource.name,
       withAudio: activeMode === 'audio_only' ? false : withAudio,
+      sourceKind: selectedSource.source_type === 'window' ? 'window' : 'screen',
+      compatibilityMode,
     };
 
     if (isInline) {
@@ -364,7 +422,7 @@ export default function SharePicker(props: SharePickerProps) {
       await invoke('share_picker_select', { selection });
       await getCurrentWindow().close();
     }
-  }, [selectedSource, activeMode, withAudio, isInline, props]);
+  }, [selectedSource, activeMode, withAudio, compatibilityMode, isInline, props]);
 
   /* ── Cancel action ── */
   const handleCancel = useCallback(async () => {
@@ -475,7 +533,9 @@ export default function SharePicker(props: SharePickerProps) {
                   onSelect={handleSourceSelect}
                   isVisual={isVisualMode}
                   resolvedThumbnail={thumbnails[source.id]}
+                  isThumbnailLoading={thumbnailsLoading.has(source.id)}
                   showEchoWarning={echoWarningActive && source.source_type === 'system_audio'}
+                  onThumbnailError={() => setThumbnails((prev) => { const next = { ...prev }; delete next[source.id]; return next; })}
                 />
               </div>
             ))}
@@ -504,6 +564,17 @@ export default function SharePicker(props: SharePickerProps) {
               >
                 System audio
               </span>
+            </label>
+          )}
+          {selectedSource?.source_type === 'window' && isWindowsPlatform && (
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={compatibilityMode}
+                onChange={(e) => setCompatibilityMode(e.target.checked)}
+                className="accent-wavis-accent"
+              />
+              <span className="text-wavis-text-secondary">Game compatibility mode</span>
             </label>
           )}
         </div>
