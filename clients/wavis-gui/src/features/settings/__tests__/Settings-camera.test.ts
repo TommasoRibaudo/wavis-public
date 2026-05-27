@@ -30,22 +30,32 @@ describe('Feature: video-feed — Settings camera section', () => {
     expect(devices.map((d, i) => cameraOptionLabel(d, i))).toEqual([]);
   });
 
-  describe('Linux / unsupported platform gate (6.10)', () => {
-    it('supportedCapturePlatform is false on Linux user agent', () => {
+  describe('Linux / platform gate (6.10)', () => {
+    it('supportedCapturePlatform is true on Linux user agent so the UI can surface native limitations', () => {
       const linuxUa = 'Mozilla/5.0 (X11; Linux x86_64)';
-      const supported = /Windows|Macintosh/.test(linuxUa);
-      expect(supported).toBe(false);
+      const hasBrowserCameraMedia = false;
+      const supported =
+        /Windows|Macintosh/.test(linuxUa) || /Linux/.test(linuxUa) || hasBrowserCameraMedia;
+      expect(supported).toBe(true);
+    });
+
+    it('supportedCapturePlatform is true on Linux user agent with browser camera media', () => {
+      const linuxUa = 'Mozilla/5.0 (X11; Linux x86_64)';
+      const hasBrowserCameraMedia = true;
+      const supported =
+        /Windows|Macintosh/.test(linuxUa) || /Linux/.test(linuxUa) || hasBrowserCameraMedia;
+      expect(supported).toBe(true);
     });
 
     it('supportedCapturePlatform is true on Windows user agent', () => {
       const windowsUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
-      const supported = /Windows|Macintosh/.test(windowsUa);
+      const supported = /Windows|Macintosh/.test(windowsUa) || /Linux/.test(windowsUa) || false;
       expect(supported).toBe(true);
     });
 
     it('supportedCapturePlatform is true on macOS user agent', () => {
       const macUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)';
-      const supported = /Windows|Macintosh/.test(macUa);
+      const supported = /Windows|Macintosh/.test(macUa) || /Linux/.test(macUa) || false;
       expect(supported).toBe(true);
     });
   });

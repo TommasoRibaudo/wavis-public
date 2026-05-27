@@ -8,9 +8,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
 import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
-import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getScreenShareCodec, setScreenShareCodec, type ScreenShareCodecOverride, DEFAULT_SCREEN_SHARE_CODEC, getVideoInputDevice, setVideoInputDevice } from './settings-store';
+import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, getState as getVoiceRoomState, changeSelectedCamera } from '@features/voice/voice-room';
+import { updateSessionProfileColor, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -147,11 +147,14 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     participantKicked: true,
     participantMutedByHost: true,
     inviteReceived: true,
+    passthroughChanged: true,
   });
+  const [passthroughVolume, setPassthroughVolumeState] = useState<number>(
+    getVoiceRoomState().passthroughVolume,
+  );
   const [muteHotkey, setMuteHotkeyState] = useState<string>(DEFAULT_MUTE_HOTKEY);
   const [watchAllHotkey, setWatchAllHotkeyState] = useState<string>(DEFAULT_WATCH_ALL_HOTKEY);
   const [denoiseEnabled, setDenoiseEnabledState] = useState(true);
-  const [screenShareCodecState, setScreenShareCodecState] = useState<ScreenShareCodecOverride>(DEFAULT_SCREEN_SHARE_CODEC);
   const [inputVolume, setInputVolumeState] = useState<number>(100);
   const [notificationVolume, setNotificationVolumeState] = useState<number>(50);
   const [soundVolumes, setSoundVolumesState] = useState<Record<string, number>>({});
@@ -188,11 +191,11 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     getAccessToken().then(setAccessTokenVal);
     getMinimizeToTray().then(setMinimizeToTrayState);
     getNotificationToggles().then(setNotifyToggles);
+    setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
     getMuteHotkey().then(setMuteHotkeyState);
     getWatchAllHotkey().then(setWatchAllHotkeyState);
     getFocusMainHotkey().then(setFocusMainHotkeyState);
     getDenoiseEnabled().then(setDenoiseEnabledState);
-    getScreenShareCodec().then(setScreenShareCodecState);
     getInputVolume().then(setInputVolumeState);
     getNotificationVolume().then(setNotificationVolumeState);
     getSoundVolumes().then(setSoundVolumesState);
@@ -412,7 +415,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
           }
           // Re-register new hotkey immediately so it works without reconnecting
           registerFocusMainHotkey(combo, () => {
-            void getCurrentWindow().setFocus();
+            void getCurrentWindow().unminimize().then(() => getCurrentWindow().setFocus());
           });
         }
       }).catch(() => {});
@@ -452,10 +455,70 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
         </div>
       )}
       {channelId && activeTab === 'channel' ? (
-        <div className="flex-1 min-h-0">
-          <Suspense fallback={<div className="p-4 text-wavis-text-secondary">loading...</div>}>
-            <ChannelDetail channelIdProp={channelId} hideJoinVoice={true} hideBackButton={true} />
-          </Suspense>
+        <div className="flex-1 min-h-0 flex flex-col">
+          {(() => {
+            const vs = getVoiceRoomState();
+            const isAdmin = vs.selfIsHost;
+            const isActive = vs.machineState === 'active';
+            if (!isAdmin || !isActive) return null;
+            const activePassthrough = vs.passthrough;
+            const joinedSubRoomId = vs.joinedSubRoomId;
+            const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
+            return (
+              <div className="flex-shrink-0 p-3 border-b border-wavis-text-secondary">
+                <p className="text-sm text-wavis-text-secondary mb-2">VOICE AUDIO</p>
+                <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+                  <div>
+                    <span className="text-wavis-text-secondary">Passthrough volume ({passthroughVolume}%)</span>
+                    <p className="text-xs text-wavis-text-secondary/70 mb-1">Volume for audio from a linked room — applies to all participants</p>
+                    <VolumeSlider
+                      value={passthroughVolume}
+                      onChange={(v) => {
+                        setPassthroughVolumeState(v);
+                        setPassthroughVolume(v);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <span className="text-wavis-text-secondary">Passthrough</span>
+                    <p className="text-xs text-wavis-text-secondary/70 mb-2">Link two rooms so participants can hear each other</p>
+                    {activePassthrough ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-wavis-text">Active: {activePassthrough.label}</span>
+                        <button
+                          type="button"
+                          onClick={() => clearPassthrough()}
+                          className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
+                        >
+                          Disable
+                        </button>
+                      </div>
+                    ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {otherSubRooms.map((r) => (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => setPassthrough(r.id)}
+                            className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
+                          >
+                            Enable to Room {r.roomNumber}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-wavis-text-secondary/70">Join a sub-room to enable passthrough</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+          <div className="flex-1 min-h-0">
+            <Suspense fallback={<div className="p-4 text-wavis-text-secondary">loading...</div>}>
+              <ChannelDetail channelIdProp={channelId} hideJoinVoice={true} hideBackButton={true} />
+            </Suspense>
+          </div>
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto">
@@ -742,30 +805,6 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               }`}>
                 {denoiseStatus.message}
               </p>
-              <div>
-                <label className="text-wavis-text-secondary block mb-1 text-sm">Screen Share Codec</label>
-                <div className="flex gap-0">
-                  {(['auto', 'vp9', 'vp8', 'av1'] as const).map((codec) => (
-                    <button
-                      key={codec}
-                      onClick={() => {
-                        setScreenShareCodecState(codec);
-                        void setScreenShareCodec(codec);
-                      }}
-                      className={`flex-1 py-1 px-1 text-xs text-center border transition-colors ${
-                        screenShareCodecState === codec
-                          ? 'border-wavis-accent text-wavis-accent'
-                          : 'border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-                      }`}
-                    >
-                      {codec.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-wavis-text-secondary mt-1">
-                  Auto: uses W4 shootout winner. Override only for testing.
-                </p>
-              </div>
             </div>
           </div>
 
@@ -919,6 +958,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 ['participantKicked', 'Participant kicked'],
                 ['participantMutedByHost', 'Muted by host'],
                 ['inviteReceived', 'Invite received'],
+                ['passthroughChanged', 'Passthrough changed'],
               ] as const).map(([key, label]) => (
                 <div key={key} className="flex items-center justify-between">
                   <span className="text-wavis-text-secondary">{label}</span>

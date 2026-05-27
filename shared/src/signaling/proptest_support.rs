@@ -142,6 +142,8 @@ impl Arbitrary for ParticipantInfo {
                     display_name,
                     user_id,
                     profile_color,
+                    is_muted: false,
+                    is_host_muted: false,
                 },
             )
             .boxed()
@@ -703,6 +705,17 @@ impl Arbitrary for ClearPassthroughPayload {
     }
 }
 
+impl Arbitrary for SetPassthroughVolumePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<u8>()
+            .prop_map(|volume| SetPassthroughVolumePayload { volume })
+            .boxed()
+    }
+}
+
 impl Arbitrary for PassthroughStatePayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -728,8 +741,13 @@ impl Arbitrary for SubRoomStatePayload {
         (
             prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6),
             prop::option::of(any::<PassthroughStatePayload>()),
+            any::<u8>(),
         )
-            .prop_map(|(rooms, passthrough)| SubRoomStatePayload { rooms, passthrough })
+            .prop_map(|(rooms, passthrough, passthrough_volume_percent)| SubRoomStatePayload {
+                rooms,
+                passthrough,
+                passthrough_volume_percent,
+            })
             .boxed()
     }
 }
@@ -998,6 +1016,7 @@ impl Arbitrary for SignalingMessage {
             any::<LeaveSubRoomPayload>().prop_map(SignalingMessage::LeaveSubRoom),
             any::<SetPassthroughPayload>().prop_map(SignalingMessage::SetPassthrough),
             any::<ClearPassthroughPayload>().prop_map(SignalingMessage::ClearPassthrough),
+            any::<SetPassthroughVolumePayload>().prop_map(SignalingMessage::SetPassthroughVolume),
             any::<SubRoomStatePayload>().prop_map(SignalingMessage::SubRoomState),
             any::<SubRoomCreatedPayload>().prop_map(SignalingMessage::SubRoomCreated),
             any::<SubRoomJoinedPayload>().prop_map(SignalingMessage::SubRoomJoined),

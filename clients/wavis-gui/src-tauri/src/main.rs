@@ -135,6 +135,32 @@ mod media {
     }
 
     #[tauri::command]
+    pub fn media_poll_screen_share_frame(
+        _identity: String,
+        _last_seq: Option<u64>,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    #[tauri::command]
+    pub fn media_get_screen_share_stream_url(_identity: String) -> Result<String, String> {
+        Err("remote screen share stream URL is only available on Linux".to_string())
+    }
+
+    #[tauri::command]
+    pub fn media_open_native_screen_share_viewer(
+        _identity: String,
+        _title: String,
+    ) -> Result<(), String> {
+        Err("native screen share viewer is only available on Linux".to_string())
+    }
+
+    #[tauri::command]
+    pub fn media_close_native_screen_share_viewer(_identity: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
     pub fn media_set_screen_share_quality(_quality: u8) -> Result<(), String> {
         Ok(())
     }
@@ -244,6 +270,7 @@ mod screen_recording_auth {
     }
 }
 mod bug_report;
+mod crash_handler;
 mod debug_env;
 mod diagnostics;
 #[cfg(target_os = "windows")]
@@ -290,6 +317,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use serde_json::Value;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
 fn main() {
@@ -317,12 +345,27 @@ fn main() {
 
     // Create the shared Rust log buffer for bug report diagnostics.
     let log_buffer = bug_report::new_shared_buffer(200);
+    crash_handler::install(log_buffer.clone());
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
 
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(debug_env::tauri_log_level())
+                // Global minimum is always Info so the ring buffer captures
+                // voice/WebRTC/room activity for crash reports and bug reports,
+                // even without debug flags. The Stdout target filters independently
+                // so console output stays quiet in normal operation.
+                .level(log::LevelFilter::Info)
+                .clear_targets()
+                .target(
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
+                        .filter({
+                            let min = debug_env::tauri_log_level()
+                                .to_level()
+                                .unwrap_or(log::Level::Warn);
+                            move |metadata| metadata.level() <= min
+                        }),
+                )
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Dispatch(log_layer),
                 ))
@@ -346,6 +389,7 @@ fn main() {
             sysinfo::System::new(),
         )))
         .setup(|app| {
+            crash_handler::register_app_handle(app.handle().clone());
             #[cfg(desktop)]
             {
                 if let Err(err) = app
@@ -366,33 +410,78 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label();
-                let app = window.app_handle();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label();
+                    let app = window.app_handle();
 
-                // Only the main window gets minimize-to-tray behavior
-                if label == "main" {
-                    if let Some(webview_window) = app.get_webview_window(label) {
-                        if let (Some(flag), Some(vis)) = (
-                            app.try_state::<tray::MinimizeToTrayFlag>(),
-                            app.try_state::<tray::WindowVisibility>(),
-                        ) {
-                            if tray::handle_close_requested(&webview_window, &flag, &vis) {
-                                api.prevent_close();
-                                return;
+                    // Only the main window gets minimize-to-tray behavior
+                    if label == "main" {
+                        if let Some(webview_window) = app.get_webview_window(label) {
+                            if let (Some(flag), Some(vis)) = (
+                                app.try_state::<tray::MinimizeToTrayFlag>(),
+                                app.try_state::<tray::WindowVisibility>(),
+                            ) {
+                                if tray::handle_close_requested(&webview_window, &flag, &vis) {
+                                    api.prevent_close();
+                                    return;
+                                }
+                            }
+                        }
+                        // Main window is actually closing (not minimized to tray).
+                        // Prevent the close so JS can tear down LiveKit cleanly (send
+                        // the Leave signal to the SFU) before the webview is destroyed.
+                        api.prevent_close();
+
+                        // Notify the frontend so it can tear down the voice session
+                        // and close child windows. The JS listener must call
+                        // close_main_window when it's done; the safety timeout below
+                        // ensures the window closes even if the listener never fires.
+                        let _ = app.emit("main-window-closing", ());
+
+                        // Also emit voice-session:ended directly so pop-out windows
+                        // (ScreenSharePage) self-close even if the main window's JS
+                        // listener doesn't execute in time (race condition on destroy).
+                        let _ = app.emit("voice-session:ended", ());
+
+                        // Safety timeout: close the window after 1.5 s regardless,
+                        // in case the JS listener crashes or never fires.
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.destroy();
+                            }
+                        });
+                    }
+                }
+                tauri::WindowEvent::Focused(focused) => {
+                    if window.label() == "main" {
+                        let app = window.app_handle();
+                        if let Some(vis) = app.try_state::<tray::WindowVisibility>() {
+                            // Skip if already hidden to tray — tray manages its own events
+                            if !vis.hidden.load(Ordering::SeqCst) {
+                                if *focused {
+                                    let _ = window.emit(
+                                        "window-visibility-changed",
+                                        tray::WindowVisibilityPayload { visible: true },
+                                    );
+                                } else {
+                                    // Only suppress notifications when actually minimized,
+                                    // not just when the user switches to another app.
+                                    let minimized = window.is_minimized().unwrap_or(false);
+                                    if minimized {
+                                        let _ = window.emit(
+                                            "window-visibility-changed",
+                                            tray::WindowVisibilityPayload { visible: false },
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
-                    // Main window is actually closing (not minimized to tray).
-                    // Notify the frontend so it can tear down the voice session
-                    // and close child windows before the window is destroyed.
-                    let _ = app.emit("main-window-closing", ());
-
-                    // Also emit voice-session:ended directly so pop-out windows
-                    // (ScreenSharePage) self-close even if the main window's JS
-                    // listener doesn't execute in time (race condition on destroy).
-                    let _ = app.emit("voice-session:ended", ());
                 }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -417,10 +506,18 @@ fn main() {
             media::media_detach_screen_share_audio,
             media::media_set_master_volume,
             media::media_is_connected,
+            media::media_camera_start,
+            media::media_camera_stop,
             media::screen_share_start,
             media::screen_share_start_source,
             media::screen_share_stop,
             media::screen_share_poll_frame,
+            media::media_poll_screen_share_frame,
+            media::media_poll_camera_frame,
+            media::media_poll_local_camera_frame,
+            media::media_get_screen_share_stream_url,
+            media::media_open_native_screen_share_viewer,
+            media::media_close_native_screen_share_viewer,
             media::media_set_screen_share_quality,
             is_window_visible,
             share_sources::list_share_sources,
@@ -446,6 +543,9 @@ fn main() {
             native_mic::native_mic_stop,
             native_mic::native_mic_set_denoise_enabled,
             native_mic::native_mic_set_input_device,
+            close_main_window,
+            #[cfg(debug_assertions)]
+            panic_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while building wavis")
@@ -732,8 +832,11 @@ async fn store_token(
     let key_for_keyring = key.clone();
     let value_for_keyring = value.clone();
     run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
-        entry.set_password(&value_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        entry
+            .set_password(&value_for_keyring)
+            .map_err(|e| e.to_string())?;
         Ok(())
     })
     .await?;
@@ -756,7 +859,8 @@ async fn get_token(
     // Cache miss — read from keychain once and populate the cache.
     let key_for_keyring = key.clone();
     let result = run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(val) => Ok(Some(val)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -771,14 +875,12 @@ async fn get_token(
 }
 
 #[tauri::command]
-async fn delete_token(
-    key: String,
-    cache: tauri::State<'_, KeyringCache>,
-) -> Result<(), String> {
+async fn delete_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<(), String> {
     cache.0.lock().unwrap().remove(&key);
     let key_for_keyring = key.clone();
     run_keyring_blocking(move || {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent
@@ -860,4 +962,19 @@ fn set_input_gain(gain: f32, state: tauri::State<'_, media::MediaState>) -> Resu
 #[tauri::command]
 fn is_window_visible(state: tauri::State<'_, tray::WindowVisibility>) -> bool {
     !state.hidden.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Called by the frontend after LiveKit cleanup to allow the main window to
+/// close. Pairs with the `prevent_close()` in the CloseRequested handler.
+#[tauri::command]
+fn close_main_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.destroy();
+    }
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn panic_now() {
+    panic!("Manual panic triggered via panic_now command");
 }

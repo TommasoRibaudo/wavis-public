@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { computeGridLayout } from '../watch-all-grid';
+import { computeGridLayout, computeWatchAllLayout } from '../watch-all-grid';
 
 const shareCountArb = fc.integer({ min: 1, max: 6 });
 const containerWidthArb = fc.integer({ min: 480, max: 3840 });
@@ -43,6 +43,21 @@ describe('Property 1: Grid layout maximizes visible video area', () => {
   });
 });
 
+describe('Property 6: computeWatchAllLayout â€” maximizes occupied video area', () => {
+  it('returned partition area is >= every other candidate partition area', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+        const resultArea = computeOccupiedAreaForLayout(result, streams, width, height);
+        const bestPossibleArea = computeBestPartitionArea(streams, width, height);
+
+        expect(resultArea).toBeCloseTo(bestPossibleArea, 6);
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
 describe('Property 2: Grid layout produces uniform tiles', () => {
   // Feature: watch-all-streams, Property 2: Grid layout produces uniform tiles
   // Validates: Requirements 11.2
@@ -58,6 +73,126 @@ describe('Property 2: Grid layout produces uniform tiles', () => {
 
         const emptyCells = result.columns * result.rows - shareCount;
         expect(emptyCells).toBeLessThan(result.columns);
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+/* ═══ computeWatchAllLayout properties ══════════════════════════════ */
+
+const aspectRatioArb = fc.float({ min: 0.5, max: 5.0, noNaN: true });
+const streamArb = fc.record({
+  id: fc.uuid(),
+  aspectRatio: aspectRatioArb,
+});
+const streamsArb = fc.array(streamArb, { minLength: 1, maxLength: 5 }).map((streams) => {
+  // Ensure unique ids
+  const seen = new Set<string>();
+  return streams.filter((s) => { if (seen.has(s.id)) return false; seen.add(s.id); return true; });
+}).filter((s) => s.length >= 1);
+
+function computeOccupiedAreaFromRowAspectSums(
+  rowAspectSums: number[],
+  width: number,
+  height: number,
+): number {
+  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + (width / sum), 0);
+  const scale = Math.min(1, height / naturalTotalHeight);
+  return rowAspectSums.reduce((acc, sum) => {
+    const rowHeight = (width / sum) * scale;
+    return acc + rowHeight * rowHeight * sum;
+  }, 0);
+}
+
+function computeOccupiedAreaForLayout(
+  layout: ReturnType<typeof computeWatchAllLayout>,
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const aspectRatioById = new Map(streams.map((stream) => [stream.id, stream.aspectRatio]));
+  const rowAspectSums = layout.rows.map((row) =>
+    row.tiles.reduce((sum, tile) => sum + (aspectRatioById.get(tile.id) ?? 0), 0),
+  );
+  return computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height);
+}
+
+function computeBestPartitionArea(
+  streams: Array<{ id: string; aspectRatio: number }>,
+  width: number,
+  height: number,
+): number {
+  const sorted = [...streams].sort((a, b) => a.aspectRatio - b.aspectRatio);
+  let bestArea = -1;
+
+  for (let mask = 0; mask < (1 << (sorted.length - 1)); mask++) {
+    const rowAspectSums: number[] = [];
+    let rowStart = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const splitAfter = i === sorted.length - 1 || ((mask >> i) & 1) === 1;
+      if (!splitAfter) continue;
+
+      rowAspectSums.push(
+        sorted.slice(rowStart, i + 1).reduce((sum, stream) => sum + stream.aspectRatio, 0),
+      );
+      rowStart = i + 1;
+    }
+
+    bestArea = Math.max(bestArea, computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height));
+  }
+
+  return bestArea;
+}
+
+describe('Property 3: computeWatchAllLayout — all streams appear exactly once', () => {
+  it('every input stream id appears in exactly one tile', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+        const allIds = result.rows.flatMap((r) => r.tiles.map((t) => t.id));
+
+        expect(allIds).toHaveLength(streams.length);
+        for (const s of streams) {
+          expect(allIds.filter((id) => id === s.id)).toHaveLength(1);
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('Property 4: computeWatchAllLayout — positive flex values', () => {
+  it('all row and tile flexGrow values are > 0', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+
+        for (const row of result.rows) {
+          expect(row.flexGrow).toBeGreaterThan(0);
+          for (const tile of row.tiles) {
+            expect(tile.flexGrow).toBeGreaterThan(0);
+          }
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('Property 5: computeWatchAllLayout — tile flexGrow matches aspect ratio', () => {
+  it('tile flexGrow equals its stream aspect ratio', () => {
+    fc.assert(
+      fc.property(streamsArb, containerWidthArb, containerHeightArb, (streams, width, height) => {
+        const result = computeWatchAllLayout(streams, width, height);
+
+        for (const row of result.rows) {
+          for (const tile of row.tiles) {
+            const stream = streams.find((s) => s.id === tile.id)!;
+            expect(tile.flexGrow).toBeCloseTo(stream.aspectRatio, 10);
+          }
+        }
       }),
       { numRuns: 200 },
     );

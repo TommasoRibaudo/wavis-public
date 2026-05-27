@@ -139,6 +139,38 @@ fn test_sfu_cold_starting_serialization() {
 }
 
 #[test]
+fn test_set_passthrough_volume_round_trip() {
+    let msg = SignalingMessage::SetPassthroughVolume(SetPassthroughVolumePayload { volume: 35 });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(json, r#"{"type":"set_passthrough_volume","volume":35}"#);
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_sub_room_state_passthrough_volume_round_trip() {
+    // Verify the camelCase wire field name and that the value survives a round-trip.
+    let msg = SignalingMessage::SubRoomState(SubRoomStatePayload {
+        rooms: vec![],
+        passthrough: None,
+        passthrough_volume_percent: 42,
+    });
+    let json = to_json(&msg).unwrap();
+    assert!(json.contains(r#""passthroughVolumePercent":42"#), "got: {json}");
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_sub_room_state_passthrough_volume_default_on_absent_field() {
+    // Old servers omit the field; clients should default to 20.
+    let json = r#"{"type":"sub_room_state","rooms":[]}"#;
+    let parsed = parse(json).unwrap();
+    match parsed {
+        SignalingMessage::SubRoomState(p) => assert_eq!(p.passthrough_volume_percent, 20),
+        _ => panic!("expected SubRoomState"),
+    }
+}
+
+#[test]
 fn test_join_voice_supports_sub_rooms_serialization() {
     let msg = SignalingMessage::JoinVoice(JoinVoicePayload {
         channel_id: "00000000-0000-0000-0000-000000000001".to_string(),
@@ -176,6 +208,7 @@ fn test_sub_room_state_round_trip() {
             target_sub_room_id: "sub-room-2".to_string(),
             label: "1 - 2".to_string(),
         }),
+        passthrough_volume_percent: 20,
     });
     let json = to_json(&msg).unwrap();
     assert!(json.contains(r#""type":"sub_room_state""#));
@@ -365,7 +398,7 @@ proptest! {
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
-                           "set_passthrough", "clear_passthrough",
+                           "set_passthrough", "clear_passthrough", "set_passthrough_volume",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",
                            "sfu_cold_starting",

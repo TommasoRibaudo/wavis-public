@@ -173,6 +173,7 @@ export function eventToToggleKey(
     case 'kicked': return 'participantKicked';
     case 'host-mute': return 'participantMutedByHost';
     case 'host-unmute': return 'participantMutedByHost';
+    case 'passthrough': return 'passthroughChanged';
     case 'deafen': return null;
     case 'undeafen': return null;
     default: return null;
@@ -196,6 +197,7 @@ export function toastMessageForEvent(
     case 'share-start': return `${displayName} started sharing`;
     case 'share-stop': return `${displayName} stopped sharing`;
     case 'share-permission': return `share permission changed`;
+    case 'passthrough': return displayName === 'cleared' ? 'Passthrough Disabled' : 'Passthrough Enabled';
     case 'deafen': return `${displayName} deafened`;
     case 'undeafen': return `${displayName} undeafened`;
     default: return null;
@@ -215,6 +217,7 @@ export function toastColorForEvent(type: RoomEventType): string {
     case 'share-start':
     case 'share-stop': return 'var(--wavis-purple)';
     case 'share-permission': return 'var(--wavis-warn)';
+    case 'passthrough': return 'var(--wavis-accent)';
     case 'deafen': return 'var(--wavis-warn)';
     case 'undeafen': return 'var(--wavis-accent)';
     default: return 'var(--wavis-text)';

@@ -64,9 +64,13 @@ interface ShareTileState {
   participantId: string;
   displayName: string;
   color: string;
+  kind: 'live' | 'test';
   canvasFallback: boolean;
   muted: boolean;
   volume: number;
+  nativeWidth: number | null;
+  nativeHeight: number | null;
+  aspectRatio: number;
 }
 
 interface LabelOverlayState {
@@ -95,7 +99,7 @@ function addTile(
   payload: { participantId: string; displayName: string; color: string; canvasFallback: boolean },
 ): ShareTileState[] {
   if (tiles.some((t) => t.participantId === payload.participantId)) return tiles;
-  return [...tiles, { ...payload, muted: false, volume: 70 }];
+  return [...tiles, { ...payload, kind: 'live', muted: false, volume: 70, nativeWidth: null, nativeHeight: null, aspectRatio: 16 / 9 }];
 }
 
 /**
@@ -126,6 +130,7 @@ function popOutTile(
   if (!tile) return { remainingTiles: tiles, payload: null };
   return {
     remainingTiles: removeTile(tiles, participantId),
+    // Send slider position (tile.volume); mute-toggle is local-only, not inherited by pop-out
     payload: { participantId, volume: tile.volume },
   };
 }
@@ -139,6 +144,31 @@ function restoreTileVolume(
       ? { ...t, volume: payload.volume, muted: payload.volume === 0 }
       : t,
   );
+}
+
+function applyDiagnosticsTestState(
+  payload: {
+    tiles: Array<{
+      participantId: string;
+      displayName: string;
+      color: string;
+      width: number;
+      height: number;
+    }>;
+  },
+): ShareTileState[] {
+  return payload.tiles.map((tile) => ({
+    participantId: tile.participantId,
+    displayName: tile.displayName,
+    color: tile.color,
+    kind: 'test',
+    canvasFallback: false,
+    muted: false,
+    volume: 70,
+    nativeWidth: tile.width,
+    nativeHeight: tile.height,
+    aspectRatio: tile.width / tile.height,
+  }));
 }
 
 /**
@@ -181,9 +211,13 @@ const tileArb: fc.Arbitrary<ShareTileState> = fc.record({
   participantId: fc.uuid(),
   displayName: fc.string({ minLength: 1, maxLength: 20 }),
   color: fc.constantFrom(...COLORS),
+  kind: fc.constant<'live'>('live'),
   canvasFallback: fc.boolean(),
   muted: fc.boolean(),
   volume: fc.integer({ min: 0, max: 100 }),
+  nativeWidth: fc.constant<number | null>(null),
+  nativeHeight: fc.constant<number | null>(null),
+  aspectRatio: fc.float({ min: 0.5, max: 3, noNaN: true }),
 });
 
 /** Generate 2–6 tiles with unique participantIds. */
@@ -399,6 +433,53 @@ describe('WatchAllPage tile state management', () => {
     expect(tiles[0].muted).toBe(false);
   });
 
+  it('mute toggle preserves slider position (volume field unchanged)', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 70);
+    expect(tiles[0].volume).toBe(70);
+
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(70); // slider position preserved
+
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(false);
+    expect(tiles[0].volume).toBe(70); // unmute restores to pre-mute level, not 50
+  });
+
+  it('restore-volume with 0 sets slider to 0 and mutes', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 60);
+
+    // Simulates slider explicitly dragged to 0 in another window (persisted via syncScreenShareVolume)
+    tiles = restoreTileVolume(tiles, { participantId: 'user-1', volume: 0 });
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(0); // slider follows the explicit 0
+  });
+
+  it('pop-out of muted tile sends slider position (toggle-mute is local-only)', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 80);
+    tiles = toggleMute(tiles, 'user-1');
+    expect(tiles[0].muted).toBe(true);
+    expect(tiles[0].volume).toBe(80);
+
+    const { payload } = popOutTile(tiles, 'user-1');
+    expect(payload?.volume).toBe(80); // slider position, not effective volume (mute is local)
+  });
+
+  it('pop-out of unmuted tile sends slider position', () => {
+    let tiles: ShareTileState[] = [];
+    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = setTileVolume(tiles, 'user-1', 45);
+
+    const { payload } = popOutTile(tiles, 'user-1');
+    expect(payload?.volume).toBe(45);
+  });
+
   it('volume persists across pop-out and pop-back', () => {
     let tiles: ShareTileState[] = [];
     tiles = addTile(tiles, {
@@ -482,6 +563,54 @@ describe('WatchAllPage tile state management', () => {
 
     overlay = leaveTile(overlay);
     expect(overlay).toEqual({ hovered: false, labelVisible: true });
+  });
+
+  it('diagnostics test state maps synthetic streams into test tiles', () => {
+    const tiles = applyDiagnosticsTestState({
+      tiles: [
+        {
+          participantId: 'diagnostics-test-1',
+          displayName: '16:9 #1',
+          color: '#60a5fa',
+          width: 1920,
+          height: 1080,
+        },
+        {
+          participantId: 'diagnostics-test-2',
+          displayName: '9:16 #1',
+          color: '#f472b6',
+          width: 608,
+          height: 1080,
+        },
+      ],
+    });
+
+    expect(tiles).toEqual([
+      {
+        participantId: 'diagnostics-test-1',
+        displayName: '16:9 #1',
+        color: '#60a5fa',
+        kind: 'test',
+        canvasFallback: false,
+        muted: false,
+        volume: 70,
+        nativeWidth: 1920,
+        nativeHeight: 1080,
+        aspectRatio: 16 / 9,
+      },
+      {
+        participantId: 'diagnostics-test-2',
+        displayName: '9:16 #1',
+        color: '#f472b6',
+        kind: 'test',
+        canvasFallback: false,
+        muted: false,
+        volume: 70,
+        nativeWidth: 608,
+        nativeHeight: 1080,
+        aspectRatio: 608 / 1080,
+      },
+    ]);
   });
 });
 

@@ -218,6 +218,7 @@ vi.mock('../audio-devices', () => ({
 let mockMaxRetries = 10;
 
 vi.mock('@features/settings/settings-store', () => ({
+  DEFAULT_PASSTHROUGH_VOLUME: 20,
   getDefaultVolume: vi.fn(async () => 70),
   getReconnectConfig: vi.fn(async () => ({
     strategy: 'exponential' as const,
@@ -228,6 +229,7 @@ vi.mock('@features/settings/settings-store', () => ({
   getMuteHotkey: vi.fn(async () => 'Ctrl+Shift+M'),
   getProfileColor: vi.fn(async () => '#E06C75'),
   getChannelVolumes: vi.fn(async () => null),
+  setChannelVolumes: vi.fn(async () => {}),
   getWindowsSharePath: vi.fn(async () => 'browser'),
   getVideoInputDevice: vi.fn(async () => null),
   setVideoInputDevice: vi.fn(async () => {}),
@@ -288,6 +290,8 @@ vi.mock('../native-media', () => ({
 import {
   initSession,
   leaveRoom,
+  scheduleLeaveRoom,
+  BACKGROUND_LEAVE_DISCONNECT_MS,
   leaveSubRoom,
   joinSubRoom,
   toggleSelfMute,
@@ -300,6 +304,8 @@ import {
   detachScreenShareAudio,
   startCustomShare,
   getState,
+  persistStreamVolume,
+  getPersistedStreamVolume,
 } from '../voice-room';
 import type { VoiceRoomState } from '../voice-room';
 import * as settingsStore from '@features/settings/settings-store';
@@ -1222,6 +1228,58 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(sentMessages).toContainEqual({ type: 'leave' });
   });
 
+  it('keeps the room connected until the background leave timeout elapses', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    sentMessages = [];
+    vi.useFakeTimers();
+    try {
+      scheduleLeaveRoom();
+
+      await vi.advanceTimersByTimeAsync(BACKGROUND_LEAVE_DISCONNECT_MS - 1);
+
+      expect(getState().machineState).toBe('active');
+      expect(lastLkModule!.disconnectCalls).toBe(0);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(getState().machineState).toBe('idle');
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the background leave timer when a hard leave happens first', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    sentMessages = [];
+    vi.useFakeTimers();
+    try {
+      scheduleLeaveRoom();
+      leaveRoom();
+
+      expect(getState().machineState).toBe('idle');
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(BACKGROUND_LEAVE_DISCONNECT_MS);
+
+      expect(lastLkModule!.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'leave')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('plays one leave sound when the local participant is kicked', async () => {
     await driveToActive('ch-sounds', 'room-sounds', false);
 
@@ -1285,6 +1343,97 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     await tick();
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
+  });
+});
+
+describe('VoiceRoom room-scoped toast flags', () => {
+  it('does not mark join events toastable when another user joins a different room', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'participant_joined',
+      participantId: 'peer-3',
+      displayName: 'Bob',
+      userId: 'u3',
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-3',
+      subRoomId: 'room-2',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'peer-3',
+      shouldToast: false,
+    });
+  });
+
+  it('marks join events toastable only when another user enters the local room', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'peer-2',
+      shouldToast: true,
+    });
+  });
+
+  it('does not mark self room joins toastable', async () => {
+    await driveToActive('ch-toast', 'room-toast');
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] },
+        { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
+      ],
+    });
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'self-peer',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(getState().events.at(-1)).toMatchObject({
+      type: 'join',
+      participantId: 'self-peer',
+      shouldToast: false,
+    });
   });
 });
 
@@ -1623,6 +1772,45 @@ describe('Voice-room media wiring', () => {
 
   // P9: Host-mute prevents self-unmute, host-unmute releases the lock
   describe('P9: Host-mute prevents unmute until host releases', () => {
+    it('hydrates mute flags from joined and room_state snapshots for late joiners', async () => {
+      resetAll();
+      latestState = null;
+      initSession('ch-1', 'test-room', 'owner', (s) => { latestState = s; });
+      await tick();
+
+      messageHandler!({ type: 'auth_success' });
+      messageHandler!({
+        type: 'joined',
+        peerId: 'self-peer',
+        roomId: 'room-1',
+        participants: [
+          { participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true },
+        ],
+      });
+      await tick();
+
+      expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
+        isMuted: true,
+        isHostMuted: true,
+      });
+
+      messageHandler!({
+        type: 'room_state',
+        participants: [
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false },
+        ],
+      });
+      await tick();
+
+      expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
+        isMuted: true,
+        isHostMuted: false,
+      });
+
+      leaveRoom();
+    });
+
     it('toggleSelfMute is blocked when host-muted, unblocked after participant_unmuted', async () => {
       resetAll();
       await driveToActive();
@@ -2799,5 +2987,63 @@ describe('Property 10: Media reconnect cooldown enforcement', () => {
       ),
       { numRuns: 20 },
     );
+  });
+});
+
+describe('stream volume persistence', () => {
+  it('getPersistedStreamVolume returns null when no stream volumes have been saved', async () => {
+    await driveToActive();
+    expect(getPersistedStreamVolume('peer-2')).toBeNull();
+    leaveRoom();
+  });
+
+  it('persistStreamVolume stores volume keyed by userId, readable via getPersistedStreamVolume', async () => {
+    await driveToActive(); // peer-2 has userId u2
+
+    persistStreamVolume('peer-2', 40);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(40);
+    leaveRoom();
+  });
+
+  it('persistStreamVolume overwrites previous value for the same participant', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 40);
+    persistStreamVolume('peer-2', 80);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(80);
+    leaveRoom();
+  });
+
+  it('persistStreamVolume clamps volume to 0–100', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 150);
+    expect(getPersistedStreamVolume('peer-2')).toBe(100);
+
+    persistStreamVolume('peer-2', -10);
+    expect(getPersistedStreamVolume('peer-2')).toBe(0);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamVolume returns null for unknown participantId', async () => {
+    await driveToActive();
+    persistStreamVolume('peer-2', 55);
+    expect(getPersistedStreamVolume('unknown-peer')).toBeNull();
+    leaveRoom();
+  });
+
+  it('getPersistedStreamVolume returns saved value loaded from channel prefs on join', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 55 },
+    });
+
+    await driveToActive(); // peer-2 has userId u2
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(55);
+    leaveRoom();
   });
 });

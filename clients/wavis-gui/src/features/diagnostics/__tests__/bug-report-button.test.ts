@@ -26,6 +26,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 // Mock settings-store with in-memory map for round-trip testing
 const storeMap = new Map<string, unknown>();
 vi.mock('@features/settings/settings-store', () => ({
+  DEFAULT_PASSTHROUGH_VOLUME: 20,
   STORE_KEYS: { bugReportButtonPos: 'wavis_bug_report_button_pos' },
   getStoreValue: vi.fn(async <T>(key: string, defaultValue: T): Promise<T> => {
     return (storeMap.has(key) ? storeMap.get(key) as T : defaultValue);

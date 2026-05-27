@@ -272,7 +272,7 @@ export class StreamReceiver {
    *   Not fired for 'disconnected' — that state may recover on its own; the
    *   stall detector handles it if video frames stop arriving.
    */
-  async start(onConnectionFailed?: () => void): Promise<MediaStream> {
+  async start(onConnectionFailed?: () => void, onListenersReady?: () => void): Promise<MediaStream> {
     this.stop();
     const key = compositeKey(this.participantId, this.windowLabel);
     const startGeneration = ++this.startGeneration;
@@ -391,6 +391,11 @@ export class StreamReceiver {
           return;
         }
         this.cleanups.push(unlistenIce, unlistenOffer);
+
+        // Notify caller that offer + ICE listeners are registered. The caller
+        // should trigger resendStream() here — not before — so the sender's
+        // initial offer arrives after this receiver can already handle it.
+        onListenersReady?.();
 
         // Signal readiness — sender will (re-)send the offer
         emit(`ss-bridge:receiver-ready:${key}`, {});

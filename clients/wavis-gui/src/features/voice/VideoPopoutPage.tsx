@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { computeGridLayout } from '@features/screen-share/watch-all-grid';
@@ -10,6 +11,13 @@ interface VideoPopoutParams {
 }
 
 const TITLE_BAR_HEIGHT = 32;
+
+interface PolledCameraFrame {
+  frame: string;
+  width: number;
+  height: number;
+  seq: number;
+}
 
 function parseHashParams(): VideoPopoutParams | null {
   try {
@@ -23,9 +31,11 @@ function parseHashParams(): VideoPopoutParams | null {
 
 function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const receiverRef = useRef<StreamReceiver | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [receiverError, setReceiverError] = useState(false);
+  const [nativeFallbackActive, setNativeFallbackActive] = useState(false);
   const shouldReceive = tile.hasTrack && !tile.isMuted && !tile.hasError;
 
   useEffect(() => {
@@ -36,6 +46,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
       receiverRef.current = null;
       setStream(null);
       setReceiverError(false);
+      setNativeFallbackActive(false);
       return;
     }
 
@@ -53,6 +64,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
         if (cancelled) return;
         setStream(null);
         setReceiverError(true);
+        setNativeFallbackActive(true);
       });
 
     return () => {
@@ -78,7 +90,61 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
     };
   }, [stream]);
 
+  useEffect(() => {
+    if (!shouldReceive || !nativeFallbackActive) return;
+
+    let stopped = false;
+    let lastSeq: number | null = null;
+    let busy = false;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (!canvas || !ctx) return;
+
+    const paintPayload = (payload: PolledCameraFrame) => {
+      if (canvas.width !== payload.width || canvas.height !== payload.height) {
+        canvas.width = payload.width;
+        canvas.height = payload.height;
+      }
+      const image = new Image();
+      image.onload = () => {
+        if (stopped || lastSeq !== payload.seq) return;
+        ctx.drawImage(image, 0, 0, payload.width, payload.height);
+      };
+      image.src = `data:image/jpeg;base64,${payload.frame}`;
+    };
+
+    const poll = () => {
+      if (stopped || busy) return;
+      busy = true;
+      const command = tile.isSelf ? 'media_poll_local_camera_frame' : 'media_poll_camera_frame';
+      const args = tile.isSelf
+        ? { lastSeq }
+        : { identity: tile.participantId, lastSeq };
+      invoke<PolledCameraFrame | null>(command, args)
+        .then((payload) => {
+          if (!payload || stopped) return;
+          lastSeq = payload.seq;
+          paintPayload(payload);
+        })
+        .catch(() => {
+          // Keep the placeholder visible; the bridge may reconnect or the next
+          // popout sync can replace this fallback.
+        })
+        .finally(() => {
+          busy = false;
+        });
+    };
+
+    const id = setInterval(poll, 66);
+    poll();
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [nativeFallbackActive, shouldReceive, tile.isSelf, tile.participantId]);
+
   const showVideo = shouldReceive && stream && !receiverError;
+  const showNativeFallback = shouldReceive && nativeFallbackActive;
 
   return (
     <div className="relative overflow-hidden bg-wavis-panel" style={{ width: '100%', height: '100%' }}>
@@ -88,6 +154,16 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
           autoPlay
           playsInline
           muted={tile.isSelf}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            ...(tile.isSelf ? { transform: 'scaleX(-1)' } : {}),
+          }}
+        />
+      ) : showNativeFallback ? (
+        <canvas
+          ref={canvasRef}
           style={{
             width: '100%',
             height: '100%',
@@ -119,7 +195,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
           muted
         </div>
       )}
-      {(tile.hasError || receiverError) && (
+      {(tile.hasError || (receiverError && !nativeFallbackActive)) && (
         <div
           className="absolute top-1 left-1 text-[10px] px-1 rounded"
           style={{ background: 'rgba(0,0,0,0.65)', color: 'var(--wavis-danger)' }}

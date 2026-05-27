@@ -226,6 +226,7 @@ fn sub_room_state_payload(state: &SubRoomState) -> SubRoomStatePayload {
     SubRoomStatePayload {
         rooms: state.rooms.iter().map(sub_room_info_payload).collect(),
         passthrough: active_passthrough_payload(state),
+        passthrough_volume_percent: state.passthrough_volume_percent,
     }
 }
 
@@ -749,6 +750,13 @@ pub fn set_passthrough(
         return Ok(SubRoomActionResult::default());
     }
 
+    tracing::info!(
+        room_id = %room_id,
+        participant_id = %participant_id,
+        target_sub_room_id = %target_sub_room_id,
+        "passthrough set"
+    );
+
     Ok(SubRoomActionResult {
         signals: sub_room_state_signals(room_state, room_id),
         expiry: None,
@@ -790,10 +798,47 @@ pub fn clear_passthrough(
         return Ok(SubRoomActionResult::default());
     }
 
+    tracing::info!(
+        room_id = %room_id,
+        participant_id = %participant_id,
+        "passthrough cleared"
+    );
+
     Ok(SubRoomActionResult {
         signals: sub_room_state_signals(room_state, room_id),
         expiry: None,
     })
+}
+
+pub fn set_passthrough_volume(
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+    volume_percent: u8,
+) -> SubRoomActionResult {
+    let clamped = volume_percent.min(100);
+    let changed = room_state
+        .with_room_write(room_id, |members| {
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return false;
+            };
+            if sub_rooms.passthrough_volume_percent == clamped {
+                return false;
+            }
+            sub_rooms.passthrough_volume_percent = clamped;
+            true
+        })
+        .unwrap_or(false);
+
+    if !changed {
+        return SubRoomActionResult::default();
+    }
+
+    tracing::info!(room_id = %room_id, volume_percent = %clamped, "passthrough volume set");
+
+    SubRoomActionResult {
+        signals: sub_room_state_signals(room_state, room_id),
+        expiry: None,
+    }
 }
 
 pub fn expire_sub_room(
@@ -977,6 +1022,8 @@ pub async fn join_voice(
         display_name: display_name.to_string(),
         user_id: Some(user_id.to_string()),
         profile_color: profile_color.map(|s| s.to_string()),
+        is_muted: false,
+        is_host_muted: false,
     };
     room_state.update_room_info(&room_id, |info| {
         info.participants.push(new_participant.clone());
@@ -1261,12 +1308,16 @@ mod tests {
                 display_name: "Peer A".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
             },
             ParticipantInfo {
                 participant_id: "peer-b".to_string(),
                 display_name: "Peer B".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
             },
         ];
         state.create_room("voice-room".to_string(), info);

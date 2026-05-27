@@ -25,11 +25,13 @@ export interface NotificationToggles {
   participantKicked: boolean;
   participantMutedByHost: boolean;
   inviteReceived: boolean;
+  passthroughChanged: boolean;
 }
 
 export interface ChannelVolumePrefs {
   master: number;
   participants: Record<string, number>;
+  streams?: Record<string, number>;
 }
 
 export type WindowsSharePathPreference = 'browser' | 'native';
@@ -53,6 +55,7 @@ export const STORE_KEYS = {
   notifyParticipantKicked: 'wavis_notify_participant_kicked',
   notifyParticipantMutedByHost: 'wavis_notify_participant_muted_by_host',
   notifyInviteReceived: 'wavis_notify_invite_received',
+  notifyPassthroughChanged: 'wavis_notify_passthrough_changed',
   minimizeToTray: 'wavis_minimize_to_tray',
   reconnectConfig: 'wavis_reconnect_config',
   muteHotkey: 'wavis_mute_hotkey',
@@ -80,6 +83,7 @@ export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
 };
 
 export const DEFAULT_VOLUME = 70;
+export const DEFAULT_PASSTHROUGH_VOLUME = 20;
 export const DEFAULT_MUTE_HOTKEY = 'Ctrl+Shift+M';
 export const DEFAULT_WATCH_ALL_HOTKEY = 'CmdOrCtrl+Shift+W';
 export const DEFAULT_FOCUS_MAIN_HOTKEY = 'CmdOrCtrl+Shift+Home';
@@ -109,6 +113,7 @@ const NOTIFICATION_KEY_MAP: Record<keyof NotificationToggles, string> = {
   participantKicked: STORE_KEYS.notifyParticipantKicked,
   participantMutedByHost: STORE_KEYS.notifyParticipantMutedByHost,
   inviteReceived: STORE_KEYS.notifyInviteReceived,
+  passthroughChanged: STORE_KEYS.notifyPassthroughChanged,
 };
 
 // ─── API Functions (exported) ──────────────────────────────────────
@@ -157,12 +162,13 @@ export async function setDefaultVolume(volume: number): Promise<void> {
 // ─── Notification Toggles ──────────────────────────────────────────
 
 export async function getNotificationToggles(): Promise<NotificationToggles> {
-  const [joined, left, kicked, mutedByHost, invite] = await Promise.all([
+  const [joined, left, kicked, mutedByHost, invite, passthrough] = await Promise.all([
     getStoreValue(STORE_KEYS.notifyParticipantJoined, true),
     getStoreValue(STORE_KEYS.notifyParticipantLeft, true),
     getStoreValue(STORE_KEYS.notifyParticipantKicked, true),
     getStoreValue(STORE_KEYS.notifyParticipantMutedByHost, true),
     getStoreValue(STORE_KEYS.notifyInviteReceived, true),
+    getStoreValue(STORE_KEYS.notifyPassthroughChanged, true),
   ]);
   return {
     participantJoined: joined,
@@ -170,6 +176,7 @@ export async function getNotificationToggles(): Promise<NotificationToggles> {
     participantKicked: kicked,
     participantMutedByHost: mutedByHost,
     inviteReceived: invite,
+    passthroughChanged: passthrough,
   };
 }
 

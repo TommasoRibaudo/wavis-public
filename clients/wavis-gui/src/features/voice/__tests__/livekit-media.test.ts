@@ -204,6 +204,11 @@ vi.mock('livekit-client', () => ({
     Poor: 'poor',
     Lost: 'lost',
   },
+  VideoQuality: {
+    LOW: 0,
+    MEDIUM: 1,
+    HIGH: 2,
+  },
 }));
 
 // ─── Mock Web Audio API ────────────────────────────────────────────
@@ -567,7 +572,7 @@ vi.stubGlobal('navigator', {
 
 // ─── Import module under test ──────────────────────────────────────
 
-import { LiveKitModule, type MediaCallbacks } from '../livekit-media';
+import { LiveKitModule, buildRtcConfiguration, isForceRelayEnabled, type MediaCallbacks } from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
 
 // ─── Callback Mock Helper ──────────────────────────────────────────
@@ -1031,6 +1036,65 @@ describe('camera publish/unpublish', () => {
       frameRate: CAMERA_QUALITY_HIGH.maxFps,
     });
     expect(sender.setParameters).toHaveBeenCalledWith({
+      encodings: [{
+        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+      }],
+    });
+  });
+
+  it('setCameraQuality preserves required sender parameter fields when updating encodings', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-merged-params');
+    const existingParameters: RTCRtpSendParameters = {
+      codecs: [{ mimeType: 'video/VP8' }] as unknown as RTCRtpCodecParameters[],
+      headerExtensions: [{ uri: 'urn:ietf:params:rtp-hdrext:sdes:mid' }] as unknown as RTCRtpHeaderExtensionParameters[],
+      rtcp: { cname: 'camera-cname' },
+      transactionId: 'camera-params-1',
+      encodings: [],
+    };
+    const sender = {
+      getParameters: vi.fn(() => ({ ...existingParameters })),
+      setParameters: vi.fn(async () => {}),
+    };
+    const publication = {
+      trackSid: 'camera-quality-merged',
+      source: 'camera',
+      kind: 'video',
+      track: {
+        sid: 'camera-quality-merged',
+        mediaStreamTrack: mediaTrack,
+        sender,
+      },
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(async () => ({
+      getVideoTracks: () => [mediaTrack],
+      getTracks: () => [mediaTrack],
+    }));
+    vi.stubGlobal('navigator', {
+      userAgent: '',
+      mediaDevices,
+    });
+    mockRoom.localParticipant.publishTrack = vi.fn(async () => {
+      mockRoom.localParticipant.trackPublications.set('camera-quality-merged', publication);
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    await mod.publishCamera({
+      deviceId: 'camera-device-merged',
+      quality: CAMERA_QUALITY_HIGH,
+    });
+
+    await mod.setCameraQuality(CAMERA_QUALITY_HIGH);
+
+    expect(sender.getParameters).toHaveBeenCalled();
+    expect(sender.setParameters).toHaveBeenCalledWith({
+      codecs: existingParameters.codecs,
+      headerExtensions: existingParameters.headerExtensions,
+      rtcp: existingParameters.rtcp,
+      transactionId: existingParameters.transactionId,
       encodings: [{
         maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
         maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
@@ -2211,7 +2275,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-track-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
@@ -2260,6 +2324,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2302,6 +2367,7 @@ describe('Screen share and device selection', () => {
         const publication = {
           source: 'screen_share',
           setEnabled: vi.fn(),
+          setVideoQuality: vi.fn(),
           track: initialTrack,
         };
         const participant = { identity: 'alice' };
@@ -2331,12 +2397,14 @@ describe('Screen share and device selection', () => {
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
 
+      // Alice is a video sharer — her screen_share_audio should be deferred until the viewer attaches it.
+      const aliceWithVideo = { identity: 'alice', getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined), trackPublications: new Map() };
       const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } };
       emitRoomEvent(
         'trackSubscribed',
         remoteTrack,
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        aliceWithVideo,
       );
 
       const deferredMap = (mod as unknown as {
@@ -2376,9 +2444,10 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       const setSubscribed = vi.fn();
+      // Alice is a video sharer — audio should be deferred until the viewer window opens.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn(() => undefined),
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map(),
       };
 
@@ -2411,9 +2480,10 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       const setSubscribed = vi.fn();
+      // Alice is a video sharer — audio track arriving before the viewer must be deferred.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn(() => undefined),
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map(),
       };
 
@@ -2461,6 +2531,50 @@ describe('Screen share and device selection', () => {
       mod.disconnect();
     });
 
+    it('late join recovers an already-published screen share video on ParticipantConnected without duplicating the later TrackSubscribed event', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const track = createMockScreenShareTrack('screen-late-1', 'screen-late-sid');
+      const publication = {
+        source: 'screen_share',
+        track,
+        trackSid: 'screen-late-sid',
+        setEnabled: vi.fn(),
+        setVideoQuality: vi.fn(),
+      };
+      const participant = {
+        identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => (
+          source === 'screen_share' ? publication : undefined
+        )),
+        trackPublications: new Map([
+          ['screen-late-sid', publication],
+        ]),
+      };
+
+      emitRoomEvent('participantConnected', participant);
+
+      const subCallsAfterRecovery = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
+      expect(subCallsAfterRecovery).toHaveLength(1);
+      expect(subCallsAfterRecovery[0].args[0]).toBe('alice');
+      expect(publication.setEnabled).toHaveBeenCalledWith(true);
+
+      emitRoomEvent('trackSubscribed', track, publication, participant);
+
+      const subCallsAfterDuplicate = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
+      expect(subCallsAfterDuplicate).toHaveLength(1);
+
+      const screenShareElements = (mod as unknown as {
+        screenShareElements: Map<string, { trackSid: string }>;
+      }).screenShareElements;
+      expect(screenShareElements.get('alice')?.trackSid).toBe('screen-late-sid');
+
+      mod.disconnect();
+    });
+
     it('attachScreenShareAudio is a no-op for unknown participants', async () => {
       resetAll();
       const cbs = createMockCallbacks();
@@ -2489,7 +2603,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
@@ -2515,7 +2629,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
@@ -2546,7 +2660,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 0);
@@ -2579,20 +2693,20 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
 
       mod.attachScreenShareAudio('alice');
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-1'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       emitRoomEvent(
         'trackSubscribed',
         createMockScreenShareTrack('share-video-2'),
-        { source: 'screen_share', setEnabled: vi.fn() },
+        { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
         { identity: 'alice' },
       );
       mod.attachScreenShareAudio('alice');
@@ -2612,8 +2726,10 @@ describe('Screen share and device selection', () => {
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
 
+      // Alice is a video sharer — the second audio track (Linux WebKit path) should also be deferred.
       const participant = {
         identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
         trackPublications: new Map([
           ['share-video', { source: 'screen_share' }],
         ]),
@@ -2663,7 +2779,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 
@@ -2701,7 +2817,7 @@ describe('Screen share and device selection', () => {
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 
@@ -2735,12 +2851,12 @@ describe('Screen share and device selection', () => {
         { identity: 'alice' },
       );
 
-      // Subscribe alice's sys-audio track and attach it (simulates viewer clicking Watch)
+      // Subscribe alice's sys-audio track (audio-only share — auto-attaches immediately)
       emitRoomEvent(
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-alice' } },
         { source: 'screen_share_audio' },
-        { identity: 'alice' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
       mod.attachScreenShareAudio('alice');
 
@@ -2795,7 +2911,7 @@ describe('Screen share and device selection', () => {
 
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${s.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: `sid-${s.identity}` },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: s.identity },
               );
 
@@ -2856,7 +2972,7 @@ describe('Screen share and device selection', () => {
             for (const p of participants) {
               emitRoomEvent('trackSubscribed',
                 { kind: 'video', mediaStreamTrack: { id: `screen-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
-                { source: 'screen_share', setEnabled: vi.fn() },
+                { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
@@ -6048,4 +6164,162 @@ describe('Feature: turn-credentials-audit, Property 7: GUI force-relay override'
   // is an operator debug aid documented in the runbook
   // (`doc/turn_credentials_audit.md` § Forced-relay verification),
   // not part of the contract.
+});
+
+// ─── Feature: turn-relay-symmetric-nat-fix ────────────────────────────────────
+// Tests for buildRtcConfiguration and isForceRelayEnabled post-fix behavior.
+// Uses vi.stubEnv() directly (no vi.resetModules()) because isForceRelayEnabled
+// reads import.meta.env.VITE_WAVIS_FORCE_RELAY inside the function body, so
+// stubs are visible without a module reload.
+
+describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and isForceRelayEnabled', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // ─── Pinned Requirement 5 cases ──────────────────────────────────────────
+
+  it('buildRtcConfiguration_includes_turn_url_for_nonempty_payload', () => {
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'test-credential',
+    });
+    const hasTurn = rtcConfig.iceServers?.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(hasTurn).toBe(true);
+  });
+
+  it('buildRtcConfiguration_force_relay_on_leaves_iceServers_undefined', () => {
+    // R5.2 (revised): force-relay flag sets iceTransportPolicy:'relay' but must
+    // NOT populate iceServers when there is no payload. Supplying any iceServers
+    // array blocks livekit-client v2.17.2 Engine.makeRTCConfiguration's predicate
+    // `if (serverResponse.iceServers && !rtcConfig.iceServers)`, preventing SDK
+    // injection of TURN entries from JoinResponse.ice_servers. With
+    // iceTransportPolicy:'relay' and no TURN entries ICE fails immediately.
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    const rtcConfig = buildRtcConfiguration(undefined);
+    expect(rtcConfig.iceTransportPolicy).toBe('relay');
+    expect(rtcConfig.iceServers).toBeUndefined();
+  });
+
+  it('buildRtcConfiguration_omits_turn_when_credentials_missing', () => {
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: '',
+    });
+    const hasTurn = rtcConfig.iceServers?.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(hasTurn).toBeFalsy();
+  });
+
+  it('buildRtcConfiguration_force_relay_flag_sets_relay_policy', () => {
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    const rtcConfig = buildRtcConfiguration({
+      stunUrls: ['stun:stun.l.google.com:19302'],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'test-credential',
+    });
+    expect(rtcConfig.iceTransportPolicy).toBe('relay');
+  });
+
+  // ─── Property test — Requirement 2.4 ─────────────────────────────────────
+
+  it('buildRtcConfiguration_turn_credentials_passthrough_property', () => {
+    // Feature: turn-relay-symmetric-nat-fix, Property 1: TURN credential pass-through is shape-preserving
+    // Validates: Requirements 2.4
+    fc.assert(
+      fc.property(
+        fc.record({
+          stunUrls: fc.array(fc.webUrl()),
+          // Map to turn: scheme so the prefix filter below can distinguish
+          // the TURN entry from any STUN entries in the same iceServers array.
+          turnUrls: fc.array(
+            fc.webUrl().map((u) => u.replace(/^https?:\/\//, 'turn:')),
+            { minLength: 1 },
+          ),
+          turnUsername: fc.string({ minLength: 1 }),
+          turnCredential: fc.string({ minLength: 1 }),
+        }),
+        (payload) => {
+          const cfg = buildRtcConfiguration(payload);
+          // Filter by turn: prefix to find the TURN entry — this is the stronger
+          // check: it confirms the entry was wired as a TURN server, not a STUN
+          // server that happens to share the same array reference.
+          const turnEntries = (cfg.iceServers ?? []).filter((s) => {
+            const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+            return urls.some((u) => u.startsWith('turn:'));
+          });
+          // Reference equality on urls pins that the function does not slice or
+          // copy the array (design § Correctness Properties).
+          return (
+            turnEntries.length === 1
+            && turnEntries[0].urls === payload.turnUrls
+            && turnEntries[0].username === payload.turnUsername
+            && turnEntries[0].credential === payload.turnCredential
+          );
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  // ─── Additional design cases (R2.2, R2.5, R3.1) ──────────────────────────
+
+  it('buildRtcConfiguration_no_payload_no_force_relay_omits_iceServers', () => {
+    // Regression guard for the load-bearing fix: with force-relay off and no
+    // payload, iceServers must be undefined so livekit-client v2.17.2
+    // Engine.makeRTCConfiguration's predicate fires and injects
+    // JoinResponse.ice_servers (the LiveKit embedded TURN credential pair).
+    const result = buildRtcConfiguration(undefined);
+    expect(result.iceServers).toBeUndefined();
+    expect(result.iceTransportPolicy).toBe('all');
+  });
+
+  it('buildRtcConfiguration_logs_redacted_iceServers_in_connect_log', () => {
+    // Verify that the credential-redaction projection applied in the connect
+    // log (task 1.3) strips the credential field. We exercise the same map()
+    // expression here to guard against accidental reversion.
+    const payload = {
+      stunUrls: [],
+      turnUrls: ['turn:18.190.186.160:3478'],
+      turnUsername: 'test-user',
+      turnCredential: 'super-secret',
+    };
+    const rtcConfig = buildRtcConfiguration(payload);
+
+    // buildRtcConfiguration correctly passes credential to RTCPeerConnection
+    const turnEntry = rtcConfig.iceServers?.find((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      return urls.some((u) => u.startsWith('turn:'));
+    });
+    expect(turnEntry?.credential).toBe('super-secret');
+
+    // The connect-log projection (task 1.3) omits credential
+    const redacted = rtcConfig.iceServers?.map((s) => ({
+      urls: s.urls,
+      username: s.username,
+    }));
+    expect(redacted?.every((s) => !('credential' in s))).toBe(true);
+  });
+
+  it('isForceRelayEnabled_ignores_unprefixed_env_var', () => {
+    // Unprefixed WAVIS_FORCE_RELAY is not exposed by Vite's import.meta.env —
+    // setting it alone must not activate force-relay mode.
+    vi.stubEnv('WAVIS_FORCE_RELAY', 'true');
+    expect(isForceRelayEnabled()).toBe(false);
+
+    // Only the VITE_*-prefixed variable activates the flag.
+    vi.unstubAllEnvs();
+    vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
+    expect(isForceRelayEnabled()).toBe(true);
+  });
 });

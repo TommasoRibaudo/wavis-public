@@ -31,8 +31,8 @@ struct MinimizeToTrayPayload {
 }
 
 #[derive(Clone, Serialize)]
-struct WindowVisibilityPayload {
-    visible: bool,
+pub struct WindowVisibilityPayload {
+    pub visible: bool,
 }
 
 pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {

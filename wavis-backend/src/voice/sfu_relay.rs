@@ -218,6 +218,8 @@ pub async fn handle_sfu_join(
         display_name: display_name.to_string(),
         user_id: None,
         profile_color: profile_color.map(|s| s.to_string()),
+        is_muted: false,
+        is_host_muted: false,
     };
     state.update_room_info(room_id, |info| {
         info.participants.push(new_participant.clone());
@@ -484,6 +486,17 @@ pub async fn handle_mute(
         )));
     }
 
+    state.update_room_info(room_id, |info| {
+        if let Some(participant) = info
+            .participants
+            .iter_mut()
+            .find(|p| p.participant_id == target_id)
+        {
+            participant.is_muted = true;
+            participant.is_host_muted = true;
+        }
+    });
+
     // Broadcast ParticipantMuted to ALL participants (including the muted one)
     Ok(vec![OutboundSignal::broadcast_all(
         SignalingMessage::ParticipantMuted(ParticipantMutedPayload {
@@ -531,6 +544,16 @@ pub async fn handle_unmute(
             "target participant {target_id} not in room"
         )));
     }
+
+    state.update_room_info(room_id, |info| {
+        if let Some(participant) = info
+            .participants
+            .iter_mut()
+            .find(|p| p.participant_id == target_id)
+        {
+            participant.is_host_muted = false;
+        }
+    });
 
     // Broadcast ParticipantUnmuted to ALL participants (including the unmuted one)
     Ok(vec![OutboundSignal::broadcast_all(
@@ -634,6 +657,8 @@ pub async fn handle_create_room(
         display_name: display_name.to_string(),
         user_id: None,
         profile_color: profile_color.map(|s| s.to_string()),
+        is_muted: false,
+        is_host_muted: false,
     };
     state.update_room_info(room_id_trimmed, |info| {
         info.participants.push(creator_info);
@@ -1330,6 +1355,8 @@ mod tests {
                         display_name: kicker_id.clone(),
                         user_id: None,
                         profile_color: None,
+                        is_muted: false,
+                        is_host_muted: false,
                     });
                 });
 
@@ -1342,6 +1369,8 @@ mod tests {
                             display_name: target_id.clone(),
                             user_id: None,
                             profile_color: None,
+                            is_muted: false,
+                            is_host_muted: false,
                         });
                     });
                 }
@@ -1422,6 +1451,8 @@ mod tests {
                         display_name: kicker_id.clone(),
                         user_id: None,
                         profile_color: None,
+                        is_muted: false,
+                        is_host_muted: false,
                     });
                 });
 
@@ -1433,6 +1464,8 @@ mod tests {
                         display_name: target_id.clone(),
                         user_id: None,
                         profile_color: None,
+                        is_muted: false,
+                        is_host_muted: false,
                     });
                 });
 
@@ -1912,6 +1945,17 @@ mod tests {
                     "signal must be ParticipantMuted with participant_id == guest_id, got: {:?}",
                     signals[0].msg
                 );
+
+                let participant_snapshot = state
+                    .get_room_info(&room_id)
+                    .and_then(|info| {
+                        info.participants
+                            .into_iter()
+                            .find(|p| p.participant_id == guest_id)
+                    })
+                    .expect("guest remains in room");
+                prop_assert!(participant_snapshot.is_muted, "muted participant snapshot must be muted");
+                prop_assert!(participant_snapshot.is_host_muted, "host-muted participant snapshot must record host mute");
 
                 Ok(())
             })?;

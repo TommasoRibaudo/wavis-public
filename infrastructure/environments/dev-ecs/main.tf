@@ -102,6 +102,9 @@ locals {
     # Re-enable when a TURN server that honors RFC 5766 (e.g. a coturn
     # sidecar) lands. Tracked in the workspace-only spec at
     # .kiro/specs/turn-credentials-audit/ (Addendum: LiveKit auth).
+    # See also: .kiro/specs/turn-relay-symmetric-nat-fix/ — defines the
+    # post-Option-B contingency path; backend issuer remains dormant
+    # pending standalone-coturn promotion.
   }
 
   managed_config_keys = toset([
@@ -137,6 +140,9 @@ locals {
     # the desired outcome — the backend stops issuing dead HMAC
     # credentials — but it is a destructive change. Review
     # `terraform plan` before running apply.
+    # See also: .kiro/specs/turn-relay-symmetric-nat-fix/ — defines the
+    # post-Option-B contingency path; backend issuer remains dormant
+    # pending standalone-coturn promotion.
     LIVEKIT_API_KEY         = "CHANGE-ME-livekit-api-key"
     LIVEKIT_API_SECRET      = "CHANGE-ME-livekit-api-secret"
     RDS_MASTER_PASSWORD     = "CHANGE-ME-rds-master-password"
