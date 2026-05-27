@@ -2692,7 +2692,7 @@ pub(crate) async fn dispatch_message(
             let user_id_uuid = Uuid::parse_str(
                 session_ref.user_id.as_ref().expect("channel session always has user_id"),
             ).expect("session user_id is always a valid UUID");
-            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough").await.is_err() {
+            if require_host_role(ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough").await.is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -2738,7 +2738,7 @@ pub(crate) async fn dispatch_message(
             let user_id_uuid = Uuid::parse_str(
                 session_ref.user_id.as_ref().expect("channel session always has user_id"),
             ).expect("session user_id is always a valid UUID");
-            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "clear_passthrough").await.is_err() {
+            if require_host_role(ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "clear_passthrough").await.is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -2783,7 +2783,7 @@ pub(crate) async fn dispatch_message(
             let user_id_uuid = Uuid::parse_str(
                 session_ref.user_id.as_ref().expect("channel session always has user_id"),
             ).expect("session user_id is always a valid UUID");
-            if require_host_role(&ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough_volume").await.is_err() {
+            if require_host_role(ctx.app_state, ctx.peer_id, channel_id, user_id_uuid, "set_passthrough_volume").await.is_err() {
                 return DispatchOutcome::Continue;
             }
 
