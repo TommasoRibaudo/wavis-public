@@ -86,6 +86,8 @@ where
                 display_name: payload.display_name,
                 user_id: None,
                 profile_color: payload.profile_color,
+                is_muted: false,
+                is_host_muted: false,
             });
         }
     }

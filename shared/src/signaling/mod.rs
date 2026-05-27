@@ -470,6 +470,16 @@ pub struct ParticipantInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub profile_color: Option<String>,
+    /// Whether this participant's microphone is currently muted.
+    #[serde(rename = "isMuted", default, skip_serializing_if = "is_false")]
+    pub is_muted: bool,
+    /// Whether the current mute was imposed by a host.
+    #[serde(rename = "isHostMuted", default, skip_serializing_if = "is_false")]
+    pub is_host_muted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Broadcast to existing participants when a new participant joins.
@@ -826,7 +836,10 @@ pub struct SubRoomStatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<PassthroughStatePayload>,
     /// Passthrough volume as a percentage (0–100). Defaults to 20 if absent (backward compat).
-    #[serde(rename = "passthroughVolumePercent", default = "default_passthrough_volume")]
+    #[serde(
+        rename = "passthroughVolumePercent",
+        default = "default_passthrough_volume"
+    )]
     pub passthrough_volume_percent: u8,
 }
 

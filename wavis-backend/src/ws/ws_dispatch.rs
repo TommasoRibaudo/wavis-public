@@ -1694,6 +1694,16 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_muted = true;
+                }
+            });
+
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
                     SignalingMessage::ParticipantSelfMuted(ParticipantSelfMutedPayload {
@@ -1737,6 +1747,16 @@ pub(crate) async fn dispatch_message(
                     return DispatchOutcome::Continue;
                 }
             };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_muted = participant.is_host_muted;
+                }
+            });
 
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(

@@ -142,6 +142,8 @@ impl Arbitrary for ParticipantInfo {
                     display_name,
                     user_id,
                     profile_color,
+                    is_muted: false,
+                    is_host_muted: false,
                 },
             )
             .boxed()

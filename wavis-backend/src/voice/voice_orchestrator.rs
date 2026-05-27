@@ -1022,6 +1022,8 @@ pub async fn join_voice(
         display_name: display_name.to_string(),
         user_id: Some(user_id.to_string()),
         profile_color: profile_color.map(|s| s.to_string()),
+        is_muted: false,
+        is_host_muted: false,
     };
     room_state.update_room_info(&room_id, |info| {
         info.participants.push(new_participant.clone());
@@ -1306,12 +1308,16 @@ mod tests {
                 display_name: "Peer A".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
             },
             ParticipantInfo {
                 participant_id: "peer-b".to_string(),
                 display_name: "Peer B".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
             },
         ];
         state.create_room("voice-room".to_string(), info);
