@@ -1772,6 +1772,45 @@ describe('Voice-room media wiring', () => {
 
   // P9: Host-mute prevents self-unmute, host-unmute releases the lock
   describe('P9: Host-mute prevents unmute until host releases', () => {
+    it('hydrates mute flags from joined and room_state snapshots for late joiners', async () => {
+      resetAll();
+      latestState = null;
+      initSession('ch-1', 'test-room', 'owner', (s) => { latestState = s; });
+      await tick();
+
+      messageHandler!({ type: 'auth_success' });
+      messageHandler!({
+        type: 'joined',
+        peerId: 'self-peer',
+        roomId: 'room-1',
+        participants: [
+          { participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true },
+        ],
+      });
+      await tick();
+
+      expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
+        isMuted: true,
+        isHostMuted: true,
+      });
+
+      messageHandler!({
+        type: 'room_state',
+        participants: [
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false },
+        ],
+      });
+      await tick();
+
+      expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
+        isMuted: true,
+        isHostMuted: false,
+      });
+
+      leaveRoom();
+    });
+
     it('toggleSelfMute is blocked when host-muted, unblocked after participant_unmuted', async () => {
       resetAll();
       await driveToActive();
