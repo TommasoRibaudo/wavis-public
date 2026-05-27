@@ -266,6 +266,9 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             )?;
         }
         SignalingMessage::ClearPassthrough(_) => {}
+        SignalingMessage::SetPassthroughVolume(_) => {
+            // volume is u8 (0–255) and clamped to 0–100 server-side; no string fields to check.
+        }
         SignalingMessage::SubRoomState(p) => {
             for room in &p.rooms {
                 check("subRoomId", &room.sub_room_id, MAX_SUB_ROOM_ID_LEN)?;

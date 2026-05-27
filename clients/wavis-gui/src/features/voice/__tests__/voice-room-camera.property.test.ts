@@ -70,6 +70,7 @@ function makeState(overrides?: Partial<VoiceRoomState>): VoiceRoomState {
     connectionMode: 'livekit',
     sharePermission: 'anyone',
     defaultVolume: 70,
+    passthroughVolume: 20,
     mediaReconnectFailures: 0,
     activeVideoShare: null,
     activeAudioShare: null,
@@ -352,6 +353,7 @@ async function loadVoiceRoomIntegrationHarness() {
   }));
 
   vi.doMock('@features/settings/settings-store', () => ({
+    DEFAULT_PASSTHROUGH_VOLUME: 20,
     getDefaultVolume: vi.fn(async () => 70),
     getReconnectConfig: vi.fn(async () => ({
       strategy: 'exponential' as const,

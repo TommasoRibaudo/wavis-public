@@ -89,6 +89,8 @@ pub struct SubRoomState {
     pub membership_sources: HashMap<String, SubRoomMembershipSource>,
     /// Optional active passthrough pair for this voice session.
     pub active_passthrough: Option<PassthroughPair>,
+    /// Passthrough volume as a percentage (0–100), set by an admin and applied to all participants.
+    pub passthrough_volume_percent: u8,
 }
 
 impl SubRoomState {
@@ -98,6 +100,7 @@ impl SubRoomState {
             participant_assignments: HashMap::new(),
             membership_sources: HashMap::new(),
             active_passthrough: None,
+            passthrough_volume_percent: 20,
         }
     }
 }

@@ -76,13 +76,13 @@ pub fn install(log_buffer: SharedLogBuffer) {
             } else {
                 for line in lines {
                     report.push_str(&line);
-                    report.push_str("\n");
+                    report.push('\n');
                 }
             }
         } else {
             report.push_str("(log buffer unavailable — mutex poisoned)\n");
         }
-        report.push_str("\n");
+        report.push('\n');
 
         let filename = format!("crash-report-{}.txt", timestamp);
 

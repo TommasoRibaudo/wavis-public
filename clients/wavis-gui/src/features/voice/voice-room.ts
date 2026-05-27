@@ -36,6 +36,7 @@ import {
   setChannelVolumes,
   getVideoInputDevice,
   setVideoInputDevice,
+  DEFAULT_PASSTHROUGH_VOLUME,
 } from '@features/settings/settings-store';
 import type { ChannelVolumePrefs } from '@features/settings/settings-store';
 import type { ShareMode, ShareSelection, EnumerationResult, FallbackReason, AudioShareStartResult } from '@features/screen-share/share-types';
@@ -114,6 +115,7 @@ export type RoomEventType =
   | 'share-start'
   | 'share-stop'
   | 'share-permission'
+  | 'passthrough'
   | 'system';
 export interface ChatMessage {
   id: string;
@@ -186,6 +188,8 @@ export interface VoiceRoomState {
   sharePermission: 'anyone' | 'host_only';
   /** Default volume loaded from store, used for new participants. */
   defaultVolume: number;
+  /** Passthrough volume (0–100): attenuates audio from paired sub-room. Persisted per channel. */
+  passthroughVolume: number;
   /** Consecutive media reconnect failure count. */
   mediaReconnectFailures: number;
   /** Active video share slot (screen or window). Null when no video share. */
@@ -448,6 +452,7 @@ export function computeEffectiveParticipantVolume(
   joinedSubRoomId: string | null,
   participantSubRoomById: Record<string, string>,
   passthrough: VoicePassthroughState | null,
+  passthroughVolumeFraction = 0.2,
 ): number {
   if (participantId === selfParticipantId) return manualVolume;
   if (!joinedSubRoomId) return 0;
@@ -461,7 +466,7 @@ export function computeEffectiveParticipantVolume(
       ? passthrough.sourceSubRoomId
       : null;
   if (participantSubRoomId !== pairedSubRoomId) return 0;
-  return Math.round(manualVolume * 0.2);
+  return Math.round(manualVolume * passthroughVolumeFraction);
 }
 
 /**
@@ -491,6 +496,7 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.joinedSubRoomId,
       state.participantSubRoomById,
       state.passthrough,
+      state.passthroughVolume / 100,
     ),
   );
 }
@@ -986,6 +992,7 @@ let sessionUsername: string | null = null;
 let sessionProfileColor: string | null = null;
 let channelVolumePrefs: ChannelVolumePrefs | null = null;
 let volumeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let passthroughVolumeSendTimer: ReturnType<typeof setTimeout> | null = null;
 
 const DEFAULT_STATE: VoiceRoomState = {
   machineState: 'idle',
@@ -1019,6 +1026,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   connectionMode: undefined,
   sharePermission: 'anyone',
   defaultVolume: 70,
+  passthroughVolume: DEFAULT_PASSTHROUGH_VOLUME,
   mediaReconnectFailures: 0,
   activeVideoShare: null,
   activeAudioShare: null,
@@ -2691,8 +2699,8 @@ function dispatchMessage(raw: unknown): void {
           color: isSelf && sessionProfileColor ? sessionProfileColor : (p.profileColor as string | undefined) ?? colorFor({ userId: pUserId, id: p.participantId as string }),
           role: (isSelf && state.selfIsHost) ? 'host' as ParticipantRole : 'guest' as ParticipantRole,
           isSpeaking: false,
-          isMuted: false,
-          isHostMuted: false,
+          isMuted: Boolean(p.isMuted),
+          isHostMuted: Boolean(p.isHostMuted),
           isDeafened: false,
           isSharing: false,
           rmsLevel: 0,
@@ -2853,6 +2861,7 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_state': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
+      const previousPassthrough = state.passthrough;
       const rooms = ((msg.rooms as Array<Record<string, unknown>>) || []).map((room) => ({
         id: room.subRoomId as string,
         roomNumber: room.roomNumber as number,
@@ -2874,6 +2883,25 @@ function dispatchMessage(raw: unknown): void {
             label: passthrough.label,
           }
         : null;
+      if (typeof msg.passthroughVolumePercent === 'number') {
+        state.passthroughVolume = Math.max(0, Math.min(100, Math.round(msg.passthroughVolumePercent)));
+      }
+      // Detect passthrough changes and emit a log event + notification
+      {
+        const newPassthrough = state.passthrough;
+        const wasActive = !!previousPassthrough;
+        const isActive = !!newPassthrough;
+        const pairChanged = wasActive && isActive
+          && (previousPassthrough!.sourceSubRoomId !== newPassthrough.sourceSubRoomId
+              || previousPassthrough!.targetSubRoomId !== newPassthrough.targetSubRoomId);
+        if (!wasActive && isActive) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `set ${newPassthrough.label}` });
+        } else if (wasActive && !isActive) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `cleared` });
+        } else if (pairChanged) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `set ${newPassthrough!.label}` });
+        }
+      }
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
       stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
@@ -3036,8 +3064,8 @@ function dispatchMessage(raw: unknown): void {
           color: isSelf && sessionProfileColor ? sessionProfileColor : (p.profileColor as string | undefined) ?? colorFor({ userId: rsUserId, id: p.participantId as string }),
           role: (isSelf && state.selfIsHost) ? 'host' as ParticipantRole : 'guest' as ParticipantRole,
           isSpeaking: false,
-          isMuted: false,
-          isHostMuted: false,
+          isMuted: Boolean(p.isMuted),
+          isHostMuted: Boolean(p.isHostMuted),
           isDeafened: false,
           isSharing: false,
           rmsLevel: 0,
@@ -3886,6 +3914,10 @@ export function leaveRoom(): void {
     clearTimeout(volumeSaveTimer);
     volumeSaveTimer = null;
   }
+  if (passthroughVolumeSendTimer) {
+    clearTimeout(passthroughVolumeSendTimer);
+    passthroughVolumeSendTimer = null;
+  }
 }
 
 function stopPeriodicMediaRetry(): void {
@@ -4598,6 +4630,7 @@ export function setParticipantVolume(participantId: string, volume: number): voi
         state.joinedSubRoomId,
         state.participantSubRoomById,
         state.passthrough,
+        state.passthroughVolume / 100,
       ),
     );
   }
@@ -4720,6 +4753,20 @@ export function setPassthrough(targetSubRoomId: string): void {
 export function clearPassthrough(): void {
   if (!client || client.status !== 'connected') return;
   client.send({ type: 'clear_passthrough' });
+}
+
+export function setPassthroughVolume(volume: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+  // Debounce WS sends to avoid spamming the server (and its DB role-check) on every
+  // slider pixel. The slider's local useState updates immediately for responsive UI;
+  // the actual signal (and the server-echo that updates state.passthroughVolume) follows
+  // up to 150ms later — an intentional optimistic divergence for a host-only control.
+  if (passthroughVolumeSendTimer) clearTimeout(passthroughVolumeSendTimer);
+  passthroughVolumeSendTimer = setTimeout(() => {
+    passthroughVolumeSendTimer = null;
+    if (!client || client.status !== 'connected') return;
+    client.send({ type: 'set_passthrough_volume', volume: clamped });
+  }, 150);
 }
 
 /* ─── Chat ──────────────────────────────────────────────────────── */

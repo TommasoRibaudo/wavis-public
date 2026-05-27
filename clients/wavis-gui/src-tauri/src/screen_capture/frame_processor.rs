@@ -15,7 +15,7 @@ const DEFAULT_MAX_WIDTH: u32 = 1920;
 /// Default maximum output height after resolution capping.
 const DEFAULT_MAX_HEIGHT: u32 = 1080;
 /// Default maximum frame rate for the capture pipeline.
-const DEFAULT_MAX_FPS: u32 = 15;
+const DEFAULT_MAX_FPS: u32 = 60;
 /// Default JPEG quality for viewer-side frame encoding (0–100).
 const DEFAULT_JPEG_QUALITY: u8 = 75;
 
@@ -34,7 +34,7 @@ pub struct ScreenShareConfig {
 }
 
 impl ScreenShareConfig {
-    /// Create a new config with default values (1920×1080 @ 15fps, JPEG 75).
+    /// Create a new config with default values (1920×1080 @ 60fps, JPEG 75).
     pub fn new() -> Self {
         Self {
             max_width: AtomicU32::new(DEFAULT_MAX_WIDTH),
@@ -66,13 +66,13 @@ impl ScreenShareConfig {
             "low" => {
                 self.max_width.store(1920, Ordering::Relaxed);
                 self.max_height.store(1080, Ordering::Relaxed);
-                self.max_fps.store(30, Ordering::Relaxed);
+                self.max_fps.store(60, Ordering::Relaxed);
                 self.jpeg_quality.store(85, Ordering::Relaxed);
             }
             "high" => {
                 self.max_width.store(2560, Ordering::Relaxed);
                 self.max_height.store(1440, Ordering::Relaxed);
-                self.max_fps.store(30, Ordering::Relaxed);
+                self.max_fps.store(60, Ordering::Relaxed);
                 self.jpeg_quality.store(92, Ordering::Relaxed);
             }
             "max" => {
@@ -379,7 +379,7 @@ mod tests {
         let cfg = ScreenShareConfig::new();
         assert_eq!(cfg.max_width(), 1920);
         assert_eq!(cfg.max_height(), 1080);
-        assert_eq!(cfg.max_fps(), 15);
+        assert_eq!(cfg.max_fps(), 60);
         assert_eq!(cfg.jpeg_quality(), 75);
     }
 
@@ -389,7 +389,7 @@ mod tests {
         cfg.apply_preset("low").unwrap();
         assert_eq!(cfg.max_width(), 1920);
         assert_eq!(cfg.max_height(), 1080);
-        assert_eq!(cfg.max_fps(), 30);
+        assert_eq!(cfg.max_fps(), 60);
         assert_eq!(cfg.jpeg_quality(), 85);
     }
 

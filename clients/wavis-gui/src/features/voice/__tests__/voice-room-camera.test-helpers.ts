@@ -244,6 +244,7 @@ export async function setupVoiceRoomCameraHarness(): Promise<VoiceRoomCameraHarn
   }));
 
   vi.doMock('@features/settings/settings-store', () => ({
+    DEFAULT_PASSTHROUGH_VOLUME: 20,
     getDefaultVolume: vi.fn(async () => 70),
     getReconnectConfig: vi.fn(async () => ({
       strategy: 'exponential' as const,
