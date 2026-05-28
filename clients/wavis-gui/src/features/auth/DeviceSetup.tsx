@@ -142,35 +142,27 @@ export default function DeviceSetup() {
           </div>
 
           <label className="flex items-center gap-3 text-sm cursor-pointer select-none mb-6">
-            <span
-              className="border px-2 py-0.5 text-xs"
-              style={{
-                borderColor: confirmed ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
-                color: confirmed ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
-                backgroundColor: confirmed ? 'rgba(46, 160, 67, 0.08)' : 'transparent',
-              }}
-            >
-              {confirmed ? '✓' : ' '}
-            </span>
-            <span className={confirmed ? 'text-wavis-text' : 'text-wavis-text-secondary'}>
-              I have saved my Recovery ID
-            </span>
             <input
               type="checkbox"
               checked={confirmed}
               onChange={(e) => setConfirmed(e.target.checked)}
-              className="sr-only"
+              className="peer sr-only"
             />
+            <span className="flex size-6 shrink-0 items-center justify-center border-2 border-wavis-text-secondary bg-wavis-bg text-base leading-none text-transparent transition-colors peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-wavis-accent peer-checked:border-wavis-accent peer-checked:bg-wavis-accent peer-checked:text-wavis-bg">
+              ✓
+            </span>
+            <span className={confirmed ? 'text-wavis-text' : 'text-wavis-text-secondary'}>
+              I have saved my Recovery ID (required)
+            </span>
           </label>
 
-          {confirmed && (
-            <button
-              onClick={() => { void handleContinue(); }}
-              className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2"
-            >
-              /continue
-            </button>
-          )}
+          <button
+            onClick={() => { void handleContinue(); }}
+            disabled={!confirmed}
+            className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg disabled:border-wavis-text-secondary disabled:text-wavis-text-secondary disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-wavis-text-secondary transition-colors px-6 py-2"
+          >
+            /continue
+          </button>
         </div>
 
         <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs">
