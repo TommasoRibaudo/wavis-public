@@ -646,19 +646,34 @@ export async function setUsername(name: string): Promise<void> {
 export async function updateUsername(username: string): Promise<void> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw new Error('No server URL configured');
-  const accessToken = await getAccessToken();
-  if (!accessToken) throw new Error('Not authenticated');
   const insecure = await getInsecureTls();
+  const url = serverUrl.replace(/\/+$/, '') + '/auth/username';
 
-  const res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/username', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ username }),
-    ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
-  });
+  const doRequest = async (token: string) =>
+    tauriFetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ username }),
+      ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+    });
+
+  let accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+
+  let res = await doRequest(accessToken);
+
+  if (res.status === 401) {
+    const refreshResult = await refreshTokens();
+    if (refreshResult.status !== 'success') {
+      throw new Error('Session expired — please log in again');
+    }
+    const newToken = await getAccessToken();
+    if (!newToken) throw new Error('Session expired — please log in again');
+    res = await doRequest(newToken);
+  }
 
   if (!res.ok) {
     throw new Error('Failed to update username');
