@@ -2670,8 +2670,8 @@ export default function ActiveRoom() {
             activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId
             || activePassthrough.targetSubRoomId === roomState.joinedSubRoomId
           );
-        const canSetPassthrough = !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
-        const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
+        const canSetPassthrough = isHost && !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
+        const canClearPassthrough = isHost && activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
         const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
         const passthroughLabel = activePassthroughInvolvesRoom && activePassthrough?.label
           ? `“${activePassthrough.label}”`
