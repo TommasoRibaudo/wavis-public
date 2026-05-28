@@ -444,7 +444,11 @@ mod tests {
                         SignalingMessage::SessionDisplaced(_) |
                         SignalingMessage::ViewerSubscribed(_) |
                         SignalingMessage::ViewerJoined(_) |
-                        SignalingMessage::SfuColdStarting(_)
+                        SignalingMessage::SfuColdStarting(_) |
+                        SignalingMessage::UpdateProfileColor(_) |
+                        SignalingMessage::ParticipantColorUpdated(_) |
+                        SignalingMessage::UpdateUsername(_) |
+                        SignalingMessage::ParticipantUsernameUpdated(_)
                     ),
                     "Message should be a non-Join/non-Auth variant that requires authentication"
                 );
