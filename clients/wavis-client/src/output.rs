@@ -199,6 +199,7 @@ mod tests {
             profile_color: None,
             is_muted: false,
             is_host_muted: false,
+            is_deafened: false,
         })
     }
 
@@ -425,6 +426,7 @@ mod tests {
                     profile_color: None,
                     is_muted: false,
                     is_host_muted: false,
+                    is_deafened: false,
                 },
                 ParticipantInfo {
                     participant_id: "bob".to_string(),
@@ -433,6 +435,7 @@ mod tests {
                     profile_color: None,
                     is_muted: false,
                     is_host_muted: false,
+                    is_deafened: false,
                 },
             ],
             ice_config: None,
@@ -546,6 +549,7 @@ mod tests {
                 profile_color: None,
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             },
             ParticipantInfo {
                 participant_id: "b".to_string(),
@@ -554,6 +558,7 @@ mod tests {
                 profile_color: None,
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             },
         ];
         let out = format_status("room-x", "peer-y", &participants, &SfuConnectionMode::Proxy);

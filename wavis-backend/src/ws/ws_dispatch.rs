@@ -1802,6 +1802,16 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_deafened = true;
+                }
+            });
+
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
                     SignalingMessage::ParticipantDeafened(ParticipantDeafenedPayload {
@@ -1845,6 +1855,16 @@ pub(crate) async fn dispatch_message(
                     return DispatchOutcome::Continue;
                 }
             };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_deafened = false;
+                }
+            });
 
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
