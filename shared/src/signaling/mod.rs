@@ -476,6 +476,9 @@ pub struct ParticipantInfo {
     /// Whether the current mute was imposed by a host.
     #[serde(rename = "isHostMuted", default, skip_serializing_if = "is_false")]
     pub is_host_muted: bool,
+    /// Whether this participant is currently deafened.
+    #[serde(rename = "isDeafened", default, skip_serializing_if = "is_false")]
+    pub is_deafened: bool,
 }
 
 fn is_false(value: &bool) -> bool {

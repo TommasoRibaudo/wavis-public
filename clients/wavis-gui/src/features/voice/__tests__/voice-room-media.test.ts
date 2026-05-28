@@ -1785,7 +1785,7 @@ describe('Voice-room media wiring', () => {
         roomId: 'room-1',
         participants: [
           { participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' },
-          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true, isDeafened: true },
         ],
       });
       await tick();
@@ -1793,12 +1793,13 @@ describe('Voice-room media wiring', () => {
       expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
         isMuted: true,
         isHostMuted: true,
+        isDeafened: true,
       });
 
       messageHandler!({
         type: 'room_state',
         participants: [
-          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false, isDeafened: false },
         ],
       });
       await tick();
@@ -1806,6 +1807,7 @@ describe('Voice-room media wiring', () => {
       expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
         isMuted: true,
         isHostMuted: false,
+        isDeafened: false,
       });
 
       leaveRoom();
