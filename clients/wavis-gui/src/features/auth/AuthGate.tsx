@@ -7,7 +7,7 @@ import {
   clearAccessTokens,
   getTokenExpiryMs,
   getServerUrl,
-  getDisplayName,
+  getUsername,
 } from './auth';
 import type { RefreshResult } from './auth';
 import { parseHostname } from '@shared/helpers';
@@ -38,7 +38,7 @@ export default function AuthGate() {
   const location = useLocation();
   const [ready, setReady] = useState(false);
   const [hostname, setHostname] = useState('wavis');
-  const [displayName, setDisplayNameVal] = useState<string | null>(null);
+  const [username, setUsernameState] = useState<string | null>(null);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshRetriesRef = useRef(0);
@@ -159,10 +159,9 @@ export default function AuthGate() {
         setHostname(parseHostname(url));
       }
 
-      // Load display name for status bar
-      const name = await getDisplayName();
+      const name = await getUsername();
       if (!cancelled && name) {
-        setDisplayNameVal(name);
+        setUsernameState(name);
       }
 
       // 2. Check token expiry
@@ -246,8 +245,8 @@ export default function AuthGate() {
         <div className="shrink-0 flex items-center justify-between px-3 sm:px-4 py-1.5 border-b bg-wavis-panel border-wavis-text-secondary text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-1.5 h-1.5 rounded-full bg-wavis-accent shrink-0" />
-            <span className="text-wavis-text truncate">{displayName ?? hostname}</span>
-            {displayName && <span className="text-wavis-text-secondary truncate">@ {hostname}</span>}
+            <span className="text-wavis-text truncate">{username ?? hostname}</span>
+            {username && <span className="text-wavis-text-secondary truncate">@ {hostname}</span>}
           </div>
           <button
             onClick={() => navigate('/settings')}

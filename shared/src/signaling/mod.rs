@@ -253,6 +253,10 @@ pub enum SignalingMessage {
     UpdateProfileColor(UpdateProfileColorPayload),
     /// Server -> all participants broadcast that a participant changed their profile color.
     ParticipantColorUpdated(ParticipantColorUpdatedPayload),
+    /// Client -> server notification that the sender changed their username.
+    UpdateUsername(UpdateUsernamePayload),
+    /// Server -> all participants broadcast that a participant changed their username.
+    ParticipantUsernameUpdated(ParticipantUsernameUpdatedPayload),
 }
 
 /// Client requests room creation. No invite code needed — creator becomes Host.
@@ -982,6 +986,23 @@ pub struct ParticipantColorUpdatedPayload {
     /// New colour (hex string, e.g. "#E06C75").
     #[serde(rename = "profileColor")]
     pub profile_color: String,
+}
+
+/// Client sends updated username to the backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateUsernamePayload {
+    /// New username chosen by the user.
+    pub username: String,
+}
+
+/// Server broadcasts new username to all room participants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantUsernameUpdatedPayload {
+    /// Identifier of the participant who changed their username.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+    /// New username chosen by the user.
+    pub username: String,
 }
 
 // --- Error types ---

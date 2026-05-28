@@ -1,11 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router';
-import { startPairing, approvePairing, finishPairing, setDisplayName } from './auth';
+import { startPairing, approvePairing, finishPairing, setUsername, fetchMyUsername } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
-import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 
-const MAX_DEVICE_NAME_LENGTH = 32;
 
 function ModeToggle({ mode, onToggle }: { mode: 'new' | 'approve'; onToggle: (m: 'new' | 'approve') => void }) {
   return (
@@ -40,8 +38,6 @@ export default function PairDevice() {
 
   const [mode, setMode] = useState<'new' | 'approve'>('new');
 
-  const [deviceName, setDeviceName] = useState('');
-  const [nameError, setNameError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [pairingId, setPairingId] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -63,23 +59,10 @@ export default function PairDevice() {
 
   const handleStartPairing = useCallback(async () => {
     if (starting) return;
-
-    setNameError(null);
     setStartError(null);
-
-    const trimmed = deviceName.trim();
-    if (!trimmed) {
-      setNameError('device name is required');
-      return;
-    }
-    if (trimmed.length > MAX_DEVICE_NAME_LENGTH) {
-      setNameError(`device name must be ${MAX_DEVICE_NAME_LENGTH} characters or less`);
-      return;
-    }
-
     setStarting(true);
     try {
-      const result = await startPairing(trimmed);
+      const result = await startPairing('');
       setPairingId(result.pairing_id);
       setPairingCode(result.code);
     } catch (err) {
@@ -87,7 +70,7 @@ export default function PairDevice() {
     } finally {
       setStarting(false);
     }
-  }, [deviceName, starting]);
+  }, [starting]);
 
   const handleFinishPairing = useCallback(async () => {
     if (finishing || !pairingId || !pairingCode) return;
@@ -96,9 +79,15 @@ export default function PairDevice() {
     setFinishing(true);
     try {
       await finishPairing(pairingId, pairingCode);
-      const trimmed = deviceName.trim();
-      if (trimmed) {
-        await setDisplayName(trimmed);
+      // The account already has a username; pull the server-side value into
+      // local store so this device matches the rest of the account.
+      try {
+        const serverUsername = await fetchMyUsername();
+        if (serverUsername) {
+          await setUsername(serverUsername);
+        }
+      } catch {
+        // Best-effort: pairing succeeded; local username sync can recover later.
       }
       navigate('/', { replace: true });
     } catch (err) {
@@ -113,7 +102,7 @@ export default function PairDevice() {
     } finally {
       setFinishing(false);
     }
-  }, [finishing, pairingId, pairingCode, deviceName, navigate]);
+  }, [finishing, pairingId, pairingCode, navigate]);
 
   const handleApprove = useCallback(async () => {
     if (approving) return;
@@ -141,12 +130,6 @@ export default function PairDevice() {
     }
   }, [approvePairingId, approveCode, approving]);
 
-  const handleNewKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') void handleStartPairing();
-    },
-    [handleStartPairing],
-  );
 
   const handleApproveKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -157,8 +140,6 @@ export default function PairDevice() {
 
   const handleModeToggle = useCallback((nextMode: 'new' | 'approve') => {
     setMode(nextMode);
-    setDeviceName('');
-    setNameError(null);
     setStartError(null);
     setPairingId(null);
     setPairingCode(null);
@@ -179,22 +160,6 @@ export default function PairDevice() {
             Pair this device with an existing account
           </div>
 
-          <AuthFieldRow
-            label="Device name:"
-            placeholder="my new device"
-            value={deviceName}
-            onChange={(value) => {
-              setDeviceName(value);
-              setNameError(null);
-            }}
-            onKeyDown={handleNewKeyDown}
-            error={nameError}
-            disabled={starting}
-            maxLength={MAX_DEVICE_NAME_LENGTH}
-            inputRef={inputRef}
-            autoFocus
-            className="mb-6"
-          />
 
           <button
             onClick={() => { void handleStartPairing(); }}
