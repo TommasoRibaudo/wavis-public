@@ -261,8 +261,10 @@ impl<
                 | SignalingMessage::ViewerSubscribed(_)
                 | SignalingMessage::ViewerJoined(_)
                 | SignalingMessage::UpdateProfileColor(_)
-                | SignalingMessage::ParticipantColorUpdated(_) => {
-                    // Device auth / session / viewer / cold-start / color notification messages — not relevant to P2P CallSession
+                | SignalingMessage::ParticipantColorUpdated(_)
+                | SignalingMessage::UpdateUsername(_)
+                | SignalingMessage::ParticipantUsernameUpdated(_) => {
+                    // Device auth / session / viewer / cold-start / profile notification messages — not relevant to P2P CallSession
                 }
                 SignalingMessage::Ping => {
                     // Keepalive — no action needed in CallSession

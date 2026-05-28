@@ -4,7 +4,7 @@ import {
   type AuthLogEntry,
   validateServerUrl,
   recoverAccount,
-  setDisplayName,
+  setUsername,
   INSECURE_TLS_ALLOWED,
 } from './auth';
 import { logEntryColor } from './authLog';
@@ -12,7 +12,7 @@ import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 
 const MIN_PHRASE_LENGTH = 4;
-const MAX_DEVICE_NAME_LENGTH = 32;
+const MAX_USERNAME_LENGTH = 64;
 
 export default function RecoverAccount() {
   const navigate = useNavigate();
@@ -21,7 +21,7 @@ export default function RecoverAccount() {
   const [serverUrl, setServerUrl] = useState('');
   const [recoveryId, setRecoveryId] = useState('');
   const [phrase, setPhrase] = useState('');
-  const [deviceName, setDeviceName] = useState('');
+  const [username, setUsernameValue] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -57,13 +57,13 @@ export default function RecoverAccount() {
       return;
     }
 
-    const trimmedName = deviceName.trim();
+    const trimmedName = username.trim();
     if (!trimmedName) {
-      setNameError('device name is required');
+      setNameError('username is required');
       return;
     }
-    if (trimmedName.length > MAX_DEVICE_NAME_LENGTH) {
-      setNameError(`device name must be ${MAX_DEVICE_NAME_LENGTH} characters or less`);
+    if (trimmedName.length > MAX_USERNAME_LENGTH) {
+      setNameError(`username must be ${MAX_USERNAME_LENGTH} characters or less`);
       return;
     }
 
@@ -84,7 +84,7 @@ export default function RecoverAccount() {
     setPhrase('');
 
     if (result.success) {
-      await setDisplayName(trimmedName);
+      await setUsername(trimmedName);
       navigate('/', { replace: true });
       return;
     }
@@ -98,7 +98,7 @@ export default function RecoverAccount() {
       setRecoverError('Recovery failed — please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, recoveryId, phrase, deviceName, insecureTls, recovering, navigate]);
+  }, [serverUrl, recoveryId, phrase, username, insecureTls, recovering, navigate]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -147,17 +147,17 @@ export default function RecoverAccount() {
         />
 
         <AuthFieldRow
-          label="Device name:"
-          placeholder="my new device"
-          value={deviceName}
+          label="Username:"
+          placeholder="your name"
+          value={username}
           onChange={(value) => {
-            setDeviceName(value);
+            setUsernameValue(value);
             setNameError(null);
           }}
           onKeyDown={handleKeyDown}
           error={nameError}
           disabled={recovering}
-          maxLength={MAX_DEVICE_NAME_LENGTH}
+          maxLength={MAX_USERNAME_LENGTH}
         />
 
         <AuthFieldRow

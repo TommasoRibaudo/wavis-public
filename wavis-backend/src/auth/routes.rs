@@ -41,6 +41,9 @@ use crate::error::ErrorResponse;
 
 type AuthErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 
+// Mirror of shared::signaling::validation::MAX_DISPLAY_NAME_LEN.
+const MAX_USERNAME_LEN: usize = shared::signaling::validation::MAX_DISPLAY_NAME_LEN;
+
 // ---------------------------------------------------------------------------
 // Request / Response types
 // ---------------------------------------------------------------------------
@@ -48,7 +51,8 @@ type AuthErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub phrase: String,
-    pub device_name: String,
+    #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
+    pub username: String,
 }
 
 #[derive(Serialize)]
@@ -64,7 +68,8 @@ pub struct RegisterResponse {
 pub struct RecoverRequest {
     pub recovery_id: String,
     pub phrase: String,
-    pub device_name: String,
+    #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
+    pub username: String,
 }
 
 #[derive(Serialize)]
@@ -125,6 +130,16 @@ pub struct RotatePhraseRequest {
     pub new_phrase: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateUsernameRequest {
+    pub username: String,
+}
+
+#[derive(Serialize)]
+pub struct MeResponse {
+    pub username: String,
+}
+
 #[derive(Serialize)]
 pub struct DeviceInfoResponse {
     pub device_id: String,
@@ -153,6 +168,15 @@ fn error_response(status: StatusCode, error: &str) -> AuthErrorResponse {
     )
 }
 
+
+#[allow(clippy::result_large_err)]
+fn validate_username(username: &str) -> Result<&str, AuthErrorResponse> {
+    let username = username.trim();
+    if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+        return Err(error_response(StatusCode::BAD_REQUEST, "invalid username"));
+    }
+    Ok(username)
+}
 fn map_register_error(err: &AuthError) -> AuthErrorResponse {
     match err {
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
@@ -308,11 +332,12 @@ pub async fn register(
         return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
+    let username = validate_username(&body.username)?;
 
     let result = auth::register_user(
         &app_state.db_pool,
         &body.phrase,
-        &body.device_name,
+        username,
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
@@ -378,11 +403,13 @@ pub async fn recover(
         return Err(rate_limited_response(retry_after_secs));
     }
 
+    let username = validate_username(&body.username)?;
+
     let result = auth::recover_account(
         &app_state.db_pool,
         &body.recovery_id,
         &body.phrase,
-        &body.device_name,
+        username,
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
@@ -704,6 +731,50 @@ pub async fn rotate_phrase(
 }
 
 // ---------------------------------------------------------------------------
+// GET /auth/me (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn get_me(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<MeResponse>, AuthErrorResponse> {
+    match auth::get_username(&app_state.db_pool, user.user_id).await {
+        Ok(username) => Ok(Json(MeResponse { username })),
+        Err(err) => {
+            warn!(user_id = %user.user_id, error = %err, "get_me failed");
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /auth/username (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn update_username(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(body): Json<UpdateUsernameRequest>,
+) -> Result<StatusCode, AuthErrorResponse> {
+    let username = validate_username(&body.username)?;
+
+    let result = auth::update_username(&app_state.db_pool, user.user_id, username).await;
+    match result {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(err) => {
+            warn!(user_id = %user.user_id, error = %err, "update_username failed");
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /auth/refresh
 // ---------------------------------------------------------------------------
 
@@ -751,5 +822,28 @@ pub async fn refresh_token(
             );
             Err(map_refresh_error(&err))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_username_trims_valid_names() {
+        match validate_username("  Alice  ") {
+            Ok(username) => assert_eq!(username, "Alice"),
+            Err(_) => panic!("valid username should be accepted"),
+        }
+    }
+
+    #[test]
+    fn validate_username_rejects_empty_and_long_names() {
+        let (empty_status, _, _) = validate_username("   ").unwrap_err();
+        assert_eq!(empty_status, StatusCode::BAD_REQUEST);
+
+        let too_long = "a".repeat(MAX_USERNAME_LEN + 1);
+        let (long_status, _, _) = validate_username(&too_long).unwrap_err();
+        assert_eq!(long_status, StatusCode::BAD_REQUEST);
     }
 }

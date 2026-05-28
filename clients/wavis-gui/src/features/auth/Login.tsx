@@ -4,9 +4,9 @@ import {
   type AuthLogEntry,
   validateServerUrl,
   recoverAccount,
-  setDisplayName,
+  setUsername,
   getServerUrl,
-  getDisplayName,
+  getUsername,
   getInsecureTls,
   INSECURE_TLS_ALLOWED,
 } from './auth';
@@ -23,7 +23,7 @@ export default function Login() {
   const [serverUrl, setServerUrl] = useState('');
   const [recoveryId, setRecoveryId] = useState('');
   const [phrase, setPhrase] = useState('');
-  const [deviceName, setDeviceName] = useState('');
+  const [username, setUsernameValue] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [logging, setLogging] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -39,12 +39,12 @@ export default function Login() {
     (async () => {
       const [url, name, insecure] = await Promise.all([
         getServerUrl(),
-        getDisplayName(),
+        getUsername(),
         getInsecureTls(),
       ]);
       if (cancelled) return;
       if (url) setServerUrl(url);
-      if (name) setDeviceName(name);
+      if (name) setUsernameValue(name);
       setInsecureTls(insecure);
       setLoaded(true);
     })();
@@ -83,7 +83,7 @@ export default function Login() {
       return;
     }
 
-    const nameToUse = deviceName.trim() || 'device';
+    const nameToUse = username.trim() || 'user';
 
     setLogging(true);
     setLogs([]);
@@ -96,7 +96,7 @@ export default function Login() {
     setPhrase('');
 
     if (result.success) {
-      await setDisplayName(nameToUse);
+      await setUsername(nameToUse);
       navigate('/', { replace: true });
       return;
     }
@@ -110,7 +110,7 @@ export default function Login() {
       setLoginError('Login failed — please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, recoveryId, phrase, deviceName, insecureTls, logging, navigate]);
+  }, [serverUrl, recoveryId, phrase, username, insecureTls, logging, navigate]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {

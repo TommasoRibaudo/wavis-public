@@ -40,8 +40,8 @@ use axum::extract::ws::WebSocket;
 use shared::signaling::{
     self, AnswerPayload, ErrorPayload, IceCandidatePayload, JoinRejectedPayload,
     ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantSelfMutedPayload,
-    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, SessionDescription,
-    SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
+    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, ParticipantUsernameUpdatedPayload,
+    SessionDescription, SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
 };
 use std::env;
 use std::net::IpAddr;
@@ -1903,6 +1903,63 @@ pub(crate) async fn dispatch_message(
             );
             DispatchOutcome::Continue
         }
+        SignalingMessage::UpdateUsername(payload) => {
+            let session_ref = ctx.session.as_ref().unwrap();
+            let sender_id = session_ref.participant_id.as_str();
+
+            if !ctx.rate_limiter.action_allow() {
+                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit on UpdateUsername");
+                ctx.app_state
+                    .abuse_metrics
+                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+                ctx.app_state.connections.send_to(
+                    sender_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+
+            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
+            let room_id = match room_id_opt {
+                Some(ref r) => r.clone(),
+                None => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "not in a room".to_string(),
+                        }),
+                    );
+                    return DispatchOutcome::Continue;
+                }
+            };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|participant| participant.participant_id == sender_id)
+                {
+                    participant.display_name = payload.username.clone();
+                }
+            });
+
+            dispatch_signals(
+                vec![OutboundSignal::broadcast_all(
+                    SignalingMessage::ParticipantUsernameUpdated(
+                        ParticipantUsernameUpdatedPayload {
+                            participant_id: sender_id.to_string(),
+                            username: payload.username,
+                        },
+                    ),
+                )],
+                &room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
         SignalingMessage::StartShare => {
             // Session is guaranteed Some here (pre-join gate already handled above)
             let session_ref = ctx.session.as_ref().unwrap();
@@ -3144,6 +3201,8 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::ViewerJoined(_)
         | SignalingMessage::UpdateProfileColor(_)
         | SignalingMessage::ParticipantColorUpdated(_)
+        | SignalingMessage::UpdateUsername(_)
+        | SignalingMessage::ParticipantUsernameUpdated(_)
         | SignalingMessage::Ping => {
             connections.send_to(
                 sender_peer_id,

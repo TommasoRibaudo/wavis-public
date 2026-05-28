@@ -587,6 +587,8 @@ async fn main() -> io::Result<()> {
         .route("/auth/pair/finish", post(auth::routes::pair_finish))
         .route("/auth/logout_all", post(auth::routes::logout_all))
         .route("/auth/devices", get(auth::routes::list_devices))
+        .route("/auth/me", get(auth::routes::get_me))
+        .route("/auth/username", post(auth::routes::update_username))
         .route(
             "/auth/devices/{device_id}/revoke",
             post(auth::routes::revoke_device),

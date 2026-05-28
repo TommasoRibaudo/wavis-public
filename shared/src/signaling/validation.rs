@@ -341,6 +341,13 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
             check("profileColor", &p.profile_color, MAX_PROFILE_COLOR_LEN)?;
         }
+        SignalingMessage::UpdateUsername(p) => {
+            check("username", &p.username, MAX_DISPLAY_NAME_LEN)?;
+        }
+        SignalingMessage::ParticipantUsernameUpdated(p) => {
+            check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
+            check("username", &p.username, MAX_DISPLAY_NAME_LEN)?;
+        }
     }
     Ok(())
 }
@@ -782,6 +789,7 @@ mod tests {
                 "set_share_permission", "share_permission_changed",
                 "ping",
                 "update_profile_color", "participant_color_updated",
+                "update_username", "participant_username_updated",
             ];
             prop_assume!(!known.contains(&type_val.as_str()));
 
