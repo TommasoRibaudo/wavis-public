@@ -88,6 +88,7 @@ where
                 profile_color: payload.profile_color,
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             });
         }
     }

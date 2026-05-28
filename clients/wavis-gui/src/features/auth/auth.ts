@@ -207,7 +207,7 @@ export async function getInsecureTls(): Promise<boolean> {
 export async function registerUser(
   serverUrl: string,
   phrase: string,
-  deviceName: string,
+  username: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
 ): Promise<{ success: true; recovery_id: string } | { success: false; error?: string }> {
@@ -228,7 +228,7 @@ export async function registerUser(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phrase, device_name: deviceName }),
+      body: JSON.stringify({ phrase, username }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -287,7 +287,7 @@ export async function recoverAccount(
   serverUrl: string,
   recoveryId: string,
   phrase: string,
-  deviceName: string,
+  username: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
 ): Promise<{ success: boolean; error?: string }> {
@@ -308,7 +308,7 @@ export async function recoverAccount(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recovery_id: recoveryId, phrase, device_name: deviceName }),
+      body: JSON.stringify({ recovery_id: recoveryId, phrase, username }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -630,17 +630,62 @@ export async function refreshTokens(): Promise<RefreshResult> {
   }
 }
 
-// --- Display Name (exported) ---
+// --- Username (exported) ---
 
-export async function getDisplayName(): Promise<string | null> {
+export async function getUsername(): Promise<string | null> {
   const store = await getStore();
-  return (await store.get<string>('display_name')) ?? null;
+  return (await store.get<string>('username')) ?? (await store.get<string>('display_name')) ?? null;
 }
 
-export async function setDisplayName(name: string): Promise<void> {
+export async function setUsername(name: string): Promise<void> {
   const store = await getStore();
-  await store.set('display_name', name);
+  await store.set('username', name);
+  await store.delete('display_name');
 }
+
+export async function updateUsername(username: string): Promise<void> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+  const insecure = await getInsecureTls();
+
+  const res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/username', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ username }),
+    ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+  });
+
+  if (!res.ok) {
+    throw new Error('Failed to update username');
+  }
+
+  await setUsername(username);
+}
+
+export async function fetchMyUsername(): Promise<string | null> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+  const insecure = await getInsecureTls();
+
+  const res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/me', {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+  });
+
+  if (!res.ok) return null;
+  const body = (await res.json()) as { username?: string };
+  return body.username ?? null;
+}
+export const getDisplayName = getUsername;
+export const setDisplayName = setUsername;
 
 // --- Session Clearing (exported) ---
 
@@ -658,7 +703,7 @@ export async function clearAccessTokens(): Promise<void> {
 
 /**
  * Clear access tokens from Tauri store AND refresh token from OS keychain.
- * Preserves device identity fields (device_id, server_url, display_name, insecure_tls).
+ * Preserves device identity fields (device_id, server_url, username, insecure_tls).
  * Used after non-recoverable failures (401, 400) or missing/corrupt keychain token.
  */
 export async function clearSessionFull(): Promise<void> {
@@ -675,7 +720,7 @@ export async function clearSessionFull(): Promise<void> {
 // --- Logout (exported) ---
 
 /**
- * Logout: clears tokens and device_id but preserves server_url, display_name,
+ * Logout: clears tokens and device_id but preserves server_url, username,
  * and insecure_tls so the login page can pre-fill them.
  */
 export async function logout(): Promise<void> {
@@ -699,6 +744,7 @@ export async function resetAuth(): Promise<void> {
   await store.delete('access_token');
   await store.delete('access_token_exp');
   await store.delete('insecure_tls');
+  await store.delete('username');
   await store.delete('display_name');
   try {
     await invoke('delete_token', { key: 'wavis_refresh_token' });

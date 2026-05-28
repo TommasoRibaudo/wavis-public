@@ -195,6 +195,7 @@ vi.mock('@shared/websocket', () => ({
 vi.mock('@features/auth/auth', () => ({
   getServerUrl: vi.fn(async () => 'https://test.wavis.dev'),
   getDisplayName: vi.fn(async () => 'TestUser'),
+  getUsername: vi.fn(async () => 'TestUser'),
   getAccessToken: vi.fn(async () => 'mock-token'),
   isTokenExpired: vi.fn(async () => false),
   refreshTokens: vi.fn(async () => true),
@@ -1785,7 +1786,7 @@ describe('Voice-room media wiring', () => {
         roomId: 'room-1',
         participants: [
           { participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' },
-          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: true, isDeafened: true },
         ],
       });
       await tick();
@@ -1793,12 +1794,13 @@ describe('Voice-room media wiring', () => {
       expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
         isMuted: true,
         isHostMuted: true,
+        isDeafened: true,
       });
 
       messageHandler!({
         type: 'room_state',
         participants: [
-          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false },
+          { participantId: 'peer-2', displayName: 'Alice', userId: 'u2', isMuted: true, isHostMuted: false, isDeafened: false },
         ],
       });
       await tick();
@@ -1806,6 +1808,7 @@ describe('Voice-room media wiring', () => {
       expect(latestState!.participants.find((p) => p.id === 'peer-2')).toMatchObject({
         isMuted: true,
         isHostMuted: false,
+        isDeafened: false,
       });
 
       leaveRoom();
@@ -2670,6 +2673,23 @@ describe('Edge case unit tests', () => {
       const charlie = latestState!.participants.find(p => p.id === 'peer-3');
       expect(charlie).toBeDefined();
       expect(charlie!.displayName).toBe('Charlie');
+
+      leaveRoom();
+    });
+
+    it('applies participant_username_updated to the matching participant', async () => {
+      await driveToActive();
+
+      messageHandler!({
+        type: 'participant_username_updated',
+        participantId: 'peer-2',
+        username: 'New Alice',
+      });
+      await tick();
+
+      const alice = latestState!.participants.find(p => p.id === 'peer-2');
+      expect(alice).toBeDefined();
+      expect(alice!.displayName).toBe('New Alice');
 
       leaveRoom();
     });

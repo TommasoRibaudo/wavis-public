@@ -665,6 +665,7 @@ fn handle_incoming_message(text: &str, state: &mut ClientState) {
                 profile_color: payload.profile_color.clone(),
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             });
             output::event(&output::format_participant_joined(&payload));
             // Also route to RoomSession so it tracks participants internally

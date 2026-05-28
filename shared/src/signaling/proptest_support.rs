@@ -144,6 +144,7 @@ impl Arbitrary for ParticipantInfo {
                     profile_color,
                     is_muted: false,
                     is_host_muted: false,
+                    is_deafened: false,
                 },
             )
             .boxed()
@@ -946,6 +947,31 @@ impl Arbitrary for SessionDisplacedPayload {
     }
 }
 
+impl Arbitrary for UpdateUsernamePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|username| UpdateUsernamePayload { username })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ParticipantUsernameUpdatedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<String>(), any::<String>())
+            .prop_map(|(participant_id, username)| ParticipantUsernameUpdatedPayload {
+                participant_id,
+                username,
+            })
+            .boxed()
+    }
+}
+
 impl Arbitrary for SignalingMessage {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -1037,6 +1063,10 @@ impl Arbitrary for SignalingMessage {
             Just(SignalingMessage::Ping),
             // Session displacement
             any::<SessionDisplacedPayload>().prop_map(SignalingMessage::SessionDisplaced),
+            // Username update
+            any::<UpdateUsernamePayload>().prop_map(SignalingMessage::UpdateUsername),
+            any::<ParticipantUsernameUpdatedPayload>()
+                .prop_map(SignalingMessage::ParticipantUsernameUpdated),
         ]
         .boxed()
     }

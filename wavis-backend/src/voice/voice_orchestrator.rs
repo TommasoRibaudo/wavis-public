@@ -1024,6 +1024,7 @@ pub async fn join_voice(
         profile_color: profile_color.map(|s| s.to_string()),
         is_muted: false,
         is_host_muted: false,
+        is_deafened: false,
     };
     room_state.update_room_info(&room_id, |info| {
         info.participants.push(new_participant.clone());
@@ -1310,6 +1311,7 @@ mod tests {
                 profile_color: None,
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             },
             ParticipantInfo {
                 participant_id: "peer-b".to_string(),
@@ -1318,6 +1320,7 @@ mod tests {
                 profile_color: None,
                 is_muted: false,
                 is_host_muted: false,
+                is_deafened: false,
             },
         ];
         state.create_room("voice-room".to_string(), info);

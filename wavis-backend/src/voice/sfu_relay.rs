@@ -220,6 +220,7 @@ pub async fn handle_sfu_join(
         profile_color: profile_color.map(|s| s.to_string()),
         is_muted: false,
         is_host_muted: false,
+        is_deafened: false,
     };
     state.update_room_info(room_id, |info| {
         info.participants.push(new_participant.clone());
@@ -659,6 +660,7 @@ pub async fn handle_create_room(
         profile_color: profile_color.map(|s| s.to_string()),
         is_muted: false,
         is_host_muted: false,
+        is_deafened: false,
     };
     state.update_room_info(room_id_trimmed, |info| {
         info.participants.push(creator_info);
@@ -1357,6 +1359,7 @@ mod tests {
                         profile_color: None,
                         is_muted: false,
                         is_host_muted: false,
+                        is_deafened: false,
                     });
                 });
 
@@ -1371,6 +1374,7 @@ mod tests {
                             profile_color: None,
                             is_muted: false,
                             is_host_muted: false,
+                            is_deafened: false,
                         });
                     });
                 }
@@ -1453,6 +1457,7 @@ mod tests {
                         profile_color: None,
                         is_muted: false,
                         is_host_muted: false,
+                        is_deafened: false,
                     });
                 });
 
@@ -1466,6 +1471,7 @@ mod tests {
                         profile_color: None,
                         is_muted: false,
                         is_host_muted: false,
+                        is_deafened: false,
                     });
                 });
 

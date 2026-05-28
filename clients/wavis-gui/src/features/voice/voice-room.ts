@@ -9,7 +9,7 @@
 
 import { SignalingClient } from '@shared/websocket';
 import type { ChannelRole } from '@features/channels/channels';
-import { getServerUrl, getDisplayName, refreshTokens, onTokensRefreshed } from '@features/auth/auth';
+import { getServerUrl, getUsername, refreshTokens, onTokensRefreshed } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { toWsUrl } from '@shared/helpers';
 import { LiveKitModule, type MediaState, type MediaCallbacks, type ShareQualityInfo, type ShareStats, type VideoReceiveStats, type ShareProfileId } from './livekit-media';
@@ -988,7 +988,7 @@ let client: SignalingClient | null = null;
 let unsubscribe: (() => void) | null = null;
 let onChange: ((state: VoiceRoomState) => void) | null = null;
 let channelRole: ChannelRole | null = null;
-let sessionDisplayName: string | null = null;
+let sessionUsername: string | null = null;
 let sessionProfileColor: string | null = null;
 let channelVolumePrefs: ChannelVolumePrefs | null = null;
 let volumeSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1981,7 +1981,7 @@ function buildSyntheticSelfParticipant(): RoomParticipant | null {
   if (!state.selfParticipantId) return null;
   return {
     id: state.selfParticipantId,
-    displayName: sessionDisplayName ?? displayNameCache.get(state.selfParticipantId) ?? 'You',
+    displayName: sessionUsername ?? displayNameCache.get(state.selfParticipantId) ?? 'You',
     color: sessionProfileColor ?? colorFor({ id: state.selfParticipantId }),
     role: state.selfIsHost ? 'host' : 'guest',
     isSpeaking: false,
@@ -2286,7 +2286,7 @@ function sendJoinVoiceRequest(): void {
     channelId: state.channelId,
     supportsSubRooms: true,
   };
-  if (sessionDisplayName) joinMsg.displayName = sessionDisplayName;
+  if (sessionUsername) joinMsg.displayName = sessionUsername;
   if (sessionProfileColor) joinMsg.profileColor = sessionProfileColor;
   client.send(joinMsg);
 }
@@ -2701,7 +2701,7 @@ function dispatchMessage(raw: unknown): void {
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
-          isDeafened: false,
+          isDeafened: Boolean(p.isDeafened),
           isSharing: false,
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
@@ -3066,7 +3066,7 @@ function dispatchMessage(raw: unknown): void {
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
-          isDeafened: false,
+          isDeafened: Boolean(p.isDeafened),
           isSharing: false,
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
@@ -3317,6 +3317,19 @@ function dispatchMessage(raw: unknown): void {
       if (cp) {
         cp.color = msg.profileColor as string;
       }
+      rebuildVideoTiles();
+      notify();
+      break;
+    }
+
+    case 'participant_username_updated': {
+      const participantId = msg.participantId as string;
+      const username = msg.username as string;
+      const participant = state.participants.find((pp) => pp.id === participantId);
+      if (participant) {
+        participant.displayName = username;
+      }
+      displayNameCache.set(participantId, username);
       rebuildVideoTiles();
       notify();
       break;
@@ -3704,14 +3717,14 @@ export function initSession(
     // Load display name, default volume, profile color, persisted channel volumes,
     // and the Windows share-path preference before connecting.
     Promise.all([
-      getDisplayName(),
+      getUsername(),
       getDefaultVolume(),
       getProfileColor(),
       getChannelVolumes(channelId),
       getWindowsSharePath(),
     ]).then(([name, vol, profileColor, savedVols, windowsSharePath]) => {
       if (client !== thisClient) return;
-      sessionDisplayName = name;
+      sessionUsername = name;
       sessionProfileColor = profileColor;
       channelVolumePrefs = savedVols;
       state.defaultVolume = vol;
@@ -3895,7 +3908,7 @@ export function leaveRoom(): void {
   // Clear session-scoped references
   onChange = null;
   channelRole = null;
-  sessionDisplayName = null;
+  sessionUsername = null;
   channelVolumePrefs = null;
   if (volumeSaveTimer) {
     clearTimeout(volumeSaveTimer);
@@ -4575,6 +4588,19 @@ export function updateSessionProfileColor(color: string): void {
     notify();
   }
   client?.send({ type: 'update_profile_color', profileColor: color });
+}
+
+export function updateSessionUsername(username: string): void {
+  sessionUsername = username;
+  if (state.selfParticipantId) {
+    displayNameCache.set(state.selfParticipantId, username);
+    state.participants = state.participants.map((p) =>
+      p.id === state.selfParticipantId ? { ...p, displayName: username } : p,
+    );
+    rebuildVideoTiles();
+    notify();
+  }
+  client?.send({ type: 'update_username', username });
 }
 
 export function setParticipantVolume(participantId: string, volume: number): void {
