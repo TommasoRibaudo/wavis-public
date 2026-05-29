@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { type ReactNode, useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { CmdButton } from '@shared/CmdButton';
@@ -476,12 +476,44 @@ interface ChannelDetailProps {
   channelIdProp?: string;
   hideJoinVoice?: boolean;
   hideBackButton?: boolean;
+  /**
+   * Optional override for navigating away from this view (e.g. after deleting
+   * or leaving the channel, or when the channel is no longer available).
+   * When embedded inside the in-room settings panel, the host passes a
+   * navigation function that gracefully tears down the active voice session.
+   * Defaults to `navigate` from react-router.
+   */
+  onNavigateAway?: (path: string) => void;
+  /**
+   * When true, render as content meant to live inside another scroller
+   * (no `h-full`, no inner overflow scroller, no max-width/padding wrapper,
+   * and no pinned bottom command bar — `/leave` is folded into the inline
+   * command row instead). Used by the in-room settings panel.
+   */
+  embedded?: boolean;
+  /** Extra sections rendered between ADMINISTRATION and MEMBERSHIP in embedded mode. */
+  embeddedMiddle?: ReactNode;
 }
 
-export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackButton }: ChannelDetailProps = {}) {
+export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackButton, onNavigateAway, embedded, embeddedMiddle }: ChannelDetailProps = {}) {
   const { channelId: channelIdParam } = useParams();
   const channelId = channelIdProp ?? channelIdParam;
   const navigate = useNavigate();
+  // Hold onNavigateAway in a ref so navigateAway (and the callbacks that depend
+  // on it, like loadDetail) keep a stable identity even when the parent passes
+  // a fresh function on every render. Without this, an unmemoized caller would
+  // re-run the initial-load effect in a loop, causing the panel to flicker.
+  const onNavigateAwayRef = useRef(onNavigateAway);
+  useEffect(() => {
+    onNavigateAwayRef.current = onNavigateAway;
+  }, [onNavigateAway]);
+  const navigateAway = useCallback(
+    (path: string) => {
+      if (onNavigateAwayRef.current) onNavigateAwayRef.current(path);
+      else navigate(path, { replace: true });
+    },
+    [navigate],
+  );
 
   /* ── State ── */
   const [detail, setDetail] = useState<ChannelDetailData | null>(null);
@@ -538,7 +570,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         if (controller.signal.aborted) return;
         // Channel deleted (by us or someone else) — redirect to list
         if (err instanceof ApiError && err.kind === 'NotFound') {
-          navigate('/', { replace: true });
+          navigateAway('/');
           return;
         }
         if (!silent) {
@@ -552,7 +584,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         if (!silent) setLoading(false);
       }
     },
-    [channelId],
+    [channelId, navigateAway],
   );
 
   /* ── loadVoice ── */
@@ -653,7 +685,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
     setMutationError(null);
     try {
       await deleteChannel(channelId);
-      navigate('/', { replace: true });
+      navigateAway('/');
     } catch (err) {
       if (err instanceof ApiError) {
         setMutationError(apiErrorMessage(err));
@@ -663,7 +695,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
     } finally {
       setSubmitting(false);
     }
-  }, [channelId, navigate]);
+  }, [channelId, navigateAway]);
 
   const handleLeave = useCallback(async () => {
     if (!channelId) return;
@@ -671,7 +703,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
     setMutationError(null);
     try {
       await leaveChannel(channelId);
-      navigate('/', { replace: true });
+      navigateAway('/');
     } catch (err) {
       if (err instanceof ApiError) {
         setMutationError(apiErrorMessage(err));
@@ -681,7 +713,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
     } finally {
       setSubmitting(false);
     }
-  }, [channelId, navigate]);
+  }, [channelId, navigateAway]);
 
   const handleBan = useCallback(
     (userId: string) => {
@@ -750,161 +782,311 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
       (!hideJoinVoice || c !== '/voice') &&
       (!hideBackButton || c !== '/back'),
   );
+  // Embedded (in-room settings) groups commands into settings-style sections:
+  // management actions vs. destructive membership actions.
+  const managementCommands = allCommands.filter((c) =>
+    c === '/invite' || c === '/revoke' || c === '/ban' || c === '/unban' || c === '/role',
+  );
+  const dangerCommands = allCommands.filter((c) => c === '/delete' || c === '/leave');
   const sorted = detail ? sortMembers(detail.members) : [];
 
   /* ── Render ── */
-  return (
-    <div className="h-full flex flex-col bg-wavis-bg font-mono text-wavis-text">
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
-          {/* Back button */}
-          {!hideBackButton && (
-            <button
-              onClick={() => navigate('/')}
-              className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-            >
-              ← /channels
-            </button>
-          )}
+  const innerContent = (
+    <>
+      {/* Back button */}
+      {!hideBackButton && (
+        <button
+          onClick={() => navigate('/')}
+          className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+        >
+          ← /channels
+        </button>
+      )}
 
-          {/* Loading */}
-          {loading && <LoadingBlock />}
+      {/* Loading */}
+      {loading && <LoadingBlock />}
 
-          {/* Error */}
-          {!loading && error && (
-            <ErrorPanel error={error} onRetry={() => loadDetail()} />
-          )}
+      {/* Error */}
+      {!loading && error && (
+        <ErrorPanel error={error} onRetry={() => loadDetail()} />
+      )}
 
-          {/* Detail loaded */}
-          {!loading && !error && detail && (
+      {/* Detail loaded */}
+      {!loading && !error && detail && (
+        <>
+          {/* Channel header */}
+          <div className="flex items-center gap-3 mb-2">
+            <h2>{detail.name}</h2>
+            <ChannelRoleBadge role={role} />
+          </div>
+
+          <div className="text-wavis-text-secondary overflow-hidden">{DIVIDER}</div>
+
+          {/* Voice status */}
+          {!hideJoinVoice && (
             <>
-              {/* Channel header */}
-              <div className="flex items-center gap-3 mb-2">
-                <h2>{detail.name}</h2>
-                <ChannelRoleBadge role={role} />
-              </div>
-
-              <div className="text-wavis-text-secondary overflow-hidden">{DIVIDER}</div>
-
-              {/* Voice status */}
-              {!hideJoinVoice && (
-                <>
-                  <div className="mt-4">
-                    <p className="text-sm text-wavis-text-secondary mb-1">VOICE</p>
-                    <VoiceStatusPanel voice={voice} />
-                    <button
-                      onClick={handleJoinVoice}
-                      className="mt-2 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs"
-                    >
-                      /join voice
-                    </button>
-                  </div>
-
-                  <div className="text-wavis-text-secondary mt-4 overflow-hidden">{DIVIDER}</div>
-                </>
-              )}
-
-              {/* Members */}
               <div className="mt-4">
-                <p className="text-sm text-wavis-text-secondary mb-2">
-                  MEMBERS ({detail.members.length}/6)
-                </p>
-                <div className="flex flex-col">
-                  {sorted.map((m) => (
-                    <MemberRow
-                      key={m.userId}
-                      member={m}
-                      isMe={m.userId === myUserId}
-                      myRole={role}
-                      onBan={activePanel === 'ban' ? undefined : undefined}
-                      onRole={role === 'owner' ? () => setRoleTarget(m.userId) : undefined}
-                      roleTarget={roleTarget}
-                      setRoleTarget={setRoleTarget}
-                      submitting={submitting}
-                      onRoleChange={handleRoleChange}
-                    />
-                  ))}
-                </div>
+                <p className="text-sm text-wavis-text-secondary mb-1">VOICE</p>
+                <VoiceStatusPanel voice={voice} />
+                <button
+                  onClick={handleJoinVoice}
+                  className="mt-2 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs"
+                >
+                  /join voice
+                </button>
               </div>
 
-              {/* Admin actions (inline, below members) */}
-              {adminCommands.length > 0 && (
-                <>
-                  <div className="text-wavis-text-secondary mt-4 overflow-hidden">{DIVIDER}</div>
-                  <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">
-                    {adminCommands.map((cmd) => (
-                      <CmdButton
-                        key={cmd}
-                        label={cmd}
-                        onClick={() => handleCmdClick(cmd)}
-                        active={
-                          (cmd === '/invite' && activePanel === 'invite') ||
-                          (cmd === '/revoke' && activePanel === 'revoke') ||
-                          (cmd === '/ban' && activePanel === 'ban') ||
-                          (cmd === '/unban' && activePanel === 'unban') ||
-                          (cmd === '/role' && activePanel === 'role')
-                        }
-                        danger={cmd === '/delete'}
-                        disabled={submitting && cmd !== '/back'}
-                      />
-                    ))}
-                  </div>
+              <div className="text-wavis-text-secondary mt-4 overflow-hidden">{DIVIDER}</div>
+            </>
+          )}
 
-                  {/* Feedback messages */}
-                  {successMsg && (
-                    <p className="text-wavis-accent text-sm mt-2">{successMsg}</p>
-                  )}
-                  {mutationError && (
-                    <p className="text-wavis-danger text-sm mt-2">{mutationError}</p>
-                  )}
+          {/* Members */}
+          <div className="mt-4">
+            <p className="text-sm text-wavis-text-secondary mb-2">
+              MEMBERS ({detail.members.length}/6)
+            </p>
+            <div className="flex flex-col">
+              {sorted.map((m) => (
+                <MemberRow
+                  key={m.userId}
+                  member={m}
+                  isMe={m.userId === myUserId}
+                  myRole={role}
+                  onBan={activePanel === 'ban' ? undefined : undefined}
+                  onRole={role === 'owner' ? () => setRoleTarget(m.userId) : undefined}
+                  roleTarget={roleTarget}
+                  setRoleTarget={setRoleTarget}
+                  submitting={submitting}
+                  onRoleChange={handleRoleChange}
+                />
+              ))}
+            </div>
+          </div>
 
-                  {/* Active panel */}
-                  {activePanel === 'invite' && (
-                    <InvitePanel
-                      channelId={channelId!}
-                      submitting={submitting}
-                      onSuccess={(msg) => setSuccessMsg(msg)}
-                      onError={(msg) => setMutationError(msg)}
-                    />
-                  )}
-                  {activePanel === 'revoke' && (
-                    <RevokePanel
-                      channelId={channelId!}
-                      submitting={submitting}
-                      onMutation={handleMutation}
-                    />
-                  )}
-                  {activePanel === 'ban' && (
-                    <BanPanel
-                      members={sorted}
-                      myRole={role}
-                      myUserId={myUserId ?? ''}
-                      submitting={submitting}
-                      onBan={handleBan}
-                    />
-                  )}
-                  {activePanel === 'unban' && (
-                    <UnbanPanel
-                      channelId={channelId!}
-                      submitting={submitting}
-                      onMutation={handleMutation}
-                    />
-                  )}
+          {/* Admin actions (inline, below members) */}
+          {adminCommands.length > 0 && (
+            <>
+              <div className="text-wavis-text-secondary mt-4 overflow-hidden">{DIVIDER}</div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+                {adminCommands.map((cmd) => (
+                  <CmdButton
+                    key={cmd}
+                    label={cmd}
+                    onClick={() => handleCmdClick(cmd)}
+                    active={
+                      (cmd === '/invite' && activePanel === 'invite') ||
+                      (cmd === '/revoke' && activePanel === 'revoke') ||
+                      (cmd === '/ban' && activePanel === 'ban') ||
+                      (cmd === '/unban' && activePanel === 'unban') ||
+                      (cmd === '/role' && activePanel === 'role')
+                    }
+                    danger={cmd === '/delete'}
+                    disabled={submitting && cmd !== '/back'}
+                  />
+                ))}
+              </div>
 
-                  {/* Confirmation prompts */}
-                  {confirmAction === 'delete' && (
-                    <ConfirmTextGate
-                      requiredText="YES"
-                      message="Delete this channel permanently?"
-                      busy={submitting}
-                      onConfirm={handleDelete}
-                      onCancel={() => setConfirmAction('none')}
-                    />
-                  )}
-                </>
+              {/* Feedback messages */}
+              {successMsg && (
+                <p className="text-wavis-accent text-sm mt-2">{successMsg}</p>
+              )}
+              {mutationError && (
+                <p className="text-wavis-danger text-sm mt-2">{mutationError}</p>
               )}
 
-              {/* Leave confirmation (available to non-owners) */}
+              {/* Active panel */}
+              {activePanel === 'invite' && (
+                <InvitePanel
+                  channelId={channelId!}
+                  submitting={submitting}
+                  onSuccess={(msg) => setSuccessMsg(msg)}
+                  onError={(msg) => setMutationError(msg)}
+                />
+              )}
+              {activePanel === 'revoke' && (
+                <RevokePanel
+                  channelId={channelId!}
+                  submitting={submitting}
+                  onMutation={handleMutation}
+                />
+              )}
+              {activePanel === 'ban' && (
+                <BanPanel
+                  members={sorted}
+                  myRole={role}
+                  myUserId={myUserId ?? ''}
+                  submitting={submitting}
+                  onBan={handleBan}
+                />
+              )}
+              {activePanel === 'unban' && (
+                <UnbanPanel
+                  channelId={channelId!}
+                  submitting={submitting}
+                  onMutation={handleMutation}
+                />
+              )}
+
+              {/* Confirmation prompts */}
+              {confirmAction === 'delete' && (
+                <ConfirmTextGate
+                  requiredText="YES"
+                  message="Delete this channel permanently?"
+                  busy={submitting}
+                  onConfirm={handleDelete}
+                  onCancel={() => setConfirmAction('none')}
+                />
+              )}
+            </>
+          )}
+
+          {/* Leave confirmation (available to non-owners) */}
+          {confirmAction === 'leave' && (
+            <ConfirmTextGate
+              requiredText="YES"
+              message="Leave this channel?"
+              busy={submitting}
+              onConfirm={handleLeave}
+              onCancel={() => setConfirmAction('none')}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+
+  if (embedded) {
+    // Settings-styled layout: each concern lives in a labeled section with a
+    // bordered panel, matching the ACCOUNT / PROFILE / PASSTHROUGH sections.
+    if (loading) return <LoadingBlock />;
+    if (error) return <ErrorPanel error={error} onRetry={() => loadDetail()} />;
+    if (!detail) return null;
+
+    const feedback = (
+      <>
+        {successMsg && <p className="text-wavis-accent text-xs">{successMsg}</p>}
+        {mutationError && <p className="text-wavis-danger text-xs">{mutationError}</p>}
+      </>
+    );
+
+    const activePanelContent = (
+      <>
+        {activePanel === 'invite' && (
+          <InvitePanel
+            channelId={channelId!}
+            submitting={submitting}
+            onSuccess={(msg) => setSuccessMsg(msg)}
+            onError={(msg) => setMutationError(msg)}
+          />
+        )}
+        {activePanel === 'revoke' && (
+          <RevokePanel channelId={channelId!} submitting={submitting} onMutation={handleMutation} />
+        )}
+        {activePanel === 'ban' && (
+          <BanPanel
+            members={sorted}
+            myRole={role}
+            myUserId={myUserId ?? ''}
+            submitting={submitting}
+            onBan={handleBan}
+          />
+        )}
+        {activePanel === 'unban' && (
+          <UnbanPanel channelId={channelId!} submitting={submitting} onMutation={handleMutation} />
+        )}
+      </>
+    );
+
+    return (
+      <>
+        {/* Channel identity */}
+        <div>
+          <p className="text-sm text-wavis-text-secondary mb-2">CHANNEL</p>
+          <div className="p-3 bg-wavis-panel border border-wavis-text-secondary text-sm flex items-center justify-between gap-3">
+            <span className="min-w-0 truncate text-wavis-text">{detail.name}</span>
+            <ChannelRoleBadge role={role} className="shrink-0" />
+          </div>
+        </div>
+
+        {/* Members */}
+        <div>
+          <p className="text-sm text-wavis-text-secondary mb-2">
+            MEMBERS ({detail.members.length}/6)
+          </p>
+          <div className="bg-wavis-panel border border-wavis-text-secondary divide-y divide-wavis-text-secondary/20">
+            {sorted.map((m) => (
+              <MemberRow
+                key={m.userId}
+                member={m}
+                isMe={m.userId === myUserId}
+                myRole={role}
+                onRole={role === 'owner' ? () => setRoleTarget(m.userId) : undefined}
+                roleTarget={roleTarget}
+                setRoleTarget={setRoleTarget}
+                submitting={submitting}
+                onRoleChange={handleRoleChange}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Administration (invite / revoke / ban / unban / role) */}
+        {managementCommands.length > 0 && (
+          <div>
+            <p className="text-sm text-wavis-text-secondary mb-2">ADMINISTRATION</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+              <div className="flex flex-wrap gap-2 justify-center">
+                {managementCommands.map((cmd) => (
+                  <CmdButton
+                    key={cmd}
+                    label={cmd}
+                    onClick={() => handleCmdClick(cmd)}
+                    active={
+                      (cmd === '/invite' && activePanel === 'invite') ||
+                      (cmd === '/revoke' && activePanel === 'revoke') ||
+                      (cmd === '/ban' && activePanel === 'ban') ||
+                      (cmd === '/unban' && activePanel === 'unban') ||
+                      (cmd === '/role' && activePanel === 'role')
+                    }
+                    className="text-sm px-3 py-1 flex-1"
+                    disabled={submitting}
+                  />
+                ))}
+              </div>
+              {feedback}
+              {activePanelContent}
+            </div>
+          </div>
+        )}
+
+        {embeddedMiddle}
+
+        {/* Membership / danger zone (delete for owner, leave otherwise) */}
+        {dangerCommands.length > 0 && (
+          <div>
+            <p className="text-sm text-wavis-text-secondary mb-2">MEMBERSHIP</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+              <div className="flex flex-wrap gap-2">
+                {dangerCommands.map((cmd) => (
+                  <CmdButton
+                    key={cmd}
+                    label={cmd}
+                    onClick={() => handleCmdClick(cmd)}
+                    danger
+                    className="text-sm px-3 py-1 flex-1"
+                    disabled={submitting}
+                  />
+                ))}
+              </div>
+              {confirmAction === 'delete' && (
+                <ConfirmTextGate
+                  requiredText="YES"
+                  message="Delete this channel permanently?"
+                  busy={submitting}
+                  onConfirm={handleDelete}
+                  onCancel={() => setConfirmAction('none')}
+                />
+              )}
               {confirmAction === 'leave' && (
                 <ConfirmTextGate
                   requiredText="YES"
@@ -914,8 +1096,18 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
                   onCancel={() => setConfirmAction('none')}
                 />
               )}
-            </>
-          )}
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-wavis-bg font-mono text-wavis-text">
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
+          {innerContent}
         </div>
       </div>
 

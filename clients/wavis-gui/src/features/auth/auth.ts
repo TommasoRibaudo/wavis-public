@@ -191,6 +191,18 @@ export async function getRefreshToken(): Promise<string | null> {
   return invoke<string | null>('get_token', { key: 'wavis_refresh_token' });
 }
 
+export async function storeRecoveryId(id: string): Promise<void> {
+  await invoke('store_token', { key: 'wavis_recovery_id', value: id });
+}
+
+export async function getStoredRecoveryId(): Promise<string | null> {
+  return invoke<string | null>('get_token', { key: 'wavis_recovery_id' });
+}
+
+export async function deleteStoredRecoveryId(): Promise<void> {
+  await invoke('delete_token', { key: 'wavis_recovery_id' });
+}
+
 export async function setInsecureTls(value: boolean): Promise<void> {
   const store = await getStore();
   await store.set('insecure_tls', INSECURE_TLS_ALLOWED && value);
@@ -274,7 +286,7 @@ export async function registerUser(
   await store.set('device_id', body.device_id);
   onLog(makeLogEntry('Device registered: ' + body.device_id, 'success'));
 
-  await invoke('store_token', { key: 'wavis_recovery_id', value: body.recovery_id });
+  await storeRecoveryId(body.recovery_id);
   onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
 
   notifyTokenRefreshedCallbacks();
@@ -302,13 +314,14 @@ export async function recoverAccount(
   await setInsecureTls(insecureTls);
 
   onLog(makeLogEntry('Sending recovery request...', 'info'));
+  const trimmedRecoveryId = recoveryId.trim();
   let res: Response;
   try {
     const url = serverUrl.replace(/\/+$/, '') + '/auth/recover';
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recovery_id: recoveryId, phrase, username }),
+      body: JSON.stringify({ recovery_id: trimmedRecoveryId, phrase, username }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -358,6 +371,9 @@ export async function recoverAccount(
   const store = await getStore();
   await store.set('device_id', body.device_id);
   onLog(makeLogEntry('Device recovered: ' + body.device_id, 'success'));
+
+  await storeRecoveryId(trimmedRecoveryId);
+  onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
 
   notifyTokenRefreshedCallbacks();
   return { success: true };
@@ -737,6 +753,8 @@ export async function clearSessionFull(): Promise<void> {
 /**
  * Logout: clears tokens and device_id but preserves server_url, username,
  * and insecure_tls so the login page can pre-fill them.
+ * Recovery ID is intentionally preserved: removing device_id routes the next
+ * launch to /setup, and a new registration overwrites the trusted-device ID.
  */
 export async function logout(): Promise<void> {
   const store = await getStore();
@@ -765,5 +783,10 @@ export async function resetAuth(): Promise<void> {
     await invoke('delete_token', { key: 'wavis_refresh_token' });
   } catch (err) {
     console.error(LOG_PREFIX, 'Failed to delete refresh token from keychain:', err);
+  }
+  try {
+    await deleteStoredRecoveryId();
+  } catch (err) {
+    console.error(LOG_PREFIX, 'Failed to delete recovery ID from keychain:', err);
   }
 }

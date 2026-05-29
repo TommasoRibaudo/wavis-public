@@ -241,7 +241,7 @@ export function ChannelSwitcherPanel({ onChannelSelect, onClose, currentChannelI
       )}
 
       {/* Bottom command bar */}
-      <div className="border-t border-wavis-text-secondary p-4">
+      <div className="shrink-0 p-4 border-t border-wavis-text-secondary">
         <div className="flex gap-4 border-b border-transparent w-full max-w-[1000px] mx-auto">
         <button
           onClick={() => toggleForm('create')}

@@ -35,6 +35,56 @@ describe('VoiceRoom camera lifecycle', () => {
     }
   });
 
+  it('shuts down camera when the session is disconnected remotely', async () => {
+    const harness = await setupVoiceRoomCameraHarness();
+
+    try {
+      await harness.driveToActive();
+      await harness.connectMedia();
+      await harness.voiceRoom.toggleCameraIntent();
+
+      harness.emitMessage({ type: 'session_displaced' });
+      await harness.tick();
+
+      expect(harness.state.lastLiveKitModule!.unpublishCameraCalls).toBe(1);
+      expect(harness.state.lastLiveKitModule!.disconnectCalls).toBe(1);
+      expect(harness.voiceRoom.getState().machineState).toBe('idle');
+      expect(harness.voiceRoom.getState().cameraIntent).toBe(false);
+      expect(harness.voiceRoom.getState().cameraPublication).toBe('idle');
+      expect(harness.voiceRoom.getState().videoTilesById).toEqual({});
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it('clears visible shares when the session is disconnected remotely', async () => {
+    const harness = await setupVoiceRoomCameraHarness();
+
+    try {
+      await harness.driveToActive();
+      await harness.connectMedia();
+      harness.emitMessage({
+        type: 'share_started',
+        participantId: 'self-peer',
+        displayName: 'TestUser',
+        shareType: 'screen_audio',
+      });
+
+      expect(harness.voiceRoom.getState().participants.some((participant) => participant.isSharing)).toBe(true);
+
+      harness.emitMessage({ type: 'session_displaced' });
+      await harness.tick();
+
+      expect(harness.state.lastLiveKitModule!.stopScreenShare).toHaveBeenCalled();
+      expect(harness.voiceRoom.getState().participants.some((participant) => participant.isSharing)).toBe(false);
+      expect(harness.voiceRoom.getState().activeVideoShare).toBeNull();
+      expect(harness.voiceRoom.getState().activeAudioShare).toBeNull();
+      expect(harness.voiceRoom.getState().screenShareStreams.size).toBe(0);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
   it('fails early with no camera configured when no video inputs are enumerable', async () => {
     const harness = await setupVoiceRoomCameraHarness();
     harness.state.videoInputDevice = 'camera-missing';
