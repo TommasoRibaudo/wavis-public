@@ -72,6 +72,7 @@ const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true'
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
+const NOT_AUTHORIZED_REJECTION_PREFIX = 'Unable to join voice.';
 import { registerWatchAllHotkey, unregisterWatchAllHotkey, registerFocusMainHotkey, unregisterFocusMainHotkey } from '@shared/hotkey-bridge';
 import { useHotkeys } from '@shared/useHotkeys';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
@@ -97,7 +98,12 @@ import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
-import { cameraButtonLabel, hasBrowserCameraMediaSupport, shouldMountCameraButton } from './active-room-camera';
+import {
+  cameraButtonLabel,
+  hasBrowserCameraMediaSupport,
+  shouldDisableCameraButton,
+  shouldMountCameraButton,
+} from './active-room-camera';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
 import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
@@ -562,12 +568,15 @@ export default function ActiveRoom() {
     };
   }, []);
 
-  // Clear persisted last channel when kicked (so next launch falls back to ChannelsList)
+  // Clear persisted last channel when the saved channel is no longer safe to auto-join.
   useEffect(() => {
-    if (roomState?.error === 'You were kicked') {
+    if (
+      roomState?.error === 'You were kicked'
+      || roomState?.rejectionReason?.startsWith(NOT_AUTHORIZED_REJECTION_PREFIX)
+    ) {
       void clearLastChannel();
     }
-  }, [roomState?.error]);
+  }, [roomState?.error, roomState?.rejectionReason]);
 
   // Tray event wiring: dispatch tray menu actions to voice room
   useEffect(() => {
@@ -1881,6 +1890,11 @@ export default function ActiveRoom() {
     ? roomState.machineState === 'active' || roomState.machineState === 'reconnecting'
     : false;
   const showCameraButton = shouldMountCameraButton(voiceRoomConnected, supportedCapturePlatform);
+  const cameraButtonDisabled = shouldDisableCameraButton(
+    voiceRoomConnected,
+    roomState?.mediaState,
+    roomState?.joinedSubRoomId,
+  );
   const videoButtonLabel = cameraButtonLabel(roomState?.cameraIntent ?? false);
   const cameraLabel = `/${videoButtonLabel}`;
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
@@ -2512,6 +2526,7 @@ export default function ActiveRoom() {
                   maskSize: 'contain',
                   maskRepeat: 'no-repeat',
                   maskPosition: 'center',
+                  pointerEvents: 'none',
                 }}
               />
             )}
@@ -2829,7 +2844,7 @@ export default function ActiveRoom() {
   );
 
   const youBar = (
-    <div className="p-4 border-t border-wavis-text-secondary">
+    <div className="shrink-0 p-4 border-t border-wavis-text-secondary">
       <div className="flex items-center gap-1 border-b border-wavis-text-secondary font-mono text-wavis-text">
         <button onClick={() => toggleSection('you')} className="bg-transparent outline-none px-1 py-1 text-xs text-wavis-text-secondary hover:opacity-80">
           {expandedSections.you ? '[-]' : '[+]'}
@@ -2858,7 +2873,8 @@ export default function ActiveRoom() {
                 <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
                 <button
                   onClick={toggleCameraIntent}
-                  className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity"
+                  disabled={cameraButtonDisabled}
+                  className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ color: roomState.cameraIntent ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
                   title={cameraLabel}
                   aria-label={videoButtonLabel}
@@ -2899,7 +2915,8 @@ export default function ActiveRoom() {
             {showCameraButton && (
               <button
                 onClick={toggleCameraIntent}
-                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border ${roomState.cameraIntent ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                disabled={cameraButtonDisabled}
+                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${roomState.cameraIntent ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
                 {cameraLabel}
               </button>
@@ -3067,7 +3084,12 @@ export default function ActiveRoom() {
               </button>
             )}
             <div className="mt-4 flex flex-col gap-1">
-              <button onClick={() => { setShowSettings(true); setChannelSwitcherOpen(false); }} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
+              <button
+                onClick={() => { if (showSettings) { setShowSettings(false); } else { setShowSettings(true); setChannelSwitcherOpen(false); } }}
+                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+              >
+                {showSettings ? '/close-settings' : '/settings'}
+              </button>
             </div>
           </div>
         </div>
@@ -3240,10 +3262,10 @@ export default function ActiveRoom() {
       {currentPanelTab === 'video' && !videoPopoutOpen ? (
         <>
           <VideoTab videoTilesById={videoTilesById} />
-          <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
+          <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
             <button
               onClick={() => { void openVideoPopoutWindow(); }}
-              className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+              className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
             >
               /pop-out
             </button>
@@ -3334,10 +3356,10 @@ export default function ActiveRoom() {
               {mobileTab === 'video' && !videoPopoutOpen && (
                 <div className="flex flex-col flex-1 min-h-0">
                   <VideoTab videoTilesById={videoTilesById} />
-                  <div className="h-[4.5rem] px-4 border-t border-wavis-text-secondary flex items-center">
+                  <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
                     <button
                       onClick={() => { void openVideoPopoutWindow(); }}
-                      className={`w-full py-1 px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                      className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                     >
                       /pop-out
                     </button>

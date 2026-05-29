@@ -8,6 +8,7 @@ import {
   getServerUrl,
   getUsername,
   getInsecureTls,
+  getStoredRecoveryId,
   INSECURE_TLS_ALLOWED,
 } from './auth';
 import { logEntryColor } from './authLog';
@@ -15,6 +16,10 @@ import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 
 const MIN_PHRASE_LENGTH = 4;
+
+export function deriveLoginMode(storedId: string | null): 'trusted' | 'new-device' {
+  return storedId !== null ? 'trusted' : 'new-device';
+}
 
 export default function Login() {
   const navigate = useNavigate();
@@ -33,19 +38,23 @@ export default function Login() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [trustedDevice, setTrustedDevice] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [url, name, insecure] = await Promise.all([
+      const [url, name, insecure, storedId] = await Promise.all([
         getServerUrl(),
         getUsername(),
         getInsecureTls(),
+        getStoredRecoveryId(),
       ]);
       if (cancelled) return;
       if (url) setServerUrl(url);
       if (name) setUsernameValue(name);
+      if (storedId) setRecoveryId(storedId);
       setInsecureTls(insecure);
+      setTrustedDevice(deriveLoginMode(storedId) === 'trusted');
       setLoaded(true);
     })();
     return () => {
@@ -55,7 +64,7 @@ export default function Login() {
 
   useEffect(() => {
     if (loaded) inputRef.current?.focus();
-  }, [loaded]);
+  }, [loaded, trustedDevice]);
 
   const handleSubmit = useCallback(async () => {
     if (logging) return;
@@ -103,11 +112,11 @@ export default function Login() {
 
     const err = result.error ?? '';
     if (err.includes('too many requests')) {
-      setLoginError('too many requests — try again later');
+      setLoginError('too many requests - try again later');
     } else if (err.includes('Recovery failed')) {
-      setLoginError('Login failed — check your Wavis ID and password');
+      setLoginError('Login failed - check your Wavis ID and password');
     } else {
-      setLoginError('Login failed — please try again');
+      setLoginError('Login failed - please try again');
       setShowRetry(true);
     }
   }, [serverUrl, recoveryId, phrase, username, insecureTls, logging, navigate]);
@@ -134,23 +143,31 @@ export default function Login() {
 
   return (
     <AuthShell
-      subtitle={<div className="mt-2 text-wavis-text-secondary text-sm">Log in to your account</div>}
+      subtitle={
+        <div className="mt-2 text-wavis-text-secondary text-sm">
+          {trustedDevice
+            ? 'Welcome back - enter your password to continue'
+            : 'Log in on a new device'}
+        </div>
+      }
     >
       <div className="px-4 sm:px-6 py-4">
-        <AuthFieldRow
-          label="Wavis ID:"
-          placeholder="wvs-XXXX-XXXX"
-          value={recoveryId}
-          onChange={(value) => {
-            setRecoveryId(value);
-            setRecoveryIdError(null);
-          }}
-          onKeyDown={handleKeyDown}
-          error={recoveryIdError}
-          disabled={logging}
-          inputRef={inputRef}
-          autoFocus
-        />
+        {!trustedDevice && (
+          <AuthFieldRow
+            label="Wavis ID:"
+            placeholder="wvs-XXXX-XXXX"
+            value={recoveryId}
+            onChange={(value) => {
+              setRecoveryId(value);
+              setRecoveryIdError(null);
+            }}
+            onKeyDown={handleKeyDown}
+            error={recoveryIdError}
+            disabled={logging}
+            inputRef={inputRef}
+            autoFocus
+          />
+        )}
 
         <AuthFieldRow
           label="Password:"
@@ -164,52 +181,58 @@ export default function Login() {
           onKeyDown={handleKeyDown}
           error={phraseError}
           disabled={logging}
+          inputRef={trustedDevice ? inputRef : undefined}
+          autoFocus={trustedDevice}
         />
 
-        <AuthFieldRow
-          label="Server:"
-          placeholder="https://wavis.example.com"
-          value={serverUrl}
-          onChange={(value) => {
-            setServerUrl(value);
-            setUrlError(null);
-          }}
-          onKeyDown={handleKeyDown}
-          error={urlError}
-          disabled={logging}
-          ariaLabel="Server URL"
-        />
+        {!trustedDevice && (
+          <>
+            <AuthFieldRow
+              label="Server:"
+              placeholder="https://wavis.example.com"
+              value={serverUrl}
+              onChange={(value) => {
+                setServerUrl(value);
+                setUrlError(null);
+              }}
+              onKeyDown={handleKeyDown}
+              error={urlError}
+              disabled={logging}
+              ariaLabel="Server URL"
+            />
 
-        {INSECURE_TLS_ALLOWED && (
-          <div className="mb-6">
-            <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
-              <span
-                className="border px-2 py-0.5 text-xs"
-                style={{
-                  borderColor: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
-                  color: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
-                  backgroundColor: insecureTls ? 'rgba(255, 166, 87, 0.08)' : 'transparent',
-                }}
-              >
-                {insecureTls ? 'ON' : 'OFF'}
-              </span>
-              <span className={insecureTls ? 'text-wavis-warn' : 'text-wavis-text-secondary'}>
-                --danger-insecure-tls
-              </span>
-              <input
-                type="checkbox"
-                checked={insecureTls}
-                onChange={(e) => setInsecureTls(e.target.checked)}
-                disabled={logging}
-                className="sr-only"
-              />
-            </label>
-            {insecureTls && (
-              <p className="text-wavis-warn text-xs mt-2 pl-6">
-                TLS certificate verification disabled. Do NOT use in production.
-              </p>
+            {INSECURE_TLS_ALLOWED && (
+              <div className="mb-6">
+                <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
+                  <span
+                    className="border px-2 py-0.5 text-xs"
+                    style={{
+                      borderColor: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
+                      color: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
+                      backgroundColor: insecureTls ? 'rgba(255, 166, 87, 0.08)' : 'transparent',
+                    }}
+                  >
+                    {insecureTls ? 'ON' : 'OFF'}
+                  </span>
+                  <span className={insecureTls ? 'text-wavis-warn' : 'text-wavis-text-secondary'}>
+                    --danger-insecure-tls
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={insecureTls}
+                    onChange={(e) => setInsecureTls(e.target.checked)}
+                    disabled={logging}
+                    className="sr-only"
+                  />
+                </label>
+                {insecureTls && (
+                  <p className="text-wavis-warn text-xs mt-2 pl-6">
+                    TLS certificate verification disabled. Do not use in production.
+                  </p>
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
 
         <button
@@ -249,14 +272,31 @@ export default function Login() {
         </div>
       )}
 
-      <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between">
-        <span>Log in with your Wavis ID and password</span>
-        <button
-          onClick={() => navigate('/setup')}
-          className="hover:text-wavis-text transition-colors"
-        >
-          ← /setup
-        </button>
+      <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between gap-3">
+        <span>
+          {trustedDevice
+            ? 'Trusted device login'
+            : 'Log in with your Wavis ID and password'}
+        </span>
+        {trustedDevice ? (
+          <button
+            onClick={() => {
+              setTrustedDevice(false);
+              setRecoveryId('');
+              setRecoveryIdError(null);
+            }}
+            className="hover:text-wavis-text transition-colors text-right"
+          >
+            Not you / log in on a new device
+          </button>
+        ) : (
+          <button
+            onClick={() => navigate('/setup')}
+            className="hover:text-wavis-text transition-colors"
+          >
+            /setup
+          </button>
+        )}
       </div>
     </AuthShell>
   );

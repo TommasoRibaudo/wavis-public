@@ -19,6 +19,7 @@ import { formatHotkeyCombination, unregisterMuteHotkey, unregisterWatchAllHotkey
 import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
+import ChannelDetail from '@features/channels/ChannelDetail';
 
 /* ─── Audio Types ───────────────────────────────────────────────── */
 interface AudioDevice {
@@ -112,10 +113,10 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'general' | 'channel'>('general');
 
-  const handleNavigateAway = (path: string) => {
+  const handleNavigateAway = useCallback((path: string) => {
     if (onNavigateAway) onNavigateAway(path);
     else navigate(path);
-  };
+  }, [onNavigateAway, navigate]);
   const { showSecrets } = useDebug();
 
   const [showConfirm, setShowConfirm] = useState(false);
@@ -452,139 +453,153 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   return (
     <div className="h-full flex flex-col min-w-0 bg-wavis-bg font-mono text-wavis-text">
-      <div className="flex-shrink-0 px-3 sm:px-6 py-2 border-b border-wavis-text-secondary/30 bg-wavis-bg">
-        {onClose ? (
-          <button onClick={onClose} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ✕ /close settings
-          </button>
-        ) : (
-          <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ← /channels
-          </button>
-        )}
-      </div>
       {channelId && (
-        <div className="flex shrink-0 border-b border-wavis-text-secondary font-mono text-xs">
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            general
-          </button>
-          <button
-            onClick={() => setActiveTab('channel')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            channel
-          </button>
+        <div className="flex shrink-0 h-[4.5rem] px-3 py-3 border-b border-wavis-text-secondary font-mono text-xs items-center justify-between">
+          <div className="flex items-center h-full">
+            <button
+              onClick={() => setActiveTab('general')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              general
+            </button>
+            <button
+              onClick={() => setActiveTab('channel')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              channel
+            </button>
+          </div>
+          {onClose ? (
+            <button
+              onClick={onClose}
+              className="text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : (
+            <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          )}
         </div>
       )}
       {channelId && activeTab === 'channel' ? (
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-2xl mx-auto px-3 sm:px-6 py-4 space-y-4">
-            <button
-              onClick={() => handleNavigateAway(`/channel/${channelId}`)}
-              className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-2 transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-            >
-              /channel-settings — members &amp; administration →
-            </button>
-            {(() => {
-              const vs = getVoiceRoomState();
-              if (!vs.selfIsHost || vs.machineState !== 'active') return null;
-              const activePassthrough = vs.passthrough;
-              const passthroughOn = !!activePassthrough || passthroughIntent;
-              const joinedSubRoomId = vs.joinedSubRoomId;
-              const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
-              return (
-                <div>
-                  <p className="text-sm text-wavis-text-secondary mb-2">PASSTHROUGH</p>
-                  <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-wavis-text-secondary">Enable passthrough</span>
-                      <Switch
-                        checked={passthroughOn}
-                        onCheckedChange={(checked: boolean) => {
-                          if (checked) {
-                            setPassthroughIntent(true);
-                          } else {
-                            setPassthroughIntent(false);
-                            clearPassthrough();
-                          }
-                        }}
-                        aria-label="Toggle passthrough"
-                      />
-                    </div>
-                    <p className="text-xs text-wavis-text-secondary/70">
-                      Link two sub-rooms so their participants can hear each other
-                    </p>
-                    {passthroughOn && (
-                      <>
-                        <div>
-                          <label className="text-wavis-text-secondary block mb-1">
-                            Passthrough volume ({passthroughVolume}%)
-                          </label>
-                          <p className="text-xs text-wavis-text-secondary/70 mb-1">
-                            Attenuates audio from the linked sub-room — applies to all participants
-                          </p>
-                          <VolumeSlider
-                            value={passthroughVolume}
-                            onChange={(v) => {
-                              setPassthroughVolumeState(v);
-                              setPassthroughVolume(v);
-                            }}
-                          />
-                        </div>
-                        <div>
-                          {activePassthrough ? (
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <span className="text-wavis-text-secondary">Linked</span>
-                                <p className="text-xs text-wavis-text-secondary/70">{activePassthrough.label}</p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  clearPassthrough();
-                                  setPassthroughIntent(false);
-                                }}
-                                className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
-                              >
-                                /unlink
-                              </button>
-                            </div>
-                          ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
-                            <div>
-                              <span className="text-wavis-text-secondary block mb-1">Link to room</span>
-                              <div className="flex flex-wrap gap-1">
-                                {otherSubRooms.map((r) => (
-                                  <button
-                                    key={r.id}
-                                    type="button"
-                                    onClick={() => { setPassthrough(r.id); setPassthroughIntent(false); }}
-                                    className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
-                                  >
-                                    Room {r.roomNumber}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ) : (
-                            <p className="text-xs text-wavis-text-secondary/70">
-                              Join a sub-room to link rooms
+            <ChannelDetail
+              channelIdProp={channelId}
+              hideJoinVoice
+              hideBackButton
+              embedded
+              onNavigateAway={handleNavigateAway}
+              embeddedMiddle={(() => {
+                const vs = getVoiceRoomState();
+                if (!vs.selfIsHost || vs.machineState !== 'active') return null;
+                const activePassthrough = vs.passthrough;
+                const passthroughOn = !!activePassthrough || passthroughIntent;
+                const joinedSubRoomId = vs.joinedSubRoomId;
+                const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
+                return (
+                  <div>
+                    <p className="text-sm text-wavis-text-secondary mb-2">PASSTHROUGH</p>
+                    <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-wavis-text-secondary">Enable passthrough</span>
+                        <Switch
+                          checked={passthroughOn}
+                          onCheckedChange={(checked: boolean) => {
+                            if (checked) {
+                              setPassthroughIntent(true);
+                            } else {
+                              setPassthroughIntent(false);
+                              clearPassthrough();
+                            }
+                          }}
+                          aria-label="Toggle passthrough"
+                        />
+                      </div>
+                      <p className="text-xs text-wavis-text-secondary/70">
+                        Link two sub-rooms so their participants can hear each other
+                      </p>
+                      {passthroughOn && (
+                        <>
+                          <div>
+                            <label className="text-wavis-text-secondary block mb-1">
+                              Passthrough volume ({passthroughVolume}%)
+                            </label>
+                            <p className="text-xs text-wavis-text-secondary/70 mb-1">
+                              Attenuates audio from the linked sub-room — applies to all participants
                             </p>
-                          )}
-                        </div>
-                      </>
-                    )}
+                            <VolumeSlider
+                              value={passthroughVolume}
+                              onChange={(v) => {
+                                setPassthroughVolumeState(v);
+                                setPassthroughVolume(v);
+                              }}
+                            />
+                          </div>
+                          <div>
+                            {activePassthrough ? (
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <span className="text-wavis-text-secondary">Linked</span>
+                                  <p className="text-xs text-wavis-text-secondary/70">{activePassthrough.label}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    clearPassthrough();
+                                    setPassthroughIntent(false);
+                                  }}
+                                  className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
+                                >
+                                  /unlink
+                                </button>
+                              </div>
+                            ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
+                              <div>
+                                <span className="text-wavis-text-secondary block mb-1">Link to room</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {otherSubRooms.map((r) => (
+                                    <button
+                                      key={r.id}
+                                      type="button"
+                                      onClick={() => { setPassthrough(r.id); setPassthroughIntent(false); }}
+                                      className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
+                                    >
+                                      Room {r.roomNumber}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-wavis-text-secondary/70">
+                                Join a sub-room to link rooms
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })()}
+                );
+              })()}
+            />
           </div>
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
+          {!channelId && onClose ? (
+            <button
+              onClick={onClose}
+              className="mb-4 text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : !channelId ? (
+            <button onClick={() => navigate('/')} className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          ) : null}
           <h2>settings</h2>
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 

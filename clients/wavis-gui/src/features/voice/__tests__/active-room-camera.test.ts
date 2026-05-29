@@ -5,7 +5,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { cameraButtonLabel, hasBrowserCameraMediaSupport, shouldMountCameraButton } from '../active-room-camera';
+import {
+  cameraButtonLabel,
+  hasBrowserCameraMediaSupport,
+  shouldDisableCameraButton,
+  shouldMountCameraButton,
+} from '../active-room-camera';
 
 /* ─── Button ordering logic ─────────────────────────────────────── */
 
@@ -32,6 +37,20 @@ describe('Feature: video-feed — button stays mounted during media reconnect (R
 
   it('shouldMountCameraButton is false when voice room is not connected', () => {
     expect(shouldMountCameraButton(false, true)).toBe(false);
+  });
+});
+
+describe('Feature: video-feed - button disabled gate', () => {
+  it('disables camera when the user is not in a synchronized room', () => {
+    expect(shouldDisableCameraButton(true, 'connected', null)).toBe(true);
+  });
+
+  it('enables camera when voice, media, and synchronized room membership are active', () => {
+    expect(shouldDisableCameraButton(true, 'connected', 'room-1')).toBe(false);
+  });
+
+  it('keeps camera enabled during media reconnect while still in a synchronized room', () => {
+    expect(shouldDisableCameraButton(true, 'reconnecting', 'room-1')).toBe(false);
   });
 });
 
