@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 let mockStore: Record<string, unknown> = {};
 let mockKeychain: Record<string, string> = {};
 let mockFetchMode: 'register_ok' | 'recover_ok' = 'register_ok';
+let fetchBodies: unknown[] = [];
 
 vi.mock('@tauri-apps/plugin-store', () => ({
   load: vi.fn(async () => ({
@@ -35,8 +36,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/plugin-http', () => ({
-  fetch: vi.fn(async (url: string) => {
+  fetch: vi.fn(async (url: string, init?: RequestInit) => {
     const futureExp = Date.now() / 1000 + 900;
+    if (init?.body) fetchBodies.push(JSON.parse(init.body as string));
     if (url.includes('/auth/register') && mockFetchMode === 'register_ok') {
       return {
         ok: true,
@@ -73,6 +75,7 @@ describe('recovery ID keychain helpers', () => {
     mockStore = {};
     mockKeychain = {};
     mockFetchMode = 'register_ok';
+    fetchBodies = [];
     vi.clearAllMocks();
     vi.resetModules();
   });
@@ -106,6 +109,29 @@ describe('recovery ID keychain helpers', () => {
       key: 'wavis_recovery_id',
       value: 'wvs-TRIM-0001',
     });
+    expect(fetchBodies).toMatchObject([
+      { recovery_id: 'wvs-TRIM-0001', phrase: 'passphrase' },
+    ]);
+    expect(fetchBodies[0]).not.toHaveProperty('username');
+  });
+
+  it('recoverAccount can skip storing the recovery ID', async () => {
+    mockFetchMode = 'recover_ok';
+    mockKeychain = { wavis_recovery_id: 'wvs-OLD-0001' };
+    const auth = await import('../auth');
+
+    const result = await auth.recoverAccount(
+      'https://wavis.example.com',
+      'wvs-NOTRUST-1',
+      'passphrase',
+      '',
+      false,
+      () => {},
+      false,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockKeychain['wavis_recovery_id']).toBeUndefined();
   });
 
   it('registerUser stores the response recovery ID after success', async () => {

@@ -99,6 +99,16 @@ export function parseJwtExpiry(jwt: string): number | null {
   }
 }
 
+function retryAfterMessage(res: Response): string {
+  const retryAfter = res.headers.get('Retry-After');
+  if (!retryAfter) return 'too many requests -- try again later';
+  const seconds = Number.parseFloat(retryAfter);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'too many requests -- try again later';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes <= 1) return 'too many requests -- try again in about 1 minute';
+  return `too many requests -- try again in about ${minutes} minutes`;
+}
+
 export function redactToken(token: string): string {
   if (token.length >= 16) return token.slice(0, 16) + '...';
   return '***';
@@ -251,7 +261,7 @@ export async function registerUser(
   }
 
   if (res.status === 429) {
-    const msg = 'too many requests -- try again later';
+    const msg = retryAfterMessage(res);
     onLog(makeLogEntry(msg, 'warning'));
     return { success: false, error: msg };
   }
@@ -299,9 +309,10 @@ export async function recoverAccount(
   serverUrl: string,
   recoveryId: string,
   phrase: string,
-  username: string,
+  _username: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
+  rememberRecoveryId = true,
 ): Promise<{ success: boolean; error?: string }> {
   onLog(makeLogEntry('Validating server URL: ' + serverUrl, 'info'));
   const validation = validateServerUrl(serverUrl, insecureTls);
@@ -321,7 +332,7 @@ export async function recoverAccount(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recovery_id: trimmedRecoveryId, phrase, username }),
+      body: JSON.stringify({ recovery_id: trimmedRecoveryId, phrase }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -338,7 +349,7 @@ export async function recoverAccount(
   }
 
   if (res.status === 429) {
-    const msg = 'too many requests -- try again later';
+    const msg = retryAfterMessage(res);
     onLog(makeLogEntry(msg, 'warning'));
     return { success: false, error: msg };
   }
@@ -372,8 +383,13 @@ export async function recoverAccount(
   await store.set('device_id', body.device_id);
   onLog(makeLogEntry('Device recovered: ' + body.device_id, 'success'));
 
-  await storeRecoveryId(trimmedRecoveryId);
-  onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
+  if (rememberRecoveryId) {
+    await storeRecoveryId(trimmedRecoveryId);
+    onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
+  } else {
+    await deleteStoredRecoveryId();
+    onLog(makeLogEntry('Recovery ID not stored on this device', 'info'));
+  }
 
   notifyTokenRefreshedCallbacks();
   return { success: true };
@@ -751,8 +767,10 @@ export async function clearSessionFull(): Promise<void> {
 // --- Logout (exported) ---
 
 /**
- * Logout: clears tokens and device_id but preserves server_url, username,
- * and insecure_tls so the login page can pre-fill them.
+ * Logout: clears tokens, device_id, and display name from local store.
+ * Preserves server_url and insecure_tls (connection settings, not identity).
+ * Username is cleared so a subsequent login on the same device does not
+ * inherit the previous account's display name.
  * Recovery ID is intentionally preserved: removing device_id routes the next
  * launch to /setup, and a new registration overwrites the trusted-device ID.
  */
@@ -761,6 +779,8 @@ export async function logout(): Promise<void> {
   await store.delete('access_token');
   await store.delete('access_token_exp');
   await store.delete('device_id');
+  await store.delete('username');
+  await store.delete('display_name');
   try {
     await invoke('delete_token', { key: 'wavis_refresh_token' });
   } catch (err) {

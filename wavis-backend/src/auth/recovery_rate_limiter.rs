@@ -19,7 +19,7 @@ pub struct RecoveryRateLimiterConfig {
 impl Default for RecoveryRateLimiterConfig {
     fn default() -> Self {
         Self {
-            per_ip_max: 5,
+            per_ip_max: 30,
             per_ip_window_secs: 3600,
             per_rid_max: 3,
             per_rid_window_secs: 3600,
@@ -137,7 +137,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let now = Instant::now();
 
-        for _ in 0..5 {
+        for _ in 0..30 {
             assert!(limiter.check_ip(ip, now));
             limiter.record_ip(ip, now);
         }
@@ -150,7 +150,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let now = Instant::now();
 
-        for _ in 0..5 {
+        for _ in 0..30 {
             limiter.record_ip(ip, now);
         }
         assert!(!limiter.check_ip(ip, now));
@@ -192,7 +192,7 @@ mod tests {
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let now = Instant::now();
 
-        for _ in 0..5 {
+        for _ in 0..30 {
             limiter.record_ip(ip1, now);
         }
         assert!(!limiter.check_ip(ip1, now));
@@ -231,7 +231,7 @@ mod tests {
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let now = Instant::now();
 
-        for _ in 0..5 {
+        for _ in 0..30 {
             limiter.record_ip(ip, now);
         }
 
@@ -297,7 +297,7 @@ mod tests {
             rid_suffix in "[A-Z0-9]{4}-[A-Z0-9]{4}",
         ) {
             let config = RecoveryRateLimiterConfig {
-                per_ip_max: 5,
+                per_ip_max: 30,
                 per_ip_window_secs: 3600,
                 per_rid_max,
                 per_rid_window_secs,

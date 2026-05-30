@@ -304,7 +304,7 @@ pub async fn recover_account(
     pool: &sqlx::PgPool,
     recovery_id: &str,
     phrase: &str,
-    username: &str,
+    _username: &str,
     auth_secret: &[u8],
     access_ttl_secs: u64,
     refresh_ttl_days: u32,
@@ -351,15 +351,10 @@ pub async fn recover_account(
         return Err(AuthError::PhraseVerificationFailed);
     }
 
-    sqlx::query("UPDATE users SET username = $1 WHERE user_id = $2")
-        .bind(username)
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
-
     // 4. Create new device under this user. The account username is intentionally
     // separate from the per-device label stored in devices.device_name.
+    // Recovery never renames the account; username changes flow through
+    // POST /auth/username only.
     let device_id = device::create_device(pool, user_id, "primary")
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;

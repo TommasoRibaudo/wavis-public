@@ -9,7 +9,7 @@ import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUserna
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -116,6 +116,11 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const handleNavigateAway = useCallback((path: string) => {
     if (onNavigateAway) onNavigateAway(path);
     else navigate(path);
+  }, [onNavigateAway, navigate]);
+
+  const handleAuthNavigateAway = useCallback((path: string) => {
+    if (onNavigateAway) onNavigateAway(path);
+    else navigate(path, { replace: true });
   }, [onNavigateAway, navigate]);
   const { showSecrets } = useDebug();
 
@@ -229,14 +234,16 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   const handleLogout = async () => {
     setLoggingOut(true);
+    leaveRoom();
     await logout();
-    navigate('/login', { replace: true });
+    handleAuthNavigateAway('/login');
   };
 
   const handleReset = async () => {
     setResetting(true);
+    leaveRoom();
     await resetAuth();
-    navigate('/setup', { replace: true });
+    handleAuthNavigateAway('/setup');
   };
 
   const handleMinimizeToTrayChange = useCallback((checked: boolean) => {
@@ -626,46 +633,41 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             </div>
           </div>
 
-          {/* Only show account management on standalone settings page */}
-          {!onClose && (
-            <>
-              <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
+          <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-              {/* Account management */}
-              <div className="mb-6">
-                <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
-                <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
-                  <button
-                    onClick={() => handleNavigateAway('/devices')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /devices — manage devices
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/pair')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /pair-device — add a new device
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/phrase')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /change-password — change password
-                  </button>
-                  <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
-                    <button
-                      onClick={handleLogout}
-                      disabled={loggingOut}
-                      className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
-                    </button>
-                  </div>
-                </div>
+          {/* Account management */}
+          <div className="mb-6">
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
+              <button
+                onClick={() => handleNavigateAway('/devices')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /devices — manage devices
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/pair')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /pair-device — add a new device
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/phrase')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /change-password — change password
+              </button>
+              <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
+                <button
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
+                </button>
               </div>
-            </>
-          )}
+            </div>
+          </div>
 
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
