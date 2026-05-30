@@ -9,7 +9,7 @@
  * Each test calls leaveRoom() in afterEach to reset module-level state.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getState,
   leaveRoom,
@@ -107,7 +107,6 @@ vi.mock('@features/settings/settings-store', () => ({
 // ─── Message injection state ──────────────────────────────────────
 // The mock captures the onMessage handler so tests can inject messages directly.
 let _messageHandler: ((msg: unknown) => void) | null = null;
-let _statusHandler: ((s: string) => void) | null = null;
 
 vi.mock('@shared/websocket', () => {
   class MockSignalingClient {
@@ -120,9 +119,8 @@ vi.mock('@shared/websocket', () => {
       _messageHandler = h;
       return () => { _messageHandler = null; };
     });
-    onStatusChange = vi.fn().mockImplementation((h: (s: string) => void) => {
-      _statusHandler = h;
-      return () => { _statusHandler = null; };
+    onStatusChange = vi.fn().mockImplementation((_h: (s: string) => void) => {
+      return () => {};
     });
   }
 
