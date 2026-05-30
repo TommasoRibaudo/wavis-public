@@ -7,8 +7,8 @@ import {
   setUsername,
   INSECURE_TLS_ALLOWED,
 } from './auth';
-import { logEntryColor } from './authLog';
 import { AuthFieldRow } from './AuthFieldRow';
+import { AuthLogPanel } from './AuthLogPanel';
 import { AuthShell } from './AuthShell';
 
 const MIN_PHRASE_LENGTH = 4;
@@ -229,18 +229,7 @@ export default function RecoverAccount() {
         )}
       </div>
 
-      {logs.length > 0 && (
-        <div className="border-t border-wavis-text-secondary px-4 sm:px-6 py-4">
-          <div className="mb-2 font-bold text-sm">RECOVERY LOG</div>
-          <div className="overflow-y-auto space-y-0.5 text-sm" style={{ maxHeight: '240px' }}>
-            {logs.map((entry, i) => (
-              <div key={i} style={{ color: logEntryColor(entry.type) }}>
-                [{entry.time}] {entry.message}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <AuthLogPanel title="RECOVERY LOG" logs={logs} />
 
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between">
         <span>Recover your account on a new device</span>

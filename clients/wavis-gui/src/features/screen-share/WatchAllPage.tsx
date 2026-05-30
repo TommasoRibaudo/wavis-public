@@ -14,10 +14,12 @@ import {
   type WatchAllTestState,
 } from './watch-all-test-mode';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
+import { useFullscreen } from '@shared/hooks/useFullscreen';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixer';
 import QuickActionButtons from '@shared/QuickActionButtons';
 import FocusMainButton from '@shared/FocusMainButton';
+import FullscreenButton from '@shared/FullscreenButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -718,6 +720,7 @@ export default function WatchAllPage() {
     delayMs: GLOBAL_BAR_FADE_DELAY_MS,
     listenToMouseMove: true,
   });
+  const { isFullscreen, toggleFullscreen } = useFullscreen();
 
   const p = params.current;
   const diagnosticsTestSessionId = p?.testSessionId ?? null;
@@ -1146,11 +1149,20 @@ export default function WatchAllPage() {
 
   return (
     <div className="h-screen flex flex-col bg-wavis-overlay-base font-mono text-wavis-text overflow-hidden select-none">
-      {/* Title bar */}
+      {/* Title bar; overlays grid and auto-hides in fullscreen */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0"
-        style={{ height: TITLE_BAR_HEIGHT }}
+        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
+        style={isFullscreen ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          height: TITLE_BAR_HEIGHT,
+          opacity: bottomBarVisible ? 1 : 0,
+          pointerEvents: bottomBarVisible ? 'auto' : 'none',
+        } : { height: TITLE_BAR_HEIGHT }}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
@@ -1265,6 +1277,7 @@ export default function WatchAllPage() {
         <FocusMainButton
           onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
         />
+        <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
         <div className="flex-1" />
         <div className="relative flex items-center gap-1 shrink-0">
           <button
