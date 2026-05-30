@@ -8,6 +8,7 @@ import { useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
+import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
@@ -92,6 +93,7 @@ export default function ScreenSharePage() {
 
   // Auto-hide controls on mouse idle
   const { isVisible: controlsVisible } = useAutoHide({ delayMs: 2000, listenToMouseMove: true });
+  const { isFullscreen, toggleFullscreen } = useFullscreen();
 
   const p = params.current;
 
@@ -592,11 +594,20 @@ export default function ScreenSharePage() {
 
   return (
     <div className="h-screen flex flex-col bg-wavis-overlay-base font-mono text-wavis-text overflow-hidden select-none">
-      {/* Header — draggable title bar */}
+      {/* Header — draggable title bar; overlays video and auto-hides in fullscreen */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0"
-        style={{ height: 32 }}
+        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
+        style={isFullscreen ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          height: 32,
+          opacity: controlsVisible ? 1 : 0,
+          pointerEvents: controlsVisible ? 'auto' : 'none',
+        } : { height: 32 }}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
@@ -715,6 +726,8 @@ export default function ScreenSharePage() {
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
           onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (

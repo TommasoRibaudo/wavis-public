@@ -8,10 +8,10 @@ import {
   INSECURE_TLS_ALLOWED,
   deleteStoredRecoveryId,
 } from './auth';
-import { logEntryColor } from './authLog';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
 import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
+import { AuthLogPanel } from './AuthLogPanel';
 
 const MIN_PHRASE_LENGTH = 4;
 const MAX_USERNAME_LENGTH = 64;
@@ -345,18 +345,7 @@ export default function DeviceSetup() {
             )}
           </div>
 
-          {logs.length > 0 && (
-            <div className="border-t border-wavis-text-secondary px-4 sm:px-6 py-4">
-              <div className="mb-2 font-bold text-sm">REGISTRATION LOG</div>
-              <div className="overflow-y-auto space-y-0.5 text-sm" style={{ maxHeight: '240px' }}>
-                {logs.map((entry, i) => (
-                  <div key={i} style={{ color: logEntryColor(entry.type) }}>
-                    [{entry.time}] {entry.message}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <AuthLogPanel title="REGISTRATION LOG" logs={logs} />
         </>
       )}
 

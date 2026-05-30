@@ -4,6 +4,7 @@ import { VolumeSlider } from '@shared/VolumeSlider';
 import QuickActionButtons, { SEPARATOR } from '@shared/QuickActionButtons';
 import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixer';
 import FocusMainButton from '@shared/FocusMainButton';
+import FullscreenButton from '@shared/FullscreenButton';
 
 interface StreamHoverBarProps {
   visible: boolean;
@@ -21,6 +22,8 @@ interface StreamHoverBarProps {
   onVoiceMuteToggle: (id: string) => void;
   ownerControls?: ReactNode;
   onFocusMain?: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 const STREAM_MUTED_ICON = '\u25cb';
@@ -42,6 +45,8 @@ export default function StreamHoverBar({
   onVoiceMuteToggle,
   ownerControls,
   onFocusMain,
+  isFullscreen,
+  onToggleFullscreen,
 }: StreamHoverBarProps) {
   const [voiceMixerOpen, setVoiceMixerOpen] = useState(false);
 
@@ -125,6 +130,10 @@ export default function StreamHoverBar({
           />
         )}
       </div>
+
+      {onToggleFullscreen !== undefined && (
+        <FullscreenButton isFullscreen={isFullscreen ?? false} onToggle={onToggleFullscreen} />
+      )}
     </div>
   );
 }

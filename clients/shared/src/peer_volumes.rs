@@ -107,3 +107,209 @@ impl Default for PeerVolumes {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── perceptual_gain ──────────────────────────────────────────────
+
+    #[test]
+    fn perceptual_gain_zero_is_silent() {
+        assert_eq!(perceptual_gain(0), 0.0);
+    }
+
+    #[test]
+    fn perceptual_gain_100_is_max_gain() {
+        let g = perceptual_gain(100);
+        assert!((g - MAX_GAIN).abs() < 1e-5, "expected {MAX_GAIN}, got {g}");
+    }
+
+    #[test]
+    fn perceptual_gain_70_is_near_unity() {
+        let g = perceptual_gain(70);
+        assert!(g > 0.99 && g < 1.1, "expected ~1.0 at vol=70, got {g}");
+    }
+
+    #[test]
+    fn perceptual_gain_clamps_above_100() {
+        assert_eq!(perceptual_gain(200), perceptual_gain(100));
+    }
+
+    #[test]
+    fn perceptual_gain_is_monotonically_increasing() {
+        let mut prev = perceptual_gain(0);
+        for v in 1u8..=100 {
+            let g = perceptual_gain(v);
+            assert!(g >= prev, "gain not monotone at vol={v}: {g} < {prev}");
+            prev = g;
+        }
+    }
+
+    // ── PeerVolumes::get / set ───────────────────────────────────────
+
+    #[test]
+    fn get_returns_default_for_unknown_peer() {
+        let pv = PeerVolumes::new();
+        assert_eq!(pv.get("unknown"), DEFAULT_VOLUME);
+    }
+
+    #[test]
+    fn set_and_get_round_trip() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 42);
+        assert_eq!(pv.get("peer-1"), 42);
+    }
+
+    #[test]
+    fn set_clamps_volume_above_100() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 200);
+        assert_eq!(pv.get("peer-1"), 100);
+    }
+
+    #[test]
+    fn set_allows_zero_volume() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 0);
+        assert_eq!(pv.get("peer-1"), 0);
+    }
+
+    #[test]
+    fn set_updates_existing_entry() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 50);
+        pv.set("peer-1", 80);
+        assert_eq!(pv.get("peer-1"), 80);
+    }
+
+    // ── capacity cap ────────────────────────────────────────────────
+
+    #[test]
+    fn set_ignores_new_peer_when_map_is_full() {
+        let pv = PeerVolumes::new();
+        for i in 0..MAX_PEER_VOLUMES {
+            pv.set(&format!("peer-{i}"), 50);
+        }
+        assert_eq!(pv.list().len(), MAX_PEER_VOLUMES);
+        pv.set("peer-overflow", 99);
+        assert_eq!(pv.get("peer-overflow"), DEFAULT_VOLUME, "overflow peer should return default");
+        assert_eq!(pv.list().len(), MAX_PEER_VOLUMES, "map should not grow beyond cap");
+    }
+
+    #[test]
+    fn set_updates_existing_peer_even_when_map_is_full() {
+        let pv = PeerVolumes::new();
+        for i in 0..MAX_PEER_VOLUMES {
+            pv.set(&format!("peer-{i}"), 50);
+        }
+        pv.set("peer-0", 99);
+        assert_eq!(pv.get("peer-0"), 99);
+    }
+
+    // ── remove / clear ───────────────────────────────────────────────
+
+    #[test]
+    fn remove_deletes_entry() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 42);
+        pv.remove("peer-1");
+        assert_eq!(pv.get("peer-1"), DEFAULT_VOLUME);
+    }
+
+    #[test]
+    fn remove_nonexistent_is_noop() {
+        let pv = PeerVolumes::new();
+        pv.remove("ghost");
+        assert_eq!(pv.get("ghost"), DEFAULT_VOLUME);
+    }
+
+    #[test]
+    fn clear_removes_all_entries() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 10);
+        pv.set("peer-2", 20);
+        pv.clear();
+        assert_eq!(pv.list().len(), 0);
+        assert_eq!(pv.get("peer-1"), DEFAULT_VOLUME);
+    }
+
+    #[test]
+    fn remove_frees_capacity_for_new_peer() {
+        let pv = PeerVolumes::new();
+        for i in 0..MAX_PEER_VOLUMES {
+            pv.set(&format!("peer-{i}"), 50);
+        }
+        pv.remove("peer-0");
+        pv.set("peer-new", 77);
+        assert_eq!(pv.get("peer-new"), 77);
+    }
+
+    // ── gain ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn gain_returns_perceptual_gain_for_set_peer() {
+        let pv = PeerVolumes::new();
+        pv.set("peer-1", 50);
+        let expected = perceptual_gain(50);
+        assert!((pv.gain("peer-1") - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gain_returns_default_gain_for_unknown_peer() {
+        let pv = PeerVolumes::new();
+        let expected = perceptual_gain(DEFAULT_VOLUME);
+        assert!((pv.gain("unknown") - expected).abs() < 1e-6);
+    }
+
+    // ── list ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_returns_all_set_peers() {
+        let pv = PeerVolumes::new();
+        pv.set("a", 10);
+        pv.set("b", 20);
+        let mut entries = pv.list();
+        entries.sort_by_key(|(k, _)| k.clone());
+        assert_eq!(entries, vec![("a".to_string(), 10), ("b".to_string(), 20)]);
+    }
+
+    #[test]
+    fn list_is_empty_on_new_instance() {
+        let pv = PeerVolumes::new();
+        assert!(pv.list().is_empty());
+    }
+
+    // ── Clone shares the same underlying map ─────────────────────────
+
+    #[test]
+    fn clone_shares_inner_arc() {
+        let pv1 = PeerVolumes::new();
+        let pv2 = pv1.clone();
+        pv1.set("peer-1", 55);
+        assert_eq!(pv2.get("peer-1"), 55);
+    }
+
+    // ── thread safety ────────────────────────────────────────────────
+
+    #[test]
+    fn concurrent_set_and_get_do_not_panic() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pv = Arc::new(PeerVolumes::new());
+        let mut handles = Vec::new();
+
+        for i in 0..6usize {
+            let pv_clone = Arc::clone(&pv);
+            handles.push(thread::spawn(move || {
+                pv_clone.set(&format!("peer-{i}"), (i * 10) as u8);
+                let _ = pv_clone.get(&format!("peer-{i}"));
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+    }
+}
