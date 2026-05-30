@@ -5,8 +5,8 @@ import {
   validateServerUrl,
   recoverAccount,
   setUsername,
+  fetchMyUsername,
   getServerUrl,
-  getUsername,
   getInsecureTls,
   getStoredRecoveryId,
   INSECURE_TLS_ALLOWED,
@@ -28,7 +28,6 @@ export default function Login() {
   const [serverUrl, setServerUrl] = useState('');
   const [recoveryId, setRecoveryId] = useState('');
   const [phrase, setPhrase] = useState('');
-  const [username, setUsernameValue] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [logging, setLogging] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -39,19 +38,18 @@ export default function Login() {
   const [showRetry, setShowRetry] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [trustedDevice, setTrustedDevice] = useState(false);
+  const [trustThisDevice, setTrustThisDevice] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [url, name, insecure, storedId] = await Promise.all([
+      const [url, insecure, storedId] = await Promise.all([
         getServerUrl(),
-        getUsername(),
         getInsecureTls(),
         getStoredRecoveryId(),
       ]);
       if (cancelled) return;
       if (url) setServerUrl(url);
-      if (name) setUsernameValue(name);
       if (storedId) setRecoveryId(storedId);
       setInsecureTls(insecure);
       setTrustedDevice(deriveLoginMode(storedId) === 'trusted');
@@ -92,20 +90,33 @@ export default function Login() {
       return;
     }
 
-    const nameToUse = username.trim() || 'user';
-
     setLogging(true);
     setLogs([]);
 
-    const result = await recoverAccount(serverUrl, trimmedRecoveryId, phrase, nameToUse, insecureTls, (entry) => {
-      setLogs((prev) => [...prev, entry]);
-    });
+    // Recovery must not rename the account. After recovery, fetch the real
+    // server-side username so local state reflects the Wavis ID that logged in.
+    const result = await recoverAccount(
+      serverUrl,
+      trimmedRecoveryId,
+      phrase,
+      '',
+      insecureTls,
+      (entry) => {
+        setLogs((prev) => [...prev, entry]);
+      },
+      trustedDevice || trustThisDevice,
+    );
 
     setLogging(false);
     setPhrase('');
 
     if (result.success) {
-      await setUsername(nameToUse);
+      try {
+        const serverUsername = await fetchMyUsername();
+        if (serverUsername) await setUsername(serverUsername);
+      } catch {
+        // Best-effort — proceed even if the sync fails; /settings can update later.
+      }
       navigate('/', { replace: true });
       return;
     }
@@ -119,7 +130,7 @@ export default function Login() {
       setLoginError('Login failed - please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, recoveryId, phrase, username, insecureTls, logging, navigate]);
+  }, [serverUrl, recoveryId, phrase, insecureTls, logging, navigate, trustedDevice, trustThisDevice]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -232,6 +243,29 @@ export default function Login() {
                 )}
               </div>
             )}
+
+            <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3">
+              <div className="mb-2 text-sm font-bold">TRUST THIS DEVICE</div>
+              <p className="text-sm text-wavis-text-secondary mb-4">
+                Your Wavis ID will be saved securely on this device. You'll only need your
+                password to log back in here.
+              </p>
+              <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={trustThisDevice}
+                  onChange={(e) => setTrustThisDevice(e.target.checked)}
+                  disabled={logging}
+                  className="peer sr-only"
+                />
+                <span className="flex size-6 shrink-0 items-center justify-center border-2 border-wavis-text-secondary bg-wavis-bg text-xs leading-none text-transparent transition-colors peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-wavis-accent peer-checked:border-wavis-accent peer-checked:bg-wavis-accent peer-checked:text-wavis-bg">
+                  OK
+                </span>
+                <span className={trustThisDevice ? 'text-wavis-text' : 'text-wavis-text-secondary'}>
+                  Trust this device (recommended)
+                </span>
+              </label>
+            </div>
           </>
         )}
 

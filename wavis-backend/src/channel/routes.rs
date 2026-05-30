@@ -19,7 +19,7 @@
 //! functions and translates `ChannelError` variants into HTTP responses.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -145,6 +145,17 @@ pub struct VoiceStatusResponse {
 #[derive(Serialize)]
 pub struct VoiceParticipantInfo {
     pub display_name: String,
+}
+
+#[derive(Deserialize)]
+pub struct BatchVoiceStatusQuery {
+    pub ids: String,
+}
+
+#[derive(Serialize)]
+pub struct BatchVoiceStatusItem {
+    pub active: bool,
+    pub participant_count: u32,
 }
 
 #[derive(Serialize)]
@@ -690,6 +701,88 @@ pub async fn get_voice_status(
             }))
         }
     }
+}
+
+/// GET /channels/voice-status?ids=<uuid>,<uuid>
+/// Returns active voice indicators for multiple channels.
+pub async fn get_batch_voice_status(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Query(query): Query<BatchVoiceStatusQuery>,
+) -> Result<Json<std::collections::HashMap<String, BatchVoiceStatusItem>>, ChannelErrorResponse> {
+    let mut channel_ids = Vec::new();
+    for raw_id in query.ids.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        let channel_id = raw_id.parse::<Uuid>().map_err(|_| {
+            ChannelErrorResponse(Box::new((
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                Json(ErrorResponse {
+                    error: "invalid channel id".to_string(),
+                }),
+            )))
+        })?;
+        channel_ids.push(channel_id);
+    }
+
+    let mut response = std::collections::HashMap::with_capacity(channel_ids.len());
+    if channel_ids.is_empty() {
+        return Ok(Json(response));
+    }
+
+    let memberships = sqlx::query_scalar::<_, Uuid>(
+        "SELECT channel_id FROM channel_memberships \
+         WHERE user_id = $1 AND banned_at IS NULL AND channel_id = ANY($2)",
+    )
+    .bind(user.user_id)
+    .bind(&channel_ids)
+    .fetch_all(&state.db_pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            user_id = %user.user_id,
+            error = %e,
+            "batch voice status DB error"
+        );
+        ChannelErrorResponse(Box::new((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            HeaderMap::new(),
+            Json(ErrorResponse {
+                error: "internal error".to_string(),
+            }),
+        )))
+    })?;
+    let visible: std::collections::HashSet<Uuid> = memberships.into_iter().collect();
+
+    let map = state.active_room_map.read().await;
+    for channel_id in channel_ids {
+        let mut participant_count = 0;
+        if visible.contains(&channel_id)
+            && let Some(room_id) = map.get(&channel_id)
+            && let Some(room_info) = state.room_state.get_room_info(room_id)
+        {
+            participant_count = match &room_info.sub_room_state {
+                Some(sub_room_state) => room_info
+                    .participants
+                    .iter()
+                    .filter(|p| {
+                        sub_room_state
+                            .participant_assignments
+                            .contains_key(&p.participant_id)
+                    })
+                    .count() as u32,
+                None => room_info.participants.len() as u32,
+            };
+        }
+        response.insert(
+            channel_id.to_string(),
+            BatchVoiceStatusItem {
+                active: participant_count > 0,
+                participant_count,
+            },
+        );
+    }
+
+    Ok(Json(response))
 }
 
 /// GET /channels/:channel_id/bans

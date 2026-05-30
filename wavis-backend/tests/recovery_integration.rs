@@ -136,6 +136,69 @@ async fn prop5_recovery_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// Feature: user-identity-recovery, Property 5: Username preserved on recovery
+// A stale display name from another device must never clobber the account's
+// server-side username. Regression test for fix/device-name-persistence-105.
+// Validates: Requirements 5.1 (recovery does not mutate account identity)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn prop5_recovery_preserves_existing_username() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let phrase = "my-recovery-phrase";
+    let dummy = phrase::generate_dummy_verifier(&test_phrase_config());
+
+    // Register with a known username.
+    let reg = register_test_user(&pool, phrase, "original-name").await;
+
+    // Confirm the server stored the original username.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT username FROM users WHERE user_id = $1")
+            .bind(reg.user_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some("original-name"));
+
+    // Recovery call supplies a *different* (stale/leaked) username — simulating
+    // what happens when a second device has a cached display name from a
+    // different account logged in previously.
+    let _recovered = recover_account(
+        &pool,
+        &reg.recovery_id,
+        phrase,
+        "stale-leaked-name",
+        TEST_SECRET,
+        TEST_ACCESS_TTL,
+        TEST_REFRESH_TTL_DAYS,
+        TEST_PEPPER,
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+        &dummy,
+    )
+    .await
+    .unwrap();
+
+    // The account username must NOT have been overwritten.
+    let after: Option<String> =
+        sqlx::query_scalar("SELECT username FROM users WHERE user_id = $1")
+            .bind(reg.user_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after.as_deref(),
+        Some("original-name"),
+        "recovery must not overwrite an existing username (got: {:?})",
+        after,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Feature: user-identity-recovery, Property 5 (negative): Wrong phrase fails
 // ---------------------------------------------------------------------------
 

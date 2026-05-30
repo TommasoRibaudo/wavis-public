@@ -69,7 +69,7 @@ pub struct RecoverRequest {
     pub recovery_id: String,
     pub phrase: String,
     #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
-    pub username: String,
+    pub username: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -403,13 +403,11 @@ pub async fn recover(
         return Err(rate_limited_response(retry_after_secs));
     }
 
-    let username = validate_username(&body.username)?;
-
     let result = auth::recover_account(
         &app_state.db_pool,
         &body.recovery_id,
         &body.phrase,
-        username,
+        body.username.as_deref().unwrap_or(""),
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
@@ -845,5 +843,24 @@ mod tests {
         let too_long = "a".repeat(MAX_USERNAME_LEN + 1);
         let (long_status, _, _) = validate_username(&too_long).unwrap_err();
         assert_eq!(long_status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Recovery accepts a missing or empty username because recovery does not
+    /// rename the account. validate_username is NOT called on the recover path.
+    #[test]
+    fn recover_request_allows_missing_or_empty_username() {
+        let missing = RecoverRequest {
+            recovery_id: "wvs-ABCD-1234".to_string(),
+            phrase: "phrase".to_string(),
+            username: None,
+        };
+        let empty = RecoverRequest {
+            recovery_id: "wvs-ABCD-1234".to_string(),
+            phrase: "phrase".to_string(),
+            username: Some(String::new()),
+        };
+        assert_eq!(missing.username.as_deref().unwrap_or(""), "");
+        assert_eq!(empty.username.as_deref().unwrap_or(""), "");
+        assert!(validate_username("").is_err());
     }
 }

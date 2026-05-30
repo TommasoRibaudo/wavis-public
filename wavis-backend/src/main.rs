@@ -594,12 +594,16 @@ async fn main() -> io::Result<()> {
             post(auth::routes::revoke_device),
         )
         .route("/auth/phrase/rotate", post(auth::routes::rotate_phrase))
-        // Channel routes — /channels/join MUST come before /channels/{channel_id}
+        // Channel routes — static /channels/* routes MUST come before /channels/{channel_id}
         .route(
             "/channels",
             post(channel::routes::create_channel).get(channel::routes::list_channels),
         )
         .route("/channels/join", post(channel::routes::join_channel))
+        .route(
+            "/channels/voice-status",
+            get(channel::routes::get_batch_voice_status),
+        )
         .route(
             "/channels/{channel_id}",
             get(channel::routes::get_channel).delete(channel::routes::delete_channel),
