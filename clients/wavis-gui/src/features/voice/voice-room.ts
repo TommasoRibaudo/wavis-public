@@ -1659,6 +1659,71 @@ function resetCameraRuntimeState(): void {
   state.roomPanelTab = 'logs';
 }
 
+function cleanupPublishedMediaForSessionEnd(): void {
+  let sentStopShare = false;
+
+  if (state.activeVideoShare || state.activeAudioShare) {
+    if (lkModule && lkModule instanceof LiveKitModule) {
+      lkModule.stopWasapiAudioBridge().catch(() => { });
+    }
+    if (state.activeVideoShare) {
+      if (lkModule && lkModule instanceof LiveKitModule) {
+        lkModule.stopNativeCapture().catch(() => { });
+      }
+      invoke('screen_share_stop').catch(() => { });
+      if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
+    }
+    if (state.activeAudioShare) invoke('audio_share_stop').catch(() => { });
+    if (client && client.status === 'connected') {
+      client.send({ type: 'stop-share' });
+      sentStopShare = true;
+    }
+    state.activeVideoShare = null;
+    state.activeAudioShare = null;
+    state.shareQualityInfo = null;
+    state.shareStats = null;
+    stopMotionDetection();
+  }
+
+  const selfP = state.participants.find((p) => p.id === state.selfParticipantId);
+  if (selfP?.isSharing) {
+    invoke('external_share_stop').catch(() => { });
+    invoke('screen_share_stop').catch(() => { });
+    invoke('audio_share_stop').catch(() => { });
+    externalShareHelperActive = false;
+    if (!sentStopShare && client && client.status === 'connected') {
+      client.send({ type: 'stop-share' });
+      sentStopShare = true;
+    }
+  }
+
+  for (const participant of state.participants) {
+    participant.isSharing = false;
+  }
+  state.screenShareStreams = new Map();
+  state.shareQualityInfo = null;
+  state.shareStats = null;
+
+  if (lkModule) {
+    if (state.cameraPublication === 'published' || state.cameraIntent) {
+      void getCameraMediaModule()?.unpublishCamera().catch(() => {});
+    }
+    void lkModule.stopScreenShare().catch(() => {});
+    lkModule.disconnect();
+    lkModule = null;
+  }
+  resetCameraRuntimeState();
+
+  bufferedMediaToken = null;
+  externalShareHelperActive = false;
+  reusePatchGuardCheckedForSession = false;
+  reusePatchGuardPassedForSession = false;
+  pendingWasapiResume = null;
+  stopColdStartRetry();
+  stopPeriodicMediaRetry();
+  setActiveLiveKitModule(null);
+}
+
 function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {
   const joinedSubRoomId = state.joinedSubRoomId;
   if (!joinedSubRoomId) return { ids: new Set(), tiles: {} };
@@ -2645,6 +2710,7 @@ function dispatchMessage(raw: unknown): void {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
             state.error = (msg.reason as string) || 'Authentication failed';
             playLocalDisconnectSoundOnce();
+            cleanupPublishedMediaForSessionEnd();
             state.machineState = 'idle';
             notify();
             return;
@@ -2655,6 +2721,7 @@ function dispatchMessage(raw: unknown): void {
               console.error(LOG, 'reconnect after refresh failed:', err);
               state.error = 'Authentication failed';
               playLocalDisconnectSoundOnce();
+              cleanupPublishedMediaForSessionEnd();
               state.machineState = 'idle';
               notify();
             });
@@ -2668,6 +2735,7 @@ function dispatchMessage(raw: unknown): void {
         client.disconnect();
       }
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       notify();
       break;
@@ -2762,6 +2830,7 @@ function dispatchMessage(raw: unknown): void {
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
         state.rejectionReason = (msg.reason as string) || 'Server failed to start';
@@ -2783,6 +2852,7 @@ function dispatchMessage(raw: unknown): void {
       }
       client = null;
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       notify();
       break;
@@ -3127,6 +3197,7 @@ function dispatchMessage(raw: unknown): void {
         }
         client = null;
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
       }
       notify();
@@ -3155,6 +3226,7 @@ function dispatchMessage(raw: unknown): void {
       }
       client = null;
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       stopColdStartRetry();
       stopPeriodicMediaRetry();
@@ -3692,6 +3764,7 @@ export function initSession(
           state.error = 'Connection lost';
           state.lastRateLimitError = null;
           playLocalDisconnectSoundOnce();
+          cleanupPublishedMediaForSessionEnd();
           state.machineState = 'idle';
           notify();
         }
@@ -3735,6 +3808,7 @@ export function initSession(
         if (client !== thisClient) return;
         state.error = 'Connection failed';
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         notify();
       });
@@ -3761,44 +3835,7 @@ export function scheduleLeaveRoom(delayMs = BACKGROUND_LEAVE_DISCONNECT_MS): voi
 export function leaveRoom(): void {
   clearBackgroundLeaveTimer();
   playLocalDisconnectSoundOnce();
-
-  // Clean up custom share captures (best-effort, fire-and-forget)
-  if (state.activeVideoShare || state.activeAudioShare) {
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      lkModule.stopWasapiAudioBridge().catch(() => { });
-    }
-    if (state.activeVideoShare) {
-      // Stop native capture bridge (Windows LiveKit path)
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.stopNativeCapture().catch(() => { });
-      }
-      invoke('screen_share_stop').catch(() => { });
-      if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
-    }
-    if (state.activeAudioShare) invoke('audio_share_stop').catch(() => { });
-    // Send stop_share before leave for custom shares
-    if (client && client.status === 'connected') {
-      client.send({ type: 'stop-share' });
-    }
-    // Clear state synchronously
-    state.activeVideoShare = null;
-    state.activeAudioShare = null;
-    stopMotionDetection();
-  }
-
-  // Clean up fallback (getDisplayMedia) share if active
-  const selfP = state.participants.find((p) => p.id === state.selfParticipantId);
-  if (selfP?.isSharing && !state.activeVideoShare && !state.activeAudioShare) {
-    invoke('external_share_stop').catch(() => { });
-    externalShareHelperActive = false;
-    // Fallback share is active — send stop_share signaling before leave
-    if (client && client.status === 'connected') {
-      client.send({ type: 'stop-share' });
-    }
-    selfP.isSharing = false;
-    state.shareQualityInfo = null;
-    state.shareStats = null;
-  }
+  cleanupPublishedMediaForSessionEnd();
 
   // Notify all child windows (screen share pop-outs) that the session is ending.
   // This must fire before we tear down media/WS so child windows can self-close
@@ -3810,23 +3847,6 @@ export function leaveRoom(): void {
     unregisterMuteHotkey(registeredHotkey).catch(() => { });
     registeredHotkey = null;
   }
-
-  // Tear down LiveKit media
-  if (lkModule) {
-    if (state.cameraPublication === 'published' || state.cameraIntent) {
-      void getCameraMediaModule()?.unpublishCamera().catch(() => {});
-    }
-    lkModule.disconnect();
-    lkModule = null;
-  }
-  bufferedMediaToken = null;
-  externalShareHelperActive = false;
-  reusePatchGuardCheckedForSession = false;
-  reusePatchGuardPassedForSession = false;
-  pendingWasapiResume = null;
-  stopColdStartRetry();
-  stopPeriodicMediaRetry();
-  setActiveLiveKitModule(null);
 
   // Send Leave if still connected
   if (client && client.status === 'connected') {

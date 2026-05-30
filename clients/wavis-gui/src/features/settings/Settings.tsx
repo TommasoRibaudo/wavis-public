@@ -1,16 +1,15 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
-const ChannelDetail = lazy(() => import('@features/channels/ChannelDetail'));
 import { useNavigate } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
-import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
+import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUsername, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -20,6 +19,7 @@ import { formatHotkeyCombination, unregisterMuteHotkey, unregisterWatchAllHotkey
 import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
+import ChannelDetail from '@features/channels/ChannelDetail';
 
 /* ─── Audio Types ───────────────────────────────────────────────── */
 interface AudioDevice {
@@ -113,10 +113,15 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'general' | 'channel'>('general');
 
-  const handleNavigateAway = (path: string) => {
+  const handleNavigateAway = useCallback((path: string) => {
     if (onNavigateAway) onNavigateAway(path);
     else navigate(path);
-  };
+  }, [onNavigateAway, navigate]);
+
+  const handleAuthNavigateAway = useCallback((path: string) => {
+    if (onNavigateAway) onNavigateAway(path);
+    else navigate(path, { replace: true });
+  }, [onNavigateAway, navigate]);
   const { showSecrets } = useDebug();
 
   const [showConfirm, setShowConfirm] = useState(false);
@@ -124,7 +129,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [loggingOut, setLoggingOut] = useState(false);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [displayName, setDisplayNameVal] = useState<string | null>(null);
+  const [username, setUsernameState] = useState<string>('');
+  const [usernameSaving, setUsernameSaving] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
   const [selectedColor, setSelectedColor] = useState<string>(PROFILE_COLORS[0]);
   const [tlsEnabled, setTlsEnabled] = useState(true);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
@@ -141,6 +148,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [osPlatform, setOsPlatform] = useState<string>('—');
   const [webviewVersion, setWebviewVersion] = useState<string>('—');
   const [minimizeToTray, setMinimizeToTrayState] = useState(false);
+  const [passthroughIntent, setPassthroughIntent] = useState(false);
   const [notifyToggles, setNotifyToggles] = useState<NotificationToggles>({
     participantJoined: true,
     participantLeft: true,
@@ -182,7 +190,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   useEffect(() => {
     getServerUrl().then(setServerUrl);
     getDeviceId().then(setDeviceId);
-    getDisplayName().then(setDisplayNameVal);
+    getUsername().then((name) => setUsernameState(name ?? ''));
     getProfileColor().then(setSelectedColor);
     getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
     getDefaultVolume().then(setVolume);
@@ -226,14 +234,16 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   const handleLogout = async () => {
     setLoggingOut(true);
+    leaveRoom();
     await logout();
-    navigate('/login', { replace: true });
+    handleAuthNavigateAway('/login');
   };
 
   const handleReset = async () => {
     setResetting(true);
+    leaveRoom();
     await resetAuth();
-    navigate('/setup', { replace: true });
+    handleAuthNavigateAway('/setup');
   };
 
   const handleMinimizeToTrayChange = useCallback((checked: boolean) => {
@@ -248,6 +258,29 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     await invoke('media_set_denoise_enabled', { enabled: checked });
     await setMediaDenoiseEnabled(checked);
   }, []);
+
+  const handleUsernameSave = useCallback(async () => {
+    const trimmed = username.trim();
+    if (!trimmed) {
+      setUsernameError('username is required');
+      return;
+    }
+    if (trimmed.length > 64) {
+      setUsernameError('username must be 64 characters or less');
+      return;
+    }
+    setUsernameSaving(true);
+    setUsernameError(null);
+    try {
+      await updateUsername(trimmed);
+      setUsernameState(trimmed);
+      updateSessionUsername(trimmed);
+    } catch (err) {
+      setUsernameError(err instanceof Error ? err.message : 'failed to save username');
+    } finally {
+      setUsernameSaving(false);
+    }
+  }, [username]);
 
   // Hotkey recording: capture keydown events when in recording mode
   useEffect(() => {
@@ -427,112 +460,163 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   return (
     <div className="h-full flex flex-col min-w-0 bg-wavis-bg font-mono text-wavis-text">
-      <div className="flex-shrink-0 px-3 sm:px-6 py-2 border-b border-wavis-text-secondary/30 bg-wavis-bg">
-        {onClose ? (
-          <button onClick={onClose} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ✕ /close settings
-          </button>
-        ) : (
-          <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ← /channels
-          </button>
-        )}
-      </div>
       {channelId && (
-        <div className="flex shrink-0 border-b border-wavis-text-secondary font-mono text-xs">
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            general
-          </button>
-          <button
-            onClick={() => setActiveTab('channel')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            channel
-          </button>
+        <div className="flex shrink-0 h-[4.5rem] px-3 py-3 border-b border-wavis-text-secondary font-mono text-xs items-center justify-between">
+          <div className="flex items-center h-full">
+            <button
+              onClick={() => setActiveTab('general')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              general
+            </button>
+            <button
+              onClick={() => setActiveTab('channel')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              channel
+            </button>
+          </div>
+          {onClose ? (
+            <button
+              onClick={onClose}
+              className="text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : (
+            <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          )}
         </div>
       )}
       {channelId && activeTab === 'channel' ? (
-        <div className="flex-1 min-h-0 flex flex-col">
-          {(() => {
-            const vs = getVoiceRoomState();
-            const isAdmin = vs.selfIsHost;
-            const isActive = vs.machineState === 'active';
-            if (!isAdmin || !isActive) return null;
-            const activePassthrough = vs.passthrough;
-            const joinedSubRoomId = vs.joinedSubRoomId;
-            const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
-            return (
-              <div className="flex-shrink-0 p-3 border-b border-wavis-text-secondary">
-                <p className="text-sm text-wavis-text-secondary mb-2">VOICE AUDIO</p>
-                <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-3 sm:px-6 py-4 space-y-4">
+            <ChannelDetail
+              channelIdProp={channelId}
+              hideJoinVoice
+              hideBackButton
+              embedded
+              onNavigateAway={handleNavigateAway}
+              embeddedMiddle={(() => {
+                const vs = getVoiceRoomState();
+                if (!vs.selfIsHost || vs.machineState !== 'active') return null;
+                const activePassthrough = vs.passthrough;
+                const passthroughOn = !!activePassthrough || passthroughIntent;
+                const joinedSubRoomId = vs.joinedSubRoomId;
+                const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
+                return (
                   <div>
-                    <span className="text-wavis-text-secondary">Passthrough volume ({passthroughVolume}%)</span>
-                    <p className="text-xs text-wavis-text-secondary/70 mb-1">Volume for audio from a linked room — applies to all participants</p>
-                    <VolumeSlider
-                      value={passthroughVolume}
-                      onChange={(v) => {
-                        setPassthroughVolumeState(v);
-                        setPassthroughVolume(v);
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <span className="text-wavis-text-secondary">Passthrough</span>
-                    <p className="text-xs text-wavis-text-secondary/70 mb-2">Link two rooms so participants can hear each other</p>
-                    {activePassthrough ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-wavis-text">Active: {activePassthrough.label}</span>
-                        <button
-                          type="button"
-                          onClick={() => clearPassthrough()}
-                          className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
-                        >
-                          Disable
-                        </button>
+                    <p className="text-sm text-wavis-text-secondary mb-2">PASSTHROUGH</p>
+                    <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-wavis-text-secondary">Enable passthrough</span>
+                        <Switch
+                          checked={passthroughOn}
+                          onCheckedChange={(checked: boolean) => {
+                            if (checked) {
+                              setPassthroughIntent(true);
+                            } else {
+                              setPassthroughIntent(false);
+                              clearPassthrough();
+                            }
+                          }}
+                          aria-label="Toggle passthrough"
+                        />
                       </div>
-                    ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {otherSubRooms.map((r) => (
-                          <button
-                            key={r.id}
-                            type="button"
-                            onClick={() => setPassthrough(r.id)}
-                            className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
-                          >
-                            Enable to Room {r.roomNumber}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-wavis-text-secondary/70">Join a sub-room to enable passthrough</span>
-                    )}
+                      <p className="text-xs text-wavis-text-secondary/70">
+                        Link two sub-rooms so their participants can hear each other
+                      </p>
+                      {passthroughOn && (
+                        <>
+                          <div>
+                            <label className="text-wavis-text-secondary block mb-1">
+                              Passthrough volume ({passthroughVolume}%)
+                            </label>
+                            <p className="text-xs text-wavis-text-secondary/70 mb-1">
+                              Attenuates audio from the linked sub-room — applies to all participants
+                            </p>
+                            <VolumeSlider
+                              value={passthroughVolume}
+                              onChange={(v) => {
+                                setPassthroughVolumeState(v);
+                                setPassthroughVolume(v);
+                              }}
+                            />
+                          </div>
+                          <div>
+                            {activePassthrough ? (
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <span className="text-wavis-text-secondary">Linked</span>
+                                  <p className="text-xs text-wavis-text-secondary/70">{activePassthrough.label}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    clearPassthrough();
+                                    setPassthroughIntent(false);
+                                  }}
+                                  className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
+                                >
+                                  /unlink
+                                </button>
+                              </div>
+                            ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
+                              <div>
+                                <span className="text-wavis-text-secondary block mb-1">Link to room</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {otherSubRooms.map((r) => (
+                                    <button
+                                      key={r.id}
+                                      type="button"
+                                      onClick={() => { setPassthrough(r.id); setPassthroughIntent(false); }}
+                                      className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
+                                    >
+                                      Room {r.roomNumber}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-wavis-text-secondary/70">
+                                Join a sub-room to link rooms
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </div>
-            );
-          })()}
-          <div className="flex-1 min-h-0">
-            <Suspense fallback={<div className="p-4 text-wavis-text-secondary">loading...</div>}>
-              <ChannelDetail channelIdProp={channelId} hideJoinVoice={true} hideBackButton={true} />
-            </Suspense>
+                );
+              })()}
+            />
           </div>
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
+          {!channelId && onClose ? (
+            <button
+              onClick={onClose}
+              className="mb-4 text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : !channelId ? (
+            <button onClick={() => navigate('/')} className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          ) : null}
           <h2>settings</h2>
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-          {/* Device info */}
+          {/* Account info */}
           <div className="mb-6">
-            <p className="text-sm text-wavis-text-secondary mb-2">DEVICE</p>
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
-                <span className="text-wavis-text-secondary">name: </span>
-                <span>{displayName ?? '—'}</span>
+                <span className="text-wavis-text-secondary">username: </span>
+                <span>{username || '—'}</span>
               </div>
               <div>
                 <span className="text-wavis-text-secondary">server: </span>
@@ -549,55 +633,77 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             </div>
           </div>
 
-          {/* Only show account management on standalone settings page */}
-          {!onClose && (
-            <>
-              <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
+          <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-              {/* Account management */}
-              <div className="mb-6">
-                <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
-                <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
-                  <button
-                    onClick={() => handleNavigateAway('/devices')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /devices — manage devices
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/pair')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /pair-device — add a new device
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/phrase')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /change-password — change password
-                  </button>
-                  <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
-                    <button
-                      onClick={handleLogout}
-                      disabled={loggingOut}
-                      className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
-                    </button>
-                  </div>
-                </div>
+          {/* Account management */}
+          <div className="mb-6">
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
+              <button
+                onClick={() => handleNavigateAway('/devices')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /devices — manage devices
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/pair')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /pair-device — add a new device
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/phrase')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /change-password — change password
+              </button>
+              <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
+                <button
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
+                </button>
               </div>
-            </>
-          )}
+            </div>
+          </div>
 
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
           {/* Profile color picker */}
           <div className="mb-6">
             <p className="text-sm text-wavis-text-secondary mb-2">PROFILE</p>
-            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary">
-              <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
-              <div className="flex flex-wrap gap-2">
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3">
+              <div>
+                <label htmlFor="username" className="text-sm text-wavis-text-secondary block mb-1">Username</label>
+                <div className="flex gap-2">
+                  <input
+                    id="username"
+                    value={username}
+                    maxLength={64}
+                    onChange={(e) => {
+                      setUsernameState(e.target.value);
+                      setUsernameError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleUsernameSave();
+                    }}
+                    className="flex-1 min-w-0 bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
+                  />
+                  <button
+                    onClick={() => { void handleUsernameSave(); }}
+                    disabled={usernameSaving}
+                    className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-3 py-1 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {usernameSaving ? 'saving...' : '/save'}
+                  </button>
+                </div>
+                {usernameError && <p className="text-xs text-wavis-danger mt-1">{usernameError}</p>}
+              </div>
+              <div>
+                <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
+                <div className="flex flex-wrap gap-2">
                 {PROFILE_COLORS.map((color) => (
                   <button
                     key={color}
@@ -611,6 +717,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     aria-label={`Select color ${color}`}
                   />
                 ))}
+                </div>
               </div>
             </div>
           </div>

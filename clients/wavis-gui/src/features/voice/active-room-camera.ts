@@ -9,6 +9,15 @@ export function shouldMountCameraButton(
   return voiceRoomConnected && supportedCapturePlatform;
 }
 
+export function shouldDisableCameraButton(
+  voiceRoomConnected: boolean,
+  mediaState: string | undefined,
+  joinedSubRoomId: string | null | undefined,
+): boolean {
+  const mediaUsable = mediaState === 'connected' || mediaState === 'reconnecting';
+  return !voiceRoomConnected || !mediaUsable || !joinedSubRoomId;
+}
+
 export function hasBrowserCameraMediaSupport(): boolean {
   return typeof window !== 'undefined'
     && typeof navigator !== 'undefined'

@@ -128,6 +128,10 @@ fn build_channel_router(state: AppState) -> Router {
         )
         .route("/channels/join", post(channel_routes::join_channel))
         .route(
+            "/channels/voice-status",
+            get(channel_routes::get_batch_voice_status),
+        )
+        .route(
             "/channels/{channel_id}",
             get(channel_routes::get_channel).delete(channel_routes::delete_channel),
         )

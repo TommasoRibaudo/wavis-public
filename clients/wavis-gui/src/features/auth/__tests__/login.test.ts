@@ -348,3 +348,17 @@ describe('Login Component Logic', () => {
     expect(navigateTarget).toBeNull(); // stays on /login
   });
 });
+
+describe('deriveLoginMode', () => {
+  it('stored recovery ID selects trusted mode', async () => {
+    const { deriveLoginMode } = await import('../Login');
+
+    expect(deriveLoginMode('wvs-ABCD-1234')).toBe('trusted');
+  });
+
+  it('missing recovery ID selects new-device mode', async () => {
+    const { deriveLoginMode } = await import('../Login');
+
+    expect(deriveLoginMode(null)).toBe('new-device');
+  });
+});
