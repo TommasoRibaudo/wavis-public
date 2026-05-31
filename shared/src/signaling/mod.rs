@@ -762,6 +762,12 @@ pub enum WireSubRoomMembershipSource {
     LegacyRoomOne,
 }
 
+impl Default for WireSubRoomMembershipSource {
+    fn default() -> Self {
+        Self::Explicit
+    }
+}
+
 /// Snapshot information for a single synchronized sub-room.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubRoomInfoPayload {
@@ -902,6 +908,7 @@ pub struct SubRoomJoinedPayload {
     #[serde(rename = "subRoomId")]
     pub sub_room_id: String,
     /// How the server assigned this membership.
+    #[serde(default)]
     pub source: WireSubRoomMembershipSource,
 }
 
