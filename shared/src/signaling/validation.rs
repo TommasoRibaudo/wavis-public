@@ -269,6 +269,15 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
         SignalingMessage::SetPassthroughVolume(_) => {
             // volume is u8 (0–255) and clamped to 0–100 server-side; no string fields to check.
         }
+        SignalingMessage::SetPassthroughFilter(p) => {
+            if p.strength > 100 {
+                return Err(ValidationError {
+                    field: "strength".to_string(),
+                    actual_len: p.strength as usize,
+                    max_len: 100,
+                });
+            }
+        }
         SignalingMessage::SubRoomState(p) => {
             for room in &p.rooms {
                 check("subRoomId", &room.sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
@@ -415,6 +424,18 @@ mod tests {
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "targetSubRoomId");
         assert_eq!(err.max_len, MAX_SUB_ROOM_ID_LEN);
+    }
+
+    #[test]
+    fn passthrough_filter_strength_over_100_rejected() {
+        let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
+            enabled: true,
+            strength: 101,
+        });
+        let err = validate_field_lengths(&msg).unwrap_err();
+        assert_eq!(err.field, "strength");
+        assert_eq!(err.actual_len, 101);
+        assert_eq!(err.max_len, 100);
     }
 
     #[test]
@@ -782,6 +803,10 @@ mod tests {
                 "create_room", "room_created",
                 "auth", "auth_success", "auth_failed",
                 "join_voice",
+                "create_sub_room", "join_sub_room", "leave_sub_room",
+                "set_passthrough", "clear_passthrough", "set_passthrough_volume",
+                "set_passthrough_filter", "sub_room_state", "sub_room_created",
+                "sub_room_joined", "sub_room_left", "sub_room_deleted",
                 "sfu_cold_starting",
                 "chat_send", "chat_message",
                 "chat_history_request", "chat_history_response",

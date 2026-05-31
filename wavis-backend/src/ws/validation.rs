@@ -68,8 +68,13 @@ pub fn validate_state_transition(
                 } else {
                     Err("not authenticated")
                 }
-            } else if matches!(msg, SignalingMessage::ChatHistoryRequest(_)) {
-                // ChatHistoryRequest requires an active session (post-join only)
+            } else if matches!(
+                msg,
+                SignalingMessage::ChatHistoryRequest(_)
+                    | SignalingMessage::SelfDeafen
+                    | SignalingMessage::SelfUndeafen
+            ) {
+                // These messages require an active room session (post-join only).
                 Err("not in a room")
             } else {
                 Err("not authenticated")
@@ -153,6 +158,8 @@ mod tests {
                 | SignalingMessage::Auth(_)
                 | SignalingMessage::Ping
                 | SignalingMessage::ChatHistoryRequest(_)
+                | SignalingMessage::SelfDeafen
+                | SignalingMessage::SelfUndeafen
         )
     }
 
@@ -505,6 +512,22 @@ mod tests {
         });
         let result = validate_state_transition(&msg, None, true);
         assert_eq!(result, Err("not authenticated"));
+    }
+
+    #[test]
+    fn self_deafen_without_session_reports_not_in_room() {
+        assert_eq!(
+            validate_state_transition(&SignalingMessage::SelfDeafen, None, false),
+            Err("not in a room")
+        );
+    }
+
+    #[test]
+    fn self_undeafen_without_session_reports_not_in_room() {
+        assert_eq!(
+            validate_state_transition(&SignalingMessage::SelfUndeafen, None, false),
+            Err("not in a room")
+        );
     }
 
     // Feature: ephemeral-room-chat, Property 5: ChatSend requires active session

@@ -53,6 +53,8 @@ vi.mock('../livekit-media', () => ({
     setMicEnabled: vi.fn(),
     setMasterVolume: vi.fn(),
     setParticipantVolume: vi.fn(),
+    setParticipantPassthrough: vi.fn(),
+    setPassthroughFilterSettings: vi.fn(),
     startNativeCapture: vi.fn().mockResolvedValue(undefined),
     stopNativeCapture: vi.fn().mockResolvedValue(undefined),
     startWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
@@ -306,6 +308,18 @@ describe('sub_room_state', () => {
     expect(getState().passthroughVolume).toBe(100);
     inject({ type: 'sub_room_state', rooms: [], passthroughVolumePercent: -10 });
     expect(getState().passthroughVolume).toBe(0);
+  });
+
+  it('applies passthrough filter settings from sub_room_state', async () => {
+    await setupActiveSession();
+    inject({
+      type: 'sub_room_state',
+      rooms: [],
+      passthroughFiltersEnabled: false,
+      passthroughFilterStrength: 150,
+    });
+    expect(getState().passthroughFiltersEnabled).toBe(false);
+    expect(getState().passthroughFilterStrength).toBe(100);
   });
 
   it('sorts rooms by roomNumber', async () => {

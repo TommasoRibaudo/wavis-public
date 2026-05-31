@@ -67,6 +67,8 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     disconnect: vi.fn(() => { (mod as Record<string, number>).disconnectCalls++; }),
     setMicEnabled: vi.fn(async () => {}),
     setParticipantVolume: vi.fn(),
+    setParticipantPassthrough: vi.fn(),
+    setPassthroughFilterSettings: vi.fn(),
     setMasterVolume: vi.fn(),
     startScreenShare: vi.fn(async () => true),
     stopScreenShare: vi.fn(async () => {}),

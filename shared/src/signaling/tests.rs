@@ -147,15 +147,42 @@ fn test_set_passthrough_volume_round_trip() {
 }
 
 #[test]
+fn test_set_passthrough_filter_round_trip() {
+    let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
+        enabled: true,
+        strength: 65,
+    });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"set_passthrough_filter","enabled":true,"strength":65}"#
+    );
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
 fn test_sub_room_state_passthrough_volume_round_trip() {
     // Verify the camelCase wire field name and that the value survives a round-trip.
     let msg = SignalingMessage::SubRoomState(SubRoomStatePayload {
         rooms: vec![],
         passthrough: None,
         passthrough_volume_percent: 42,
+        passthrough_filters_enabled: true,
+        passthrough_filter_strength: 50,
     });
     let json = to_json(&msg).unwrap();
-    assert!(json.contains(r#""passthroughVolumePercent":42"#), "got: {json}");
+    assert!(
+        json.contains(r#""passthroughVolumePercent":42"#),
+        "got: {json}"
+    );
+    assert!(
+        json.contains(r#""passthroughFiltersEnabled":true"#),
+        "got: {json}"
+    );
+    assert!(
+        json.contains(r#""passthroughFilterStrength":50"#),
+        "got: {json}"
+    );
     assert_eq!(parse(&json).unwrap(), msg);
 }
 
@@ -165,7 +192,11 @@ fn test_sub_room_state_passthrough_volume_default_on_absent_field() {
     let json = r#"{"type":"sub_room_state","rooms":[]}"#;
     let parsed = parse(json).unwrap();
     match parsed {
-        SignalingMessage::SubRoomState(p) => assert_eq!(p.passthrough_volume_percent, 20),
+        SignalingMessage::SubRoomState(p) => {
+            assert_eq!(p.passthrough_volume_percent, 20);
+            assert!(p.passthrough_filters_enabled);
+            assert_eq!(p.passthrough_filter_strength, 50);
+        }
         _ => panic!("expected SubRoomState"),
     }
 }
@@ -209,6 +240,8 @@ fn test_sub_room_state_round_trip() {
             label: "1 - 2".to_string(),
         }),
         passthrough_volume_percent: 20,
+        passthrough_filters_enabled: true,
+        passthrough_filter_strength: 50,
     });
     let json = to_json(&msg).unwrap();
     assert!(json.contains(r#""type":"sub_room_state""#));
@@ -399,6 +432,7 @@ proptest! {
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
                            "set_passthrough", "clear_passthrough", "set_passthrough_volume",
+                           "set_passthrough_filter",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",
                            "sfu_cold_starting",

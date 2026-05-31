@@ -19,6 +19,8 @@ use crate::cpal_audio::AudioBuffer;
 #[cfg(feature = "real-backends")]
 use crate::cpal_audio::PeerVolumes;
 #[cfg(feature = "real-backends")]
+use crate::passthrough_filter::{PassthroughBiquadChain, PassthroughFilters};
+#[cfg(feature = "real-backends")]
 use std::collections::{HashMap, HashSet, VecDeque};
 
 type AudioFrameCallback = Arc<Mutex<Option<Box<dyn Fn(&str, &[f32]) + Send + 'static>>>>;
@@ -31,6 +33,7 @@ pub(super) struct ParticipantAudioDecoderContext {
     pub audio_cb: AudioFrameCallback,
     pub closing: Arc<AtomicBool>,
     pub peer_volumes: Arc<Mutex<Option<PeerVolumes>>>,
+    pub passthrough_filters: Arc<Mutex<Option<PassthroughFilters>>>,
     pub screen_share_audio_enabled: Arc<Mutex<HashSet<String>>>,
     pub remote_queues: Arc<Mutex<HashMap<String, VecDeque<f32>>>>,
 }
@@ -228,6 +231,7 @@ pub(super) async fn run_participant_audio_decoder(
 ) {
     let mut frames_received: u64 = 0;
     let mut total_samples: u64 = 0;
+    let mut passthrough_chain = PassthroughBiquadChain::new();
 
     while let Some(frame) = stream.next().await {
         if ctx.closing.load(std::sync::atomic::Ordering::SeqCst) {
@@ -253,24 +257,39 @@ pub(super) async fn run_participant_audio_decoder(
             continue;
         }
 
-        let mut queues = ctx.remote_queues.lock().unwrap();
-        let queue = queues.entry(ctx.queue_key.clone()).or_default();
+        let filters = ctx.passthrough_filters.lock().unwrap().clone();
+        let is_passthrough = ctx.source == TrackSource::Microphone
+            && filters
+                .as_ref()
+                .is_some_and(|filters| filters.is_participant_passthrough(&participant_id));
 
-        if (gain - 1.0).abs() < f32::EPSILON {
-            queue.extend(converted.iter().copied());
-        } else {
-            queue.extend(converted.iter().map(|&s| s * gain));
+        let mut processed = converted;
+        if (gain - 1.0).abs() >= f32::EPSILON {
+            for sample in &mut processed {
+                *sample *= gain;
+            }
+        }
+        if is_passthrough {
+            if let Some(filters) = filters {
+                passthrough_chain.process_frame(&mut processed, filters.settings());
+            }
         }
 
+        let mut queues = ctx.remote_queues.lock().unwrap();
+        queues
+            .entry(ctx.queue_key.clone())
+            .or_default()
+            .extend(processed.iter().copied());
+
         frames_received += 1;
-        total_samples += converted.len() as u64;
+        total_samples += processed.len() as u64;
         if frames_received.is_multiple_of(250) {
             log::info!(
                 "frame_delivery=stats participant={participant_id} frames_received={frames_received} total_samples={total_samples}"
             );
         }
         if let Some(cb) = ctx.audio_cb.lock().unwrap().as_ref() {
-            cb(&participant_id, &converted);
+            cb(&participant_id, &processed);
         }
     }
 

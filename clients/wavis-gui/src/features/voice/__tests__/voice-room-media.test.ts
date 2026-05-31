@@ -71,6 +71,8 @@ interface MockLiveKitModule {
   applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
+  setParticipantPassthrough: (id: string, enabled: boolean) => void;
+  setPassthroughFilterSettings: (settings: { enabled: boolean; strength: number }) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
@@ -134,6 +136,8 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     applyRemoteCameraVisibility: vi.fn(() => {}),
     setParticipantVolume: vi.fn((id: string, vol: number) => { mod.setParticipantVolumeCalls.push({ id, vol }); }),
     setMasterVolume: vi.fn((vol: number) => { mod.setMasterVolumeCalls.push(vol); }),
+    setParticipantPassthrough: vi.fn(() => {}),
+    setPassthroughFilterSettings: vi.fn(() => {}),
     setScreenShareAudioVolume: vi.fn((id: string, vol: number) => { mod.setScreenShareAudioVolumeCalls.push({ id, vol }); }),
     attachScreenShareAudio: vi.fn((id: string) => { mod.attachScreenShareAudioCalls.push(id); }),
     detachScreenShareAudio: vi.fn((id: string) => { mod.detachScreenShareAudioCalls.push(id); }),

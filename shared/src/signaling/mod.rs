@@ -219,6 +219,8 @@ pub enum SignalingMessage {
     ClearPassthrough(ClearPassthroughPayload),
     /// Client -> server (admin/owner) request to set the passthrough volume for all participants.
     SetPassthroughVolume(SetPassthroughVolumePayload),
+    /// Client -> server (admin/owner) request to set passthrough muffle filter settings.
+    SetPassthroughFilter(SetPassthroughFilterPayload),
     /// Server -> client snapshot of the synchronized sub-room layout.
     SubRoomState(SubRoomStatePayload),
     /// Server -> client broadcast that a new sub-room was created.
@@ -752,9 +754,10 @@ pub struct JoinVoicePayload {
 }
 
 /// Source of a participant's sub-room membership.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum WireSubRoomMembershipSource {
     #[serde(rename = "explicit")]
+    #[default]
     Explicit,
     #[serde(rename = "legacy_room_one")]
     LegacyRoomOne,
@@ -820,6 +823,15 @@ pub struct SetPassthroughVolumePayload {
     pub volume: u8,
 }
 
+/// Client (admin/owner) sets the passthrough muffle filter for all participants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughFilterPayload {
+    /// Whether passthrough participants should be spectrally muffled.
+    pub enabled: bool,
+    /// Filter strength as a percentage (0–100).
+    pub strength: u8,
+}
+
 /// Authoritative passthrough pair included in synchronized sub-room snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PassthroughStatePayload {
@@ -848,10 +860,30 @@ pub struct SubRoomStatePayload {
         default = "default_passthrough_volume"
     )]
     pub passthrough_volume_percent: u8,
+    /// Whether passthrough muffle filtering is enabled. Defaults on for backward compat.
+    #[serde(
+        rename = "passthroughFiltersEnabled",
+        default = "default_passthrough_filters_enabled"
+    )]
+    pub passthrough_filters_enabled: bool,
+    /// Passthrough muffle strength as a percentage (0–100). Defaults to 50 if absent.
+    #[serde(
+        rename = "passthroughFilterStrength",
+        default = "default_passthrough_filter_strength"
+    )]
+    pub passthrough_filter_strength: u8,
 }
 
 fn default_passthrough_volume() -> u8 {
     20
+}
+
+fn default_passthrough_filters_enabled() -> bool {
+    true
+}
+
+fn default_passthrough_filter_strength() -> u8 {
+    50
 }
 
 /// Server announces a newly created sub-room.
@@ -871,6 +903,7 @@ pub struct SubRoomJoinedPayload {
     #[serde(rename = "subRoomId")]
     pub sub_room_id: String,
     /// How the server assigned this membership.
+    #[serde(default)]
     pub source: WireSubRoomMembershipSource,
 }
 
