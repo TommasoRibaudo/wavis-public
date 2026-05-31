@@ -87,6 +87,19 @@ mod media {
     }
 
     #[tauri::command]
+    pub fn media_set_participant_passthrough(_id: String, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn media_set_passthrough_filter_settings(
+        _enabled: bool,
+        _strength: u32,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
     pub fn media_set_screen_share_audio_volume(
         _identity: String,
         _volume: u8,
@@ -501,6 +514,8 @@ fn main() {
             media::media_set_mic_enabled,
             media::media_set_denoise_enabled,
             media::media_set_participant_volume,
+            media::media_set_participant_passthrough,
+            media::media_set_passthrough_filter_settings,
             media::media_set_screen_share_audio_volume,
             media::media_attach_screen_share_audio,
             media::media_detach_screen_share_audio,

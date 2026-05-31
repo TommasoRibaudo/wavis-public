@@ -26,6 +26,8 @@ interface MockLiveKitModule {
   getLocalCameraTrack: () => MediaStreamTrack | null;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
+  setParticipantPassthrough: (id: string, enabled: boolean) => void;
+  setPassthroughFilterSettings: (settings: { enabled: boolean; strength: number }) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
@@ -78,6 +80,8 @@ function createMockLiveKitModule(
     getLocalCameraTrack: vi.fn(() => module.localCameraTrack),
     setParticipantVolume: vi.fn(() => {}),
     setMasterVolume: vi.fn(() => {}),
+    setParticipantPassthrough: vi.fn(() => {}),
+    setPassthroughFilterSettings: vi.fn(() => {}),
     setScreenShareAudioVolume: vi.fn(() => {}),
     attachScreenShareAudio: vi.fn(() => {}),
     detachScreenShareAudio: vi.fn(() => {}),

@@ -4,6 +4,9 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { computeGridLayout } from '@features/screen-share/watch-all-grid';
 import { StreamReceiver } from '@features/screen-share/screen-share-viewer';
+import { useAutoHide } from '@shared/hooks/useAutoHide';
+import { useFullscreen } from '@shared/hooks/useFullscreen';
+import FullscreenButton from '@shared/FullscreenButton';
 import type { VideoTileSnapshot } from './camera-types';
 
 interface VideoPopoutParams {
@@ -265,6 +268,9 @@ export default function VideoPopoutPage() {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
+  const { isVisible: controlsVisible } = useAutoHide({ delayMs: 3000, listenToMouseMove: true });
+  const { isFullscreen, toggleFullscreen } = useFullscreen();
+
   const tiles = useMemo(() => Object.values(tilesById), [tilesById]);
   const layout = tiles.length > 0 && gridSize.width > 0 && gridSize.height > 0
     ? computeGridLayout(tiles.length, gridSize.width, gridSize.height)
@@ -275,10 +281,20 @@ export default function VideoPopoutPage() {
 
   return (
     <div className="h-screen flex flex-col bg-wavis-overlay-base font-mono text-wavis-text overflow-hidden select-none">
+      {/* Title bar; overlays grid and auto-hides in fullscreen */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0"
-        style={{ height: TITLE_BAR_HEIGHT }}
+        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
+        style={isFullscreen ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          height: TITLE_BAR_HEIGHT,
+          opacity: controlsVisible ? 1 : 0,
+          pointerEvents: controlsVisible ? 'auto' : 'none',
+        } : { height: TITLE_BAR_HEIGHT }}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
@@ -286,13 +302,16 @@ export default function VideoPopoutPage() {
             Camera — {paramsRef.current?.channelName ?? 'wavis'}
           </span>
         </div>
-        <button
-          onClick={handleClose}
-          className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
-          aria-label="Close camera window"
-        >
-          [x]
-        </button>
+        <div data-no-drag className="flex items-center shrink-0">
+          <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
+          <button
+            onClick={handleClose}
+            className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
+            aria-label="Close camera window"
+          >
+            [x]
+          </button>
+        </div>
       </div>
       <div ref={gridRef} className="flex-1 overflow-hidden relative">
         {tiles.length === 0 ? (

@@ -292,6 +292,20 @@ export class NativeMediaModule {
     }).catch(() => {});
   }
 
+  setParticipantPassthrough(participantIdentity: string, enabled: boolean): void {
+    invoke('media_set_participant_passthrough', {
+      id: participantIdentity,
+      enabled,
+    }).catch(() => {});
+  }
+
+  setPassthroughFilterSettings(settings: { enabled: boolean; strength: number }): void {
+    invoke('media_set_passthrough_filter_settings', {
+      enabled: Boolean(settings.enabled),
+      strength: Math.max(0, Math.min(100, Math.round(settings.strength))),
+    }).catch(() => {});
+  }
+
   /** Set per-participant screen share audio volume (0–100). */
   setScreenShareAudioVolume(participantIdentity: string, volume: number): void {
     invoke('media_set_screen_share_audio_volume', {

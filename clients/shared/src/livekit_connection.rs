@@ -21,6 +21,8 @@ use crate::cpal_audio::AudioBuffer;
 use crate::cpal_audio::PeerVolumes;
 #[cfg(feature = "real-backends")]
 use crate::denoise_filter::DenoiseFilter;
+#[cfg(feature = "real-backends")]
+use crate::passthrough_filter::PassthroughFilters;
 use crate::room_session::{LiveKitConnection, RoomError};
 use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackSource};
 use livekit::Room as LkRoom;
@@ -99,6 +101,9 @@ pub struct RealLiveKitConnection {
     /// Per-peer volume map for scaling individual participant audio.
     #[cfg(feature = "real-backends")]
     peer_volumes: Arc<Mutex<Option<PeerVolumes>>>,
+    /// Shared passthrough membership and filter settings for playback-only muffle.
+    #[cfg(feature = "real-backends")]
+    passthrough_filters: Arc<Mutex<Option<PassthroughFilters>>>,
     /// Participants whose remote screen-share audio is currently allowed to
     /// enter the playback mix. This is driven by the viewer open/close state
     /// on Linux/WebKit where remote media is handled entirely on the Rust side.
@@ -177,6 +182,8 @@ impl RealLiveKitConnection {
             #[cfg(feature = "real-backends")]
             peer_volumes: Arc::new(Mutex::new(None)),
             #[cfg(feature = "real-backends")]
+            passthrough_filters: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "real-backends")]
             screen_share_audio_enabled: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(feature = "real-backends")]
             remote_audio_queues: Arc::new(Mutex::new(HashMap::new())),
@@ -212,6 +219,12 @@ impl RealLiveKitConnection {
     #[cfg(feature = "real-backends")]
     pub fn set_peer_volumes(&self, volumes: PeerVolumes) {
         *self.peer_volumes.lock().unwrap() = Some(volumes);
+    }
+
+    /// Wire shared passthrough filter state before `connect()`.
+    #[cfg(feature = "real-backends")]
+    pub fn set_passthrough_filters(&self, filters: PassthroughFilters) {
+        *self.passthrough_filters.lock().unwrap() = Some(filters);
     }
 
     /// Allow or block a participant's remote ScreenShareAudio track from being
@@ -302,6 +315,8 @@ impl LiveKitConnection for RealLiveKitConnection {
         #[cfg(feature = "real-backends")]
         let peer_volumes_outer = Arc::clone(&self.peer_volumes);
         #[cfg(feature = "real-backends")]
+        let passthrough_filters_outer = Arc::clone(&self.passthrough_filters);
+        #[cfg(feature = "real-backends")]
         let screen_share_audio_enabled_outer = Arc::clone(&self.screen_share_audio_enabled);
         #[cfg(feature = "real-backends")]
         let remote_queues_outer = Arc::clone(&self.remote_audio_queues);
@@ -359,6 +374,8 @@ impl LiveKitConnection for RealLiveKitConnection {
                         #[cfg(feature = "real-backends")]
                         let peer_vols = Arc::clone(&peer_volumes_outer);
                         #[cfg(feature = "real-backends")]
+                        let passthrough_filters = Arc::clone(&passthrough_filters_outer);
+                        #[cfg(feature = "real-backends")]
                         let screen_share_audio_enabled =
                             Arc::clone(&screen_share_audio_enabled_outer);
                         #[cfg(feature = "real-backends")]
@@ -375,6 +392,7 @@ impl LiveKitConnection for RealLiveKitConnection {
                                 audio_cb,
                                 closing: closing2,
                                 peer_volumes: peer_vols,
+                                passthrough_filters,
                                 screen_share_audio_enabled,
                                 remote_queues,
                             },

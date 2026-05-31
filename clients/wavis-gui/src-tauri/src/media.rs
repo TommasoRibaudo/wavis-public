@@ -26,6 +26,7 @@ use wavis_client_shared::audio::{AudioBackend, AudioTrack};
 use wavis_client_shared::cpal_audio::{AudioBuffer, CpalAudioBackend, PeerVolumes};
 use wavis_client_shared::denoise_filter::DenoiseFilter;
 use wavis_client_shared::livekit_connection::RealLiveKitConnection;
+use wavis_client_shared::passthrough_filter::PassthroughFilters;
 use wavis_client_shared::room_session::LiveKitConnection;
 
 #[cfg(target_os = "linux")]
@@ -539,6 +540,8 @@ pub struct MediaState {
     capture_buffer: Mutex<Option<AudioBuffer>>,
     /// Shared per-peer volume map — wired to the connection on connect.
     peer_volumes: PeerVolumes,
+    /// Shared playback-only passthrough muffle state — wired to the connection on connect.
+    passthrough_filters: PassthroughFilters,
     /// Shared denoise filter — wired to LiveKit connection (and future P2P backend) at session start.
     denoise: Mutex<Option<Arc<DenoiseFilter>>>,
     /// Active screen capture backend (Linux only).
@@ -629,6 +632,7 @@ impl MediaState {
             playback_buffer: Mutex::new(None),
             capture_buffer: Mutex::new(None),
             peer_volumes: PeerVolumes::new(),
+            passthrough_filters: PassthroughFilters::new(),
             denoise: Mutex::new(None),
             #[cfg(target_os = "linux")]
             screen_capture: Mutex::new(None),
@@ -739,6 +743,7 @@ impl MediaState {
             conn.set_capture_buffer(self.audio.capture_buffer.clone());
             conn.set_playback_buffer(self.audio.playback_buffer.clone());
             conn.set_peer_volumes(self.peer_volumes.clone());
+            conn.set_passthrough_filters(self.passthrough_filters.clone());
         }
 
         Ok(())
@@ -973,6 +978,7 @@ pub fn media_connect(
         }
     }
     conn.set_peer_volumes(state.peer_volumes.clone());
+    conn.set_passthrough_filters(state.passthrough_filters.clone());
 
     // Create and wire denoise filter (from persisted preference)
     let denoise = Arc::new(DenoiseFilter::new(denoise_enabled));
@@ -1528,6 +1534,32 @@ pub fn media_set_participant_volume(
 ) -> Result<(), String> {
     let clamped = level.min(100) as u8;
     state.peer_volumes.set(&id, clamped);
+    Ok(())
+}
+
+/// Mark whether a participant's mic audio should receive passthrough muffle filtering.
+#[tauri::command]
+pub fn media_set_participant_passthrough(
+    id: String,
+    enabled: bool,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    state
+        .passthrough_filters
+        .set_participant_passthrough(&id, enabled);
+    Ok(())
+}
+
+/// Set global passthrough muffle filter settings (host-controlled via signaling).
+#[tauri::command]
+pub fn media_set_passthrough_filter_settings(
+    enabled: bool,
+    strength: u32,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    state
+        .passthrough_filters
+        .set_settings(enabled, strength.min(100) as u8);
     Ok(())
 }
 
