@@ -227,6 +227,8 @@ fn sub_room_state_payload(state: &SubRoomState) -> SubRoomStatePayload {
         rooms: state.rooms.iter().map(sub_room_info_payload).collect(),
         passthrough: active_passthrough_payload(state),
         passthrough_volume_percent: state.passthrough_volume_percent,
+        passthrough_filters_enabled: state.passthrough_filters_enabled,
+        passthrough_filter_strength: state.passthrough_filter_strength,
     }
 }
 
@@ -841,6 +843,45 @@ pub fn set_passthrough_volume(
     }
 }
 
+pub fn set_passthrough_filter(
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+    enabled: bool,
+    strength: u8,
+) -> Result<SubRoomActionResult, String> {
+    let clamped = strength.min(100);
+    let changed = room_state
+        .with_room_write(room_id, |members| {
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return false;
+            };
+            if sub_rooms.passthrough_filters_enabled == enabled
+                && sub_rooms.passthrough_filter_strength == clamped
+            {
+                return false;
+            }
+            sub_rooms.passthrough_filters_enabled = enabled;
+            sub_rooms.passthrough_filter_strength = clamped;
+            true
+        })
+        .map_err(|_| "room not found".to_string())?;
+
+    if !changed {
+        return Ok(SubRoomActionResult::default());
+    }
+
+    tracing::info!(
+        room_id = %room_id,
+        enabled,
+        strength = %clamped,
+        "passthrough filter set"
+    );
+    Ok(SubRoomActionResult {
+        signals: sub_room_state_signals(room_state, room_id),
+        expiry: None,
+    })
+}
+
 pub fn expire_sub_room(
     room_state: &InMemoryRoomState,
     room_id: &str,
@@ -1437,6 +1478,24 @@ mod tests {
                 .iter()
                 .any(|signal| matches!(signal.msg, SignalingMessage::ShareStopped(_)))
         );
+    }
+
+    #[test]
+    fn set_passthrough_filter_updates_state_and_noops_when_unchanged() {
+        let state = sub_room_test_state();
+
+        let result = set_passthrough_filter(&state, "voice-room", false, 101).expect("set filter");
+
+        assert!(!result.signals.is_empty());
+        let info = state.get_room_info("voice-room").expect("room exists");
+        let sub_rooms = info.sub_room_state.expect("sub rooms");
+        assert!(!sub_rooms.passthrough_filters_enabled);
+        assert_eq!(sub_rooms.passthrough_filter_strength, 100);
+
+        let unchanged =
+            set_passthrough_filter(&state, "voice-room", false, 100).expect("set filter");
+        assert!(unchanged.signals.is_empty());
+        assert!(unchanged.expiry.is_none());
     }
 
     fn arb_channel_role() -> impl Strategy<Value = ChannelRole> {

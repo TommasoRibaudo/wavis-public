@@ -71,6 +71,8 @@ function makeState(overrides?: Partial<VoiceRoomState>): VoiceRoomState {
     sharePermission: 'anyone',
     defaultVolume: 70,
     passthroughVolume: 20,
+    passthroughFiltersEnabled: true,
+    passthroughFilterStrength: 50,
     mediaReconnectFailures: 0,
     activeVideoShare: null,
     activeAudioShare: null,
@@ -185,6 +187,8 @@ type IntegrationMockLiveKitModule = {
   applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
   setParticipantVolume: (id: string, vol: number) => void;
   setMasterVolume: (vol: number) => void;
+  setParticipantPassthrough: (id: string, enabled: boolean) => void;
+  setPassthroughFilterSettings: (settings: { enabled: boolean; strength: number }) => void;
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
@@ -271,6 +275,8 @@ function createIntegrationMockLiveKitModule(
     applyRemoteCameraVisibility: vi.fn(() => {}),
     setParticipantVolume: vi.fn(() => {}),
     setMasterVolume: vi.fn(() => {}),
+    setParticipantPassthrough: vi.fn(() => {}),
+    setPassthroughFilterSettings: vi.fn(() => {}),
     setScreenShareAudioVolume: vi.fn(() => {}),
     attachScreenShareAudio: vi.fn(() => {}),
     detachScreenShareAudio: vi.fn(() => {}),

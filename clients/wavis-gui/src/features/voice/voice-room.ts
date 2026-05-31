@@ -188,8 +188,12 @@ export interface VoiceRoomState {
   sharePermission: 'anyone' | 'host_only';
   /** Default volume loaded from store, used for new participants. */
   defaultVolume: number;
-  /** Passthrough volume (0–100): attenuates audio from paired sub-room. Persisted per channel. */
+  /** Passthrough volume (0–100): attenuates audio from paired sub-room. */
   passthroughVolume: number;
+  /** Whether paired sub-room participants are spectrally muffled. */
+  passthroughFiltersEnabled: boolean;
+  /** Passthrough muffle strength (0–100). */
+  passthroughFilterStrength: number;
   /** Consecutive media reconnect failure count. */
   mediaReconnectFailures: number;
   /** Active video share slot (screen or window). Null when no video share. */
@@ -469,6 +473,27 @@ export function computeEffectiveParticipantVolume(
   return Math.round(manualVolume * passthroughVolumeFraction);
 }
 
+function isPassthroughParticipant(participantId: string): boolean {
+  if (participantId === state.selfParticipantId || !state.joinedSubRoomId || !state.passthrough) {
+    return false;
+  }
+  const participantSubRoomId = state.participantSubRoomById[participantId] ?? null;
+  if (!participantSubRoomId || participantSubRoomId === state.joinedSubRoomId) return false;
+  const pairedSubRoomId = state.passthrough.sourceSubRoomId === state.joinedSubRoomId
+    ? state.passthrough.targetSubRoomId
+    : state.passthrough.targetSubRoomId === state.joinedSubRoomId
+      ? state.passthrough.sourceSubRoomId
+      : null;
+  return participantSubRoomId === pairedSubRoomId;
+}
+
+function applyPassthroughFilterSettings(): void {
+  lkModule?.setPassthroughFilterSettings({
+    enabled: state.passthroughFiltersEnabled,
+    strength: state.passthroughFilterStrength,
+  });
+}
+
 /**
  * Pure function: merge old and new participant lists, preserving per-participant
  * volume settings across reconnects. Matched by id: present in both → keep old
@@ -499,6 +524,7 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.passthroughVolume / 100,
     ),
   );
+  lkModule.setParticipantPassthrough(participant.id, isPassthroughParticipant(participant.id));
 }
 
 function applyEffectiveParticipantVolumes(): void {
@@ -993,6 +1019,7 @@ let sessionProfileColor: string | null = null;
 let channelVolumePrefs: ChannelVolumePrefs | null = null;
 let volumeSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let passthroughVolumeSendTimer: ReturnType<typeof setTimeout> | null = null;
+let passthroughFilterSendTimer: ReturnType<typeof setTimeout> | null = null;
 
 const DEFAULT_STATE: VoiceRoomState = {
   machineState: 'idle',
@@ -1027,6 +1054,8 @@ const DEFAULT_STATE: VoiceRoomState = {
   sharePermission: 'anyone',
   defaultVolume: 70,
   passthroughVolume: DEFAULT_PASSTHROUGH_VOLUME,
+  passthroughFiltersEnabled: true,
+  passthroughFilterStrength: 50,
   mediaReconnectFailures: 0,
   activeVideoShare: null,
   activeAudioShare: null,
@@ -2650,6 +2679,8 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     lkModule = new LiveKitModule(callbacks);
   }
 
+  applyPassthroughFilterSettings();
+  applyEffectiveParticipantVolumes();
   lkModule.connect(sfuUrl, token, iceConfig).catch((err) => {
     state.mediaState = 'failed';
     state.mediaError = err instanceof Error ? err.message : 'Connection failed';
@@ -2956,6 +2987,12 @@ function dispatchMessage(raw: unknown): void {
       if (typeof msg.passthroughVolumePercent === 'number') {
         state.passthroughVolume = Math.max(0, Math.min(100, Math.round(msg.passthroughVolumePercent)));
       }
+      if (typeof msg.passthroughFiltersEnabled === 'boolean') {
+        state.passthroughFiltersEnabled = msg.passthroughFiltersEnabled;
+      }
+      if (typeof msg.passthroughFilterStrength === 'number') {
+        state.passthroughFilterStrength = Math.max(0, Math.min(100, Math.round(msg.passthroughFilterStrength)));
+      }
       // Detect passthrough changes and emit a log event + notification
       {
         const newPassthrough = state.passthrough;
@@ -2973,6 +3010,7 @@ function dispatchMessage(raw: unknown): void {
         }
       }
       syncDerivedSubRoomState();
+      applyPassthroughFilterSettings();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
       stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
@@ -3938,6 +3976,10 @@ export function leaveRoom(): void {
     clearTimeout(passthroughVolumeSendTimer);
     passthroughVolumeSendTimer = null;
   }
+  if (passthroughFilterSendTimer) {
+    clearTimeout(passthroughFilterSendTimer);
+    passthroughFilterSendTimer = null;
+  }
 }
 
 function stopPeriodicMediaRetry(): void {
@@ -4786,6 +4828,16 @@ export function setPassthroughVolume(volume: number): void {
     passthroughVolumeSendTimer = null;
     if (!client || client.status !== 'connected') return;
     client.send({ type: 'set_passthrough_volume', volume: clamped });
+  }, 150);
+}
+
+export function setPassthroughFilter(enabled: boolean, strength: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(strength)));
+  if (passthroughFilterSendTimer) clearTimeout(passthroughFilterSendTimer);
+  passthroughFilterSendTimer = setTimeout(() => {
+    passthroughFilterSendTimer = null;
+    if (!client || client.status !== 'connected') return;
+    client.send({ type: 'set_passthrough_filter', enabled, strength: clamped });
   }, 150);
 }
 

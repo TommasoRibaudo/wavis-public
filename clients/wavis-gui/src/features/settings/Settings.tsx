@@ -9,7 +9,7 @@ import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUserna
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthroughFilter, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -160,6 +160,12 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [passthroughVolume, setPassthroughVolumeState] = useState<number>(
     getVoiceRoomState().passthroughVolume,
   );
+  const [passthroughFiltersEnabled, setPassthroughFiltersEnabledState] = useState<boolean>(
+    getVoiceRoomState().passthroughFiltersEnabled,
+  );
+  const [passthroughFilterStrength, setPassthroughFilterStrengthState] = useState<number>(
+    getVoiceRoomState().passthroughFilterStrength,
+  );
   const [muteHotkey, setMuteHotkeyState] = useState<string>(DEFAULT_MUTE_HOTKEY);
   const [watchAllHotkey, setWatchAllHotkeyState] = useState<string>(DEFAULT_WATCH_ALL_HOTKEY);
   const [denoiseEnabled, setDenoiseEnabledState] = useState(true);
@@ -200,6 +206,8 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     getMinimizeToTray().then(setMinimizeToTrayState);
     getNotificationToggles().then(setNotifyToggles);
     setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
+    setPassthroughFiltersEnabledState(getVoiceRoomState().passthroughFiltersEnabled);
+    setPassthroughFilterStrengthState(getVoiceRoomState().passthroughFilterStrength);
     getMuteHotkey().then(setMuteHotkeyState);
     getWatchAllHotkey().then(setWatchAllHotkeyState);
     getFocusMainHotkey().then(setFocusMainHotkeyState);
@@ -543,6 +551,34 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                 setPassthroughVolume(v);
                               }}
                             />
+                          </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-wavis-text-secondary">Muffle passthrough voices</span>
+                              <Switch
+                                checked={passthroughFiltersEnabled}
+                                onCheckedChange={(checked: boolean) => {
+                                  setPassthroughFiltersEnabledState(checked);
+                                  setPassthroughFilter(checked, passthroughFilterStrength);
+                                }}
+                                aria-label="Toggle passthrough muffle"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-wavis-text-secondary block mb-1">
+                                Muffle strength ({passthroughFilterStrength}%)
+                              </label>
+                              <p className="text-xs text-wavis-text-secondary/70 mb-1">
+                                {passthroughFilterStrength < 25 ? 'Subtle' : passthroughFilterStrength < 75 ? 'Balanced' : 'Strong'}
+                              </p>
+                              <VolumeSlider
+                                value={passthroughFilterStrength}
+                                onChange={(v) => {
+                                  setPassthroughFilterStrengthState(v);
+                                  setPassthroughFilter(passthroughFiltersEnabled, v);
+                                }}
+                              />
+                            </div>
                           </div>
                           <div>
                             {activePassthrough ? (

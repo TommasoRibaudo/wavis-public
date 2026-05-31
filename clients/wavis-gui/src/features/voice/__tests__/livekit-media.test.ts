@@ -572,8 +572,16 @@ vi.stubGlobal('navigator', {
 
 // ─── Import module under test ──────────────────────────────────────
 
-import { LiveKitModule, buildRtcConfiguration, isForceRelayEnabled, type MediaCallbacks } from '../livekit-media';
+import { LiveKitModule, buildRtcConfiguration, isForceRelayEnabled, mapPassthroughFilterParams, type MediaCallbacks } from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
+
+describe('passthrough filter parameter mapping', () => {
+  it('clamps strength and interpolates cutoff and high shelf', () => {
+    expect(mapPassthroughFilterParams(-10)).toEqual({ cutoffHz: 14_000, highShelfDb: 0 });
+    expect(mapPassthroughFilterParams(50)).toEqual({ cutoffHz: 6_000, highShelfDb: -3 });
+    expect(mapPassthroughFilterParams(150)).toEqual({ cutoffHz: 4_000, highShelfDb: -6 });
+  });
+});
 
 // ─── Callback Mock Helper ──────────────────────────────────────────
 

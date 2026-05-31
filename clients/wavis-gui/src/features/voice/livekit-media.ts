@@ -252,6 +252,7 @@ function classifyCameraCaptureError(error: unknown): CameraStartError {
 
 export const MIC_OPUS_BITRATE_BPS = 48_000;
 export const SYS_AUDIO_OPUS_BITRATE_BPS = 128_000;
+const PASSTHROUGH_FILTER_RAMP_SECONDS = 0.08;
 
 export interface TurnIceConfigPayload {
   stunUrls: string[];
@@ -700,6 +701,27 @@ export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {
   onAudioOnlySharerRemoved?: (identity: string) => void;
 }
 
+export interface PassthroughFilterSettings {
+  enabled: boolean;
+  strength: number;
+}
+
+export function mapPassthroughFilterParams(strength: number): { cutoffHz: number; highShelfDb: number } {
+  const clamped = Math.max(0, Math.min(100, Math.round(strength)));
+  if (clamped <= 50) {
+    const t = clamped / 50;
+    return {
+      cutoffHz: 14_000 + (6_000 - 14_000) * t,
+      highShelfDb: t === 0 ? 0 : -3 * t,
+    };
+  }
+  const t = (clamped - 50) / 50;
+  return {
+    cutoffHz: 6_000 + (4_000 - 6_000) * t,
+    highShelfDb: -3 + (-6 + 3) * t,
+  };
+}
+
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 /**
@@ -1085,6 +1107,9 @@ export class LiveKitModule {
   private audioContext: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private participantGains: Map<string, GainNode> = new Map();
+  private participantPassthrough = new Set<string>();
+  private participantFilters: Map<string, { highShelf: BiquadFilterNode; lowPass: BiquadFilterNode }> = new Map();
+  private passthroughFilterSettings: PassthroughFilterSettings = { enabled: true, strength: 50 };
   private desiredParticipantVolumes: Map<string, number> = new Map();
   private audioElementMap: Map<string, HTMLAudioElement> = new Map();
   private cameraTracks: Map<string, RemoteCameraEntry> = new Map();
@@ -2937,6 +2962,12 @@ export class LiveKitModule {
     }
 
     // 9. Disconnect participant gain nodes
+    for (const filters of this.participantFilters.values()) {
+      filters.highShelf.disconnect();
+      filters.lowPass.disconnect();
+    }
+    this.participantFilters.clear();
+    this.participantPassthrough.clear();
     for (const gain of this.participantGains.values()) {
       gain.disconnect();
     }
@@ -3027,6 +3058,25 @@ export class LiveKitModule {
     const gain = this.participantGains.get(participantIdentity);
     if (gain) {
       gain.gain.setValueAtTime(perceptualGain(volume), this.audioContext?.currentTime ?? 0);
+    }
+  }
+
+  setParticipantPassthrough(participantIdentity: string, enabled: boolean): void {
+    if (enabled) {
+      this.participantPassthrough.add(participantIdentity);
+    } else {
+      this.participantPassthrough.delete(participantIdentity);
+    }
+    this.updateParticipantFilterGraph(participantIdentity);
+  }
+
+  setPassthroughFilterSettings(settings: PassthroughFilterSettings): void {
+    this.passthroughFilterSettings = {
+      enabled: Boolean(settings.enabled),
+      strength: Math.max(0, Math.min(100, Math.round(settings.strength))),
+    };
+    for (const identity of this.participantGains.keys()) {
+      this.updateParticipantFilterGraph(identity);
     }
   }
 
@@ -5022,10 +5072,10 @@ export class LiveKitModule {
     const desiredVol = this.desiredParticipantVolumes.get(identity) ?? 0;
     gain.gain.setValueAtTime(perceptualGain(desiredVol), ctx.currentTime);
     source.connect(analyser);
-    analyser.connect(gain);
     gain.connect(this.masterGain!);
     this.participantGains.set(identity, gain);
     this.analyserMap.set(identity, analyser);
+    this.updateParticipantFilterGraph(identity);
 
     // Start the shared analyser polling interval if not already running
     this.startAnalyserPolling();
@@ -5215,12 +5265,58 @@ export class LiveKitModule {
       this.participantGains.delete(identity);
     }
 
+    const filters = this.participantFilters.get(identity);
+    if (filters) {
+      filters.highShelf.disconnect();
+      filters.lowPass.disconnect();
+      this.participantFilters.delete(identity);
+    }
+    this.participantPassthrough.delete(identity);
     this.analyserMap.delete(identity);
     // Stop polling if no more analysers
     if (this.analyserMap.size === 0 && this.analyserInterval !== null) {
       clearInterval(this.analyserInterval);
       this.analyserInterval = null;
     }
+  }
+
+  private updateParticipantFilterGraph(identity: string): void {
+    const analyser = this.analyserMap.get(identity);
+    const gain = this.participantGains.get(identity);
+    const ctx = this.audioContext;
+    if (!analyser || !gain || !ctx) return;
+
+    try { analyser.disconnect(); } catch {}
+    const existing = this.participantFilters.get(identity);
+    if (existing) {
+      try { existing.highShelf.disconnect(); } catch {}
+      try { existing.lowPass.disconnect(); } catch {}
+    }
+
+    const active = this.participantPassthrough.has(identity)
+      && this.passthroughFilterSettings.enabled
+      && this.passthroughFilterSettings.strength > 0;
+    if (!active) {
+      this.participantFilters.delete(identity);
+      analyser.connect(gain);
+      return;
+    }
+
+    const filters = existing ?? {
+      highShelf: ctx.createBiquadFilter(),
+      lowPass: ctx.createBiquadFilter(),
+    };
+    filters.highShelf.type = 'highshelf';
+    filters.lowPass.type = 'lowpass';
+    const params = mapPassthroughFilterParams(this.passthroughFilterSettings.strength);
+    filters.highShelf.frequency.setTargetAtTime(3_000, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
+    filters.highShelf.gain.setTargetAtTime(params.highShelfDb, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
+    filters.lowPass.frequency.setTargetAtTime(params.cutoffHz, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
+    filters.lowPass.Q.setTargetAtTime(0.707, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
+    analyser.connect(filters.highShelf);
+    filters.highShelf.connect(filters.lowPass);
+    filters.lowPass.connect(gain);
+    this.participantFilters.set(identity, filters);
   }
 
   /**

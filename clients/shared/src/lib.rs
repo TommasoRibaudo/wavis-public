@@ -34,6 +34,8 @@ mod cpal_device;
 #[cfg(feature = "real-backends")]
 pub mod denoise_filter;
 #[cfg(feature = "real-backends")]
+pub mod passthrough_filter;
+#[cfg(feature = "real-backends")]
 mod peer_volumes;
 #[cfg(any(feature = "real-backends", feature = "resampler"))]
 pub mod resampler;

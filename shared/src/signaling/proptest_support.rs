@@ -717,6 +717,17 @@ impl Arbitrary for SetPassthroughVolumePayload {
     }
 }
 
+impl Arbitrary for SetPassthroughFilterPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<bool>(), 0u8..=100u8)
+            .prop_map(|(enabled, strength)| SetPassthroughFilterPayload { enabled, strength })
+            .boxed()
+    }
+}
+
 impl Arbitrary for PassthroughStatePayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -743,12 +754,24 @@ impl Arbitrary for SubRoomStatePayload {
             prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6),
             prop::option::of(any::<PassthroughStatePayload>()),
             any::<u8>(),
+            any::<bool>(),
+            0u8..=100u8,
         )
-            .prop_map(|(rooms, passthrough, passthrough_volume_percent)| SubRoomStatePayload {
-                rooms,
-                passthrough,
-                passthrough_volume_percent,
-            })
+            .prop_map(
+                |(
+                    rooms,
+                    passthrough,
+                    passthrough_volume_percent,
+                    passthrough_filters_enabled,
+                    passthrough_filter_strength,
+                )| SubRoomStatePayload {
+                    rooms,
+                    passthrough,
+                    passthrough_volume_percent,
+                    passthrough_filters_enabled,
+                    passthrough_filter_strength,
+                },
+            )
             .boxed()
     }
 }
@@ -964,10 +987,12 @@ impl Arbitrary for ParticipantUsernameUpdatedPayload {
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (any::<String>(), any::<String>())
-            .prop_map(|(participant_id, username)| ParticipantUsernameUpdatedPayload {
-                participant_id,
-                username,
-            })
+            .prop_map(
+                |(participant_id, username)| ParticipantUsernameUpdatedPayload {
+                    participant_id,
+                    username,
+                },
+            )
             .boxed()
     }
 }
@@ -1043,6 +1068,7 @@ impl Arbitrary for SignalingMessage {
             any::<SetPassthroughPayload>().prop_map(SignalingMessage::SetPassthrough),
             any::<ClearPassthroughPayload>().prop_map(SignalingMessage::ClearPassthrough),
             any::<SetPassthroughVolumePayload>().prop_map(SignalingMessage::SetPassthroughVolume),
+            any::<SetPassthroughFilterPayload>().prop_map(SignalingMessage::SetPassthroughFilter),
             any::<SubRoomStatePayload>().prop_map(SignalingMessage::SubRoomState),
             any::<SubRoomCreatedPayload>().prop_map(SignalingMessage::SubRoomCreated),
             any::<SubRoomJoinedPayload>().prop_map(SignalingMessage::SubRoomJoined),
