@@ -754,18 +754,13 @@ pub struct JoinVoicePayload {
 }
 
 /// Source of a participant's sub-room membership.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum WireSubRoomMembershipSource {
     #[serde(rename = "explicit")]
+    #[default]
     Explicit,
     #[serde(rename = "legacy_room_one")]
     LegacyRoomOne,
-}
-
-impl Default for WireSubRoomMembershipSource {
-    fn default() -> Self {
-        Self::Explicit
-    }
 }
 
 /// Snapshot information for a single synchronized sub-room.
