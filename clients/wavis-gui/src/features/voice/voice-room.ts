@@ -2126,7 +2126,12 @@ function saveVolumesDebounced(): void {
         participantVols[p.userId] = p.volume;
       }
     }
-    const prefs: ChannelVolumePrefs = { master: state.masterVolume, participants: participantVols, streams: { ...(channelVolumePrefs?.streams ?? {}) } };
+    const prefs: ChannelVolumePrefs = {
+      master: state.masterVolume,
+      participants: participantVols,
+      streams: { ...(channelVolumePrefs?.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs?.streamMutes ?? {}) },
+    };
     channelVolumePrefs = prefs;
     setChannelVolumes(state.channelId, prefs).catch((err) => {
       console.warn(LOG, 'failed to persist channel volumes:', err);
@@ -3935,6 +3940,7 @@ export function leaveRoom(): void {
       master: state.masterVolume,
       participants: flushParticipantVols,
       streams: { ...(channelVolumePrefs.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}) },
     }).catch(() => {});
   }
 
@@ -4752,6 +4758,29 @@ export function getPersistedStreamVolume(participantId: string): number | null {
   const p = state.participants.find((pp) => pp.id === participantId);
   if (!p?.userId) return null;
   return channelVolumePrefs.streams[p.userId] ?? null;
+}
+
+export function persistStreamMuted(participantId: string, muted: boolean): void {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (p?.userId) {
+    if (!channelVolumePrefs) {
+      channelVolumePrefs = { master: state.masterVolume, participants: {} };
+    }
+    channelVolumePrefs = {
+      ...channelVolumePrefs,
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}), [p.userId]: muted },
+    };
+  }
+  saveVolumesDebounced();
+}
+
+export function getPersistedStreamMuted(participantId: string): boolean | null {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.userId) return null;
+  const savedMute = channelVolumePrefs?.streamMutes?.[p.userId];
+  if (savedMute !== undefined) return savedMute;
+  // Backward compatibility: older preferences represented mute as volume 0.
+  return channelVolumePrefs?.streams?.[p.userId] === 0 ? true : null;
 }
 
 export function kickParticipant(participantId: string): void {

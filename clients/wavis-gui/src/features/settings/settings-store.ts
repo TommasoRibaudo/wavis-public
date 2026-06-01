@@ -32,6 +32,7 @@ export interface ChannelVolumePrefs {
   master: number;
   participants: Record<string, number>;
   streams?: Record<string, number>;
+  streamMutes?: Record<string, boolean>;
 }
 
 export type WindowsSharePathPreference = 'browser' | 'native';
