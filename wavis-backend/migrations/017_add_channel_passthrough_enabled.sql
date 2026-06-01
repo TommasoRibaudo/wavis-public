@@ -1,0 +1,2 @@
+ALTER TABLE channels
+ADD COLUMN passthrough_enabled BOOLEAN NOT NULL DEFAULT FALSE;

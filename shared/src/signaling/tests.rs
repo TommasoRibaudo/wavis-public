@@ -147,6 +147,15 @@ fn test_set_passthrough_volume_round_trip() {
 }
 
 #[test]
+fn test_set_passthrough_enabled_round_trip() {
+    let msg =
+        SignalingMessage::SetPassthroughEnabled(SetPassthroughEnabledPayload { enabled: true });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(json, r#"{"type":"set_passthrough_enabled","enabled":true}"#);
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
 fn test_set_passthrough_filter_round_trip() {
     let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
         enabled: true,
@@ -166,6 +175,7 @@ fn test_sub_room_state_passthrough_volume_round_trip() {
     let msg = SignalingMessage::SubRoomState(SubRoomStatePayload {
         rooms: vec![],
         passthrough: None,
+        passthrough_enabled: true,
         passthrough_volume_percent: 42,
         passthrough_filters_enabled: true,
         passthrough_filter_strength: 50,
@@ -194,6 +204,7 @@ fn test_sub_room_state_passthrough_volume_default_on_absent_field() {
     match parsed {
         SignalingMessage::SubRoomState(p) => {
             assert_eq!(p.passthrough_volume_percent, 20);
+            assert!(!p.passthrough_enabled);
             assert!(p.passthrough_filters_enabled);
             assert_eq!(p.passthrough_filter_strength, 50);
         }
@@ -239,6 +250,7 @@ fn test_sub_room_state_round_trip() {
             target_sub_room_id: "sub-room-2".to_string(),
             label: "1 - 2".to_string(),
         }),
+        passthrough_enabled: true,
         passthrough_volume_percent: 20,
         passthrough_filters_enabled: true,
         passthrough_filter_strength: 50,
@@ -431,7 +443,7 @@ proptest! {
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
-                           "set_passthrough", "clear_passthrough", "set_passthrough_volume",
+                           "set_passthrough", "clear_passthrough", "set_passthrough_enabled", "set_passthrough_volume",
                            "set_passthrough_filter",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",

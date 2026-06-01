@@ -706,6 +706,17 @@ impl Arbitrary for ClearPassthroughPayload {
     }
 }
 
+impl Arbitrary for SetPassthroughEnabledPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<bool>()
+            .prop_map(|enabled| SetPassthroughEnabledPayload { enabled })
+            .boxed()
+    }
+}
+
 impl Arbitrary for SetPassthroughVolumePayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -753,6 +764,7 @@ impl Arbitrary for SubRoomStatePayload {
         (
             prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6),
             prop::option::of(any::<PassthroughStatePayload>()),
+            any::<bool>(),
             any::<u8>(),
             any::<bool>(),
             0u8..=100u8,
@@ -761,12 +773,14 @@ impl Arbitrary for SubRoomStatePayload {
                 |(
                     rooms,
                     passthrough,
+                    passthrough_enabled,
                     passthrough_volume_percent,
                     passthrough_filters_enabled,
                     passthrough_filter_strength,
                 )| SubRoomStatePayload {
                     rooms,
                     passthrough,
+                    passthrough_enabled,
                     passthrough_volume_percent,
                     passthrough_filters_enabled,
                     passthrough_filter_strength,
@@ -1067,6 +1081,7 @@ impl Arbitrary for SignalingMessage {
             any::<LeaveSubRoomPayload>().prop_map(SignalingMessage::LeaveSubRoom),
             any::<SetPassthroughPayload>().prop_map(SignalingMessage::SetPassthrough),
             any::<ClearPassthroughPayload>().prop_map(SignalingMessage::ClearPassthrough),
+            any::<SetPassthroughEnabledPayload>().prop_map(SignalingMessage::SetPassthroughEnabled),
             any::<SetPassthroughVolumePayload>().prop_map(SignalingMessage::SetPassthroughVolume),
             any::<SetPassthroughFilterPayload>().prop_map(SignalingMessage::SetPassthroughFilter),
             any::<SubRoomStatePayload>().prop_map(SignalingMessage::SubRoomState),
