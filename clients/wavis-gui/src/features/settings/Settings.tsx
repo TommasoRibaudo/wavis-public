@@ -9,7 +9,7 @@ import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUserna
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughVolume, setPassthroughFilter, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughEnabled, setPassthroughVolume, setPassthroughFilter, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
@@ -148,7 +148,6 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [osPlatform, setOsPlatform] = useState<string>('—');
   const [webviewVersion, setWebviewVersion] = useState<string>('—');
   const [minimizeToTray, setMinimizeToTrayState] = useState(false);
-  const [passthroughIntent, setPassthroughIntent] = useState(false);
   const [notifyToggles, setNotifyToggles] = useState<NotificationToggles>({
     participantJoined: true,
     participantLeft: true,
@@ -510,7 +509,8 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 const vs = getVoiceRoomState();
                 if (!vs.selfIsHost || vs.machineState !== 'active') return null;
                 const activePassthrough = vs.passthrough;
-                const passthroughOn = !!activePassthrough || passthroughIntent;
+                const passthroughEnabled = vs.passthroughEnabled;
+                const showPassthroughControls = passthroughEnabled || !!activePassthrough;
                 const joinedSubRoomId = vs.joinedSubRoomId;
                 const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
                 return (
@@ -520,22 +520,15 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                       <div className="flex items-center justify-between">
                         <span className="text-wavis-text-secondary">Enable passthrough</span>
                         <Switch
-                          checked={passthroughOn}
-                          onCheckedChange={(checked: boolean) => {
-                            if (checked) {
-                              setPassthroughIntent(true);
-                            } else {
-                              setPassthroughIntent(false);
-                              clearPassthrough();
-                            }
-                          }}
+                          checked={passthroughEnabled}
+                          onCheckedChange={setPassthroughEnabled}
                           aria-label="Toggle passthrough"
                         />
                       </div>
                       <p className="text-xs text-wavis-text-secondary/70">
                         Link two sub-rooms so their participants can hear each other
                       </p>
-                      {passthroughOn && (
+                      {showPassthroughControls && (
                         <>
                           <div>
                             <label className="text-wavis-text-secondary block mb-1">
@@ -591,14 +584,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                   type="button"
                                   onClick={() => {
                                     clearPassthrough();
-                                    setPassthroughIntent(false);
                                   }}
                                   className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
                                 >
                                   /unlink
                                 </button>
                               </div>
-                            ) : joinedSubRoomId && otherSubRooms.length > 0 ? (
+                            ) : passthroughEnabled && joinedSubRoomId && otherSubRooms.length > 0 ? (
                               <div>
                                 <span className="text-wavis-text-secondary block mb-1">Link to room</span>
                                 <div className="flex flex-wrap gap-1">
@@ -606,7 +598,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                     <button
                                       key={r.id}
                                       type="button"
-                                      onClick={() => { setPassthrough(r.id); setPassthroughIntent(false); }}
+                                      onClick={() => { setPassthrough(r.id); }}
                                       className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
                                     >
                                       Room {r.roomNumber}
@@ -614,11 +606,11 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                   ))}
                                 </div>
                               </div>
-                            ) : (
+                            ) : passthroughEnabled ? (
                               <p className="text-xs text-wavis-text-secondary/70">
                                 Join a sub-room to link rooms
                               </p>
-                            )}
+                            ) : null}
                           </div>
                         </>
                       )}

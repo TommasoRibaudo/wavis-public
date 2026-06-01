@@ -2780,7 +2780,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            let Some(ref channel_id) = session_ref.channel_id.clone() else {
+            let Some(_) = session_ref.channel_id.as_ref() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2792,26 +2792,6 @@ pub(crate) async fn dispatch_message(
             if !ctx.rate_limiter.action_allow() {
                 return DispatchOutcome::Continue;
             }
-            let user_id_uuid = Uuid::parse_str(
-                session_ref
-                    .user_id
-                    .as_ref()
-                    .expect("channel session always has user_id"),
-            )
-            .expect("session user_id is always a valid UUID");
-            if require_host_role(
-                ctx.app_state,
-                ctx.peer_id,
-                channel_id,
-                user_id_uuid,
-                "set_passthrough",
-            )
-            .await
-            .is_err()
-            {
-                return DispatchOutcome::Continue;
-            }
-
             match voice_orchestrator::set_passthrough(
                 ctx.app_state.room_state.as_ref(),
                 &session_ref.room_id,
@@ -2839,7 +2819,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            let Some(ref channel_id) = session_ref.channel_id.clone() else {
+            let Some(_) = session_ref.channel_id.as_ref() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2851,26 +2831,6 @@ pub(crate) async fn dispatch_message(
             if !ctx.rate_limiter.action_allow() {
                 return DispatchOutcome::Continue;
             }
-            let user_id_uuid = Uuid::parse_str(
-                session_ref
-                    .user_id
-                    .as_ref()
-                    .expect("channel session always has user_id"),
-            )
-            .expect("session user_id is always a valid UUID");
-            if require_host_role(
-                ctx.app_state,
-                ctx.peer_id,
-                channel_id,
-                user_id_uuid,
-                "clear_passthrough",
-            )
-            .await
-            .is_err()
-            {
-                return DispatchOutcome::Continue;
-            }
-
             match voice_orchestrator::clear_passthrough(
                 ctx.app_state.room_state.as_ref(),
                 &session_ref.room_id,
@@ -2890,6 +2850,65 @@ pub(crate) async fn dispatch_message(
                         &SignalingMessage::Error(ErrorPayload { message }),
                     );
                 }
+            }
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::SetPassthroughEnabled(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            let Some(channel_id) = session_ref.channel_id.as_deref() else {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "set_passthrough_enabled requires a channel voice session"
+                            .to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            };
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref
+                    .user_id
+                    .as_ref()
+                    .expect("channel session always has user_id"),
+            )
+            .expect("session user_id is always a valid UUID");
+            if require_host_role(
+                ctx.app_state,
+                ctx.peer_id,
+                channel_id,
+                user_id_uuid,
+                "set_passthrough_enabled",
+            )
+            .await
+            .is_err()
+            {
+                return DispatchOutcome::Continue;
+            }
+
+            match voice_orchestrator::set_passthrough_enabled(
+                &ctx.app_state.db_pool,
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                channel_id,
+                payload.enabled,
+            )
+            .await
+            {
+                Ok(result) => dispatch_signals(
+                    result.signals,
+                    &session_ref.room_id,
+                    ctx.app_state.room_state.as_ref(),
+                    ctx.app_state.connections.as_ref(),
+                ),
+                Err(message) => ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload { message }),
+                ),
             }
             DispatchOutcome::Continue
         }
@@ -3302,6 +3321,7 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::LeaveSubRoom(_)
         | SignalingMessage::SetPassthrough(_)
         | SignalingMessage::ClearPassthrough(_)
+        | SignalingMessage::SetPassthroughEnabled(_)
         | SignalingMessage::SetPassthroughVolume(_)
         | SignalingMessage::SetPassthroughFilter(_)
         | SignalingMessage::SubRoomState(_)

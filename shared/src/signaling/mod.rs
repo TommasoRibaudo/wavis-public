@@ -217,6 +217,8 @@ pub enum SignalingMessage {
     SetPassthrough(SetPassthroughPayload),
     /// Client -> server request to clear the active passthrough pair.
     ClearPassthrough(ClearPassthroughPayload),
+    /// Client -> server (admin/owner) request to enable or disable passthrough linking.
+    SetPassthroughEnabled(SetPassthroughEnabledPayload),
     /// Client -> server (admin/owner) request to set the passthrough volume for all participants.
     SetPassthroughVolume(SetPassthroughVolumePayload),
     /// Client -> server (admin/owner) request to set passthrough muffle filter settings.
@@ -816,6 +818,12 @@ pub struct SetPassthroughPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClearPassthroughPayload {}
 
+/// Client (admin/owner) enables or disables new passthrough links for the channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughEnabledPayload {
+    pub enabled: bool,
+}
+
 /// Client (admin/owner) sets the passthrough volume for all participants (0–100).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SetPassthroughVolumePayload {
@@ -854,6 +862,9 @@ pub struct SubRoomStatePayload {
     /// Optional active passthrough pair for the voice session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<PassthroughStatePayload>,
+    /// Whether channel members may create new passthrough links. Defaults off for backward compat.
+    #[serde(rename = "passthroughEnabled", default)]
+    pub passthrough_enabled: bool,
     /// Passthrough volume as a percentage (0–100). Defaults to 20 if absent (backward compat).
     #[serde(
         rename = "passthroughVolumePercent",
