@@ -125,23 +125,22 @@ function setTileVolume(
 function popOutTile(
   tiles: ShareTileState[],
   participantId: string,
-): { remainingTiles: ShareTileState[]; payload: { participantId: string; volume: number } | null } {
+): { remainingTiles: ShareTileState[]; payload: { participantId: string; volume: number; muted: boolean } | null } {
   const tile = tiles.find((t) => t.participantId === participantId) ?? null;
   if (!tile) return { remainingTiles: tiles, payload: null };
   return {
     remainingTiles: removeTile(tiles, participantId),
-    // Send slider position (tile.volume); mute-toggle is local-only, not inherited by pop-out
-    payload: { participantId, volume: tile.volume },
+    payload: { participantId, volume: tile.volume, muted: tile.muted },
   };
 }
 
 function restoreTileVolume(
   tiles: ShareTileState[],
-  payload: { participantId: string; volume: number },
+  payload: { participantId: string; volume: number; muted: boolean },
 ): ShareTileState[] {
   return tiles.map((t) =>
     t.participantId === payload.participantId
-      ? { ...t, volume: payload.volume, muted: payload.volume === 0 }
+      ? { ...t, volume: payload.volume, muted: payload.muted }
       : t,
   );
 }
@@ -325,11 +324,11 @@ describe('WatchAllPage tile state management', () => {
   /* ── Double-click emits pop-out event ── */
 
   it('double-click emits watch-all:pop-out event', () => {
-    // WatchAllPage's handlePopOut calls emit('watch-all:pop-out', { participantId })
+    // WatchAllPage's handlePopOut includes the durable slider and mute state.
     // We test the logic: given a participantId, the emitted payload is correct
     const participantId = 'user-1';
-    const payload = { participantId };
-    expect(payload).toEqual({ participantId: 'user-1' });
+    const payload = { participantId, volume: 80, muted: true };
+    expect(payload).toEqual({ participantId: 'user-1', volume: 80, muted: true });
   });
 
   /* ── Canvas fallback tile hides mute toggle ── */
@@ -387,7 +386,7 @@ describe('WatchAllPage tile state management', () => {
 
   /* ── Mute reset to default when tile removed and re-added (Req 15.5) ── */
 
-  it('mute reset to default when tile removed and re-added', () => {
+  it('mute restored when tile removed and re-added', () => {
     let tiles: ShareTileState[] = [];
 
     // Add tile
@@ -415,8 +414,9 @@ describe('WatchAllPage tile state management', () => {
       color: '#E06C75',
       canvasFallback: false,
     });
+    tiles = restoreTileVolume(tiles, { participantId: 'user-1', volume: 70, muted: true });
 
-    expect(tiles[0].muted).toBe(false);
+    expect(tiles[0].muted).toBe(true);
     expect(tiles[0].volume).toBe(70);
   });
 
@@ -454,12 +454,12 @@ describe('WatchAllPage tile state management', () => {
     tiles = setTileVolume(tiles, 'user-1', 60);
 
     // Simulates slider explicitly dragged to 0 in another window (persisted via syncScreenShareVolume)
-    tiles = restoreTileVolume(tiles, { participantId: 'user-1', volume: 0 });
+    tiles = restoreTileVolume(tiles, { participantId: 'user-1', volume: 0, muted: true });
     expect(tiles[0].muted).toBe(true);
     expect(tiles[0].volume).toBe(0); // slider follows the explicit 0
   });
 
-  it('pop-out of muted tile sends slider position (toggle-mute is local-only)', () => {
+  it('pop-out of muted tile sends slider position and mute state', () => {
     let tiles: ShareTileState[] = [];
     tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
     tiles = setTileVolume(tiles, 'user-1', 80);
@@ -468,7 +468,7 @@ describe('WatchAllPage tile state management', () => {
     expect(tiles[0].volume).toBe(80);
 
     const { payload } = popOutTile(tiles, 'user-1');
-    expect(payload?.volume).toBe(80); // slider position, not effective volume (mute is local)
+    expect(payload).toEqual({ participantId: 'user-1', volume: 80, muted: true });
   });
 
   it('pop-out of unmuted tile sends slider position', () => {
@@ -477,7 +477,7 @@ describe('WatchAllPage tile state management', () => {
     tiles = setTileVolume(tiles, 'user-1', 45);
 
     const { payload } = popOutTile(tiles, 'user-1');
-    expect(payload?.volume).toBe(45);
+    expect(payload).toEqual({ participantId: 'user-1', volume: 45, muted: false });
   });
 
   it('volume persists across pop-out and pop-back', () => {
@@ -494,7 +494,7 @@ describe('WatchAllPage tile state management', () => {
     expect(tiles[0].muted).toBe(false);
 
     const { remainingTiles, payload } = popOutTile(tiles, 'user-1');
-    expect(payload).toEqual({ participantId: 'user-1', volume: 50 });
+    expect(payload).toEqual({ participantId: 'user-1', volume: 50, muted: false });
     expect(remainingTiles).toHaveLength(0);
 
     let restoredTiles = addTile(remainingTiles, {
@@ -507,6 +507,29 @@ describe('WatchAllPage tile state management', () => {
 
     expect(restoredTiles[0].volume).toBe(50);
     expect(restoredTiles[0].muted).toBe(false);
+  });
+
+  it('mute persists across pop-out and pop-back without losing slider position', () => {
+    let tiles = addTile([], {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
+    tiles = setTileVolume(tiles, 'user-1', 80);
+    tiles = toggleMute(tiles, 'user-1');
+
+    const { remainingTiles, payload } = popOutTile(tiles, 'user-1');
+    let restoredTiles = addTile(remainingTiles, {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
+    restoredTiles = restoreTileVolume(restoredTiles, payload!);
+
+    expect(restoredTiles[0].volume).toBe(80);
+    expect(restoredTiles[0].muted).toBe(true);
   });
 
   /* ── Duplicate add is a no-op ── */

@@ -417,9 +417,8 @@ async fn deafened_state_visible_in_room_state_for_late_joiner() {
     let participants = joined["participants"].as_array().unwrap();
     let p1 = participants.iter().find(|p| p["participantId"].as_str() == Some(&peer1));
     assert!(p1.is_some(), "peer1 should be in participants list");
-    assert_eq!(
+    assert!(
         p1.unwrap()["isDeafened"].as_bool().unwrap_or(false),
-        true,
         "peer1 should be marked as deafened for late joiner"
     );
 }

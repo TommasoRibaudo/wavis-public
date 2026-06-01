@@ -28,6 +28,7 @@ interface ShareWindowParams {
   isOwner: boolean;
   canvasFallback?: boolean;
   initialVolume?: number;
+  initialMuted?: boolean;
 }
 
 interface PolledScreenShareFrame {
@@ -68,7 +69,7 @@ export default function ScreenSharePage() {
   const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [volume, setVolume] = useState(initialVolume);
-  const [muted, setMuted] = useState(initialVolume === 0);
+  const [muted, setMuted] = useState(shareParams?.initialMuted ?? (initialVolume === 0));
   const [quality, setQuality] = useState<ShareQuality>('high');
   const [sharingAudio, setSharingAudio] = useState(false);
   const [userState, setUserState] = useState<ShareUserState>({
@@ -324,10 +325,10 @@ export default function ScreenSharePage() {
 
   useEffect(() => {
     if (!p) return;
-    const unlisten = listen<{ participantId: string; volume: number }>('screen-share:restore-volume', (event) => {
+    const unlisten = listen<{ participantId: string; volume: number; muted: boolean }>('screen-share:restore-volume', (event) => {
       if (event.payload.participantId !== p.participantId) return;
       setVolume(event.payload.volume);
-      setMuted(event.payload.volume === 0);
+      setMuted(event.payload.muted);
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [p]);
@@ -466,9 +467,7 @@ export default function ScreenSharePage() {
     if (!p) return;
     setMuted((prev) => {
       const nextMuted = !prev;
-      // Use local-audio so the gain is set without writing 0 into shareVolumes.
-      // This lets Watch All re-open at the slider's actual position (not muted).
-      emit('screen-share:local-audio', { participantId: p.participantId, volume: nextMuted ? 0 : volume });
+      emit('screen-share:mute-change', { participantId: p.participantId, muted: nextMuted });
       return nextMuted;
     });
   }, [p, volume]);
