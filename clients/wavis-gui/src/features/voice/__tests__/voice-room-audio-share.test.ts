@@ -73,6 +73,8 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     startScreenShare: vi.fn(async () => true),
     stopScreenShare: vi.fn(async () => {}),
     getActiveScreenShares: vi.fn(() => []),
+    beginNativeCaptureLeakSession: vi.fn(),
+    markNativeCaptureFailure: vi.fn(),
     prepareNativeCapture: vi.fn(),
     startNativeCapture: vi.fn(async () => {}),
     stopNativeCapture: vi.fn(async () => {}),
@@ -549,6 +551,45 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     });
     expect(lastLkModule!.stopWasapiAudioBridge).toHaveBeenCalled();
     expect(getState().activeAudioShare).toBeNull();
+  });
+
+  it('stops Rust screen capture if native video bridge fails after video start', async () => {
+    resetAll();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: {
+        getUserMedia: vi.fn(),
+        getDisplayMedia: vi.fn(),
+      },
+    });
+    await driveToActive();
+
+    expect(lastLkModule).not.toBeNull();
+    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('native capture: first frame timeout (5s)'),
+    );
+
+    const selection: ShareSelection = {
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      withAudio: false,
+    };
+
+    await expect(startCustomShare(selection)).rejects.toThrow('native capture: first frame timeout (5s)');
+
+    expect(invokeCalls).toContainEqual({
+      command: 'screen_share_start_source',
+      args: expect.objectContaining({ sourceId: 'screen-1' }),
+    });
+    expect(invokeCalls).toContainEqual({
+      command: 'screen_share_stop',
+      args: undefined,
+    });
+    expect(lastLkModule!.stopNativeCapture).toHaveBeenCalled();
+    expect(getState().activeVideoShare).toBeNull();
   });
 });
 

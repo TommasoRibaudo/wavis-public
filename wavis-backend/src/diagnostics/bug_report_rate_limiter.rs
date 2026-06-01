@@ -60,6 +60,11 @@ impl BugReportRateLimiter {
         }
     }
 
+    /// Returns the configured max requests per window.
+    pub fn max_requests(&self) -> usize {
+        self.config.max_requests as usize
+    }
+
     /// Returns true if the IP has fewer than `max_requests` submissions in the window.
     pub fn check_ip(&self, ip: IpAddr, now: Instant) -> bool {
         let mut map = self.ip_windows.lock().unwrap();
@@ -112,6 +117,24 @@ impl BugReportRateLimiter {
             .entry(user_id)
             .or_insert_with(|| SlidingWindow::new(self.config.window));
         window.seconds_until_retry(self.config.max_requests as usize, now)
+    }
+
+    /// Snapshot current in-window counts for all tracked IPs.
+    pub fn snapshot_ip_counts(&self, now: Instant) -> Vec<(IpAddr, usize)> {
+        let mut map = self.ip_windows.lock().unwrap();
+        map.iter_mut()
+            .map(|(ip, w)| (*ip, w.count(now)))
+            .filter(|(_, c)| *c > 0)
+            .collect()
+    }
+
+    /// Snapshot current in-window counts for all tracked users.
+    pub fn snapshot_user_counts(&self, now: Instant) -> Vec<(Uuid, usize)> {
+        let mut map = self.user_windows.lock().unwrap();
+        map.iter_mut()
+            .map(|(uid, w)| (*uid, w.count(now)))
+            .filter(|(_, c)| *c > 0)
+            .collect()
     }
 
     /// Prune stale entries from both maps. Returns total entries removed.

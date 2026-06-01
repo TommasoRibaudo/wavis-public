@@ -80,9 +80,11 @@ locals {
     SFU_JWT_ISSUER                    = "wavis-backend"
     SFU_TOKEN_TTL_SECS                = "600"
     REFRESH_TOKEN_TTL_DAYS            = "180"
-    GITHUB_BUG_REPORT_REPO            = "Davalf99/wavis"
+    GITHUB_BUG_REPORT_REPO            = "TommasoRibaudo/wavis-public"
     BUG_REPORT_RATE_LIMIT_MAX         = "5"
     BUG_REPORT_RATE_LIMIT_WINDOW_SECS = "3600"
+    LLM_RATE_LIMIT_MAX                = "5"
+    LLM_RATE_LIMIT_WINDOW_SECS        = "86400"
     BUG_REPORT_LLM_MODEL              = "claude-sonnet-4-20250514"
     LIVEKIT_HOST                      = "ws://${aws_eip.livekit.public_ip}:7880"
     LIVEKIT_PUBLIC_HOST               = "wss://${aws_cloudfront_distribution.backend.domain_name}"
@@ -150,6 +152,7 @@ locals {
     GITHUB_BUG_REPORT_TOKEN = "CHANGE-ME-github-bug-report-token"
     GITHUB_DEPLOY_KEY       = "CHANGE-ME-github-deploy-key"
     BUG_REPORT_LLM_API_KEY  = "CHANGE-ME-bug-report-llm-api-key"
+    ADMIN_TOKEN             = "CHANGE-ME-admin-token"
   }
 
   backend_secret_keys = toset([

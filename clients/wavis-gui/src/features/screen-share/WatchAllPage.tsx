@@ -1170,13 +1170,16 @@ export default function WatchAllPage() {
             Watch All — {p.channelName}
           </span>
         </div>
-        <button
-          onClick={handleClose}
-          className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
-          aria-label="Close watch all window"
-        >
-          [x]
-        </button>
+        <div data-no-drag className="flex items-center shrink-0">
+          <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
+          <button
+            onClick={handleClose}
+            className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
+            aria-label="Close watch all window"
+          >
+            [x]
+          </button>
+        </div>
       </div>
 
       {/* Grid container */}
@@ -1277,7 +1280,6 @@ export default function WatchAllPage() {
         <FocusMainButton
           onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
         />
-        <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
         <div className="flex-1" />
         <div className="relative flex items-center gap-1 shrink-0">
           <button

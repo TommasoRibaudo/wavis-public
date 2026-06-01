@@ -2643,7 +2643,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -2689,7 +2689,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -2737,7 +2737,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -3002,7 +3002,7 @@ pub(crate) async fn dispatch_message(
             ctx.app_state.connections.send_to(
                 ctx.peer_id,
                 &SignalingMessage::Error(ErrorPayload {
-                    message: "unexpected server-generated sub-room message".to_string(),
+                    message: "unexpected server-generated room message".to_string(),
                 }),
             );
             DispatchOutcome::Continue

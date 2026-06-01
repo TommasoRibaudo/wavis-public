@@ -1458,6 +1458,7 @@ async function resumePendingWasapiCapture(): Promise<void> {
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
+let suppressMediaDisconnectedReconnect = false;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
 /** Volume before deafen, restored on undeafen. */
@@ -1738,7 +1739,12 @@ function cleanupPublishedMediaForSessionEnd(): void {
       void getCameraMediaModule()?.unpublishCamera().catch(() => {});
     }
     void lkModule.stopScreenShare().catch(() => {});
-    lkModule.disconnect();
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
     lkModule = null;
   }
   resetCameraRuntimeState();
@@ -2412,7 +2418,12 @@ function scheduleColdStartRetry(): void {
 function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): void {
   // Tear down previous instance if any
   if (lkModule) {
-    lkModule.disconnect();
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
     lkModule = null;
   }
 
@@ -2471,9 +2482,17 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       notify();
     },
     onMediaDisconnected: () => {
+      const shouldReconnect =
+        !suppressMediaDisconnectedReconnect
+        && state.machineState !== 'idle'
+        && state.mediaState !== 'disconnected'
+        && state.mediaState !== 'failed';
       state.mediaState = 'disconnected';
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'media disconnected — attempting reconnect' });
       notify();
+      if (shouldReconnect) {
+        void reconnectMedia();
+      }
     },
     onAudioLevels: (levels) => {
       for (const [identity, data] of levels) {
@@ -4042,7 +4061,12 @@ export async function reconnectMedia(): Promise<void> {
 
   // Tear down current media
   if (lkModule) {
-    lkModule.disconnect();
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
     lkModule = null;
   }
   state.mediaState = 'disconnected';
@@ -4433,7 +4457,9 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     notify();
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
-    console.error(LOG, 'startCustomShare failed:', err);
+    console.error(LOG, 'startCustomShare failed:', err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : err);
     if (nativeAudioStarted) {
       if (lkModule && lkModule instanceof LiveKitModule) {
         try {
@@ -4453,6 +4479,13 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
       lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await lkModule.stopNativeCapture();
+    }
+    if (isVideoShare && videoStarted) {
+      try {
+        await invoke('screen_share_stop');
+      } catch (screenStopErr) {
+        console.error(LOG, 'best-effort screen_share_stop during startCustomShare rollback failed:', screenStopErr);
+      }
     }
     if (isVideoShare) {
       state.activeVideoShare = null;

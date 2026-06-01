@@ -11,6 +11,7 @@ import { useAutoHide } from '@shared/hooks/useAutoHide';
 import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
+import FullscreenButton from '@shared/FullscreenButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -617,6 +618,7 @@ export default function ScreenSharePage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}
             className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
@@ -726,8 +728,6 @@ export default function ScreenSharePage() {
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
           onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={toggleFullscreen}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (
