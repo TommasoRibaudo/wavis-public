@@ -190,6 +190,8 @@ export interface VoiceRoomState {
   defaultVolume: number;
   /** Passthrough volume (0–100): attenuates audio from paired sub-room. */
   passthroughVolume: number;
+  /** Whether channel members may create new passthrough links. */
+  passthroughEnabled: boolean;
   /** Whether paired sub-room participants are spectrally muffled. */
   passthroughFiltersEnabled: boolean;
   /** Passthrough muffle strength (0–100). */
@@ -1054,6 +1056,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   sharePermission: 'anyone',
   defaultVolume: 70,
   passthroughVolume: DEFAULT_PASSTHROUGH_VOLUME,
+  passthroughEnabled: false,
   passthroughFiltersEnabled: true,
   passthroughFilterStrength: 50,
   mediaReconnectFailures: 0,
@@ -2984,6 +2987,9 @@ function dispatchMessage(raw: unknown): void {
             label: passthrough.label,
           }
         : null;
+      state.passthroughEnabled = typeof msg.passthroughEnabled === 'boolean'
+        ? msg.passthroughEnabled
+        : false;
       if (typeof msg.passthroughVolumePercent === 'number') {
         state.passthroughVolume = Math.max(0, Math.min(100, Math.round(msg.passthroughVolumePercent)));
       }
@@ -4815,6 +4821,12 @@ export function setPassthrough(targetSubRoomId: string): void {
 export function clearPassthrough(): void {
   if (!client || client.status !== 'connected') return;
   client.send({ type: 'clear_passthrough' });
+}
+
+export function setPassthroughEnabled(enabled: boolean): void {
+  if (!state.selfIsHost) return;
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'set_passthrough_enabled', enabled });
 }
 
 export function setPassthroughVolume(volume: number): void {

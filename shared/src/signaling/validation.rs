@@ -266,6 +266,7 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             )?;
         }
         SignalingMessage::ClearPassthrough(_) => {}
+        SignalingMessage::SetPassthroughEnabled(_) => {}
         SignalingMessage::SetPassthroughVolume(_) => {
             // volume is u8 (0–255) and clamped to 0–100 server-side; no string fields to check.
         }
@@ -804,7 +805,7 @@ mod tests {
                 "auth", "auth_success", "auth_failed",
                 "join_voice",
                 "create_sub_room", "join_sub_room", "leave_sub_room",
-                "set_passthrough", "clear_passthrough", "set_passthrough_volume",
+                "set_passthrough", "clear_passthrough", "set_passthrough_enabled", "set_passthrough_volume",
                 "set_passthrough_filter", "sub_room_state", "sub_room_created",
                 "sub_room_joined", "sub_room_left", "sub_room_deleted",
                 "sfu_cold_starting",
