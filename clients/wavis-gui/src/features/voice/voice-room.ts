@@ -766,6 +766,20 @@ export function canStartShare(
   return { allowed: true };
 }
 
+export function preserveVideoShareSelectionForSourceChange(
+  selection: ShareSelection,
+  videoShare: VoiceRoomState['activeVideoShare'],
+): ShareSelection {
+  if (!videoShare) return selection;
+  if (selection.mode === 'audio_only') {
+    throw new Error('changing a video share source cannot switch to audio-only');
+  }
+  return {
+    ...selection,
+    withAudio: videoShare.withAudio,
+  };
+}
+
 /**
  * Pure routing logic for fallback share outcomes.
  * Given the boolean result of startScreenShare(), returns the action to take:
