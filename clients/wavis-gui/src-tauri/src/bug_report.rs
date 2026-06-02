@@ -397,7 +397,6 @@ async fn capture_via_portal_async() -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     #[test]
     fn new_buffer_is_empty() {

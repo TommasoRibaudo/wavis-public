@@ -71,6 +71,7 @@ function makeState(overrides?: Partial<VoiceRoomState>): VoiceRoomState {
     sharePermission: 'anyone',
     defaultVolume: 70,
     passthroughVolume: 20,
+    passthroughEnabled: false,
     passthroughFiltersEnabled: true,
     passthroughFilterStrength: 50,
     mediaReconnectFailures: 0,

@@ -226,6 +226,7 @@ fn sub_room_state_payload(state: &SubRoomState) -> SubRoomStatePayload {
     SubRoomStatePayload {
         rooms: state.rooms.iter().map(sub_room_info_payload).collect(),
         passthrough: active_passthrough_payload(state),
+        passthrough_enabled: state.passthrough_enabled,
         passthrough_volume_percent: state.passthrough_volume_percent,
         passthrough_filters_enabled: state.passthrough_filters_enabled,
         passthrough_filter_strength: state.passthrough_filter_strength,
@@ -297,6 +298,7 @@ fn schedule_empty_room_if_needed(
 ///      This is explicitly out of scope for MVP.
 ///
 /// Returns `(room_id, created)` where `created` is true if a new room was created.
+#[allow(clippy::too_many_arguments)]
 pub async fn ensure_active_room(
     active_room_map: &ActiveRoomMap,
     room_state: &InMemoryRoomState,
@@ -304,6 +306,7 @@ pub async fn ensure_active_room(
     _token_mode: &TokenMode<'_>,
     _sfu_url: &str,
     channel_id: &Uuid,
+    passthrough_enabled: bool,
     max_participants: u8,
 ) -> Result<(String, bool), VoiceJoinError> {
     let mut map = active_room_map.write().await;
@@ -314,6 +317,12 @@ pub async fn ensure_active_room(
     // create a fresh room.
     if let Some(room_id) = map.get(channel_id) {
         if room_state.get_room_info(room_id).is_some() {
+            room_state.update_room_info(room_id, |info| {
+                ensure_room_sub_rooms(info);
+                if let Some(sub_rooms) = info.sub_room_state.as_mut() {
+                    sub_rooms.passthrough_enabled = passthrough_enabled;
+                }
+            });
             return Ok((room_id.clone(), false));
         }
         // Stale mapping — room no longer exists in state. Remove and recreate.
@@ -337,7 +346,9 @@ pub async fn ensure_active_room(
 
     // Create room in InMemoryRoomState with SFU type.
     let mut info = RoomInfo::new_sfu(max_participants, sfu_handle);
-    info.sub_room_state = Some(SubRoomState::new(DEFAULT_SUB_ROOM_ID.to_string()));
+    let mut sub_rooms = SubRoomState::new(DEFAULT_SUB_ROOM_ID.to_string());
+    sub_rooms.passthrough_enabled = passthrough_enabled;
+    info.sub_room_state = Some(sub_rooms);
     let created = room_state.create_room(room_id.clone(), info);
     if !created {
         // Room already exists in state (should not happen under write lock, but guard defensively).
@@ -725,6 +736,9 @@ pub fn set_passthrough(
                 return Err("room state unavailable".to_string());
             };
             clear_invalid_passthrough_locked(sub_rooms);
+            if !sub_rooms.passthrough_enabled {
+                return Err("passthrough is disabled".to_string());
+            }
 
             let source_sub_room_id = sub_rooms
                 .participant_assignments
@@ -806,6 +820,49 @@ pub fn clear_passthrough(
         "passthrough cleared"
     );
 
+    Ok(SubRoomActionResult {
+        signals: sub_room_state_signals(room_state, room_id),
+        expiry: None,
+    })
+}
+
+pub async fn set_passthrough_enabled(
+    pool: &PgPool,
+    room_state: &InMemoryRoomState,
+    room_id: &str,
+    channel_id: &str,
+    enabled: bool,
+) -> Result<SubRoomActionResult, String> {
+    let channel_id =
+        Uuid::parse_str(channel_id).map_err(|_| "invalid channel ID format".to_string())?;
+    let updated = sqlx::query("UPDATE channels SET passthrough_enabled = $1 WHERE channel_id = $2")
+        .bind(enabled)
+        .bind(channel_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if updated.rows_affected() != 1 {
+        return Err("channel not found".to_string());
+    }
+
+    let changed = room_state
+        .with_room_write(room_id, |members| {
+            let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
+                return false;
+            };
+            if sub_rooms.passthrough_enabled == enabled {
+                return false;
+            }
+            sub_rooms.passthrough_enabled = enabled;
+            true
+        })
+        .map_err(|_| "voice session not found".to_string())?;
+
+    if !changed {
+        return Ok(SubRoomActionResult::default());
+    }
+
+    tracing::info!(room_id = %room_id, enabled, "passthrough permission set");
     Ok(SubRoomActionResult {
         signals: sub_room_state_signals(room_state, room_id),
         expiry: None,
@@ -957,8 +1014,11 @@ pub async fn join_voice(
     })?;
 
     // 2. DB membership check — must be non-banned member.
-    let membership: Option<(ChannelRole, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT role, banned_at FROM channel_memberships WHERE channel_id = $1 AND user_id = $2",
+    let membership: Option<(ChannelRole, Option<DateTime<Utc>>, bool)> = sqlx::query_as(
+        "SELECT cm.role, cm.banned_at, c.passthrough_enabled \
+         FROM channel_memberships cm \
+         JOIN channels c ON c.channel_id = cm.channel_id \
+         WHERE cm.channel_id = $1 AND cm.user_id = $2",
     )
     .bind(channel_id)
     .bind(user_id)
@@ -974,7 +1034,7 @@ pub async fn join_voice(
         VoiceJoinError::DatabaseError(e.to_string())
     })?;
 
-    let (role, banned_at) = match membership {
+    let (role, banned_at, passthrough_enabled) = match membership {
         Some(row) => row,
         None => {
             warn!(
@@ -1008,6 +1068,7 @@ pub async fn join_voice(
         token_mode,
         sfu_url,
         &channel_id,
+        passthrough_enabled,
         max_participants,
     )
     .await?;
@@ -1496,6 +1557,82 @@ mod tests {
             set_passthrough_filter(&state, "voice-room", false, 100).expect("set filter");
         assert!(unchanged.signals.is_empty());
         assert!(unchanged.expiry.is_none());
+    }
+
+    fn prepare_passthrough_rooms(state: &InMemoryRoomState) {
+        let _ = create_sub_room(state, "voice-room").expect("create room-2");
+        let _ = create_sub_room(state, "voice-room").expect("create room-3");
+        let _ = join_sub_room(state, "voice-room", "room-1", "peer-a").expect("join room-1");
+        let _ = join_sub_room(state, "voice-room", "room-2", "peer-b").expect("join room-2");
+    }
+
+    #[test]
+    fn disabled_passthrough_creation_is_rejected() {
+        let state = sub_room_test_state();
+        prepare_passthrough_rooms(&state);
+
+        let err = set_passthrough(&state, "voice-room", "peer-a", "room-2").unwrap_err();
+
+        assert_eq!(err, "passthrough is disabled");
+    }
+
+    #[test]
+    fn enabled_passthrough_creation_succeeds_for_member() {
+        let state = sub_room_test_state();
+        prepare_passthrough_rooms(&state);
+        state.update_room_info("voice-room", |info| {
+            info.sub_room_state.as_mut().unwrap().passthrough_enabled = true;
+        });
+
+        let result = set_passthrough(&state, "voice-room", "peer-a", "room-2")
+            .expect("member can create passthrough");
+
+        assert!(!result.signals.is_empty());
+    }
+
+    #[test]
+    fn disabling_passthrough_preserves_active_pair_and_paired_member_can_clear() {
+        let state = sub_room_test_state();
+        prepare_passthrough_rooms(&state);
+        state.update_room_info("voice-room", |info| {
+            info.sub_room_state.as_mut().unwrap().passthrough_enabled = true;
+        });
+        let _ = set_passthrough(&state, "voice-room", "peer-a", "room-2").unwrap();
+        state.update_room_info("voice-room", |info| {
+            info.sub_room_state.as_mut().unwrap().passthrough_enabled = false;
+        });
+
+        let info = state.get_room_info("voice-room").unwrap();
+        assert!(info.sub_room_state.unwrap().active_passthrough.is_some());
+        let cleared =
+            clear_passthrough(&state, "voice-room", "peer-b").expect("paired member clears");
+        assert!(!cleared.signals.is_empty());
+    }
+
+    #[test]
+    fn uninvolved_member_cannot_clear_passthrough() {
+        let state = sub_room_test_state();
+        prepare_passthrough_rooms(&state);
+        state.add_peer("peer-c".to_string(), "voice-room".to_string());
+        state.update_room_info("voice-room", |info| {
+            info.participants.push(ParticipantInfo {
+                participant_id: "peer-c".to_string(),
+                display_name: "Peer C".to_string(),
+                user_id: None,
+                profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
+                is_deafened: false,
+            });
+            let sub_rooms = info.sub_room_state.as_mut().unwrap();
+            sub_rooms.passthrough_enabled = true;
+        });
+        let _ = join_sub_room(&state, "voice-room", "room-3", "peer-c").unwrap();
+        let _ = set_passthrough(&state, "voice-room", "peer-a", "room-2").unwrap();
+
+        let err = clear_passthrough(&state, "voice-room", "peer-c").unwrap_err();
+
+        assert_eq!(err, "passthrough is controlled by the active room pair");
     }
 
     fn arb_channel_role() -> impl Strategy<Value = ChannelRole> {

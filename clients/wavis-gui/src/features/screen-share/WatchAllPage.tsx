@@ -104,7 +104,7 @@ interface ShareTileProps {
   aspectRatio: number;
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
-  onPopOut: (participantId: string, volume: number) => void;
+  onPopOut: (participantId: string, volume: number, muted: boolean) => void;
   onAspectRatioDetected: (participantId: string, ratio: number) => void;
 }
 
@@ -478,8 +478,8 @@ const ShareTile = memo(function ShareTile({
 
   const handleDoubleClick = useCallback(() => {
     if (isDiagnosticTest) return;
-    onPopOut(participantId, volume);
-  }, [isDiagnosticTest, onPopOut, participantId, volume]);
+    onPopOut(participantId, volume, muted);
+  }, [isDiagnosticTest, muted, onPopOut, participantId, volume]);
 
   /* ── Render ── */
 
@@ -593,7 +593,7 @@ const ShareTile = memo(function ShareTile({
       {hovered && !isDiagnosticTest && (
         <button
           className="absolute top-1 right-1 text-wavis-text hover:text-wavis-accent text-xs bg-wavis-overlay-base/60 px-1 py-0.5 rounded"
-          onClick={(e) => { e.stopPropagation(); onPopOut(participantId, volume); }}
+          onClick={(e) => { e.stopPropagation(); onPopOut(participantId, volume, muted); }}
           aria-label={`Pop out ${displayName}`}
         >
           ⧉
@@ -705,7 +705,7 @@ export default function WatchAllPage() {
   const params = useRef(parseHashParams());
   const [tiles, setTiles] = useState<ShareTileState[]>([]);
   const [audioTiles, setAudioTiles] = useState<AudioTileState[]>([]);
-  const pendingRestoreVolumesRef = useRef<Map<string, number>>(new Map());
+  const pendingRestoreVolumesRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
   const [gridSize, setGridSize] = useState({ width: 0, height: 0 });
   const [userState, setUserState] = useState<ShareUserState>({
@@ -773,8 +773,8 @@ export default function WatchAllPage() {
           const { participantId, displayName, color, canvasFallback } = event.payload;
           setTiles((prev) => {
             if (prev.some((t) => t.participantId === participantId)) return prev;
-            const restoredVolume = pendingRestoreVolumesRef.current.get(participantId);
-            if (restoredVolume !== undefined) {
+            const restored = pendingRestoreVolumesRef.current.get(participantId);
+            if (restored !== undefined) {
               pendingRestoreVolumesRef.current.delete(participantId);
             }
             const baseTile = {
@@ -791,9 +791,9 @@ export default function WatchAllPage() {
             };
             return [
               ...prev,
-              restoredVolume === undefined
+              restored === undefined
                 ? baseTile
-                : { ...baseTile, muted: restoredVolume === 0, volume: restoredVolume },
+                : { ...baseTile, muted: restored.muted, volume: restored.volume },
             ];
           });
         },
@@ -820,33 +820,39 @@ export default function WatchAllPage() {
         },
       );
 
-      const unlistenRestoreVolume = await listen<{ participantId: string; volume: number }>(
+      const unlistenRestoreVolume = await listen<{ participantId: string; volume: number; muted: boolean }>(
         'watch-all:restore-volume',
         (event) => {
-          const { participantId, volume } = event.payload;
+          const { participantId, volume, muted } = event.payload;
           setTiles((prev) => {
             let found = false;
             const next = prev.map((tile) => {
               if (tile.participantId !== participantId) return tile;
               found = true;
-              // volume=0 means muted; preserve the slider position so unmute restores correctly
-              return { ...tile, volume, muted: volume === 0 };
+              return { ...tile, volume, muted };
             });
             if (!found) {
-              pendingRestoreVolumesRef.current.set(participantId, volume);
+              pendingRestoreVolumesRef.current.set(participantId, { volume, muted });
             }
             return next;
           });
+          setAudioTiles((prev) =>
+            prev.map((tile) =>
+              tile.participantId === participantId
+                ? { ...tile, volume, muted }
+                : tile,
+            ),
+          );
         },
       );
 
-      const unlistenAudioAdded = await listen<{ participantId: string; displayName: string; color: string; volume: number }>(
+      const unlistenAudioAdded = await listen<{ participantId: string; displayName: string; color: string; volume: number; muted: boolean }>(
         'watch-all:audio-share-added',
         (event) => {
-          const { participantId, displayName, color, volume } = event.payload;
+          const { participantId, displayName, color, volume, muted } = event.payload;
           setAudioTiles((prev) => {
             if (prev.some((t) => t.participantId === participantId)) return prev;
-            return [...prev, { participantId, displayName, color, muted: false, volume }];
+            return [...prev, { participantId, displayName, color, muted, volume }];
           });
         },
       );
@@ -961,7 +967,7 @@ export default function WatchAllPage() {
         if (t.participantId !== participantId) return t;
         handled = true;
         const nextMuted = !t.muted;
-        emit('watch-all:local-audio', { participantId, volume: nextMuted ? 0 : t.volume });
+        emit('watch-all:mute-change', { participantId, muted: nextMuted });
         return { ...t, muted: nextMuted };
       });
       return handled ? next : prev;
@@ -971,7 +977,7 @@ export default function WatchAllPage() {
         prev.map((t) => {
           if (t.participantId !== participantId) return t;
           const nextMuted = !t.muted;
-          emit('watch-all:local-audio', { participantId, volume: nextMuted ? 0 : t.volume });
+          emit('watch-all:mute-change', { participantId, muted: nextMuted });
           return { ...t, muted: nextMuted };
         }),
       );
@@ -1064,8 +1070,8 @@ export default function WatchAllPage() {
 
   /* ── Pop-out ── */
 
-  const handlePopOut = useCallback((participantId: string, volume: number) => {
-    emit('watch-all:pop-out', { participantId, volume });
+  const handlePopOut = useCallback((participantId: string, volume: number, muted: boolean) => {
+    emit('watch-all:pop-out', { participantId, volume, muted });
   }, []);
 
   /* ── Close button ── */

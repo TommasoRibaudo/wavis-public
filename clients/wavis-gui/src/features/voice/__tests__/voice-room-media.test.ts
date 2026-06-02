@@ -311,6 +311,8 @@ import {
   getState,
   persistStreamVolume,
   getPersistedStreamVolume,
+  persistStreamMuted,
+  getPersistedStreamMuted,
 } from '../voice-room';
 import type { VoiceRoomState } from '../voice-room';
 import * as settingsStore from '@features/settings/settings-store';
@@ -3091,6 +3093,44 @@ describe('stream volume persistence', () => {
     await driveToActive(); // peer-2 has userId u2
 
     expect(getPersistedStreamVolume('peer-2')).toBe(55);
+    leaveRoom();
+  });
+
+  it('persistStreamMuted stores mute separately from the slider volume', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 65);
+    persistStreamMuted('peer-2', true);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(65);
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamMuted returns saved mute loaded from channel prefs on join', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 55 },
+      streamMutes: { u2: true },
+    });
+
+    await driveToActive();
+
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamMuted treats legacy saved volume 0 as muted', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 0 },
+    });
+
+    await driveToActive();
+
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
     leaveRoom();
   });
 });

@@ -47,6 +47,8 @@ import {
   setScreenShareAudioVolume,
   persistStreamVolume,
   getPersistedStreamVolume,
+  persistStreamMuted,
+  getPersistedStreamMuted,
   activeShareType,
   computeStopRoute,
   startFallbackShare,
@@ -716,9 +718,10 @@ export default function ActiveRoom() {
   const [shareVolumes, setShareVolumes] = useState<Map<string, number>>(new Map());
   const shareVolumesRef = useRef(shareVolumes);
   const watchAllVolumesRef = useRef<Map<string, number>>(new Map());
+  const [shareMuted, setShareMuted] = useState<Map<string, boolean>>(new Map());
+  const shareMutedRef = useRef(shareMuted);
   // Local mute state: key = participantId, value = pre-mute volume (presence means muted).
   const [localMicMuted, setLocalMicMuted] = useState<Map<string, number>>(new Map());
-  const [localSysMuted, setLocalSysMuted] = useState<Map<string, number>>(new Map());
   const watchAllAttachedAudioRef = useRef<Set<string>>(new Set());
   const [shareQualityState, setShareQualityState] = useState<ShareQuality>('high');
   const [shareAudioOn, setShareAudioOn] = useState(false);
@@ -798,6 +801,10 @@ export default function ActiveRoom() {
     shareVolumesRef.current = shareVolumes;
   }, [shareVolumes]);
 
+  useEffect(() => {
+    shareMutedRef.current = shareMuted;
+  }, [shareMuted]);
+
   const prevStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   useEffect(() => {
     if (!roomState) return;
@@ -813,7 +820,8 @@ export default function ActiveRoom() {
           shareVolumesRef.current.get(id) ??
           getPersistedStreamVolume(id) ??
           70;
-        setScreenShareAudioVolume(id, volume);
+        const muted = shareMutedRef.current.get(id) ?? getPersistedStreamMuted(id) ?? (volume === 0);
+        setScreenShareAudioVolume(id, muted ? 0 : volume);
       }
     }
     prevStreamsRef.current = new Map(roomState.screenShareStreams);
@@ -832,6 +840,40 @@ export default function ActiveRoom() {
     return watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? getPersistedStreamVolume(participantId) ?? 70;
   }, []);
 
+  const getSavedShareMuted = useCallback((participantId: string) => {
+    return shareMutedRef.current.get(participantId) ?? getPersistedStreamMuted(participantId) ?? (getSavedShareVolume(participantId) === 0);
+  }, [getSavedShareVolume]);
+
+  const applySavedScreenShareAudio = useCallback((participantId: string) => {
+    const volume = getSavedShareVolume(participantId);
+    setScreenShareAudioVolume(participantId, getSavedShareMuted(participantId) ? 0 : volume);
+  }, [getSavedShareMuted, getSavedShareVolume]);
+
+  const syncScreenShareMuted = useCallback((participantId: string, muted: boolean) => {
+    const savedVolume = getSavedShareVolume(participantId);
+    const restoredVolume = !muted && savedVolume === 0 ? 70 : savedVolume;
+    if (restoredVolume !== savedVolume) {
+      watchAllVolumesRef.current.set(participantId, restoredVolume);
+      setShareVolumes((prev) => {
+        const next = new Map(prev);
+        next.set(participantId, restoredVolume);
+        return next;
+      });
+      persistStreamVolume(participantId, restoredVolume);
+    }
+    shareMutedRef.current.set(participantId, muted);
+    setShareMuted((prev) => {
+      if (prev.get(participantId) === muted) return prev;
+      const next = new Map(prev);
+      next.set(participantId, muted);
+      return next;
+    });
+    persistStreamMuted(participantId, muted);
+    setScreenShareAudioVolume(participantId, muted ? 0 : restoredVolume);
+    emit('watch-all:restore-volume', { participantId, volume: restoredVolume, muted });
+    emit('screen-share:restore-volume', { participantId, volume: restoredVolume, muted });
+  }, [getSavedShareVolume]);
+
   const syncScreenShareVolume = useCallback((participantId: string, volume: number) => {
     setShareVolumes((prev) => {
       if (prev.get(participantId) === volume) return prev;
@@ -840,10 +882,19 @@ export default function ActiveRoom() {
       return next;
     });
     watchAllVolumesRef.current.set(participantId, volume);
-    setScreenShareAudioVolume(participantId, volume);
+    const muted = volume === 0;
+    shareMutedRef.current.set(participantId, muted);
+    setShareMuted((prev) => {
+      if (prev.get(participantId) === muted) return prev;
+      const next = new Map(prev);
+      next.set(participantId, muted);
+      return next;
+    });
+    setScreenShareAudioVolume(participantId, muted ? 0 : volume);
     persistStreamVolume(participantId, volume);
-    emit('watch-all:restore-volume', { participantId, volume });
-    emit('screen-share:restore-volume', { participantId, volume });
+    persistStreamMuted(participantId, muted);
+    emit('watch-all:restore-volume', { participantId, volume, muted });
+    emit('screen-share:restore-volume', { participantId, volume, muted });
   }, []);
 
   const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
@@ -861,28 +912,13 @@ export default function ActiveRoom() {
     });
   }, []);
 
-  const toggleLocalSysMute = useCallback((participantId: string) => {
-    setLocalSysMuted((prev) => {
-      const next = new Map(prev);
-      if (next.has(participantId)) {
-        const saved = next.get(participantId)!;
-        next.delete(participantId);
-        setScreenShareAudioVolume(participantId, saved);
-      } else {
-        const current = watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? 70;
-        next.set(participantId, current || 70);
-        setScreenShareAudioVolume(participantId, 0);
-      }
-      return next;
-    });
-  }, []);
-
   const emitWatchAllRestoreVolume = useCallback((participantId: string) => {
     emit('watch-all:restore-volume', {
       participantId,
       volume: getSavedShareVolume(participantId),
+      muted: getSavedShareMuted(participantId),
     });
-  }, [getSavedShareVolume]);
+  }, [getSavedShareMuted, getSavedShareVolume]);
 
   const getWatchAllScope = useCallback((currentState: VoiceRoomState | null) => {
     if (!currentState || !currentState.joinedSubRoomId) {
@@ -933,7 +969,7 @@ export default function ActiveRoom() {
       }
       console.log('[wavis:active-room] handleViewerReady: attaching watch-all audio for', participantId);
       attachScreenShareAudio(participantId);
-      setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+      applySavedScreenShareAudio(participantId);
       watchAllAttachedAudioRef.current.add(participantId);
       void emit('share:user-state', shareUserStateRef.current);
       void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
@@ -943,10 +979,10 @@ export default function ActiveRoom() {
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (!shareWindow || shareWindow.window.label !== windowLabel) return;
     attachScreenShareAudio(participantId);
-    setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+    applySavedScreenShareAudio(participantId);
     void emit('share:user-state', shareUserStateRef.current);
     void emit('share:voice-participants', voiceParticipantsRef.current);
-  }, [getSavedShareVolume]);
+  }, [applySavedScreenShareAudio]);
 
   /** Re-add a participant's stream to the Watch All grid after their pop-out closes. */
   const reAddStreamToWatchAll = (participantId: string) => {
@@ -975,7 +1011,7 @@ export default function ActiveRoom() {
     // the viewer-ready attach) and the existing-tile path.
     if (!shareWindowsRef.current.has(participantId)) {
       attachScreenShareAudio(participantId);
-      setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+      applySavedScreenShareAudio(participantId);
       watchAllAttachedAudioRef.current.add(participantId);
     }
   };
@@ -1078,15 +1114,14 @@ export default function ActiveRoom() {
         syncScreenShareVolume(participantId, volume);
       }),
     );
-    // Local mute toggle: sets gain only, does not persist to shareVolumes/watchAllVolumesRef
     cleanups.push(
-      listen<{ participantId: string; volume: number }>('watch-all:local-audio', (event) => {
-        setScreenShareAudioVolume(event.payload.participantId, event.payload.volume);
+      listen<{ participantId: string; muted: boolean }>('watch-all:mute-change', (event) => {
+        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; volume: number }>('screen-share:local-audio', (event) => {
-        setScreenShareAudioVolume(event.payload.participantId, event.payload.volume);
+      listen<{ participantId: string; muted: boolean }>('screen-share:mute-change', (event) => {
+        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
       }),
     );
     cleanups.push(
@@ -1118,7 +1153,7 @@ export default function ActiveRoom() {
     return () => {
       for (const p of cleanups) p.then((fn) => fn());
     };
-  }, [syncScreenShareVolume]); // syncScreenShareVolume is stable (useCallback[]) but listed for exhaustive-deps
+  }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   useEffect(() => {
     const unlisten = listen<{ participantId: string; windowLabel: string }>('screen-share-viewer:ready', (event) => {
@@ -1151,10 +1186,13 @@ export default function ActiveRoom() {
 
   // Watch All: listen for pop-out request from WatchAllPage
   useEffect(() => {
-    const unlisten = listen<{ participantId: string; volume?: number }>('watch-all:pop-out', (event) => {
+    const unlisten = listen<{ participantId: string; volume?: number; muted?: boolean }>('watch-all:pop-out', (event) => {
       const pid = event.payload.participantId;
       if (typeof event.payload.volume === 'number') {
         syncScreenShareVolume(pid, event.payload.volume);
+      }
+      if (typeof event.payload.muted === 'boolean') {
+        syncScreenShareMuted(pid, event.payload.muted);
       }
       const rs = roomStateRef.current;
       const participant = rs?.participants.find((p) => p.id === pid);
@@ -1169,7 +1207,7 @@ export default function ActiveRoom() {
       openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
     });
     return () => { unlisten.then((fn) => fn?.()); };
-  }, [syncScreenShareVolume]);
+  }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   useEffect(() => {
     const unlisten = listen<{ participantId: string }>('watch-all:request-resend', (event) => {
@@ -1238,7 +1276,7 @@ export default function ActiveRoom() {
           console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
           resendStream(pid, 'watch-all', stream);
           attachScreenShareAudio(pid);
-          setScreenShareAudioVolume(pid, getSavedShareVolume(pid));
+          applySavedScreenShareAudio(pid);
           watchAllAttachedAudioRef.current.add(pid);
         }
       }
@@ -1267,15 +1305,16 @@ export default function ActiveRoom() {
       const participant = roomState.participants.find((p) => p.id === identity);
       if (!participant) continue;
       const vol = getSavedShareVolume(identity);
-      setScreenShareAudioVolume(identity, vol);
-      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol });
+      const muted = getSavedShareMuted(identity);
+      applySavedScreenShareAudio(identity);
+      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted });
     }
     for (const identity of prev) {
       if (curr.has(identity)) continue;
       void emit('watch-all:audio-share-removed', { participantId: identity });
     }
     prevAudioOnlySharersRef.current = new Set(curr);
-  }, [watchAllOpen, roomState?.audioOnlySharers, roomState?.participants, getSavedShareVolume]);
+  }, [applySavedScreenShareAudio, getSavedShareMuted, getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -1418,6 +1457,7 @@ export default function ActiveRoom() {
       isOwner: isSelf,
       canvasFallback: stream === null,
       initialVolume: getSavedShareVolume(participantId),
+      initialMuted: getSavedShareMuted(participantId),
     };
     const hash = encodeURIComponent(JSON.stringify(params));
     const windowLabel = `screen-share-${participantId}`;
@@ -1431,7 +1471,7 @@ export default function ActiveRoom() {
 
         nativeShareViewersRef.current.add(participantId);
         attachScreenShareAudio(participantId);
-        setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+        applySavedScreenShareAudio(participantId);
         setWatchingShareIds((prev) => new Set(prev).add(participantId));
 
         if (watchAllWindowRef.current && watchAllReadyRef.current) {
@@ -1730,8 +1770,9 @@ export default function ActiveRoom() {
           const participant = scope.participants.find((p) => p.id === identity);
           if (!participant) continue;
           const vol = getSavedShareVolume(identity);
-          setScreenShareAudioVolume(identity, vol);
-          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol });
+          const muted = getSavedShareMuted(identity);
+          applySavedScreenShareAudio(identity);
+          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted });
         }
         prevAudioOnlySharersRef.current = new Set(rs.audioOnlySharers);
       });
@@ -2619,21 +2660,20 @@ export default function ActiveRoom() {
                 <span className="text-wavis-text-secondary shrink-0">share vol</span>
                 <div className="flex-1">
                   <VolumeSlider
-                    value={shareVolumes.get(p.id) ?? 70}
+                    value={shareVolumes.get(p.id) ?? getSavedShareVolume(p.id)}
                     onChange={(v) => {
-                      if (localSysMuted.has(p.id)) setLocalSysMuted((prev) => { const next = new Map(prev); next.delete(p.id); return next; });
                       syncScreenShareVolume(p.id, v);
                     }}
                     color={p.color}
                   />
                 </div>
-                <span className="text-wavis-text-secondary w-6 text-right">{localSysMuted.has(p.id) ? 0 : (shareVolumes.get(p.id) ?? 70)}</span>
+                <span className="text-wavis-text-secondary w-6 text-right">{getSavedShareMuted(p.id) ? 0 : (shareVolumes.get(p.id) ?? getSavedShareVolume(p.id))}</span>
                 <button
-                  onClick={() => toggleLocalSysMute(p.id)}
+                  onClick={() => syncScreenShareMuted(p.id, !getSavedShareMuted(p.id))}
                   className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
-                  style={localSysMuted.has(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
-                  title={localSysMuted.has(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'}
-                >{localSysMuted.has(p.id) ? '/unmute' : '/mute'}</button>
+                  style={getSavedShareMuted(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
+                  title={getSavedShareMuted(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'}
+                >{getSavedShareMuted(p.id) ? '/unmute' : '/mute'}</button>
               </div>
             )}
             {isHost && (
@@ -2685,8 +2725,8 @@ export default function ActiveRoom() {
             activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId
             || activePassthrough.targetSubRoomId === roomState.joinedSubRoomId
           );
-        const canSetPassthrough = isHost && !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
-        const canClearPassthrough = isHost && activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
+        const canSetPassthrough = roomState.passthroughEnabled && !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
+        const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
         const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
         const passthroughLabel = activePassthroughInvolvesRoom && activePassthrough?.label
           ? `“${activePassthrough.label}”`

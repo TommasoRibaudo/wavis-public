@@ -245,6 +245,7 @@ impl<
                 | SignalingMessage::LeaveSubRoom(_)
                 | SignalingMessage::SetPassthrough(_)
                 | SignalingMessage::ClearPassthrough(_)
+                | SignalingMessage::SetPassthroughEnabled(_)
                 | SignalingMessage::SetPassthroughVolume(_)
                 | SignalingMessage::SetPassthroughFilter(_)
                 | SignalingMessage::SubRoomState(_)

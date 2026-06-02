@@ -230,6 +230,15 @@ describe('participant_undeafened', () => {
 // ─── sub_room_state ───────────────────────────────────────────────
 
 describe('sub_room_state', () => {
+  it('synchronizes passthrough permission and defaults it off when absent', async () => {
+    await setupActiveSession();
+    inject({ type: 'sub_room_state', rooms: [], passthroughEnabled: true });
+    expect(getState().passthroughEnabled).toBe(true);
+
+    inject({ type: 'sub_room_state', rooms: [] });
+    expect(getState().passthroughEnabled).toBe(false);
+  });
+
   it('populates subRooms from the message', async () => {
     await setupActiveSession();
     inject({

@@ -190,6 +190,8 @@ export interface VoiceRoomState {
   defaultVolume: number;
   /** Passthrough volume (0–100): attenuates audio from paired sub-room. */
   passthroughVolume: number;
+  /** Whether channel members may create new passthrough links. */
+  passthroughEnabled: boolean;
   /** Whether paired sub-room participants are spectrally muffled. */
   passthroughFiltersEnabled: boolean;
   /** Passthrough muffle strength (0–100). */
@@ -1054,6 +1056,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   sharePermission: 'anyone',
   defaultVolume: 70,
   passthroughVolume: DEFAULT_PASSTHROUGH_VOLUME,
+  passthroughEnabled: false,
   passthroughFiltersEnabled: true,
   passthroughFilterStrength: 50,
   mediaReconnectFailures: 0,
@@ -2129,7 +2132,12 @@ function saveVolumesDebounced(): void {
         participantVols[p.userId] = p.volume;
       }
     }
-    const prefs: ChannelVolumePrefs = { master: state.masterVolume, participants: participantVols, streams: { ...(channelVolumePrefs?.streams ?? {}) } };
+    const prefs: ChannelVolumePrefs = {
+      master: state.masterVolume,
+      participants: participantVols,
+      streams: { ...(channelVolumePrefs?.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs?.streamMutes ?? {}) },
+    };
     channelVolumePrefs = prefs;
     setChannelVolumes(state.channelId, prefs).catch((err) => {
       console.warn(LOG, 'failed to persist channel volumes:', err);
@@ -3003,6 +3011,9 @@ function dispatchMessage(raw: unknown): void {
             label: passthrough.label,
           }
         : null;
+      state.passthroughEnabled = typeof msg.passthroughEnabled === 'boolean'
+        ? msg.passthroughEnabled
+        : false;
       if (typeof msg.passthroughVolumePercent === 'number') {
         state.passthroughVolume = Math.max(0, Math.min(100, Math.round(msg.passthroughVolumePercent)));
       }
@@ -3948,6 +3959,7 @@ export function leaveRoom(): void {
       master: state.masterVolume,
       participants: flushParticipantVols,
       streams: { ...(channelVolumePrefs.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}) },
     }).catch(() => {});
   }
 
@@ -4781,6 +4793,29 @@ export function getPersistedStreamVolume(participantId: string): number | null {
   return channelVolumePrefs.streams[p.userId] ?? null;
 }
 
+export function persistStreamMuted(participantId: string, muted: boolean): void {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (p?.userId) {
+    if (!channelVolumePrefs) {
+      channelVolumePrefs = { master: state.masterVolume, participants: {} };
+    }
+    channelVolumePrefs = {
+      ...channelVolumePrefs,
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}), [p.userId]: muted },
+    };
+  }
+  saveVolumesDebounced();
+}
+
+export function getPersistedStreamMuted(participantId: string): boolean | null {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.userId) return null;
+  const savedMute = channelVolumePrefs?.streamMutes?.[p.userId];
+  if (savedMute !== undefined) return savedMute;
+  // Backward compatibility: older preferences represented mute as volume 0.
+  return channelVolumePrefs?.streams?.[p.userId] === 0 ? true : null;
+}
+
 export function kickParticipant(participantId: string): void {
   if (!state.selfIsHost) return;
   if (!client) return;
@@ -4848,6 +4883,12 @@ export function setPassthrough(targetSubRoomId: string): void {
 export function clearPassthrough(): void {
   if (!client || client.status !== 'connected') return;
   client.send({ type: 'clear_passthrough' });
+}
+
+export function setPassthroughEnabled(enabled: boolean): void {
+  if (!state.selfIsHost) return;
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'set_passthrough_enabled', enabled });
 }
 
 export function setPassthroughVolume(volume: number): void {

@@ -89,6 +89,8 @@ pub struct SubRoomState {
     pub membership_sources: HashMap<String, SubRoomMembershipSource>,
     /// Optional active passthrough pair for this voice session.
     pub active_passthrough: Option<PassthroughPair>,
+    /// Whether channel members may create new passthrough links.
+    pub passthrough_enabled: bool,
     /// Passthrough volume as a percentage (0–100), set by an admin and applied to all participants.
     pub passthrough_volume_percent: u8,
     /// Whether passthrough participants are spectrally muffled.
@@ -104,6 +106,7 @@ impl SubRoomState {
             participant_assignments: HashMap::new(),
             membership_sources: HashMap::new(),
             active_passthrough: None,
+            passthrough_enabled: false,
             passthrough_volume_percent: 20,
             passthrough_filters_enabled: true,
             passthrough_filter_strength: 50,

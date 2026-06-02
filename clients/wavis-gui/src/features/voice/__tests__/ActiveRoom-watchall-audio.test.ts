@@ -14,6 +14,7 @@ interface ViewerAudioState {
   watchAllOpen: boolean;
   watchAllReady: boolean;
   savedVolumes: Map<string, number>;
+  savedMuted: Map<string, boolean>;
   watchAllAttachedAudio: Set<string>;
 }
 
@@ -24,6 +25,7 @@ function createState(overrides: Partial<ViewerAudioState> = {}): ViewerAudioStat
     watchAllOpen: false,
     watchAllReady: false,
     savedVolumes: new Map(),
+    savedMuted: new Map(),
     watchAllAttachedAudio: new Set(),
     ...overrides,
   };
@@ -81,7 +83,8 @@ function onViewerReady(
     if (!state.watchAllOpen || !state.watchAllReady) return;
     if (state.shareWindows.has(event.participantId)) return;
     deps.attachScreenShareAudio(event.participantId);
-    deps.setScreenShareAudioVolume(event.participantId, state.savedVolumes.get(event.participantId) ?? 70);
+    const volume = state.savedVolumes.get(event.participantId) ?? 70;
+    deps.setScreenShareAudioVolume(event.participantId, state.savedMuted.get(event.participantId) ? 0 : volume);
     state.watchAllAttachedAudio.add(event.participantId);
     return;
   }
@@ -90,7 +93,8 @@ function onViewerReady(
   if (currentWindowLabel !== event.windowLabel) return;
 
   deps.attachScreenShareAudio(event.participantId);
-  deps.setScreenShareAudioVolume(event.participantId, state.savedVolumes.get(event.participantId) ?? 70);
+  const volume = state.savedVolumes.get(event.participantId) ?? 70;
+  deps.setScreenShareAudioVolume(event.participantId, state.savedMuted.get(event.participantId) ? 0 : volume);
 }
 
 function onDirectViewerStreamChanged(
@@ -171,6 +175,23 @@ describe('ActiveRoom viewer audio orchestration', () => {
 
     expect(attachScreenShareAudio).toHaveBeenCalledWith('user-1');
     expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 55);
+  });
+
+  it('attaches muted pop-out audio at zero without overwriting its saved slider volume', () => {
+    const state = createState({
+      activeShares: new Set(['user-1']),
+      shareWindows: new Map([['user-1', 'screen-share-user-1']]),
+      savedVolumes: new Map([['user-1', 55]]),
+      savedMuted: new Map([['user-1', true]]),
+    });
+
+    onViewerReady(state, { participantId: 'user-1', windowLabel: 'screen-share-user-1' }, {
+      attachScreenShareAudio,
+      setScreenShareAudioVolume,
+    });
+
+    expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 0);
+    expect(state.savedVolumes.get('user-1')).toBe(55);
   });
 
   it('ignores stale pop-out ready events after the window is gone', () => {
