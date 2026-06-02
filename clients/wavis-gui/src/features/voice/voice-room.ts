@@ -4546,8 +4546,15 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   }
 }
 
+interface StopCustomShareOptions {
+  suppressSignaling?: boolean;
+}
+
 /** Stop a specific share slot or all shares. */
-export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all'): Promise<void> {
+export async function stopCustomShare(
+  target: 'video' | 'audio' | 'all' = 'all',
+  options: StopCustomShareOptions = {},
+): Promise<void> {
   const plan = planStopCommands(target, state.activeVideoShare, state.activeAudioShare);
 
   // 1. Stop video capture (best-effort)
@@ -4604,7 +4611,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   const willStillBeSharing =
     (target === 'video' && state.activeAudioShare !== null) ||
     (target === 'audio' && state.activeVideoShare !== null);
-  if (client) {
+  if (client && !options.suppressSignaling) {
     if (!willStillBeSharing) {
       client.send({ type: 'stop-share' });
     } else if (target === 'video' && state.activeAudioShare !== null) {

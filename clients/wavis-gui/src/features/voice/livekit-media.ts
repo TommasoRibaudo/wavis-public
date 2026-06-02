@@ -2329,6 +2329,12 @@ export class LiveKitModule {
           this.callbacks.onRemoteCameraPublished?.(participant.identity);
           return;
         }
+        if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
+          publication.setSubscribed?.(true);
+          publication.setEnabled?.(true);
+          publication.setVideoQuality?.(VideoQuality.HIGH);
+          return;
+        }
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
         publication.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));

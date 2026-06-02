@@ -3482,7 +3482,7 @@ export default function ActiveRoom() {
                     ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
                     : selection;
                   if (wasChangingSource) {
-                    await stopCustomShare('video');
+                    await stopCustomShare('video', { suppressSignaling: true });
                   }
                   await startCustomShare(nextSelection);
                   setShowPostShareAudioPrompt(false);
