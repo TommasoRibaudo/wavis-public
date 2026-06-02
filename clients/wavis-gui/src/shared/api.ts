@@ -14,6 +14,7 @@ import {
   isTokenExpired,
   refreshTokens,
 } from '@features/auth/auth';
+import type { RefreshResult } from '@features/auth/auth';
 
 // Error Classification
 
@@ -66,6 +67,10 @@ function rateLimitedMessage(headers: Headers): string {
   return `too many requests — try again in ${secs} second${secs === 1 ? '' : 's'}`;
 }
 
+function refreshSucceeded(result: RefreshResult): boolean {
+  return result.status === 'success';
+}
+
 async function doFetch(
   endpoint: string,
   init: RequestInit,
@@ -106,8 +111,10 @@ export async function apiFetch<T = unknown>(
 
   // Pre-request refresh if token expired
   if (await isTokenExpired()) {
-    const ok = await refreshTokens();
-    if (!ok) throw new ApiError(401, 'Session expired', 'Unauthorized');
+    const result = await refreshTokens();
+    if (!refreshSucceeded(result)) {
+      throw new ApiError(401, 'Session expired', 'Unauthorized');
+    }
   }
 
   const insecure = await getInsecureTls();
@@ -132,7 +139,9 @@ export async function apiFetch<T = unknown>(
   // 401 retry: single refresh + replay
   if (res.status === 401) {
     const refreshed = await refreshTokens();
-    if (!refreshed) throw new ApiError(401, 'Session expired', 'Unauthorized');
+    if (!refreshSucceeded(refreshed)) {
+      throw new ApiError(401, 'Session expired', 'Unauthorized');
+    }
 
     try {
       const headers = await makeHeaders();
