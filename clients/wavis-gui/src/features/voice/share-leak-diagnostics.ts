@@ -9,7 +9,11 @@ export type NativeShareLeakStage =
   | 'track_stopped'
   | 'session_closed';
 
-export type ShareLeakCaptureBackend = 'browser-display-media' | 'native-poll';
+export type ShareLeakCaptureBackend =
+  | 'browser-display-media'
+  | 'native-wgc'
+  | 'native-gdi-screen'
+  | 'native-gdi-window';
 
 export interface ShareLeakMemorySample {
   capturedAt: string;
@@ -31,6 +35,29 @@ export interface ShareLeakCounters {
   earlyFrameBufferPeak: number;
   firstFrameLatencyMs: number | null;
   stopCleanupLatencyMs: number | null;
+}
+
+export interface WindowsNativeCaptureDiagnostics {
+  backend: string;
+  sourceKind: 'screen' | 'window';
+  startupStage: string;
+  itemWidth: number;
+  itemHeight: number;
+  adapterDescription: string | null;
+  adapterVendorId: number | null;
+  adapterDeviceId: number | null;
+  frameArrivedCallbacks: number;
+  usableFrames: number;
+  tryGetNextFrameFailures: number;
+  surfaceFailures: number;
+  surfaceCastFailures: number;
+  textureInterfaceFailures: number;
+  zeroDimensionFrames: number;
+  stagingTextureFailures: number;
+  mapFailures: number;
+  firstError: string | null;
+  firstRawFrameLatencyMs: number | null;
+  firstBufferedJpegLatencyMs: number | null;
 }
 
 export interface ShareLeakCleanupFlags {
@@ -112,6 +139,7 @@ export interface ShareSessionLeakSummary {
   sourceName: string;
   mode: 'screen_audio' | 'window';
   captureBackend: ShareLeakCaptureBackend;
+  sourceKind?: 'screen' | 'window';
   startedAt: string;
   endedAt: string;
   stages: Partial<Record<NativeShareLeakStage, string>>;
@@ -126,4 +154,5 @@ export interface ShareSessionLeakSummary {
   activeMemory: ShareLeakMemorySample | null;
   cleanupMemory: ShareLeakMemorySample | null;
   error: string | null;
+  windowsNativeCaptureDiagnostics?: WindowsNativeCaptureDiagnostics | null;
 }

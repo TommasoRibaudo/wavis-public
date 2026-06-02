@@ -40,7 +40,7 @@ import {
 } from '@features/settings/settings-store';
 import type { ChannelVolumePrefs } from '@features/settings/settings-store';
 import type { ShareMode, ShareSelection, EnumerationResult, FallbackReason, AudioShareStartResult } from '@features/screen-share/share-types';
-import type { ShareSessionLeakSummary } from './share-leak-diagnostics';
+import type { ShareSessionLeakSummary, WindowsNativeCaptureDiagnostics } from './share-leak-diagnostics';
 import { emitTelemetryEvent, type WindowsSharePath } from './telemetry';
 import {
   lookupLinuxCapability,
@@ -56,6 +56,11 @@ const LOG = '[wavis:voice-room]';
 const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
+const windowsWgcFailedSourceKinds = new Set<'screen' | 'window'>();
+
+export function resetWindowsWgcSessionBypassForTests(): void {
+  windowsWgcFailedSourceKinds.clear();
+}
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
@@ -4323,39 +4328,158 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
 
     // 3. Start video first (if needed)
     if (needsVideo) {
+      const sourceKind = selection.sourceKind ?? (selection.mode === 'window' ? 'window' : 'screen');
+      const startWindowsNativeAttempt = async (
+        captureBackend: 'wgc' | 'gdi_poll',
+      ): Promise<void> => {
+        if (!(lkModule instanceof LiveKitModule)) return;
+        const attachRustDiagnostics = async (): Promise<void> => {
+          try {
+            const diagnostics = await invoke<WindowsNativeCaptureDiagnostics | null>(
+              'screen_share_get_capture_diagnostics',
+            );
+            lkModule.attachWindowsNativeCaptureDiagnostics(diagnostics);
+          } catch (error) {
+            console.warn(LOG, 'best-effort native capture diagnostics fetch failed:', error);
+          }
+        };
+        const leakBackend = captureBackend === 'wgc'
+          ? 'native-wgc'
+          : sourceKind === 'screen'
+            ? 'native-gdi-screen'
+            : 'native-gdi-window';
+        lkModule.beginNativeCaptureLeakSession({
+          shareSessionId,
+          mode: selection.mode as 'screen_audio' | 'window',
+          sourceId: selection.sourceId,
+          sourceName: selection.sourceName,
+          sourceKind,
+          captureBackend: leakBackend,
+        });
+        lkModule.prepareNativeCapture();
+        await lkModule.prepareNativeCaptureFailureListener();
+        emitTelemetryEvent({
+          name: 'capture.path.selected',
+          os: 'windows',
+          path: leakBackend,
+          sourceKind,
+          backend: captureBackend,
+          ts: Date.now(),
+        });
+        let rustCaptureStarted = false;
+        try {
+          await invoke('screen_share_start_source', {
+            sourceId: selection.sourceId,
+            shareSessionId,
+            sourceKind,
+            captureBackend,
+            compatibilityMode: selection.compatibilityMode ?? false,
+          });
+          rustCaptureStarted = true;
+          await lkModule.startNativeCapture();
+          await attachRustDiagnostics();
+        } catch (error) {
+          lkModule.markNativeCaptureFailure(error instanceof Error ? error.message : String(error));
+          await attachRustDiagnostics();
+          try {
+            await lkModule.stopNativeCapture();
+          } catch (stopError) {
+            console.warn(LOG, 'best-effort stopNativeCapture between native attempts failed:', stopError);
+          }
+          if (rustCaptureStarted) {
+            try {
+              await invoke('screen_share_stop');
+            } catch (stopError) {
+              console.warn(LOG, 'best-effort screen_share_stop between native attempts failed:', stopError);
+            }
+          }
+          throw error;
+        }
+      };
+
       // On Windows (LiveKit JS SDK path), install the frame buffering
       // handler BEFORE starting the Rust capture. prepareNativeCapture()
       // is synchronous — no async, no event listener, no HWND dependency.
       // This branch is only for the custom picker/native-source pipeline.
       // The normal Windows `/share` button goes through startFallbackShare()
       // -> lkModule.startScreenShare() instead.
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.beginNativeCaptureLeakSession({
-          shareSessionId,
-          mode: selection.mode as 'screen_audio' | 'window',
-          sourceId: selection.sourceId,
-          sourceName: selection.sourceName,
-        });
-        lkModule.prepareNativeCapture();
-      }
-
-      if (selection.sourceId === 'portal') {
+      if (isWindowsPlatform() && lkModule instanceof LiveKitModule) {
+        const bypassWgc = windowsWgcFailedSourceKinds.has(sourceKind);
+        const firstBackend =
+          (selection.compatibilityMode === true && sourceKind === 'window') || bypassWgc
+            ? 'gdi_poll'
+            : 'wgc';
+        if (bypassWgc && !(selection.compatibilityMode === true && sourceKind === 'window')) {
+          emitTelemetryEvent({
+            name: 'capture.wgc.session_bypass',
+            sourceKind,
+            ts: Date.now(),
+          });
+        }
+        try {
+          await startWindowsNativeAttempt(firstBackend);
+        } catch (firstError) {
+          if (firstBackend === 'wgc') {
+            windowsWgcFailedSourceKinds.add(sourceKind);
+            emitTelemetryEvent({
+              name: 'capture.fallback.activated',
+              os: 'windows',
+              from: 'wgc',
+              to: 'gdi_poll',
+              reason: firstError instanceof Error ? firstError.message : String(firstError),
+              ts: Date.now(),
+            });
+            try {
+              await startWindowsNativeAttempt('gdi_poll');
+            } catch (pollError) {
+              emitTelemetryEvent({
+                name: 'capture.fallback.activated',
+                os: 'windows',
+                from: 'native',
+                to: 'browser',
+                reason: pollError instanceof Error ? pollError.message : String(pollError),
+                ts: Date.now(),
+              });
+              state.activeVideoShare = null;
+              notify();
+              await startFallbackShare();
+              return;
+            }
+          } else {
+            emitTelemetryEvent({
+              name: 'capture.fallback.activated',
+              os: 'windows',
+              from: 'native',
+              to: 'browser',
+              reason: firstError instanceof Error ? firstError.message : String(firstError),
+              ts: Date.now(),
+            });
+            state.activeVideoShare = null;
+            notify();
+            await startFallbackShare();
+            return;
+          }
+        }
+        videoStarted = true;
+      } else if (selection.sourceId === 'portal') {
         await invoke('screen_share_start');
+        videoStarted = true;
       } else {
         await invoke('screen_share_start_source', {
           sourceId: selection.sourceId,
           shareSessionId,
+          sourceKind,
           compatibilityMode: selection.compatibilityMode ?? false,
         });
+        videoStarted = true;
       }
-      videoStarted = true;
 
       // On Windows (LiveKit JS SDK path), the Rust capture writes frames
       // to a shared buffer. startNativeCapture() starts a polling loop
       // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
       // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
       // to the HWND corruption caused by child windows (SharePicker).
-      if (lkModule && lkModule instanceof LiveKitModule) {
+      if (!isWindowsPlatform() && lkModule && lkModule instanceof LiveKitModule) {
         await lkModule.startNativeCapture();
       }
     }

@@ -60,6 +60,8 @@ vi.mock('../livekit-media', () => ({
     startWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     stopWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     prepareNativeCapture: vi.fn(),
+    prepareNativeCaptureFailureListener: vi.fn().mockResolvedValue(undefined),
+    attachWindowsNativeCaptureDiagnostics: vi.fn(),
     startFallbackShare: vi.fn().mockResolvedValue({ started: false, withAudio: false }),
     stopShare: vi.fn().mockResolvedValue(undefined),
     setScreenShareQuality: vi.fn().mockResolvedValue(undefined),

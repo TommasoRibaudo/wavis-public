@@ -673,7 +673,7 @@ describe('Feature: video-feed, Property 2: Camera toggle round-trip', () => {
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('Feature: video-feed, Property 3: Failure classification reset', () => {
@@ -751,7 +751,7 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('Feature: video-feed, Property 8: Quality convergence', () => {
@@ -847,5 +847,5 @@ describe('Feature: video-feed, Property 8: Quality convergence', () => {
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });

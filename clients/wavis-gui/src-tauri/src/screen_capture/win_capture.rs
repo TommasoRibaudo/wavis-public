@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use super::{CaptureError, CapturedFrame, ScreenCapture};
@@ -16,6 +17,149 @@ const LOG: &str = "[wavis:win-capture]";
 
 /// Alias for the frame callback type to satisfy clippy::type_complexity.
 type FrameCallback = Arc<Mutex<Option<Box<dyn Fn(CapturedFrame) + Send + 'static>>>>;
+pub type SharedWindowsCaptureDiagnostics = Arc<Mutex<WindowsNativeCaptureDiagnostics>>;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsNativeCaptureDiagnostics {
+    pub backend: String,
+    pub source_kind: String,
+    pub startup_stage: String,
+    pub item_width: u32,
+    pub item_height: u32,
+    pub adapter_description: Option<String>,
+    pub adapter_vendor_id: Option<u32>,
+    pub adapter_device_id: Option<u32>,
+    pub frame_arrived_callbacks: u64,
+    pub usable_frames: u64,
+    pub try_get_next_frame_failures: u64,
+    pub surface_failures: u64,
+    pub surface_cast_failures: u64,
+    pub texture_interface_failures: u64,
+    pub zero_dimension_frames: u64,
+    pub staging_texture_failures: u64,
+    pub map_failures: u64,
+    pub first_error: Option<String>,
+    pub first_raw_frame_latency_ms: Option<u64>,
+    pub first_buffered_jpeg_latency_ms: Option<u64>,
+}
+
+impl WindowsNativeCaptureDiagnostics {
+    pub fn new(backend: &str, source_kind: &str, item_width: u32, item_height: u32) -> Self {
+        Self {
+            backend: backend.to_string(),
+            source_kind: source_kind.to_string(),
+            startup_stage: "backend_start".to_string(),
+            item_width,
+            item_height,
+            adapter_description: None,
+            adapter_vendor_id: None,
+            adapter_device_id: None,
+            frame_arrived_callbacks: 0,
+            usable_frames: 0,
+            try_get_next_frame_failures: 0,
+            surface_failures: 0,
+            surface_cast_failures: 0,
+            texture_interface_failures: 0,
+            zero_dimension_frames: 0,
+            staging_texture_failures: 0,
+            map_failures: 0,
+            first_error: None,
+            first_raw_frame_latency_ms: None,
+            first_buffered_jpeg_latency_ms: None,
+        }
+    }
+
+    pub fn total_readback_failures(&self) -> u64 {
+        self.try_get_next_frame_failures
+            + self.surface_failures
+            + self.surface_cast_failures
+            + self.texture_interface_failures
+            + self.zero_dimension_frames
+            + self.staging_texture_failures
+            + self.map_failures
+    }
+
+    pub fn compact_summary(&self) -> String {
+        format!(
+            "backend={} source_kind={} last_stage={} callbacks={} usable_frames={} readback_failures={} first_error={}",
+            self.backend,
+            self.source_kind,
+            self.startup_stage,
+            self.frame_arrived_callbacks,
+            self.usable_frames,
+            self.total_readback_failures(),
+            self.first_error.as_deref().unwrap_or("none"),
+        )
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsNativeCaptureFailureEvent {
+    reason: String,
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn record_readback_failure(
+    diagnostics: &SharedWindowsCaptureDiagnostics,
+    app_handle: &AppHandle,
+    field: fn(&mut WindowsNativeCaptureDiagnostics) -> &mut u64,
+    stage: &str,
+    error: impl std::fmt::Display,
+) {
+    let error = error.to_string();
+    let emit_reason = diagnostics.lock().ok().and_then(|mut diag| {
+        *field(&mut diag) += 1;
+        if diag.first_error.is_none() {
+            diag.first_error = Some(format!("{stage}: {error}"));
+        }
+        if diag.usable_frames == 0 && diag.total_readback_failures() == 3 {
+            Some(format!(
+                "WGC readback failed repeatedly before first frame: {}",
+                diag.compact_summary()
+            ))
+        } else {
+            None
+        }
+    });
+    if let Some(reason) = emit_reason {
+        log::warn!("{LOG} {reason}");
+        let _ = app_handle.emit(
+            "windows-native-capture-failed",
+            WindowsNativeCaptureFailureEvent { reason },
+        );
+    }
+}
+
+fn staging_texture_matches(
+    current: Option<(u32, u32, i32)>,
+    width: u32,
+    height: u32,
+    format: i32,
+) -> bool {
+    current.is_some_and(|value| value == (width, height, format))
+}
+
+struct WgcStartupSummary {
+    stage: Arc<Mutex<&'static str>>,
+    first_frame_seen: Arc<AtomicBool>,
+}
+
+impl Drop for WgcStartupSummary {
+    fn drop(&mut self) {
+        if !self.first_frame_seen.load(Ordering::SeqCst) {
+            let stage = self.stage.lock().map(|stage| *stage).unwrap_or("unknown");
+            log::warn!("{LOG} WGC exited before first frame; last_startup_stage={stage}");
+        }
+    }
+}
 
 /// Windows Graphics Capture backend for a specific source (monitor or window).
 pub struct WinCapture {
@@ -32,17 +176,37 @@ pub struct WinCapture {
 pub struct WinCaptureConfig {
     /// Source ID — an HMONITOR or HWND handle value as a string.
     pub source_id: String,
+    pub source_kind: WinCaptureSourceKind,
     /// Tauri app handle for emitting `share_error` events on source loss.
     pub app_handle: AppHandle,
+    pub diagnostics: SharedWindowsCaptureDiagnostics,
+}
+
+struct CaptureLoopParams {
+    capture_item: windows::Graphics::Capture::GraphicsCaptureItem,
+    size: windows::Graphics::SizeInt32,
+    active: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
+    frame_callback: FrameCallback,
+    callback_ready: Arc<(Mutex<bool>, Condvar)>,
+    app_handle: AppHandle,
+    diagnostics: SharedWindowsCaptureDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WinCaptureSourceKind {
+    Screen,
+    Window,
 }
 
 /// Create a `GraphicsCaptureItem` from a handle value string.
 ///
-/// Tries monitor first (via `IGraphicsCaptureItemInterop::CreateForMonitor`),
-/// then window (via `CreateForWindow`). Returns a descriptive error if the
-/// source is no longer available.
+/// Uses the picker-provided source kind to call `CreateForMonitor` or
+/// `CreateForWindow` directly. Returns a descriptive error if the source is
+/// no longer available.
 fn create_capture_item(
     handle_val: isize,
+    source_kind: WinCaptureSourceKind,
 ) -> Result<windows::Graphics::Capture::GraphicsCaptureItem, CaptureError> {
     use windows::Graphics::Capture::GraphicsCaptureItem;
     use windows::Win32::Foundation::HWND;
@@ -58,19 +222,16 @@ fn create_capture_item(
         CaptureError::CaptureStartFailed(format!("Graphics Capture interop unavailable: {e}"))
     })?;
 
-    // Try as monitor first.
-    let monitor_result: Result<GraphicsCaptureItem, _> =
-        unsafe { interop.CreateForMonitor(HMONITOR(handle_val as *mut _)) };
+    let result: Result<GraphicsCaptureItem, _> = match source_kind {
+        WinCaptureSourceKind::Screen => unsafe {
+            interop.CreateForMonitor(HMONITOR(handle_val as *mut _))
+        },
+        WinCaptureSourceKind::Window => unsafe {
+            interop.CreateForWindow(HWND(handle_val as *mut _))
+        },
+    };
 
-    if let Ok(item) = monitor_result {
-        return Ok(item);
-    }
-
-    // Try as window handle.
-    let window_result: Result<GraphicsCaptureItem, _> =
-        unsafe { interop.CreateForWindow(HWND(handle_val as *mut _)) };
-
-    match window_result {
+    match result {
         Ok(item) => Ok(item),
         Err(e) => Err(CaptureError::CaptureStartFailed(format!(
             "The selected source is no longer available: {e}"
@@ -82,22 +243,23 @@ impl WinCapture {
     /// Create and start a capture session for the given source.
     ///
     /// Parses `source_id` as an isize handle, creates a `GraphicsCaptureItem`
-    /// (trying monitor first, then window), and starts the capture loop on a
-    /// dedicated thread.
+    /// for the declared source kind, and starts the capture loop on a dedicated
+    /// thread.
     ///
     /// Returns `CaptureError::CaptureStartFailed` with a descriptive message
     /// if the source is no longer available.
     pub fn start(config: WinCaptureConfig) -> Result<Self, CaptureError> {
         log::info!(
-            "{LOG} [diag] start() ENTERED, source_id={}",
-            config.source_id
+            "{LOG} [diag] start() ENTERED, source_id={}, source_kind={:?}, backend=wgc",
+            config.source_id,
+            config.source_kind,
         );
 
         let handle_val: isize = config.source_id.parse().map_err(|_| {
             CaptureError::CaptureStartFailed(format!("invalid source id: {}", config.source_id))
         })?;
 
-        let capture_item = create_capture_item(handle_val)?;
+        let capture_item = create_capture_item(handle_val, config.source_kind)?;
 
         let size = capture_item.Size().map_err(|e| {
             CaptureError::CaptureStartFailed(format!("failed to get capture item size: {e}"))
@@ -107,6 +269,11 @@ impl WinCapture {
             return Err(CaptureError::CaptureStartFailed(
                 "The selected source has zero dimensions".to_string(),
             ));
+        }
+        if let Ok(mut diagnostics) = config.diagnostics.lock() {
+            diagnostics.item_width = size.Width as u32;
+            diagnostics.item_height = size.Height as u32;
+            diagnostics.startup_stage = "capture_item_ready".to_string();
         }
 
         let active = Arc::new(AtomicBool::new(true));
@@ -127,15 +294,16 @@ impl WinCapture {
         let handle = std::thread::Builder::new()
             .name("win-capture".into())
             .spawn(move || {
-                Self::capture_loop(
+                Self::capture_loop(CaptureLoopParams {
                     capture_item,
                     size,
                     active,
                     stop_flag,
                     frame_callback,
                     callback_ready,
-                    config.app_handle,
-                );
+                    app_handle: config.app_handle,
+                    diagnostics: config.diagnostics,
+                });
             })
             .map_err(|e| {
                 CaptureError::CaptureStartFailed(format!(
@@ -149,15 +317,18 @@ impl WinCapture {
     }
 
     /// Main capture loop — runs on a dedicated thread.
-    fn capture_loop(
-        capture_item: windows::Graphics::Capture::GraphicsCaptureItem,
-        size: windows::Graphics::SizeInt32,
-        active: Arc<AtomicBool>,
-        stop_flag: Arc<AtomicBool>,
-        frame_callback: FrameCallback,
-        callback_ready: Arc<(Mutex<bool>, Condvar)>,
-        app_handle: AppHandle,
-    ) {
+    fn capture_loop(params: CaptureLoopParams) {
+        let CaptureLoopParams {
+            capture_item,
+            size,
+            active,
+            stop_flag,
+            frame_callback,
+            callback_ready,
+            app_handle,
+            diagnostics,
+        } = params;
+
         use windows::core::Interface;
         use windows::Graphics::Capture::Direct3D11CaptureFramePool;
         use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -177,6 +348,16 @@ impl WinCapture {
         };
 
         // ── 0. Initialize WinRT on this thread ─────────────────────────
+        let startup_stage = Arc::new(Mutex::new("capture_thread_started"));
+        let first_frame_seen = Arc::new(AtomicBool::new(false));
+        let _startup_summary = WgcStartupSummary {
+            stage: startup_stage.clone(),
+            first_frame_seen: first_frame_seen.clone(),
+        };
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "capture_thread_started".to_string();
+        }
+
         log::info!("{LOG} [diag] thread: step 0 — WinRT init");
         // The capture thread creates WinRT objects (frame pool, session).
         // Without RoInitialize the WinRT runtime may silently fail to
@@ -201,6 +382,10 @@ impl WinCapture {
                     return;
                 }
             }
+        }
+        *startup_stage.lock().unwrap() = "winrt_initialized";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "winrt_initialized".to_string();
         }
 
         // ── 1. Create D3D11 device ──────────────────────────────────────
@@ -253,6 +438,10 @@ impl WinCapture {
         }
 
         log::info!("{LOG} [diag] thread: step 1 complete — D3D11 device ready");
+        *startup_stage.lock().unwrap() = "d3d_device_ready";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "d3d_device_ready".to_string();
+        }
 
         // ── 2. Create WinRT IDirect3DDevice ─────────────────────────────
         log::info!("{LOG} [diag] thread: step 2 — creating WinRT IDirect3DDevice");
@@ -264,6 +453,21 @@ impl WinCapture {
                 return;
             }
         };
+        if let Ok(adapter) = unsafe { dxgi_device.GetAdapter() } {
+            if let Ok(desc) = unsafe { adapter.GetDesc() } {
+                let end = desc
+                    .Description
+                    .iter()
+                    .position(|ch| *ch == 0)
+                    .unwrap_or(desc.Description.len());
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.adapter_description =
+                        Some(String::from_utf16_lossy(&desc.Description[..end]));
+                    diag.adapter_vendor_id = Some(desc.VendorId);
+                    diag.adapter_device_id = Some(desc.DeviceId);
+                }
+            }
+        }
 
         let winrt_device = unsafe {
             match CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) {
@@ -282,6 +486,10 @@ impl WinCapture {
                 }
             }
         };
+        *startup_stage.lock().unwrap() = "winrt_d3d_device_ready";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "winrt_d3d_device_ready".to_string();
+        }
 
         // ── 3. Create frame pool + capture session ──────────────────────
         log::info!("{LOG} [diag] thread: step 3 — creating frame pool + capture session");
@@ -307,6 +515,10 @@ impl WinCapture {
                 return;
             }
         };
+        *startup_stage.lock().unwrap() = "capture_session_ready";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "capture_session_ready".to_string();
+        }
 
         // Disable the yellow capture border if the API supports it.
         // Cursor capture is enabled so viewers see the cursor in the stream.
@@ -322,6 +534,12 @@ impl WinCapture {
         let d3d_device_clone = d3d_device.clone();
         let d3d_context_clone = d3d_context.clone();
         let capture_frame_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let first_frame_seen_callback = first_frame_seen.clone();
+        let diagnostics_callback = diagnostics.clone();
+        let app_callback = app_handle.clone();
+        let capture_started_at_ms = unix_now_ms();
+        let staging_cache = Arc::new(Mutex::new(None::<(u32, u32, i32, ID3D11Texture2D)>));
+        let staging_cache_callback = staging_cache.clone();
 
         let handler = windows::Foundation::TypedEventHandler::<
             Direct3D11CaptureFramePool,
@@ -329,6 +547,9 @@ impl WinCapture {
         >::new(move |pool, _| {
             if stop_clone.load(Ordering::SeqCst) {
                 return Ok(());
+            }
+            if let Ok(mut diag) = diagnostics_callback.lock() {
+                diag.frame_arrived_callbacks += 1;
             }
 
             let pool = match pool {
@@ -338,22 +559,58 @@ impl WinCapture {
 
             let frame = match pool.TryGetNextFrame() {
                 Ok(f) => f,
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    record_readback_failure(
+                        &diagnostics_callback,
+                        &app_callback,
+                        |diag| &mut diag.try_get_next_frame_failures,
+                        "try_get_next_frame",
+                        e,
+                    );
+                    return Ok(());
+                }
             };
 
             let surface = match frame.Surface() {
                 Ok(s) => s,
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    record_readback_failure(
+                        &diagnostics_callback,
+                        &app_callback,
+                        |diag| &mut diag.surface_failures,
+                        "surface",
+                        e,
+                    );
+                    return Ok(());
+                }
             };
 
             let access: IDirect3DDxgiInterfaceAccess = match surface.cast() {
                 Ok(a) => a,
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    record_readback_failure(
+                        &diagnostics_callback,
+                        &app_callback,
+                        |diag| &mut diag.surface_cast_failures,
+                        "surface_cast",
+                        e,
+                    );
+                    return Ok(());
+                }
             };
 
             let texture: ID3D11Texture2D = match unsafe { access.GetInterface() } {
                 Ok(t) => t,
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    record_readback_failure(
+                        &diagnostics_callback,
+                        &app_callback,
+                        |diag| &mut diag.texture_interface_failures,
+                        "texture_interface",
+                        e,
+                    );
+                    return Ok(());
+                }
             };
 
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -362,6 +619,13 @@ impl WinCapture {
             let w = desc.Width;
             let h = desc.Height;
             if w == 0 || h == 0 {
+                record_readback_failure(
+                    &diagnostics_callback,
+                    &app_callback,
+                    |diag| &mut diag.zero_dimension_frames,
+                    "texture_dimensions",
+                    format!("{}x{}", w, h),
+                );
                 return Ok(());
             }
 
@@ -382,13 +646,40 @@ impl WinCapture {
                 MiscFlags: 0,
             };
 
-            let staging: ID3D11Texture2D = unsafe {
-                let mut tex = None;
-                let hr = d3d_device_clone.CreateTexture2D(&staging_desc, None, Some(&mut tex));
-                match (hr, tex) {
-                    (Ok(()), Some(t)) => t,
-                    _ => return Ok(()),
+            let staging: ID3D11Texture2D = {
+                let mut cache = match staging_cache_callback.lock() {
+                    Ok(cache) => cache,
+                    Err(_) => return Ok(()),
+                };
+                let current = cache
+                    .as_ref()
+                    .map(|(width, height, format, _)| (*width, *height, *format));
+                if !staging_texture_matches(current, w, h, desc.Format.0) {
+                    let created = unsafe {
+                        let mut tex = None;
+                        let hr =
+                            d3d_device_clone.CreateTexture2D(&staging_desc, None, Some(&mut tex));
+                        match (hr, tex) {
+                            (Ok(()), Some(texture)) => Some(texture),
+                            (Err(e), _) => {
+                                record_readback_failure(
+                                    &diagnostics_callback,
+                                    &app_callback,
+                                    |diag| &mut diag.staging_texture_failures,
+                                    "staging_texture",
+                                    e,
+                                );
+                                None
+                            }
+                            _ => None,
+                        }
+                    };
+                    let Some(created) = created else {
+                        return Ok(());
+                    };
+                    *cache = Some((w, h, desc.Format.0, created));
                 }
+                cache.as_ref().unwrap().3.clone()
             };
 
             unsafe {
@@ -402,7 +693,14 @@ impl WinCapture {
             let map_result =
                 unsafe { d3d_context_clone.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) };
 
-            if map_result.is_err() {
+            if let Err(error) = map_result {
+                record_readback_failure(
+                    &diagnostics_callback,
+                    &app_callback,
+                    |diag| &mut diag.map_failures,
+                    "map",
+                    error,
+                );
                 return Ok(());
             }
 
@@ -429,7 +727,15 @@ impl WinCapture {
             }
 
             let n = capture_frame_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut diag) = diagnostics_callback.lock() {
+                diag.usable_frames += 1;
+                if diag.first_raw_frame_latency_ms.is_none() {
+                    diag.first_raw_frame_latency_ms =
+                        Some(unix_now_ms().saturating_sub(capture_started_at_ms));
+                }
+            }
             if n == 0 {
+                first_frame_seen_callback.store(true, Ordering::SeqCst);
                 let non_zero = rgba.iter().filter(|&&b| b != 0).count();
                 log::info!(
                         "{LOG} FrameArrived: first frame {}x{}, rgba_len={}, non_zero_bytes={}, row_pitch={}",
@@ -469,6 +775,10 @@ impl WinCapture {
         }
 
         log::info!("{LOG} [diag] thread: step 4 complete — FrameArrived handler registered");
+        *startup_stage.lock().unwrap() = "frame_handler_registered";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "frame_handler_registered".to_string();
+        }
 
         // ── 5. Register Closed event for source loss detection ──────────
         log::info!("{LOG} [diag] thread: step 5 — registering Closed handler");
@@ -515,6 +825,10 @@ impl WinCapture {
             active.store(false, Ordering::SeqCst);
             return;
         }
+        *startup_stage.lock().unwrap() = "capture_started";
+        if let Ok(mut diag) = diagnostics.lock() {
+            diag.startup_stage = "capture_started".to_string();
+        }
 
         log::info!("{LOG} capture started (session active)");
 
@@ -533,6 +847,11 @@ impl WinCapture {
             unsafe { windows::Win32::System::WinRT::RoUninitialize() };
         }
         log::info!("{LOG} capture stopped");
+        if let Ok(diag) = diagnostics.lock() {
+            if diag.usable_frames == 0 {
+                log::warn!("{LOG} WGC stopped before first frame; {}", diag.compact_summary());
+            }
+        }
     }
 }
 
@@ -594,5 +913,37 @@ impl Drop for WinCapture {
             }
             self.active.store(false, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{staging_texture_matches, WindowsNativeCaptureDiagnostics};
+
+    #[test]
+    fn staging_texture_is_reused_only_for_matching_dimensions_and_format() {
+        assert!(staging_texture_matches(Some((1920, 1080, 87)), 1920, 1080, 87));
+        assert!(!staging_texture_matches(Some((1920, 1080, 87)), 1280, 720, 87));
+        assert!(!staging_texture_matches(Some((1920, 1080, 87)), 1920, 1080, 28));
+        assert!(!staging_texture_matches(None, 1920, 1080, 87));
+    }
+
+    #[test]
+    fn compact_summary_includes_failure_count_and_first_error() {
+        let mut diag = WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+        diag.startup_stage = "capture_started".to_string();
+        diag.map_failures = 3;
+        diag.first_error = Some("map: E_FAIL".to_string());
+        let summary = diag.compact_summary();
+        assert!(summary.contains("readback_failures=3"));
+        assert!(summary.contains("first_error=map: E_FAIL"));
+    }
+
+    #[test]
+    fn compact_summary_identifies_window_capture_attempts() {
+        let diag = WindowsNativeCaptureDiagnostics::new("gdi_poll", "window", 1280, 720);
+        let summary = diag.compact_summary();
+        assert!(summary.contains("backend=gdi_poll"));
+        assert!(summary.contains("source_kind=window"));
     }
 }

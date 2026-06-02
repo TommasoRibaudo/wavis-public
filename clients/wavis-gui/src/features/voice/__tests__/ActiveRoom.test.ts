@@ -15,6 +15,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ShareQualityInfo } from '../livekit-media';
 import type { VoiceRoomState } from '../voice-room';
+import {
+  SHARE_PICKER_LOADING_LABEL,
+  SHARE_STARTING_LOADING_LABEL,
+  isVideoShareSelectionMode,
+} from '../active-room-share-loading';
 
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 
@@ -182,6 +187,18 @@ function coldStartWaitMinutes(estimatedWaitSecs: number | null): number {
   return Math.ceil((estimatedWaitSecs ?? 120) / 60);
 }
 
+function shareStartingLabel(
+  mode: 'screen_audio' | 'window' | 'audio_only',
+  isStarting: boolean,
+): string | null {
+  if (!isStarting || !isVideoShareSelectionMode(mode)) return null;
+  return SHARE_STARTING_LOADING_LABEL;
+}
+
+function shouldShowShareControls(isVideoActive: boolean, isStarting: boolean): boolean {
+  return isVideoActive && !isStarting;
+}
+
 /* ═══ Tests ═════════════════════════════════════════════════════════ */
 
 describe('Quality Indicator Rendering', () => {
@@ -268,6 +285,25 @@ describe('Cold Start UI', () => {
 
   it('defaults cold-start wait copy to two minutes', () => {
     expect(coldStartWaitMinutes(null)).toBe(2);
+  });
+});
+
+describe('Share Loading UX', () => {
+  it('shows the starting indicator for video shares but not audio-only shares', () => {
+    expect(shareStartingLabel('screen_audio', true)).toBe(SHARE_STARTING_LOADING_LABEL);
+    expect(shareStartingLabel('window', true)).toBe(SHARE_STARTING_LOADING_LABEL);
+    expect(shareStartingLabel('audio_only', true)).toBeNull();
+    expect(shareStartingLabel('screen_audio', false)).toBeNull();
+  });
+
+  it('keeps the picker loading copy unchanged', () => {
+    expect(SHARE_PICKER_LOADING_LABEL).toBe('waiting for screen picker...');
+  });
+
+  it('hides post-share controls while video share startup is visible', () => {
+    expect(shouldShowShareControls(true, true)).toBe(false);
+    expect(shouldShowShareControls(true, false)).toBe(true);
+    expect(shouldShowShareControls(false, false)).toBe(false);
   });
 });
 

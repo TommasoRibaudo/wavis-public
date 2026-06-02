@@ -545,6 +545,8 @@ fn test29a_zero_global_ws_ceiling_rejected() {
         rate_limit_window_secs: 10,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
@@ -563,6 +565,8 @@ fn test29b_zero_global_join_ceiling_rejected() {
         rate_limit_window_secs: 10,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
@@ -581,6 +585,8 @@ fn test29c_zero_token_ttl_rejected() {
         rate_limit_window_secs: 10,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
@@ -599,6 +605,8 @@ fn test29d_zero_ban_duration_rejected() {
         rate_limit_window_secs: 10,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
@@ -617,6 +625,8 @@ fn test29e_zero_rate_limit_window_rejected() {
         rate_limit_window_secs: 0,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
@@ -635,6 +645,8 @@ fn test29f_all_positive_values_accepted() {
         rate_limit_window_secs: 10,
         bug_report_rate_limit_max: 5,
         bug_report_rate_limit_window_secs: 3600,
+        llm_rate_limit_max: 5,
+        llm_rate_limit_window_secs: 86400,
         github_bug_report_token_set: true,
         github_bug_report_repo_set: true,
     };
