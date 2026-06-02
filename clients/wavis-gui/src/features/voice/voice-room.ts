@@ -1980,6 +1980,24 @@ function flushBufferedMediaTokenIfReady(): void {
   }
 }
 
+function promoteReconnectedSessionIfReady(): void {
+  if (
+    state.machineState !== 'reconnecting'
+    || state.mediaState !== 'connected'
+    || state.selfParticipantId === null
+    || state.roomId === null
+    || state.joinedSubRoomId === null
+  ) {
+    return;
+  }
+
+  state.machineState = 'active';
+  if (wasReconnecting) {
+    wasReconnecting = false;
+    appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'reconnected - back online' });
+  }
+}
+
 function ensureInSubRoomForShare(): void {
   if (state.joinedSubRoomId !== null) return;
   throw new Error('Join a room before sharing.');
@@ -2472,6 +2490,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         });
     }).catch(() => { });
     void resumePendingWasapiCapture();
+    promoteReconnectedSessionIfReady();
     notify();
   };
 
@@ -3058,6 +3077,7 @@ function dispatchMessage(raw: unknown): void {
       // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
       // yet in state when sub_room_joined arrives), so flush here once state catches up.
       flushBufferedMediaTokenIfReady();
+      promoteReconnectedSessionIfReady();
       void applyCameraQualityForShareState();
       notify();
       break;
@@ -3130,6 +3150,7 @@ function dispatchMessage(raw: unknown): void {
       }
       if (participantId === state.selfParticipantId) {
         flushBufferedMediaTokenIfReady();
+        promoteReconnectedSessionIfReady();
       }
       void applyCameraQualityForShareState();
       notify();
