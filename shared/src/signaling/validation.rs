@@ -188,7 +188,7 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
         SignalingMessage::ParticipantUndeafened(p) => {
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
         }
-        SignalingMessage::StartShare => {}
+        SignalingMessage::StartShare(_) => {}
         SignalingMessage::ShareStarted(p) => {
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
             check("display_name", &p.display_name, MAX_DISPLAY_NAME_LEN)?;
@@ -213,6 +213,16 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
                     });
                 }
                 check("participant_id", id, MAX_PEER_ID_LEN)?;
+            }
+            for share in &p.active_shares {
+                if share.participant_id.is_empty() {
+                    return Err(ValidationError {
+                        field: "participant_id".to_string(),
+                        actual_len: 0,
+                        max_len: MAX_PEER_ID_LEN,
+                    });
+                }
+                check("participant_id", &share.participant_id, MAX_PEER_ID_LEN)?;
             }
         }
         SignalingMessage::SetSharePermission(_) => {
@@ -504,6 +514,7 @@ mod tests {
         let msg = SignalingMessage::ShareStarted(ShareStartedPayload {
             participant_id: long_str(MAX_PEER_ID_LEN + 1),
             display_name: "test".to_string(),
+            share_type: None,
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -519,6 +530,7 @@ mod tests {
     fn share_state_empty_participant_id_rejected() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec!["peer-1".to_string(), "".to_string()],
+            active_shares: vec![],
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -529,6 +541,7 @@ mod tests {
     fn share_state_oversized_participant_id_rejected() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec![long_str(MAX_PEER_ID_LEN + 1)],
+            active_shares: vec![],
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -538,6 +551,7 @@ mod tests {
     fn share_state_valid_passes() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec!["peer-1".to_string(), "peer-2".to_string()],
+            active_shares: vec![],
         });
         assert!(validate_field_lengths(&msg).is_ok());
     }
@@ -546,6 +560,7 @@ mod tests {
     fn share_state_empty_list_passes() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec![],
+            active_shares: vec![],
         });
         assert!(validate_field_lengths(&msg).is_ok());
     }

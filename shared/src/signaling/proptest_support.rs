@@ -339,6 +339,21 @@ impl Arbitrary for WireSharePermission {
     }
 }
 
+impl Arbitrary for WireShareType {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        prop_oneof![
+            Just(WireShareType::ScreenAudio),
+            Just(WireShareType::Window),
+            Just(WireShareType::AudioOnly),
+            Just(WireShareType::Browser),
+        ]
+        .boxed()
+    }
+}
+
 impl Arbitrary for JoinRejectionReason {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -460,11 +475,23 @@ impl Arbitrary for ShareStartedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>())
-            .prop_map(|(participant_id, display_name)| ShareStartedPayload {
+        (any::<String>(), any::<String>(), prop::option::of(any::<WireShareType>()))
+            .prop_map(|(participant_id, display_name, share_type)| ShareStartedPayload {
                 participant_id,
                 display_name,
+                share_type,
             })
+            .boxed()
+    }
+}
+
+impl Arbitrary for StartSharePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        prop::option::of(any::<WireShareType>())
+            .prop_map(|share_type| StartSharePayload { share_type })
             .boxed()
     }
 }
@@ -500,8 +527,28 @@ impl Arbitrary for ShareStatePayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        prop::collection::vec(any::<String>(), 0..=6)
-            .prop_map(|participant_ids| ShareStatePayload { participant_ids })
+        (
+            prop::collection::vec(any::<String>(), 0..=6),
+            prop::collection::vec(any::<ActiveSharePayload>(), 0..=6),
+        )
+            .prop_map(|(participant_ids, active_shares)| ShareStatePayload {
+                participant_ids,
+                active_shares,
+            })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ActiveSharePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<String>(), prop::option::of(any::<WireShareType>()))
+            .prop_map(|(participant_id, share_type)| ActiveSharePayload {
+                participant_id,
+                share_type,
+            })
             .boxed()
     }
 }
@@ -1054,7 +1101,7 @@ impl Arbitrary for SignalingMessage {
             any::<ParticipantDeafenedPayload>().prop_map(SignalingMessage::ParticipantDeafened),
             any::<ParticipantUndeafenedPayload>().prop_map(SignalingMessage::ParticipantUndeafened),
             // Phase 3: Screen share lifecycle
-            Just(SignalingMessage::StartShare),
+            any::<StartSharePayload>().prop_map(SignalingMessage::StartShare),
             any::<ShareStartedPayload>().prop_map(SignalingMessage::ShareStarted),
             any::<StopSharePayload>().prop_map(SignalingMessage::StopShare),
             any::<ShareStoppedPayload>().prop_map(SignalingMessage::ShareStopped),

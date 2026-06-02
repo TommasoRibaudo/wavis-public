@@ -193,6 +193,8 @@ type IntegrationMockLiveKitModule = {
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
+  setRemoteShareType: (id: string, shareType?: 'screen_audio' | 'window' | 'audio_only' | 'browser') => void;
+  clearRemoteShareType: (id: string) => void;
   startWasapiAudioBridge: (loopbackExclusionAvailable: boolean) => Promise<void>;
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
@@ -281,6 +283,8 @@ function createIntegrationMockLiveKitModule(
     setScreenShareAudioVolume: vi.fn(() => {}),
     attachScreenShareAudio: vi.fn(() => {}),
     detachScreenShareAudio: vi.fn(() => {}),
+    setRemoteShareType: vi.fn(() => {}),
+    clearRemoteShareType: vi.fn(() => {}),
     startWasapiAudioBridge: vi.fn(async () => {}),
     stopWasapiAudioBridge: vi.fn(async () => {}),
     startScreenShare: vi.fn(async () => true),

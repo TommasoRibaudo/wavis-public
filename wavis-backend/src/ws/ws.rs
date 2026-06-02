@@ -415,7 +415,7 @@ mod tests {
                         SignalingMessage::SelfUndeafen |
                         SignalingMessage::ParticipantDeafened(_) |
                         SignalingMessage::ParticipantUndeafened(_) |
-                        SignalingMessage::StartShare |
+                        SignalingMessage::StartShare(_) |
                         SignalingMessage::ShareStarted(_) |
                         SignalingMessage::StopShare(_) |
                         SignalingMessage::ShareStopped(_) |
