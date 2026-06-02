@@ -3886,6 +3886,28 @@ export class LiveKitModule {
       .sort((a, b) => b.startedAtMs - a.startedAtMs);
   }
 
+  refreshRemoteScreenShare(participantIdentity: string): void {
+    const participant = this.room?.remoteParticipants.get(participantIdentity);
+    if (!participant) return;
+
+    const publication = participant.getTrackPublication(Track.Source.ScreenShare);
+    if (!publication || publication.kind !== Track.Kind.Video) return;
+
+    publication.setSubscribed?.(true);
+    publication.setEnabled?.(true);
+    publication.setVideoQuality?.(VideoQuality.HIGH);
+
+    const track = publication.track;
+    if (track && track.kind === Track.Kind.Video) {
+      this.attachRemoteScreenShareTrack(
+        participant,
+        publication,
+        track as RemoteTrack,
+        'signaling_recovery',
+      );
+    }
+  }
+
 
   /* ─── Post-Publish Track Tuning ──────────────────────────────── */
 
@@ -5080,7 +5102,7 @@ export class LiveKitModule {
     participant: RemoteParticipant,
     publication: RemoteTrackPublication,
     track: RemoteTrack,
-    reason: 'track_subscribed' | 'participant_connected_recovery',
+    reason: 'track_subscribed' | 'participant_connected_recovery' | 'signaling_recovery',
   ): void {
     // Force the track to stay enabled and pin it at HIGH quality.
     // With adaptiveStream:true and dynacast:true, the server chooses which

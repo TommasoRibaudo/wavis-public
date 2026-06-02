@@ -100,6 +100,13 @@ function updateRemoteShareType(participantId: string, shareType?: RemoteShareTyp
   }
 }
 
+function refreshRemoteScreenShare(participantId: string): void {
+  if (lkModule && 'refreshRemoteScreenShare' in lkModule) {
+    (lkModule as LiveKitModule & { refreshRemoteScreenShare(participantId: string): void })
+      .refreshRemoteScreenShare(participantId);
+  }
+}
+
 function clearRemoteShareType(participantId: string): void {
   if (lkModule && 'clearRemoteShareType' in lkModule) {
     (lkModule as LiveKitModule).clearRemoteShareType(participantId);
@@ -3527,6 +3534,9 @@ function dispatchMessage(raw: unknown): void {
         sp.shareType = remoteShareType;
       }
       updateRemoteShareType(shareStartId, remoteShareType);
+      if (remoteShareType !== 'audio_only') {
+        refreshRemoteScreenShare(shareStartId);
+      }
       // Cache the display name from the server payload
       if (shareStartName) {
         displayNameCache.set(shareStartId, shareStartName);
@@ -3614,6 +3624,9 @@ function dispatchMessage(raw: unknown): void {
         if (shouldBeSharing) {
           p.shareType = typedShares.get(p.id);
           updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
+          if (p.shareType !== 'audio_only') {
+            refreshRemoteScreenShare(p.id);
+          }
         }
       }
       void applyCameraQualityForShareState();
