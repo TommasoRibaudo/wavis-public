@@ -2,6 +2,35 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn start_share_accepts_legacy_and_typed_payloads() {
+    assert_eq!(
+        parse(r#"{"type":"start_share"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload::default()),
+    );
+    assert_eq!(
+        parse(r#"{"type":"start_share","shareType":"audio_only"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload {
+            share_type: Some(WireShareType::AudioOnly),
+        }),
+    );
+    assert!(parse(r#"{"type":"start_share","shareType":"unexpected"}"#).is_err());
+}
+
+#[test]
+fn share_state_serializes_typed_metadata_and_legacy_ids() {
+    let json = to_json(&SignalingMessage::ShareState(ShareStatePayload {
+        participant_ids: vec!["peer-1".to_string()],
+        active_shares: vec![ActiveSharePayload {
+            participant_id: "peer-1".to_string(),
+            share_type: Some(WireShareType::Window),
+        }],
+    }))
+    .unwrap();
+    assert!(json.contains(r#""participantIds":["peer-1"]"#));
+    assert!(json.contains(r#""activeShares":[{"participantId":"peer-1","shareType":"window"}]"#));
+}
+
+#[test]
 fn chat_payloads_serialize_optional_user_id_as_user_id() {
     let chat = SignalingMessage::ChatMessage(ChatMessagePayload {
         participant_id: "peer-1".to_string(),
