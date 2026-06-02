@@ -210,7 +210,7 @@ impl<
                 | SignalingMessage::ParticipantKicked(_)
                 | SignalingMessage::ParticipantMuted(_)
                 | SignalingMessage::ParticipantUnmuted(_)
-                | SignalingMessage::StartShare
+                | SignalingMessage::StartShare(_)
                 | SignalingMessage::ShareStarted(_)
                 | SignalingMessage::StopShare(_)
                 | SignalingMessage::ShareStopped(_)

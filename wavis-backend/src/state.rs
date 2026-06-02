@@ -138,6 +138,8 @@ pub struct RoomInfo {
     pub revoked_participants: HashMap<String, Instant>,
     /// Participant IDs currently sharing their screen. SFU rooms only.
     pub active_shares: HashSet<String>,
+    /// Authoritative share types for active shares that supplied metadata.
+    pub active_share_types: HashMap<String, shared::signaling::WireShareType>,
     /// Screen share permission policy (default: AllParticipants).
     pub share_permission: SharePermission,
     /// Optional synchronized sub-room state for channel-based voice sessions.
@@ -157,6 +159,7 @@ impl RoomInfo {
             media_connected: HashSet::new(),
             revoked_participants: HashMap::new(),
             active_shares: HashSet::new(),
+            active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
         }
@@ -173,6 +176,7 @@ impl RoomInfo {
             media_connected: HashSet::new(),
             revoked_participants: HashMap::new(),
             active_shares: HashSet::new(),
+            active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
         }

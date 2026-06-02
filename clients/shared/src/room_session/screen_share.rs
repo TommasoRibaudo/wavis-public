@@ -49,7 +49,7 @@ where
             return Err(RoomError::NotInRoom);
         }
         self.signaling
-            .send(&SignalingMessage::StartShare)
+            .send(&SignalingMessage::StartShare(Default::default()))
             .map_err(|e| RoomError::Signaling(e.to_string()))
     }
 

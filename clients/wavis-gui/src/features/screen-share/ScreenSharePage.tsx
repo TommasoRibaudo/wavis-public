@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startReceiving, stopReceiving } from './screen-share-viewer';
 import type { ShareQuality } from '@features/voice/voice-room';
-import { useShareTransitionOverlay } from './share-transition';
+import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
@@ -12,6 +12,7 @@ import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
+import ShareLoadingOverlay from './ShareLoadingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -79,7 +80,7 @@ export default function ScreenSharePage() {
   const [voiceParticipants, setVoiceParticipants] = useState<MixerParticipant[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [debugInfo, setDebugInfo] = useState('init');
-  const { isSwitching, markFrameRendered } = useShareTransitionOverlay({
+  const { isSwitching, hasRenderedFrame, markFrameRendered } = useShareTransitionOverlay({
     hasSurface: Boolean(stream) || Boolean(shareParams?.canvasFallback),
     hasError: Boolean(error),
   });
@@ -684,6 +685,7 @@ export default function ScreenSharePage() {
           </div>
         )}
         {isSwitching && <ShareSwitchingOverlay displayName={p.username} />}
+        {shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && <ShareLoadingOverlay />}
 
         {/* Zoom overlay */}
         {zoom > 1 && (

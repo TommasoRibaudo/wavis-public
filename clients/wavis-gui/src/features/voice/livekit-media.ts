@@ -30,7 +30,7 @@ import {
   getScreenShareCodec,
   type ScreenShareCodecOverride,
 } from '@features/settings/settings-store';
-import type { AudioShareStartResult } from '@features/screen-share/share-types';
+import type { AudioShareStartResult, ShareMode } from '@features/screen-share/share-types';
 import type {
   NativeShareLeakStage,
   ShareLeakBrowserWebRtcSnapshot,
@@ -99,6 +99,7 @@ const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION ===
 const CAMERA_CAPTURE_TIMEOUT_MS = 10_000;
 const CAMERA_PUBLISH_TIMEOUT_MS = 5_000;
 const REMOTE_CAMERA_READY_TIMEOUT_MS = 10_000;
+export type RemoteShareType = ShareMode | 'browser';
 
 /**
  * Open a camera device via getUserMedia with a hard timeout. Standard
@@ -1118,7 +1119,11 @@ export class LiveKitModule {
   private screenShareAudioPublications: Map<string, RemoteTrackPublication> = new Map();
   /** Participants whose viewer window is open but whose audio track hadn't arrived yet when attachScreenShareAudio was called. */
   private screenShareAudioPending = new Set<string>();
-  /** Participants whose share is audio-only (no video track ever published). */
+  /** Participants whose direct viewer or Watch All tile currently owns playback. */
+  private screenShareAudioViewerOwners = new Set<string>();
+  /** Server-authoritative share type metadata. Missing legacy metadata stays video-gated. */
+  private remoteShareTypes = new Map<string, RemoteShareType | undefined>();
+  /** Participants whose authoritative share type is audio-only. */
   private audioOnlySharers = new Set<string>();
   private pendingLevels: Map<string, { isSpeaking: boolean; rmsLevel: number }> = new Map();
   private rafId: number | null = null;
@@ -2326,9 +2331,7 @@ export class LiveKitModule {
         }
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
-        if (!this.screenShareAudioPending.has(participant.identity)) {
-          publication.setSubscribed(false);
-        }
+        publication.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
       });
 
       // e. TrackSubscribed
@@ -2413,20 +2416,10 @@ export class LiveKitModule {
                 settings,
               });
             }
-            if (isPending) {
-              // Viewer window already open — attach now
-              this.attachScreenShareAudio(participant.identity);
-            } else {
-              // Audio-only share: no video track means there will never be a viewer window.
-              // Attach immediately so the audio plays without requiring the user to click Watch.
-              const hasVideoShare = !!participant.getTrackPublication(Track.Source.ScreenShare);
-              if (!hasVideoShare) {
-                this.attachScreenShareAudio(participant.identity);
-                this.audioOnlySharers.add(participant.identity);
-                this.callbacks.onAudioOnlySharerAdded?.(participant.identity);
-              } else if (typeof publication.setSubscribed === 'function') {
-                publication.setSubscribed(false);
-              }
+            if (this.shouldPlayScreenShareAudio(participant.identity)) {
+              this.attachDesiredScreenShareAudio(participant.identity);
+            } else if (typeof publication.setSubscribed === 'function') {
+              publication.setSubscribed(false);
             }
           } else {
             this.attachAudioTrack(participant, track);
@@ -2454,9 +2447,6 @@ export class LiveKitModule {
             this.screenShareAudioTracks.delete(participant.identity);
             // Also clean up if it was attached
             this.cleanupParticipantAudio(`${participant.identity}:screen-share`);
-            if (this.audioOnlySharers.delete(participant.identity)) {
-              this.callbacks.onAudioOnlySharerRemoved?.(participant.identity);
-            }
           } else {
             this.cleanupParticipantAudio(participant.identity);
           }
@@ -2470,12 +2460,7 @@ export class LiveKitModule {
             }
             this.screenShareElements.delete(participant.identity);
             this.callbacks.onScreenShareUnsubscribed(participant.identity);
-            // If audio is still attached (participant stopped video but kept audio),
-            // re-enter audio-only mode so the UI reflects the ongoing audio share.
-            if (this.screenShareAudioTracks.has(participant.identity)) {
-              this.audioOnlySharers.add(participant.identity);
-              this.callbacks.onAudioOnlySharerAdded?.(participant.identity);
-            }
+            this.syncScreenShareAudioPolicy(participant.identity);
           }
         }
       });
@@ -2508,6 +2493,9 @@ export class LiveKitModule {
         // Clean up deferred screen share audio
         this.screenShareAudioTracks.delete(participant.identity);
         this.screenShareAudioPublications.delete(participant.identity);
+        this.screenShareAudioPending.delete(participant.identity);
+        this.screenShareAudioViewerOwners.delete(participant.identity);
+        this.remoteShareTypes.delete(participant.identity);
         this.cleanupParticipantAudio(`${participant.identity}:screen-share`);
         if (this.audioOnlySharers.delete(participant.identity)) {
           this.callbacks.onAudioOnlySharerRemoved?.(participant.identity);
@@ -2532,9 +2520,7 @@ export class LiveKitModule {
         const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
         if (screenShareAudioPub) {
           this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
-          if (!this.screenShareAudioPending.has(participant.identity)) {
-            screenShareAudioPub.setSubscribed(false);
-          }
+          screenShareAudioPub.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
         }
         const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
         const screenShareVideoTrack = screenShareVideoPub?.track;
@@ -2558,7 +2544,7 @@ export class LiveKitModule {
             const track = pub.track as RemoteTrack;
             this.screenShareAudioTracks.set(participant.identity, { track, participant });
             if (DEBUG_SHARE_AUDIO) console.log(LOG, `[screen-share-audio] ParticipantConnected recovery for ${participant.identity}`);
-            this.attachScreenShareAudio(participant.identity);
+            this.attachDesiredScreenShareAudio(participant.identity);
             break;
           }
         }
@@ -2949,6 +2935,9 @@ export class LiveKitModule {
     this.screenShareAudioTracks.clear();
     this.screenShareAudioPublications.clear();
     this.screenShareAudioPending.clear();
+    this.screenShareAudioViewerOwners.clear();
+    this.remoteShareTypes.clear();
+    this.audioOnlySharers.clear();
 
     // 8c. Clean up any attached screen share audio elements
     for (const key of this.audioElementMap.keys()) {
@@ -5162,12 +5151,7 @@ export class LiveKitModule {
       mst.addEventListener('unmute', onUnmute);
     }
 
-    // If this participant was previously audio-only, they've now added video.
-    // Remove them from audioOnlySharers — their audio keeps playing but is no
-    // longer treated as an isolated audio-only stream.
-    if (this.audioOnlySharers.delete(participant.identity)) {
-      this.callbacks.onAudioOnlySharerRemoved?.(participant.identity);
-    }
+    this.syncScreenShareAudioPolicy(participant.identity);
   }
 
   /**
@@ -5324,6 +5308,46 @@ export class LiveKitModule {
    * Called when the user opens the screen share viewer window.
    */
   attachScreenShareAudio(participantIdentity: string): void {
+    this.screenShareAudioViewerOwners.add(participantIdentity);
+    this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  /** Update the server-authoritative remote share type for audio policy decisions. */
+  setRemoteShareType(participantIdentity: string, shareType?: RemoteShareType): void {
+    this.remoteShareTypes.set(participantIdentity, shareType);
+    const isAudioOnly = shareType === 'audio_only';
+    if (isAudioOnly && !this.audioOnlySharers.has(participantIdentity)) {
+      this.audioOnlySharers.add(participantIdentity);
+      this.callbacks.onAudioOnlySharerAdded?.(participantIdentity);
+    } else if (!isAudioOnly && this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+    }
+    this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  /** Remove stale authoritative metadata when a remote share stops. */
+  clearRemoteShareType(participantIdentity: string): void {
+    this.remoteShareTypes.delete(participantIdentity);
+    if (this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+    }
+    this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  private shouldPlayScreenShareAudio(participantIdentity: string): boolean {
+    return this.screenShareAudioViewerOwners.has(participantIdentity)
+      || this.remoteShareTypes.get(participantIdentity) === 'audio_only';
+  }
+
+  private syncScreenShareAudioPolicy(participantIdentity: string): void {
+    if (this.shouldPlayScreenShareAudio(participantIdentity)) {
+      this.attachDesiredScreenShareAudio(participantIdentity);
+    } else {
+      this.detachDesiredScreenShareAudio(participantIdentity);
+    }
+  }
+
+  private attachDesiredScreenShareAudio(participantIdentity: string): void {
     // Mark as pending immediately so any TrackSubscribed that fires after the
     // in-flight setSubscribed(false) (from initial deferral) sees isPending=true
     // and does not call setSubscribed(false) again, which would permanently
@@ -5410,6 +5434,11 @@ export class LiveKitModule {
    * Called when the user closes the screen share viewer window.
    */
   detachScreenShareAudio(participantIdentity: string): void {
+    this.screenShareAudioViewerOwners.delete(participantIdentity);
+    this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  private detachDesiredScreenShareAudio(participantIdentity: string): void {
     this.screenShareAudioPending.delete(participantIdentity);
     const publication = this.screenShareAudioPublications.get(participantIdentity);
     if (publication && typeof publication.setSubscribed === 'function') {

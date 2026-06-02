@@ -23,7 +23,7 @@ use crate::ec2_control::Ec2InstanceState;
 use crate::state::{InMemoryRoomState, RoomType};
 use crate::voice::relay::{self, P2PJoinResult, RelayResult, RoomState, handle_p2p_join};
 use crate::voice::screen_share::{
-    ShareResult, handle_set_share_permission, handle_start_share, handle_stop_all_shares,
+    ShareResult, handle_set_share_permission, handle_start_share_with_type, handle_stop_all_shares,
     handle_stop_share,
 };
 use crate::voice::sfu_bridge::SfuHealth;
@@ -1986,7 +1986,7 @@ pub(crate) async fn dispatch_message(
             );
             DispatchOutcome::Continue
         }
-        SignalingMessage::StartShare => {
+        SignalingMessage::StartShare(payload) => {
             // Session is guaranteed Some here (pre-join gate already handled above)
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
@@ -2024,11 +2024,12 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
-            match handle_start_share(
+            match handle_start_share_with_type(
                 ctx.app_state.room_state.as_ref(),
                 &room_id,
                 sender_id,
                 sender_role,
+                payload.share_type,
             ) {
                 ShareResult::Ok(signals) => {
                     dispatch_signals(
@@ -3302,7 +3303,7 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::SelfUndeafen
         | SignalingMessage::ParticipantDeafened(_)
         | SignalingMessage::ParticipantUndeafened(_)
-        | SignalingMessage::StartShare
+        | SignalingMessage::StartShare(_)
         | SignalingMessage::ShareStarted(_)
         | SignalingMessage::StopShare(_)
         | SignalingMessage::ShareStopped(_)

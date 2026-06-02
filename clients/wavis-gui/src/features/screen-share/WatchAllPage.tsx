@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
 import { computeWatchAllLayout } from './watch-all-grid';
-import { useShareTransitionOverlay } from './share-transition';
+import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { isPlaybackHealthyWithoutFreshFrames } from './useVideoStallDetector';
 import {
   WATCH_ALL_TEST_READY_EVENT,
@@ -21,6 +21,7 @@ import QuickActionButtons from '@shared/QuickActionButtons';
 import FocusMainButton from '@shared/FocusMainButton';
 import FullscreenButton from '@shared/FullscreenButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
+import ShareLoadingOverlay from './ShareLoadingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -137,7 +138,7 @@ const ShareTile = memo(function ShareTile({
   const [hovered, setHovered] = useState(false);
   const [diagnosticViewport, setDiagnosticViewport] = useState({ width: 0, height: 0 });
   const { isVisible: labelVisible, resetTimer: revealLabel } = useAutoHide({ delayMs: LABEL_FADE_DELAY_MS });
-  const { isSwitching, markFrameRendered } = useShareTransitionOverlay({
+  const { isSwitching, hasRenderedFrame, markFrameRendered } = useShareTransitionOverlay({
     hasSurface: isDiagnosticTest || canvasFallback || Boolean(stream),
     hasError: Boolean(error),
   });
@@ -588,6 +589,7 @@ const ShareTile = memo(function ShareTile({
         </div>
       )}
       {isSwitching && <ShareSwitchingOverlay compact displayName={displayName} />}
+      {!isDiagnosticTest && shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && <ShareLoadingOverlay compact />}
 
       {/* Pop-out icon (top-right on hover) */}
       {hovered && !isDiagnosticTest && (
