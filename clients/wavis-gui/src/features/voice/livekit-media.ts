@@ -2330,6 +2330,9 @@ export class LiveKitModule {
           return;
         }
         if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
+          if (DEBUG_SHARE_TRACK_SUB) {
+            console.log(LOG, `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`);
+          }
           publication.setSubscribed?.(true);
           publication.setEnabled?.(true);
           publication.setVideoQuality?.(VideoQuality.HIGH);
@@ -2431,6 +2434,9 @@ export class LiveKitModule {
             this.attachAudioTrack(participant, track);
           }
         } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
+          if (DEBUG_SHARE_TRACK_SUB) {
+            console.log(LOG, `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`);
+          }
           this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
         }
       });

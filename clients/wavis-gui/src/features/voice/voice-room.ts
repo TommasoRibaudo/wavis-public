@@ -107,6 +107,28 @@ function refreshRemoteScreenShare(participantId: string): void {
   }
 }
 
+/**
+ * Schedule up to three retry attempts (at 1s, 3s, 6s) to call
+ * refreshRemoteScreenShare for a participant whose share just started.
+ * Handles the race where TrackSubscribed fires after share_started arrives,
+ * or where the SFU treats a republish as a track resume and never fires
+ * TrackPublished/TrackSubscribed at all.
+ */
+function scheduleRefreshRetries(participantId: string): void {
+  const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
+  refreshRetryGenerations.set(participantId, generation);
+  const delays = [1000, 3000, 6000];
+  for (const delay of delays) {
+    setTimeout(() => {
+      if (refreshRetryGenerations.get(participantId) !== generation) return;
+      if (state.screenShareStreams.has(participantId)) return;
+      const p = state.participants.find((pp) => pp.id === participantId);
+      if (!p?.isSharing) return;
+      refreshRemoteScreenShare(participantId);
+    }, delay);
+  }
+}
+
 function clearRemoteShareType(participantId: string): void {
   if (lkModule && 'clearRemoteShareType' in lkModule) {
     (lkModule as LiveKitModule).clearRemoteShareType(participantId);
@@ -1511,6 +1533,8 @@ let preDeafenSelfMuted: boolean | null = null;
 let localStopShareSent = false;
 let localSourceChanging = false;
 let externalShareHelperActive = false;
+/** Generation counters per participant — incremented on each share_started to cancel stale retries. */
+const refreshRetryGenerations = new Map<string, number>();
 export const BACKGROUND_LEAVE_DISCONNECT_MS = 15 * 60_000;
 const RECONNECT_MEDIA_COOLDOWN_MS = 3000;
 /** Slow periodic media retry interval (ms) after fast retries are exhausted. */
@@ -3536,6 +3560,11 @@ function dispatchMessage(raw: unknown): void {
       updateRemoteShareType(shareStartId, remoteShareType);
       if (remoteShareType !== 'audio_only') {
         refreshRemoteScreenShare(shareStartId);
+        // Schedule retries for the case where TrackSubscribed is delayed or the SFU
+        // treats the republish as a track resume (no TrackPublished/TrackSubscribed).
+        if (shareStartId !== state.selfParticipantId) {
+          scheduleRefreshRetries(shareStartId);
+        }
       }
       // Cache the display name from the server payload
       if (shareStartName) {
@@ -3567,6 +3596,7 @@ function dispatchMessage(raw: unknown): void {
         ssp.shareType = undefined;
       }
       clearRemoteShareType(shareStopId);
+      refreshRetryGenerations.delete(shareStopId);
       // Clear the stream reference immediately on signaling. The LiveKit
       // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
       // the sharer closes the app abruptly; without this the viewer's UI shows
@@ -4046,9 +4076,10 @@ export function leaveRoom(): void {
   // Reset reconnect cooldown timer
   lastReconnectMediaTime = 0;
 
-  // Clear display name cache and speaking tracker
+  // Clear display name cache, speaking tracker, and pending refresh retries
   displayNameCache.clear();
   speakingTracker.clear();
+  refreshRetryGenerations.clear();
   preDeafenVolume = null;
   preDeafenSelfMuted = null;
 
