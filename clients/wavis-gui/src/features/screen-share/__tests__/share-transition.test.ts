@@ -4,7 +4,22 @@ import {
   SHARE_TRANSITION_THRESHOLD_MS,
   SHARE_STREAM_STABILIZATION_MS,
   shouldShowShareTransitionOverlay,
+  shouldShowShareLoadingOverlay,
 } from '../share-transition';
+
+describe('shouldShowShareLoadingOverlay', () => {
+  it('shows before the first painted frame', () => {
+    expect(shouldShowShareLoadingOverlay(false, false)).toBe(true);
+  });
+
+  it('dismisses after the first painted frame', () => {
+    expect(shouldShowShareLoadingOverlay(true, false)).toBe(false);
+  });
+
+  it('stays hidden while an explicit error is rendered', () => {
+    expect(shouldShowShareLoadingOverlay(false, true)).toBe(false);
+  });
+});
 
 describe('shouldShowShareTransitionOverlay', () => {
   it('returns false when no render surface is active', () => {

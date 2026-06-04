@@ -688,6 +688,7 @@ pub fn leave_sub_room(
             expiry = schedule_empty_room_if_needed(sub_rooms, &current_room_id);
             left_sub_room_id = Some(current_room_id);
             if members.info.active_shares.remove(participant_id) {
+                members.info.active_share_types.remove(participant_id);
                 share_stopped = Some(SignalingMessage::ShareStopped(ShareStoppedPayload {
                     participant_id: participant_id.to_string(),
                     display_name: participant_display_name(

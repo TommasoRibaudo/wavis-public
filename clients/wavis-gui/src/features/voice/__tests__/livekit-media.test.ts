@@ -2507,6 +2507,75 @@ describe('Screen share and device selection', () => {
       mod.disconnect();
     });
 
+    it('keeps legacy screen share audio silent until watched even when video has not arrived yet', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const setSubscribed = vi.fn();
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-legacy-race' } },
+        { source: 'screen_share_audio', setSubscribed },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(setSubscribed).toHaveBeenCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+
+      mod.disconnect();
+    });
+
+    it('autoplays confirmed audio-only shares and detaches autoplay when promoted to video', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const setSubscribed = vi.fn();
+      mod.setRemoteShareType('alice', 'audio_only');
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-audio-only' } },
+        { source: 'screen_share_audio', setSubscribed },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+
+      mod.setRemoteShareType('alice', 'screen_audio');
+
+      expect(setSubscribed).toHaveBeenLastCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+
+      mod.disconnect();
+    });
+
+    it('keeps promoted video-share audio attached while a viewer owns the stream', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      mod.setRemoteShareType('alice', 'audio_only');
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-watched-promotion' } },
+        { source: 'screen_share_audio', setSubscribed: vi.fn() },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+      mod.attachScreenShareAudio('alice');
+      mod.setRemoteShareType('alice', 'window');
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+
+      mod.disconnect();
+    });
+
     it('late join keeps cached screen share audio detached until viewer-ready calls attachScreenShareAudio', async () => {
       resetAll();
       const cbs = createMockCallbacks();

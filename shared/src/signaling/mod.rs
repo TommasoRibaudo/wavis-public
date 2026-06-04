@@ -74,6 +74,16 @@ pub enum WireSharePermission {
     HostOnly,
 }
 
+/// Wire-format screen share type.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WireShareType {
+    ScreenAudio,
+    Window,
+    AudioOnly,
+    Browser,
+}
+
 impl WireSharePermission {
     /// Parse from a raw string (e.g. from legacy code paths).
     /// Returns `None` for unrecognized values.
@@ -170,7 +180,7 @@ pub enum SignalingMessage {
     ParticipantUndeafened(ParticipantUndeafenedPayload),
     // Phase 3: Screen share lifecycle
     /// Client -> server request to begin screen sharing.
-    StartShare,
+    StartShare(StartSharePayload),
     /// Server -> all participants broadcast that a share started.
     ShareStarted(ShareStartedPayload),
     /// Client -> server request to stop a share.
@@ -628,6 +638,14 @@ pub struct ParticipantUndeafenedPayload {
 
 // --- Phase 3: Screen share payload structs ---
 
+/// Client requests to begin a screen share.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct StartSharePayload {
+    /// Optional for compatibility with legacy clients.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
+}
+
 /// Broadcast to all participants when a screen share starts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShareStartedPayload {
@@ -637,6 +655,9 @@ pub struct ShareStartedPayload {
     /// Display name for the sharer who started presenting.
     #[serde(rename = "displayName")]
     pub display_name: String,
+    /// Optional for compatibility with legacy clients.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Client requests to stop a screen share (optionally targeting another participant's share).
@@ -667,6 +688,20 @@ pub struct ShareStatePayload {
     /// Participant identifiers for every currently active sharer.
     #[serde(rename = "participantIds")]
     pub participant_ids: Vec<String>,
+    /// Typed metadata for clients that support share-type-aware behavior.
+    #[serde(rename = "activeShares", default, skip_serializing_if = "Vec::is_empty")]
+    pub active_shares: Vec<ActiveSharePayload>,
+}
+
+/// Typed metadata for one active share in a late-join snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveSharePayload {
+    /// Participant identifier for the active sharer.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+    /// Optional when the share was started by a legacy client.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Client (host) requests a share permission change.

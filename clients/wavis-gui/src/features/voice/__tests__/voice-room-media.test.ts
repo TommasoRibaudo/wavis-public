@@ -309,6 +309,7 @@ import {
   detachScreenShareAudio,
   startCustomShare,
   getState,
+  isShareEnabled,
   persistStreamVolume,
   getPersistedStreamVolume,
   persistStreamMuted,
@@ -2673,6 +2674,36 @@ describe('Edge case unit tests', () => {
       expect(latestState!.mediaState).toBe('disconnected');
       expect(module.disconnectCalls).toBe(1);
       expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+
+      leaveRoom();
+    });
+
+    it('LiveKit reconnect success restores active voice state and share availability', async () => {
+      resetAll();
+      await driveToActive();
+      await assignSelfToSubRoom();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      statusChangeHandler!('disconnected');
+      await tick();
+      expect(latestState!.machineState).toBe('reconnecting');
+
+      lastLkModule!.callbacks.onMediaReconnected?.();
+      await tick();
+
+      expect(latestState!.machineState).toBe('active');
+      expect(latestState!.mediaState).toBe('connected');
+      expect(isShareEnabled(
+        latestState!.sharePermission,
+        latestState!.selfIsHost,
+        latestState!.machineState,
+        latestState!.mediaState,
+        latestState!.joinedSubRoomId,
+      )).toBe(true);
 
       leaveRoom();
     });

@@ -91,6 +91,26 @@ export interface RoomParticipant {
   volume: number;
 }
 
+type RemoteShareType = 'screen_audio' | 'window' | 'audio_only' | 'browser';
+
+function parseRemoteShareType(value: unknown): RemoteShareType | undefined {
+  return value === 'screen_audio' || value === 'window' || value === 'audio_only' || value === 'browser'
+    ? value
+    : undefined;
+}
+
+function updateRemoteShareType(participantId: string, shareType?: RemoteShareType): void {
+  if (lkModule && 'setRemoteShareType' in lkModule) {
+    (lkModule as LiveKitModule).setRemoteShareType(participantId, shareType);
+  }
+}
+
+function clearRemoteShareType(participantId: string): void {
+  if (lkModule && 'clearRemoteShareType' in lkModule) {
+    (lkModule as LiveKitModule).clearRemoteShareType(participantId);
+  }
+}
+
 export type SubRoomMembershipSource = 'explicit' | 'legacy_room_one';
 
 export interface VoiceSubRoom {
@@ -1971,6 +1991,24 @@ function flushBufferedMediaTokenIfReady(): void {
   }
 }
 
+function promoteReconnectedSessionIfReady(): void {
+  if (
+    state.machineState !== 'reconnecting'
+    || state.mediaState !== 'connected'
+    || state.selfParticipantId === null
+    || state.roomId === null
+    || state.joinedSubRoomId === null
+  ) {
+    return;
+  }
+
+  state.machineState = 'active';
+  if (wasReconnecting) {
+    wasReconnecting = false;
+    appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'reconnected - back online' });
+  }
+}
+
 function ensureInSubRoomForShare(): void {
   if (state.joinedSubRoomId !== null) return;
   throw new Error('Join a room before sharing.');
@@ -2468,6 +2506,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         });
     }).catch(() => { });
     void resumePendingWasapiCapture();
+    promoteReconnectedSessionIfReady();
     notify();
   };
 
@@ -2709,6 +2748,12 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     lkModule = new NativeMediaModule(callbacks);
   } else {
     lkModule = new LiveKitModule(callbacks);
+  }
+
+  for (const participant of state.participants) {
+    if (participant.isSharing) {
+      updateRemoteShareType(participant.id, parseRemoteShareType(participant.shareType));
+    }
   }
 
   applyPassthroughFilterSettings();
@@ -3056,6 +3101,7 @@ function dispatchMessage(raw: unknown): void {
       // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
       // yet in state when sub_room_joined arrives), so flush here once state catches up.
       flushBufferedMediaTokenIfReady();
+      promoteReconnectedSessionIfReady();
       void applyCameraQualityForShareState();
       notify();
       break;
@@ -3128,6 +3174,7 @@ function dispatchMessage(raw: unknown): void {
       }
       if (participantId === state.selfParticipantId) {
         flushBufferedMediaTokenIfReady();
+        promoteReconnectedSessionIfReady();
       }
       void applyCameraQualityForShareState();
       notify();
@@ -3483,11 +3530,13 @@ function dispatchMessage(raw: unknown): void {
     case 'share_started': {
       const shareStartId = msg.participantId as string;
       const shareStartName = msg.displayName as string | undefined;
+      const remoteShareType = parseRemoteShareType(msg.shareType);
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
         sp.isSharing = true;
-        sp.shareType = (msg.shareType as string) || undefined;
+        sp.shareType = remoteShareType;
       }
+      updateRemoteShareType(shareStartId, remoteShareType);
       // Cache the display name from the server payload
       if (shareStartName) {
         displayNameCache.set(shareStartId, shareStartName);
@@ -3517,6 +3566,7 @@ function dispatchMessage(raw: unknown): void {
         ssp.isSharing = false;
         ssp.shareType = undefined;
       }
+      clearRemoteShareType(shareStopId);
       // Clear the stream reference immediately on signaling. The LiveKit
       // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
       // the sharer closes the app abruptly; without this the viewer's UI shows
@@ -3550,18 +3600,30 @@ function dispatchMessage(raw: unknown): void {
     case 'share_state': {
       // share_state is an authoritative snapshot — reconcile all participants
       const shareIds = new Set((msg.participantIds as string[]) || []);
+      const typedShares = new Map<string, RemoteShareType | undefined>(
+        ((msg.activeShares as Array<{ participantId: string; shareType?: unknown }>) || [])
+          .map((share) => [
+            share.participantId,
+            parseRemoteShareType(share.shareType),
+          ] as [string, RemoteShareType | undefined]),
+      );
       for (const p of state.participants) {
         const shouldBeSharing = shareIds.has(p.id);
         if (p.isSharing && !shouldBeSharing) {
           // Server says they're not sharing — clear stale flag + stream
           p.isSharing = false;
           p.shareType = undefined;
+          clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
             state.screenShareStreams.delete(p.id);
           }
         } else if (!p.isSharing && shouldBeSharing) {
           p.isSharing = true;
+        }
+        if (shouldBeSharing) {
+          p.shareType = typedShares.get(p.id);
+          updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
         }
       }
       void applyCameraQualityForShareState();
@@ -4291,12 +4353,6 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     isWindowsPlatform() ? 'native_custom_picker' : isMacPlatform() ? 'mac_custom_share' : 'linux_custom_share',
   );
 
-  // Capture whether any share was already active before this call.
-  // When the user layers a video share on top of an audio-only share (or vice
-  // versa), the backend already knows the participant is sharing — sending
-  // start_share again would be redundant and confuse the signaling state.
-  const wasAlreadySharing = state.activeVideoShare !== null || state.activeAudioShare !== null;
-
   // 2. Set state fields optimistically
   const isVideoShare = selection.mode === 'screen_audio' || selection.mode === 'window';
   if (isVideoShare) {
@@ -4563,9 +4619,9 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       }
     }
 
-    // 5. Send signaling on success — skip if we were already in a share session
-    // (layering a second stream on top of an existing one; backend state is unchanged).
-    if (client && !wasAlreadySharing) {
+    // 5. Send signaling on success. Re-sending for a layered share updates the
+    // authoritative type used by remote audio gating.
+    if (client) {
       client.send({ type: 'start_share', shareType: selection.mode });
     }
 
@@ -4691,8 +4747,14 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   const willStillBeSharing =
     (target === 'video' && state.activeAudioShare !== null) ||
     (target === 'audio' && state.activeVideoShare !== null);
-  if (client && !willStillBeSharing) {
-    client.send({ type: 'stop-share' });
+  if (client) {
+    if (!willStillBeSharing) {
+      client.send({ type: 'stop-share' });
+    } else if (target === 'video' && state.activeAudioShare !== null) {
+      client.send({ type: 'start_share', shareType: 'audio_only' });
+    } else if (target === 'audio' && state.activeVideoShare !== null) {
+      client.send({ type: 'start_share', shareType: state.activeVideoShare.mode });
+    }
   }
 
   // 5. Clear affected slot(s)
