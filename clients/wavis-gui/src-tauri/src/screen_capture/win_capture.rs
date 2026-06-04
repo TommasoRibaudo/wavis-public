@@ -851,7 +851,7 @@ impl WinCapture {
             if diag.usable_frames == 0 {
                 log::warn!("{LOG} WGC stopped before first frame; {}", diag.compact_summary());
             }
-        }
+        };
     }
 }
 
