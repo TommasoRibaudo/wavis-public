@@ -13,6 +13,7 @@ import {
   computeShareRoute,
   computeStopRoute,
   isShareButtonDisabled,
+  preserveVideoShareSelectionForSourceChange,
 } from '../voice-room';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
@@ -522,6 +523,41 @@ describe('Property 18: canStartShare slot conflict detection', () => {
         const result = canStartShare(sel, null, null);
         expect(result.allowed).toBe(true);
       }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+describe('Video source change selection preservation', () => {
+  it('preserves the active video share audio setting for replacement video sources', () => {
+    fc.assert(
+      fc.property(
+        arbShareSelection.filter((selection) => selection.mode !== 'audio_only'),
+        arbVideoShare.filter((share) => share !== null),
+        (selection, videoShare) => {
+          const result = preserveVideoShareSelectionForSourceChange(selection, videoShare);
+          expect(result.mode).toBe(selection.mode);
+          expect(result.sourceId).toBe(selection.sourceId);
+          expect(result.sourceName).toBe(selection.sourceName);
+          expect(result.withAudio).toBe(videoShare!.withAudio);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it('rejects audio_only as a replacement for an active video share', () => {
+    fc.assert(
+      fc.property(
+        arbShareSelection,
+        arbVideoShare.filter((share) => share !== null),
+        (selection, videoShare) => {
+          const audioOnlySelection = { ...selection, mode: 'audio_only' as const };
+          expect(() => preserveVideoShareSelectionForSourceChange(audioOnlySelection, videoShare)).toThrow(
+            'changing a video share source cannot switch to audio-only',
+          );
+        },
+      ),
       { numRuns: 100 },
     );
   });

@@ -100,6 +100,35 @@ function updateRemoteShareType(participantId: string, shareType?: RemoteShareTyp
   }
 }
 
+function refreshRemoteScreenShare(participantId: string): void {
+  if (lkModule && 'refreshRemoteScreenShare' in lkModule) {
+    (lkModule as LiveKitModule & { refreshRemoteScreenShare(participantId: string): void })
+      .refreshRemoteScreenShare(participantId);
+  }
+}
+
+/**
+ * Schedule up to three retry attempts (at 1s, 3s, 6s) to call
+ * refreshRemoteScreenShare for a participant whose share just started.
+ * Handles the race where TrackSubscribed fires after share_started arrives,
+ * or where the SFU treats a republish as a track resume and never fires
+ * TrackPublished/TrackSubscribed at all.
+ */
+function scheduleRefreshRetries(participantId: string): void {
+  const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
+  refreshRetryGenerations.set(participantId, generation);
+  const delays = [1000, 3000, 6000];
+  for (const delay of delays) {
+    setTimeout(() => {
+      if (refreshRetryGenerations.get(participantId) !== generation) return;
+      if (state.screenShareStreams.has(participantId)) return;
+      const p = state.participants.find((pp) => pp.id === participantId);
+      if (!p?.isSharing) return;
+      refreshRemoteScreenShare(participantId);
+    }, delay);
+  }
+}
+
 function clearRemoteShareType(participantId: string): void {
   if (lkModule && 'clearRemoteShareType' in lkModule) {
     (lkModule as LiveKitModule).clearRemoteShareType(participantId);
@@ -764,6 +793,20 @@ export function canStartShare(
     return { allowed: false, reason: 'audio-only share active — start video without audio, or stop audio first' };
   }
   return { allowed: true };
+}
+
+export function preserveVideoShareSelectionForSourceChange(
+  selection: ShareSelection,
+  videoShare: VoiceRoomState['activeVideoShare'],
+): ShareSelection {
+  if (!videoShare) return selection;
+  if (selection.mode === 'audio_only') {
+    throw new Error('changing a video share source cannot switch to audio-only');
+  }
+  return {
+    ...selection,
+    withAudio: videoShare.withAudio,
+  };
 }
 
 /**
@@ -1490,6 +1533,8 @@ let preDeafenSelfMuted: boolean | null = null;
 let localStopShareSent = false;
 let localSourceChanging = false;
 let externalShareHelperActive = false;
+/** Generation counters per participant — incremented on each share_started to cancel stale retries. */
+const refreshRetryGenerations = new Map<string, number>();
 export const BACKGROUND_LEAVE_DISCONNECT_MS = 15 * 60_000;
 const RECONNECT_MEDIA_COOLDOWN_MS = 3000;
 /** Slow periodic media retry interval (ms) after fast retries are exhausted. */
@@ -3513,6 +3558,14 @@ function dispatchMessage(raw: unknown): void {
         sp.shareType = remoteShareType;
       }
       updateRemoteShareType(shareStartId, remoteShareType);
+      if (remoteShareType !== 'audio_only') {
+        refreshRemoteScreenShare(shareStartId);
+        // Schedule retries for the case where TrackSubscribed is delayed or the SFU
+        // treats the republish as a track resume (no TrackPublished/TrackSubscribed).
+        if (shareStartId !== state.selfParticipantId) {
+          scheduleRefreshRetries(shareStartId);
+        }
+      }
       // Cache the display name from the server payload
       if (shareStartName) {
         displayNameCache.set(shareStartId, shareStartName);
@@ -3543,6 +3596,7 @@ function dispatchMessage(raw: unknown): void {
         ssp.shareType = undefined;
       }
       clearRemoteShareType(shareStopId);
+      refreshRetryGenerations.delete(shareStopId);
       // Clear the stream reference immediately on signaling. The LiveKit
       // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
       // the sharer closes the app abruptly; without this the viewer's UI shows
@@ -3600,6 +3654,9 @@ function dispatchMessage(raw: unknown): void {
         if (shouldBeSharing) {
           p.shareType = typedShares.get(p.id);
           updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
+          if (p.shareType !== 'audio_only') {
+            refreshRemoteScreenShare(p.id);
+          }
         }
       }
       void applyCameraQualityForShareState();
@@ -4019,9 +4076,10 @@ export function leaveRoom(): void {
   // Reset reconnect cooldown timer
   lastReconnectMediaTime = 0;
 
-  // Clear display name cache and speaking tracker
+  // Clear display name cache, speaking tracker, and pending refresh retries
   displayNameCache.clear();
   speakingTracker.clear();
+  refreshRetryGenerations.clear();
   preDeafenVolume = null;
   preDeafenSelfMuted = null;
 
@@ -4306,7 +4364,19 @@ export async function startPortalShare(): Promise<boolean> {
  * Routes to the correct capture commands based on mode, handles atomic
  * rollback on partial failure, sends signaling, and opens the indicator.
  */
-export async function startCustomShare(selection: ShareSelection): Promise<void> {
+interface StartCustomShareOptions {
+  /**
+   * When true, the caller already has an active publication and wants to
+   * replace only the underlying MediaStreamTrack in-place (source change).
+   * Skips prepareNativeCapture() and routes to replaceNativeCaptureSource()
+   * instead of startNativeCapture() so the LiveKit publication is never torn
+   * down, keeping viewers subscribed without a TrackPublished/TrackSubscribed
+   * cycle.
+   */
+  isSourceChange?: boolean;
+}
+
+export async function startCustomShare(selection: ShareSelection, options: StartCustomShareOptions = {}): Promise<void> {
   ensureInSubRoomForShare();
   ensureReusePatchReadyForPublish();
   // 1. Check if the requested slot is available
@@ -4362,13 +4432,16 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       // The normal Windows `/share` button goes through startFallbackShare()
       // -> lkModule.startScreenShare() instead.
       if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.beginNativeCaptureLeakSession({
-          shareSessionId,
-          mode: selection.mode as 'screen_audio' | 'window',
-          sourceId: selection.sourceId,
-          sourceName: selection.sourceName,
-        });
-        lkModule.prepareNativeCapture();
+        if (!options.isSourceChange) {
+          // Normal start: set up early-frame buffering before Rust capture begins.
+          lkModule.beginNativeCaptureLeakSession({
+            shareSessionId,
+            mode: selection.mode as 'screen_audio' | 'window',
+            sourceId: selection.sourceId,
+            sourceName: selection.sourceName,
+          });
+          lkModule.prepareNativeCapture();
+        }
       }
 
       if (selection.sourceId === 'portal') {
@@ -4382,13 +4455,15 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       }
       videoStarted = true;
 
-      // On Windows (LiveKit JS SDK path), the Rust capture writes frames
-      // to a shared buffer. startNativeCapture() starts a polling loop
-      // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
-      // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
-      // to the HWND corruption caused by child windows (SharePicker).
       if (lkModule && lkModule instanceof LiveKitModule) {
-        await lkModule.startNativeCapture();
+        if (options.isSourceChange) {
+          // Source change: feed new Rust frames into the existing generator so
+          // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
+          await lkModule.replaceNativeCaptureSource();
+        } else {
+          // Normal start: publish a new track via the LiveKit SDK.
+          await lkModule.startNativeCapture();
+        }
       }
     }
 
@@ -4516,10 +4591,15 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         console.warn(LOG, 'best-effort audio_share_stop during startCustomShare rollback failed:', audioStopErr);
       }
     }
-    // Clean up pre-registered listener if startNativeCapture never ran.
-    // Only relevant for video shares — audio-only never calls prepareNativeCapture().
+    // Clean up native capture on failure.
+    // For source-change: replaceNativeCaptureSource stopped the new polling loop
+    // but the old publication is still alive — stopNativeCapture unpublishes it.
+    // For normal start: stopNativeCapture clears the listener if startNativeCapture
+    // never reached publishTrack.
     if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
-      lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      if (!options.isSourceChange) {
+        lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      }
       await lkModule.stopNativeCapture();
     }
     if (isVideoShare) {
@@ -4532,26 +4612,45 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   }
 }
 
+interface StopCustomShareOptions {
+  suppressSignaling?: boolean;
+  /**
+   * When true, skip unpublishTrack on the LiveKit publication so it stays
+   * alive for an in-place track replacement via replaceNativeCaptureSource().
+   * Only meaningful on the Windows/LiveKit native capture path.
+   */
+  keepPublication?: boolean;
+}
+
 /** Stop a specific share slot or all shares. */
-export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all'): Promise<void> {
+export async function stopCustomShare(
+  target: 'video' | 'audio' | 'all' = 'all',
+  options: StopCustomShareOptions = {},
+): Promise<void> {
   const plan = planStopCommands(target, state.activeVideoShare, state.activeAudioShare);
 
   // 1. Stop video capture (best-effort)
   if (plan.stopVideo) {
-    // Stop the native capture bridge on Windows (LiveKit JS SDK path)
+    // Stop the native capture bridge on Windows (LiveKit JS SDK path).
+    // When keepPublication=true (source-change path), skip unpublishTrack so
+    // the LiveKit publication stays alive for replaceNativeCaptureSource().
     if (lkModule && lkModule instanceof LiveKitModule) {
-      // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
-      // unpublishTrack await inside stopNativeCapture and triggers
-      // onLocalScreenShareEnded, which would send a duplicate stop-share.
-      localStopShareSent = true;
-      try {
-        await lkModule.stopNativeCapture();
-      } catch (err) {
-        console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+      if (options.keepPublication) {
+        // Source change: publication stays alive for replaceNativeCaptureSource().
+      } else {
+        // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
+        // unpublishTrack await inside stopNativeCapture and triggers
+        // onLocalScreenShareEnded, which would send a duplicate stop-share.
+        localStopShareSent = true;
+        try {
+          await lkModule.stopNativeCapture();
+        } catch (err) {
+          console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+        }
+        // Reset defensively: onLocalScreenShareEnded resets it when it fires;
+        // if it didn't fire (no active track), ensure flag is clear for future stops.
+        localStopShareSent = false;
       }
-      // Reset defensively: onLocalScreenShareEnded resets it when it fires;
-      // if it didn't fire (no active track), ensure flag is clear for future stops.
-      localStopShareSent = false;
     }
     try {
       await invoke('screen_share_stop');
@@ -4590,7 +4689,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   const willStillBeSharing =
     (target === 'video' && state.activeAudioShare !== null) ||
     (target === 'audio' && state.activeVideoShare !== null);
-  if (client) {
+  if (client && !options.suppressSignaling) {
     if (!willStillBeSharing) {
       client.send({ type: 'stop-share' });
     } else if (target === 'video' && state.activeAudioShare !== null) {

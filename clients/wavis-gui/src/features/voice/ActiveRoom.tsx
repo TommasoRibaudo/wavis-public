@@ -56,6 +56,7 @@ import {
   setPendingSharePickerData,
   buildChatDisplayItems,
   resolveChatMessageDisplayColor,
+  preserveVideoShareSelectionForSourceChange,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
@@ -734,7 +735,12 @@ export default function ActiveRoom() {
   // True while waiting for the OS screen picker to appear (macOS getDisplayMedia)
   const [sharePickerLoading, setSharePickerLoading] = useState(false);
   // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
-  const [winSharePicker, setWinSharePicker] = useState<{ enumResult: EnumerationResult; occupied: OccupiedSlots; isChangingSource?: boolean } | null>(null);
+  const [winSharePicker, setWinSharePicker] = useState<{
+    enumResult: EnumerationResult;
+    occupied: OccupiedSlots;
+    isChangingSource?: boolean;
+    initialWithAudio?: boolean;
+  } | null>(null);
   // macOS audio driver install prompt state
   const [showDriverPrompt, setShowDriverPrompt] = useState(false);
   const pendingShareRef = useRef<boolean>(false);
@@ -1092,6 +1098,7 @@ export default function ActiveRoom() {
               enumResult,
               occupied: { videoOccupied: false, audioOccupied: roomStateRef.current?.activeAudioShare !== null },
               isChangingSource: true,
+              initialWithAudio: roomStateRef.current?.activeVideoShare?.withAudio ?? false,
             });
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
@@ -3004,6 +3011,7 @@ export default function ActiveRoom() {
                                       enumResult,
                                       occupied: { videoOccupied: false, audioOccupied: roomState.activeAudioShare !== null },
                                       isChangingSource: true,
+                                      initialWithAudio: roomState.activeVideoShare?.withAudio ?? false,
                                     });
                                   } catch (err) {
                                     const detail = err instanceof Error ? err.message : String(err);
@@ -3463,17 +3471,26 @@ export default function ActiveRoom() {
             <SharePicker
               enumResult={winSharePicker.enumResult}
               occupied={winSharePicker.occupied}
+              modeScope={winSharePicker.isChangingSource ? 'video_only' : 'all'}
+              initialWithAudio={winSharePicker.initialWithAudio}
               onSelect={async (selection) => {
                 const wasChangingSource = winSharePicker.isChangingSource ?? false;
+                const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
                 setWinSharePicker(null);
                 try {
+                  const nextSelection = wasChangingSource
+                    ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
+                    : selection;
                   if (wasChangingSource) {
-                    await stopCustomShare('video');
+                    // keepPublication=true: skip unpublishTrack so the LiveKit
+                    // publication stays alive for replaceNativeCaptureSource().
+                    // Viewers never see a TrackUnpublished/TrackPublished cycle.
+                    await stopCustomShare('video', { suppressSignaling: true, keepPublication: true });
                   }
-                  await startCustomShare(selection);
+                  await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
                   setShowPostShareAudioPrompt(false);
-                  if (selection.mode !== 'audio_only') {
-                    setShareAudioOn(selection.withAudio);
+                  if (nextSelection.mode !== 'audio_only') {
+                    setShareAudioOn(nextSelection.withAudio);
                   } else {
                     setShareAudioOn(false);
                   }

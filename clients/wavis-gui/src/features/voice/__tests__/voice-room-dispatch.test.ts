@@ -57,6 +57,7 @@ vi.mock('../livekit-media', () => ({
     setPassthroughFilterSettings: vi.fn(),
     startNativeCapture: vi.fn().mockResolvedValue(undefined),
     stopNativeCapture: vi.fn().mockResolvedValue(undefined),
+    replaceNativeCaptureSource: vi.fn().mockResolvedValue(undefined),
     startWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     stopWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     prepareNativeCapture: vi.fn(),

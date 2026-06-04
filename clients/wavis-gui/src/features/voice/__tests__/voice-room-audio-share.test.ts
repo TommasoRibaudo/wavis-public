@@ -76,6 +76,7 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     prepareNativeCapture: vi.fn(),
     startNativeCapture: vi.fn(async () => {}),
     stopNativeCapture: vi.fn(async () => {}),
+    replaceNativeCaptureSource: vi.fn(async () => {}),
     startWasapiAudioBridge: vi.fn(async () => {}),
     stopWasapiAudioBridge: vi.fn(async () => {}),
     restartScreenShareWithAudio: vi.fn(async () => true),
@@ -222,6 +223,7 @@ import {
   getState,
   startCustomShare,
   startPortalShare,
+  stopCustomShare,
   toggleShareAudio,
 } from '../voice-room';
 import type { ShareSelection } from '@features/screen-share/share-types';
@@ -585,5 +587,23 @@ describe('Windows companion audio toggle state', () => {
       withAudio: false,
       audioSourceId: null,
     });
+  });
+
+  it('does not send stop-share when stopping video for a source change', async () => {
+    await startCustomShare({
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      withAudio: true,
+    });
+
+    const messagesBeforeStop = sentMessages.length;
+
+    await stopCustomShare('video', { suppressSignaling: true });
+
+    const stopMessages = sentMessages
+      .slice(messagesBeforeStop)
+      .filter((message) => message.type === 'stop-share');
+    expect(stopMessages).toHaveLength(0);
   });
 });
