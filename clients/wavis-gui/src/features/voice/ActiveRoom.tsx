@@ -1282,9 +1282,15 @@ export default function ActiveRoom() {
         if (stream && stream !== prevStream) {
           console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
           resendStream(pid, 'watch-all', stream);
-          attachScreenShareAudio(pid);
-          applySavedScreenShareAudio(pid);
-          watchAllAttachedAudioRef.current.add(pid);
+          // Only re-attach audio if the viewer already owns this stream's audio.
+          // A stream reference change can fire before viewer-ready resolves (e.g.
+          // the SFU delivers the track muted then unmutes it within the same
+          // subscription window). Attaching audio here in that case would bypass
+          // the viewer-ready gate and leak audio before the tile visually connects.
+          if (watchAllAttachedAudioRef.current.has(pid)) {
+            attachScreenShareAudio(pid);
+            applySavedScreenShareAudio(pid);
+          }
         }
       }
     }
