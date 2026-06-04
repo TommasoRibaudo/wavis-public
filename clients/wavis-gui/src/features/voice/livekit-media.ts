@@ -5907,10 +5907,10 @@ export class LiveKitModule {
           vf.close();
           frameCount++;
           if (frameCount === 1) {
-            console.log(LOG, `[replace-source] first frame into existing generator (${width}x${height}) — encoder will emit keyframe`);
+            console.log(LOG, `[replace-source] first frame into existing generator (${width}x${height})`);
             if (firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
           }
-          if (frameCount === 1 || frameCount % 60 === 0) {
+          if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
             console.log(LOG, `[replace-source] wrote VideoFrame #${frameCount} (${width}x${height})`);
           }
         }).catch(() => { vf.close(); });
@@ -5935,8 +5935,6 @@ export class LiveKitModule {
       } catch { /* capture may have stopped */ }
     }, POLL_INTERVAL_MS);
 
-    console.log(LOG, '[replace-source] polling loop started — waiting for first frame from new source...');
-
     // ── Wait for first frame (5s timeout) ──
     const FIRST_FRAME_TIMEOUT_MS = 5000;
     await Promise.race([
@@ -5955,7 +5953,7 @@ export class LiveKitModule {
       throw err;
     });
 
-    console.log(LOG, '[replace-source] source replaced — new frames flowing through existing generator, no replaceTrack called');
+    console.log(LOG, '[replace-source] source replaced — new frames flowing through existing generator');
   }
 
   /**

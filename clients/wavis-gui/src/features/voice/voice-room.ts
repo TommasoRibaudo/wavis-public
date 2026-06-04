@@ -4441,8 +4441,6 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             sourceName: selection.sourceName,
           });
           lkModule.prepareNativeCapture();
-        } else {
-          console.log(LOG, '[source-change] skipping prepareNativeCapture — publication stays live');
         }
       }
 
@@ -4459,11 +4457,9 @@ export async function startCustomShare(selection: ShareSelection, options: Start
 
       if (lkModule && lkModule instanceof LiveKitModule) {
         if (options.isSourceChange) {
-          // Source change: replace the track in the existing publication so
+          // Source change: feed new Rust frames into the existing generator so
           // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
-          console.log(LOG, '[source-change] calling replaceNativeCaptureSource');
           await lkModule.replaceNativeCaptureSource();
-          console.log(LOG, '[source-change] replaceNativeCaptureSource complete');
         } else {
           // Normal start: publish a new track via the LiveKit SDK.
           await lkModule.startNativeCapture();
@@ -4640,7 +4636,7 @@ export async function stopCustomShare(
     // the LiveKit publication stays alive for replaceNativeCaptureSource().
     if (lkModule && lkModule instanceof LiveKitModule) {
       if (options.keepPublication) {
-        console.log(LOG, '[source-change] keepPublication=true — skipping unpublishTrack, live publication preserved');
+        // Source change: publication stays alive for replaceNativeCaptureSource().
       } else {
         // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
         // unpublishTrack await inside stopNativeCapture and triggers
