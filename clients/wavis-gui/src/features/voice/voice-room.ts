@@ -2625,6 +2625,14 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (state.screenShareStreams.size === 0) {
         state.videoReceiveStats = null;
       }
+      // If the participant is still marked as sharing, schedule retries so that
+      // a temporary track unsubscription (e.g. LiveKit media reconnect) doesn't
+      // leave the icon stuck in "waiting for stream" forever when TrackSubscribed
+      // doesn't re-fire (SFU treat-as-resume edge case).
+      const unsub = state.participants.find((pp) => pp.id === identity);
+      if (unsub?.isSharing && identity !== state.selfParticipantId) {
+        scheduleRefreshRetries(identity);
+      }
       notify();
     },
     onLocalScreenShareEnded: () => {
@@ -3656,6 +3664,13 @@ function dispatchMessage(raw: unknown): void {
           updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
           if (p.shareType !== 'audio_only') {
             refreshRemoteScreenShare(p.id);
+            // Schedule retries for late joiners or post-reconnect cases where
+            // the stream isn't available yet. share_state doesn't schedule
+            // retries (only share_started does), so viewers who join mid-share
+            // and whose TrackSubscribed is delayed get stuck without this.
+            if (!state.screenShareStreams.has(p.id) && p.id !== state.selfParticipantId) {
+              scheduleRefreshRetries(p.id);
+            }
           }
         }
       }
