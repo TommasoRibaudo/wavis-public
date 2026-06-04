@@ -76,6 +76,7 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     prepareNativeCapture: vi.fn(),
     startNativeCapture: vi.fn(async () => {}),
     stopNativeCapture: vi.fn(async () => {}),
+    replaceNativeCaptureSource: vi.fn(async () => {}),
     startWasapiAudioBridge: vi.fn(async () => {}),
     stopWasapiAudioBridge: vi.fn(async () => {}),
     restartScreenShareWithAudio: vi.fn(async () => true),

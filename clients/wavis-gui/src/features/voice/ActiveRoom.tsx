@@ -3482,9 +3482,12 @@ export default function ActiveRoom() {
                     ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
                     : selection;
                   if (wasChangingSource) {
-                    await stopCustomShare('video', { suppressSignaling: true });
+                    // keepPublication=true: skip unpublishTrack so the LiveKit
+                    // publication stays alive for replaceNativeCaptureSource().
+                    // Viewers never see a TrackUnpublished/TrackPublished cycle.
+                    await stopCustomShare('video', { suppressSignaling: true, keepPublication: true });
                   }
-                  await startCustomShare(nextSelection);
+                  await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
                   setShowPostShareAudioPrompt(false);
                   if (nextSelection.mode !== 'audio_only') {
                     setShareAudioOn(nextSelection.withAudio);

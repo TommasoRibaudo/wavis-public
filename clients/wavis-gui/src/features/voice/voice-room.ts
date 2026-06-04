@@ -4364,7 +4364,19 @@ export async function startPortalShare(): Promise<boolean> {
  * Routes to the correct capture commands based on mode, handles atomic
  * rollback on partial failure, sends signaling, and opens the indicator.
  */
-export async function startCustomShare(selection: ShareSelection): Promise<void> {
+interface StartCustomShareOptions {
+  /**
+   * When true, the caller already has an active publication and wants to
+   * replace only the underlying MediaStreamTrack in-place (source change).
+   * Skips prepareNativeCapture() and routes to replaceNativeCaptureSource()
+   * instead of startNativeCapture() so the LiveKit publication is never torn
+   * down, keeping viewers subscribed without a TrackPublished/TrackSubscribed
+   * cycle.
+   */
+  isSourceChange?: boolean;
+}
+
+export async function startCustomShare(selection: ShareSelection, options: StartCustomShareOptions = {}): Promise<void> {
   ensureInSubRoomForShare();
   ensureReusePatchReadyForPublish();
   // 1. Check if the requested slot is available
@@ -4420,13 +4432,18 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       // The normal Windows `/share` button goes through startFallbackShare()
       // -> lkModule.startScreenShare() instead.
       if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.beginNativeCaptureLeakSession({
-          shareSessionId,
-          mode: selection.mode as 'screen_audio' | 'window',
-          sourceId: selection.sourceId,
-          sourceName: selection.sourceName,
-        });
-        lkModule.prepareNativeCapture();
+        if (!options.isSourceChange) {
+          // Normal start: set up early-frame buffering before Rust capture begins.
+          lkModule.beginNativeCaptureLeakSession({
+            shareSessionId,
+            mode: selection.mode as 'screen_audio' | 'window',
+            sourceId: selection.sourceId,
+            sourceName: selection.sourceName,
+          });
+          lkModule.prepareNativeCapture();
+        } else {
+          console.log(LOG, '[source-change] skipping prepareNativeCapture — publication stays live');
+        }
       }
 
       if (selection.sourceId === 'portal') {
@@ -4440,13 +4457,17 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       }
       videoStarted = true;
 
-      // On Windows (LiveKit JS SDK path), the Rust capture writes frames
-      // to a shared buffer. startNativeCapture() starts a polling loop
-      // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
-      // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
-      // to the HWND corruption caused by child windows (SharePicker).
       if (lkModule && lkModule instanceof LiveKitModule) {
-        await lkModule.startNativeCapture();
+        if (options.isSourceChange) {
+          // Source change: replace the track in the existing publication so
+          // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
+          console.log(LOG, '[source-change] calling replaceNativeCaptureSource');
+          await lkModule.replaceNativeCaptureSource();
+          console.log(LOG, '[source-change] replaceNativeCaptureSource complete');
+        } else {
+          // Normal start: publish a new track via the LiveKit SDK.
+          await lkModule.startNativeCapture();
+        }
       }
     }
 
@@ -4574,10 +4595,15 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         console.warn(LOG, 'best-effort audio_share_stop during startCustomShare rollback failed:', audioStopErr);
       }
     }
-    // Clean up pre-registered listener if startNativeCapture never ran.
-    // Only relevant for video shares — audio-only never calls prepareNativeCapture().
+    // Clean up native capture on failure.
+    // For source-change: replaceNativeCaptureSource stopped the new polling loop
+    // but the old publication is still alive — stopNativeCapture unpublishes it.
+    // For normal start: stopNativeCapture clears the listener if startNativeCapture
+    // never reached publishTrack.
     if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
-      lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      if (!options.isSourceChange) {
+        lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      }
       await lkModule.stopNativeCapture();
     }
     if (isVideoShare) {
@@ -4592,6 +4618,12 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
 
 interface StopCustomShareOptions {
   suppressSignaling?: boolean;
+  /**
+   * When true, skip unpublishTrack on the LiveKit publication so it stays
+   * alive for an in-place track replacement via replaceNativeCaptureSource().
+   * Only meaningful on the Windows/LiveKit native capture path.
+   */
+  keepPublication?: boolean;
 }
 
 /** Stop a specific share slot or all shares. */
@@ -4603,20 +4635,26 @@ export async function stopCustomShare(
 
   // 1. Stop video capture (best-effort)
   if (plan.stopVideo) {
-    // Stop the native capture bridge on Windows (LiveKit JS SDK path)
+    // Stop the native capture bridge on Windows (LiveKit JS SDK path).
+    // When keepPublication=true (source-change path), skip unpublishTrack so
+    // the LiveKit publication stays alive for replaceNativeCaptureSource().
     if (lkModule && lkModule instanceof LiveKitModule) {
-      // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
-      // unpublishTrack await inside stopNativeCapture and triggers
-      // onLocalScreenShareEnded, which would send a duplicate stop-share.
-      localStopShareSent = true;
-      try {
-        await lkModule.stopNativeCapture();
-      } catch (err) {
-        console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+      if (options.keepPublication) {
+        console.log(LOG, '[source-change] keepPublication=true — skipping unpublishTrack, live publication preserved');
+      } else {
+        // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
+        // unpublishTrack await inside stopNativeCapture and triggers
+        // onLocalScreenShareEnded, which would send a duplicate stop-share.
+        localStopShareSent = true;
+        try {
+          await lkModule.stopNativeCapture();
+        } catch (err) {
+          console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+        }
+        // Reset defensively: onLocalScreenShareEnded resets it when it fires;
+        // if it didn't fire (no active track), ensure flag is clear for future stops.
+        localStopShareSent = false;
       }
-      // Reset defensively: onLocalScreenShareEnded resets it when it fires;
-      // if it didn't fire (no active track), ensure flag is clear for future stops.
-      localStopShareSent = false;
     }
     try {
       await invoke('screen_share_stop');

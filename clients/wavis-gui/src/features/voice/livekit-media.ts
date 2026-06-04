@@ -5845,6 +5845,151 @@ export class LiveKitModule {
   }
 
   /**
+   * Replace the MediaStreamTrack on the existing native capture publication
+   * without unpublishing it. Used during a source change so the SFU keeps
+   * the same publication alive — viewers stay subscribed and never receive
+   * a TrackUnpublished / TrackPublished cycle.
+   *
+   * Caller is responsible for having already stopped the Rust capture
+   * (`screen_share_stop`) and having started the new source
+   * (`screen_share_start_source`) before calling this method.
+   */
+  async replaceNativeCaptureSource(): Promise<void> {
+    if (!this.room) throw new Error('not connected to a room');
+    const existingPub = this.nativeCapturePublication;
+    if (!existingPub?.track) throw new Error('replaceNativeCaptureSource: no active publication to replace');
+
+    console.log(LOG, '[replace-source] starting track replacement on existing publication');
+
+    // ── Stop old polling loop without touching the LiveKit publication ──
+    if (this.nativeCapturePollInterval !== null) {
+      clearInterval(this.nativeCapturePollInterval);
+      this.nativeCapturePollInterval = null;
+    }
+    this.nativeCaptureFrameHandler = null;
+    this.nativeCaptureEarlyFrames = [];
+    this.nativeCapturePollLastSeq = 0;
+    this.nativeCaptureUnlisten = null;
+
+    // Save a reference to the old generator MST so we can stop it after replaceTrack.
+    const oldMST = existingPub.track.mediaStreamTrack;
+
+    // ── Create new MediaStreamTrackGenerator (primary path on Windows) ──
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasTrackGenerator = typeof (globalThis as any).MediaStreamTrackGenerator === 'function';
+    if (!hasTrackGenerator) {
+      throw new Error('replaceNativeCaptureSource: MediaStreamTrackGenerator unavailable — cannot replace without it');
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const generator = new (globalThis as any).MediaStreamTrackGenerator({ kind: 'video' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const trackWriter: any = generator.writable.getWriter();
+    const newVideoTrack: MediaStreamTrack = generator as MediaStreamTrack;
+
+    console.log(LOG, '[replace-source] new MediaStreamTrackGenerator created');
+
+    // ── Set up frame handler + first-frame gate (same pattern as startNativeCapture) ──
+    let frameCount = 0;
+    let firstFrameResolve: (() => void) | null = null;
+    const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
+
+    const decodeBase64 = async (b64: string): Promise<ArrayBuffer> => {
+      const resp = await fetch(`data:application/octet-stream;base64,${b64}`);
+      return resp.arrayBuffer();
+    };
+
+    const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+      const { frame, width, height } = payload;
+      decodeBase64(frame).then((buf) => {
+        const blob = new Blob([buf], { type: 'image/jpeg' });
+        return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+      }).then((bitmap) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const vf = new (globalThis as any).VideoFrame(bitmap, { timestamp: performance.now() * 1000 });
+        bitmap.close();
+        trackWriter.write(vf).then(() => {
+          vf.close();
+          frameCount++;
+          if (frameCount === 1) {
+            console.log(LOG, `[replace-source] first VideoFrame written to new generator (${width}x${height})`);
+            if (firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
+          }
+          if (frameCount === 1 || frameCount % 60 === 0) {
+            console.log(LOG, `[replace-source] wrote VideoFrame #${frameCount} (${width}x${height})`);
+          }
+        }).catch(() => { vf.close(); });
+      }).catch((err) => {
+        if (frameCount === 0) console.warn(LOG, '[replace-source] first frame decode failed:', err);
+      });
+    };
+
+    this.nativeCaptureFrameHandler = handleFrame;
+    this.nativeCaptureUnlisten = () => { /* no-op */ };
+    this.nativeCapturePollLastSeq = 0;
+
+    // ── Start new polling loop ──
+    const POLL_INTERVAL_MS = 16;
+    this.nativeCapturePollInterval = setInterval(async () => {
+      try {
+        const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
+          'screen_share_poll_frame',
+        );
+        if (result && result.seq > this.nativeCapturePollLastSeq) {
+          this.nativeCapturePollLastSeq = result.seq;
+          handleFrame({ frame: result.frame, width: result.width, height: result.height });
+        }
+      } catch { /* invoke failed — capture may have stopped */ }
+    }, POLL_INTERVAL_MS);
+
+    console.log(LOG, '[replace-source] new polling loop started, waiting for first frame...');
+
+    // ── Wait for first frame with timeout ──
+    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    await Promise.race([
+      firstFramePromise,
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('[replace-source] first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+      ),
+    ]).catch((err) => {
+      // Clean up new resources; do NOT touch the old publication — let caller decide.
+      if (this.nativeCapturePollInterval !== null) {
+        clearInterval(this.nativeCapturePollInterval);
+        this.nativeCapturePollInterval = null;
+      }
+      this.nativeCaptureFrameHandler = null;
+      this.nativeCaptureUnlisten = null;
+      newVideoTrack.stop();
+      console.warn(LOG, '[replace-source] aborting:', err instanceof Error ? err.message : String(err));
+      throw err;
+    });
+
+    // ── Replace the track in-place on the existing LiveKit publication ──
+    // This calls sender.replaceTrack() under the hood — no renegotiation,
+    // same SSRC/trackSid, viewers keep their existing subscription.
+    console.log(LOG, '[replace-source] calling replaceTrack on existing LiveKit publication...');
+    try {
+      await (existingPub.track as LocalVideoTrack).replaceTrack(newVideoTrack, { userProvidedTrack: true });
+    } catch (err) {
+      // Clean up the new generator — keep old publication running so teardown
+      // can call stopNativeCapture() normally.
+      if (this.nativeCapturePollInterval !== null) {
+        clearInterval(this.nativeCapturePollInterval);
+        this.nativeCapturePollInterval = null;
+      }
+      this.nativeCaptureFrameHandler = null;
+      this.nativeCaptureUnlisten = null;
+      newVideoTrack.stop();
+      console.error(LOG, '[replace-source] replaceTrack failed:', err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+
+    // Stop old generator MST — it is now detached from the sender after replaceTrack.
+    oldMST.stop();
+
+    console.log(LOG, '[replace-source] track replaced successfully — viewers stay subscribed, no TrackPublished needed');
+  }
+
+  /**
    * Stop the native capture bridge: unpublish the screen share track,
    * stop listening for Tauri events, and clean up the canvas.
    */
