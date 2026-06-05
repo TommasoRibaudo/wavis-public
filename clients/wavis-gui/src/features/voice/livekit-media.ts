@@ -2344,6 +2344,15 @@ export class LiveKitModule {
           this.callbacks.onRemoteCameraPublished?.(participant.identity);
           return;
         }
+        if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
+          if (DEBUG_SHARE_TRACK_SUB) {
+            console.log(LOG, `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`);
+          }
+          publication.setSubscribed?.(true);
+          publication.setEnabled?.(true);
+          publication.setVideoQuality?.(VideoQuality.HIGH);
+          return;
+        }
         if (publication.source !== Track.Source.ScreenShareAudio) return;
         this.screenShareAudioPublications.set(participant.identity, publication);
         publication.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
@@ -2440,6 +2449,9 @@ export class LiveKitModule {
             this.attachAudioTrack(participant, track);
           }
         } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
+          if (DEBUG_SHARE_TRACK_SUB) {
+            console.log(LOG, `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`);
+          }
           this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
         }
       });
@@ -3902,6 +3914,28 @@ export class LiveKitModule {
       .sort((a, b) => b.startedAtMs - a.startedAtMs);
   }
 
+  refreshRemoteScreenShare(participantIdentity: string): void {
+    const participant = this.room?.remoteParticipants.get(participantIdentity);
+    if (!participant) return;
+
+    const publication = participant.getTrackPublication(Track.Source.ScreenShare);
+    if (!publication || publication.kind !== Track.Kind.Video) return;
+
+    publication.setSubscribed?.(true);
+    publication.setEnabled?.(true);
+    publication.setVideoQuality?.(VideoQuality.HIGH);
+
+    const track = publication.track;
+    if (track && track.kind === Track.Kind.Video) {
+      this.attachRemoteScreenShareTrack(
+        participant,
+        publication,
+        track as RemoteTrack,
+        'signaling_recovery',
+      );
+    }
+  }
+
 
   /* ─── Post-Publish Track Tuning ──────────────────────────────── */
 
@@ -5096,7 +5130,7 @@ export class LiveKitModule {
     participant: RemoteParticipant,
     publication: RemoteTrackPublication,
     track: RemoteTrack,
-    reason: 'track_subscribed' | 'participant_connected_recovery',
+    reason: 'track_subscribed' | 'participant_connected_recovery' | 'signaling_recovery',
   ): void {
     // Force the track to stay enabled and pin it at HIGH quality.
     // With adaptiveStream:true and dynacast:true, the server chooses which
@@ -5482,6 +5516,15 @@ export class LiveKitModule {
   private nativeCapturePublication: LocalTrackPublication | null = null;
   /** DOM-attached canvas used by the captureStream fallback (removed on stop). */
   private nativeCaptureCanvas: HTMLCanvasElement | null = null;
+  /**
+   * WritableStreamDefaultWriter for the active MediaStreamTrackGenerator.
+   * Stored so replaceNativeCaptureSource() can feed new frames from the new
+   * Rust source into the SAME generator — no replaceTrack needed, which means
+   * the encoder naturally sends a keyframe when the content changes and
+   * subscribers never see a TrackUnpublished/TrackPublished cycle.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private nativeCaptureTrackWriter: any = null;
   /** Buffered frames received between prepareNativeCapture and startNativeCapture. */
   private nativeCaptureEarlyFrames: Array<{ frame: string; width: number; height: number }> = [];
   /**
@@ -5639,6 +5682,7 @@ export class LiveKitModule {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const generator = new (globalThis as any).MediaStreamTrackGenerator({ kind: 'video' });
       trackWriter = generator.writable.getWriter();
+      this.nativeCaptureTrackWriter = trackWriter; // retained for replaceNativeCaptureSource()
       videoTrack = generator as MediaStreamTrack;
       console.log(LOG, 'native capture: using MediaStreamTrackGenerator');
     } else {
@@ -5875,6 +5919,108 @@ export class LiveKitModule {
   }
 
   /**
+   * Switch the Rust capture source without touching the LiveKit publication.
+   *
+   * Instead of creating a new generator and calling replaceTrack (which doesn't
+   * trigger a keyframe on remote decoders), we write new frames directly into
+   * the SAME MediaStreamTrackGenerator that startNativeCapture created.  The
+   * encoder sees new content on the same track, naturally emits a keyframe when
+   * the content / resolution changes, and all subscribers (including native Rust
+   * viewers on Linux) decode the new source without any TrackUnpublished /
+   * TrackPublished cycle.
+   *
+   * Caller must call screen_share_stop + screen_share_start_source before this.
+   */
+  async replaceNativeCaptureSource(): Promise<void> {
+    if (!this.room) throw new Error('not connected to a room');
+    if (!this.nativeCapturePublication) throw new Error('replaceNativeCaptureSource: no active publication');
+    const tw = this.nativeCaptureTrackWriter;
+    if (!tw) throw new Error('replaceNativeCaptureSource: no active track writer — generator path only');
+
+    console.log(LOG, '[replace-source] reusing existing generator — swapping Rust capture source');
+
+    // Stop old polling loop (keeps publication + generator alive).
+    if (this.nativeCapturePollInterval !== null) {
+      clearInterval(this.nativeCapturePollInterval);
+      this.nativeCapturePollInterval = null;
+    }
+    this.nativeCaptureEarlyFrames = [];
+    this.nativeCapturePollLastSeq = 0;
+    this.nativeCaptureUnlisten = () => { /* no-op */ };
+
+    // Build a new frame handler that writes into the SAME writer.
+    let frameCount = 0;
+    let firstFrameResolve: (() => void) | null = null;
+    const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
+
+    const decodeBase64 = async (b64: string): Promise<ArrayBuffer> => {
+      const resp = await fetch(`data:application/octet-stream;base64,${b64}`);
+      return resp.arrayBuffer();
+    };
+
+    const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+      const { frame, width, height } = payload;
+      decodeBase64(frame).then((buf) => {
+        const blob = new Blob([buf], { type: 'image/jpeg' });
+        return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+      }).then((bitmap) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const vf = new (globalThis as any).VideoFrame(bitmap, { timestamp: performance.now() * 1000 });
+        bitmap.close();
+        tw.write(vf).then(() => {
+          vf.close();
+          frameCount++;
+          if (frameCount === 1) {
+            console.log(LOG, `[replace-source] first frame into existing generator (${width}x${height})`);
+            if (firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
+          }
+          if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
+            console.log(LOG, `[replace-source] wrote VideoFrame #${frameCount} (${width}x${height})`);
+          }
+        }).catch(() => { vf.close(); });
+      }).catch((err) => {
+        if (frameCount === 0) console.warn(LOG, '[replace-source] first frame decode failed:', err);
+      });
+    };
+
+    this.nativeCaptureFrameHandler = handleFrame;
+
+    // ── Start new polling loop for the new Rust source ──
+    const POLL_INTERVAL_MS = 16;
+    this.nativeCapturePollInterval = setInterval(async () => {
+      try {
+        const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
+          'screen_share_poll_frame',
+        );
+        if (result && result.seq > this.nativeCapturePollLastSeq) {
+          this.nativeCapturePollLastSeq = result.seq;
+          handleFrame({ frame: result.frame, width: result.width, height: result.height });
+        }
+      } catch { /* capture may have stopped */ }
+    }, POLL_INTERVAL_MS);
+
+    // ── Wait for first frame (5s timeout) ──
+    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    await Promise.race([
+      firstFramePromise,
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('[replace-source] first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+      ),
+    ]).catch((err) => {
+      if (this.nativeCapturePollInterval !== null) {
+        clearInterval(this.nativeCapturePollInterval);
+        this.nativeCapturePollInterval = null;
+      }
+      this.nativeCaptureFrameHandler = null;
+      this.nativeCaptureUnlisten = null;
+      console.warn(LOG, '[replace-source] aborting:', err instanceof Error ? err.message : String(err));
+      throw err;
+    });
+
+    console.log(LOG, '[replace-source] source replaced — new frames flowing through existing generator');
+  }
+
+  /**
    * Stop the native capture bridge: unpublish the screen share track,
    * stop listening for Tauri events, and clean up the canvas.
    */
@@ -5905,10 +6051,11 @@ export class LiveKitModule {
     // Clear the no-op marker
     this.nativeCaptureUnlisten = null;
 
-    // Clear handler ref and buffered frames
+    // Clear handler ref, buffered frames, and track writer
     this.nativeCaptureFrameHandler = null;
     this.nativeCaptureEarlyFrames = [];
     this.nativeCapturePollLastSeq = 0;
+    this.nativeCaptureTrackWriter = null;
     if (leakSession) {
       leakSession.summary.cleanupFlags.frameHandlerCleared = this.nativeCaptureFrameHandler === null;
       leakSession.summary.cleanupFlags.earlyFramesCleared = this.nativeCaptureEarlyFrames.length === 0;

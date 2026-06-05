@@ -56,6 +56,7 @@ import {
   setPendingSharePickerData,
   buildChatDisplayItems,
   resolveChatMessageDisplayColor,
+  preserveVideoShareSelectionForSourceChange,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
@@ -762,7 +763,12 @@ export default function ActiveRoom() {
   // True while a selected video share source is starting publication.
   const [shareStarting, setShareStarting] = useState(false);
   // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
-  const [winSharePicker, setWinSharePicker] = useState<{ enumResult: EnumerationResult; occupied: OccupiedSlots; isChangingSource?: boolean } | null>(null);
+  const [winSharePicker, setWinSharePicker] = useState<{
+    enumResult: EnumerationResult;
+    occupied: OccupiedSlots;
+    isChangingSource?: boolean;
+    initialWithAudio?: boolean;
+  } | null>(null);
   // macOS audio driver install prompt state
   const [showDriverPrompt, setShowDriverPrompt] = useState(false);
   const pendingShareRef = useRef<boolean>(false);
@@ -1120,6 +1126,7 @@ export default function ActiveRoom() {
               enumResult,
               occupied: { videoOccupied: false, audioOccupied: roomStateRef.current?.activeAudioShare !== null },
               isChangingSource: true,
+              initialWithAudio: roomStateRef.current?.activeVideoShare?.withAudio ?? false,
             });
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
@@ -1303,9 +1310,15 @@ export default function ActiveRoom() {
         if (stream && stream !== prevStream) {
           console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
           resendStream(pid, 'watch-all', stream);
-          attachScreenShareAudio(pid);
-          applySavedScreenShareAudio(pid);
-          watchAllAttachedAudioRef.current.add(pid);
+          // Only re-attach audio if the viewer already owns this stream's audio.
+          // A stream reference change can fire before viewer-ready resolves (e.g.
+          // the SFU delivers the track muted then unmutes it within the same
+          // subscription window). Attaching audio here in that case would bypass
+          // the viewer-ready gate and leak audio before the tile visually connects.
+          if (watchAllAttachedAudioRef.current.has(pid)) {
+            attachScreenShareAudio(pid);
+            applySavedScreenShareAudio(pid);
+          }
         }
       }
     }
@@ -3026,6 +3039,7 @@ export default function ActiveRoom() {
                                       enumResult,
                                       occupied: { videoOccupied: false, audioOccupied: roomState.activeAudioShare !== null },
                                       isChangingSource: true,
+                                      initialWithAudio: roomState.activeVideoShare?.withAudio ?? false,
                                     });
                                   } catch (err) {
                                     const detail = err instanceof Error ? err.message : String(err);
@@ -3465,19 +3479,28 @@ export default function ActiveRoom() {
             <SharePicker
               enumResult={winSharePicker.enumResult}
               occupied={winSharePicker.occupied}
+              modeScope={winSharePicker.isChangingSource ? 'video_only' : 'all'}
+              initialWithAudio={winSharePicker.initialWithAudio}
               onSelect={async (selection) => {
                 const wasChangingSource = winSharePicker.isChangingSource ?? false;
+                const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
                 setWinSharePicker(null);
                 const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
                 if (showStartingIndicator) setShareStarting(true);
                 try {
+                  const nextSelection = wasChangingSource
+                    ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
+                    : selection;
                   if (wasChangingSource) {
-                    await stopCustomShare('video');
+                    // keepPublication=true: skip unpublishTrack so the LiveKit
+                    // publication stays alive for replaceNativeCaptureSource().
+                    // Viewers never see a TrackUnpublished/TrackPublished cycle.
+                    await stopCustomShare('video', { suppressSignaling: true, keepPublication: true });
                   }
-                  await startCustomShare(selection);
+                  await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
                   setShowPostShareAudioPrompt(false);
-                  if (selection.mode !== 'audio_only') {
-                    setShareAudioOn(selection.withAudio);
+                  if (nextSelection.mode !== 'audio_only') {
+                    setShareAudioOn(nextSelection.withAudio);
                   } else {
                     setShareAudioOn(false);
                   }

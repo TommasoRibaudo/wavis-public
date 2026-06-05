@@ -37,6 +37,8 @@ export interface OccupiedSlots {
 export interface SharePickerProps {
   enumResult?: EnumerationResult;
   occupied?: OccupiedSlots;
+  modeScope?: 'all' | 'video_only';
+  initialWithAudio?: boolean;
   onSelect?: (selection: ShareSelection) => void;
   onCancel?: () => void;
 }
@@ -89,6 +91,15 @@ export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots)
     }
   }
   return pickDefaultMode(sources);
+}
+
+export function pickInitialVideoMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
+  for (const m of MODES.filter((mode) => mode.key !== 'audio_only')) {
+    if (!occupied.videoOccupied && sources.some((s) => s.source_type === m.sourceType)) {
+      return m.key;
+    }
+  }
+  return 'screen_audio';
 }
 
 export function defaultWithAudioForMode(mode: ShareMode, occupied: OccupiedSlots): boolean {
@@ -266,14 +277,17 @@ export default function SharePicker(props: SharePickerProps) {
     : (parsed?.occupied ?? { videoOccupied: false, audioOccupied: false });
 
   const initSources = enumResult?.sources ?? [];
-  const initialMode = pickInitialMode(initSources, occupied);
+  const modeScope = props.modeScope ?? 'all';
+  const initialMode = modeScope === 'video_only'
+    ? pickInitialVideoMode(initSources, occupied)
+    : pickInitialMode(initSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
     initSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
   const [withAudio, setWithAudio] = useState<boolean>(() =>
-    defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
+    props.initialWithAudio ?? defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
   );
   // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
   const [compatibilityMode, setCompatibilityMode] = useState(false);
@@ -329,20 +343,21 @@ export default function SharePicker(props: SharePickerProps) {
   const isVisualMode = activeMode !== 'audio_only';
   const showAudioCheckbox = activeMode !== 'audio_only';
   // Disable system audio checkbox when an audio-only share is already occupying the audio device.
-  const audioCheckboxDisabled = occupied.audioOccupied;
+  const audioCheckboxDisabled = occupied.audioOccupied || modeScope === 'video_only';
   const canShare = selectedSource !== null;
   const showFallback = enumResult !== null && shouldShowPortalFallback(enumResult.fallback_reason) && filteredSources.length === 0;
   const isEmpty = filteredSources.length === 0 && !showFallback;
   const echoWarningActive = hasEchoWarning(warnings);
 
   useEffect(() => {
-    if (audioCheckboxDisabled && withAudio) {
+    if (occupied.audioOccupied && withAudio) {
       setWithAudio(false);
     }
-  }, [audioCheckboxDisabled, withAudio]);
+  }, [occupied.audioOccupied, withAudio]);
 
   /** Check if a mode tab should be disabled due to occupied slot. */
   const isModeDisabled = (mode: ShareMode): boolean => {
+    if (modeScope === 'video_only' && mode === 'audio_only') return true;
     if (mode === 'audio_only') return occupied.audioOccupied;
     return occupied.videoOccupied;
   };
@@ -354,6 +369,9 @@ export default function SharePicker(props: SharePickerProps) {
       setSelectedSource(null);
       activeIndexRef.current = -1;
       setWithAudio((current) => {
+        if (modeScope === 'video_only') {
+          return props.initialWithAudio ?? current;
+        }
         if (mode === 'audio_only' || occupied.audioOccupied) {
           return false;
         }
@@ -363,7 +381,7 @@ export default function SharePicker(props: SharePickerProps) {
         return current;
       });
     },
-    [occupied.audioOccupied],
+    [modeScope, occupied.audioOccupied, props.initialWithAudio],
   );
 
   /* ── Source selection ── */
