@@ -31,6 +31,7 @@ function makeParticipant(id: string, overrides?: Partial<RoomParticipant>): Room
     isHostMuted: false,
     isDeafened: false,
     isSharing: false,
+    mediaConnected: true,
     rmsLevel: 0,
     volume: 70,
     ...overrides,

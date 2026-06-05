@@ -328,6 +328,7 @@ function makeParticipant(id: string, volume: number): RoomParticipant {
     isHostMuted: false,
     isDeafened: false,
     isSharing: false,
+    mediaConnected: true,
     rmsLevel: 0,
     volume,
   };
@@ -349,6 +350,13 @@ describe('Property 11: Volume preservation across reconnect', () => {
       ),
       { numRuns: 100 },
     );
+  });
+
+  it('matched participants retain old media readiness', () => {
+    const old = [{ ...makeParticipant('p1', 70), mediaConnected: true }];
+    const fresh = [{ ...makeParticipant('p1', 70), mediaConnected: false }];
+    const merged = mergeParticipantsWithVolume(old, fresh);
+    expect(merged[0].mediaConnected).toBe(true);
   });
 
   it('new participants keep the volume from the fresh list', () => {
@@ -589,6 +597,7 @@ describe('Property 7: Color resolution from participant list', () => {
               isHostMuted: false,
               isDeafened: false,
               isSharing: false,
+              mediaConnected: true,
               rmsLevel: 0,
               volume: 70,
             },
@@ -620,6 +629,7 @@ describe('Property 7: Color resolution from participant list', () => {
               isHostMuted: false,
               isDeafened: false,
               isSharing: false,
+              mediaConnected: true,
               rmsLevel: 0,
               volume: 70,
             },
@@ -649,6 +659,7 @@ describe('Property 7: Color resolution from participant list', () => {
       isHostMuted: false,
       isDeafened: false,
       isSharing: false,
+      mediaConnected: true,
       rmsLevel: 0,
       volume: 70,
     }];
@@ -671,6 +682,7 @@ describe('Property 7: Color resolution from participant list', () => {
         isHostMuted: false,
         isDeafened: false,
         isSharing: false,
+        mediaConnected: true,
         rmsLevel: 0,
         volume: 70,
       },
@@ -685,6 +697,7 @@ describe('Property 7: Color resolution from participant list', () => {
         isHostMuted: false,
         isDeafened: false,
         isSharing: false,
+        mediaConnected: true,
         rmsLevel: 0,
         volume: 70,
       },
@@ -707,6 +720,7 @@ describe('Property 7: Color resolution from participant list', () => {
       isHostMuted: false,
       isDeafened: false,
       isSharing: false,
+      mediaConnected: true,
       rmsLevel: 0,
       volume: 70,
     }];
