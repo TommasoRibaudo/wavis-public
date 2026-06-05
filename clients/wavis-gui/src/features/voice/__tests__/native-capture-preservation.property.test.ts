@@ -19,9 +19,18 @@ import fc from 'fast-check';
 // ─── Mock: @tauri-apps/api/event ───────────────────────────────────
 
 const mockUnlisten = vi.fn();
+let nativeCaptureFailureHandler: ((event: { payload: { reason: string } }) => void) | null = null;
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => mockUnlisten),
+  listen: vi.fn(async (
+    eventName: string,
+    handler: (event: { payload: { reason: string } }) => void,
+  ) => {
+    if (eventName === 'windows-native-capture-failed') {
+      nativeCaptureFailureHandler = handler;
+    }
+    return mockUnlisten;
+  }),
 }));
 
 // ─── Mock: @tauri-apps/api/core (invoke for polling) ───────────────
@@ -257,6 +266,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   beforeEach(() => {
     pollSeq = 0;
     pollReturnsFrames = true;
+    nativeCaptureFailureHandler = null;
     mockUnlisten.mockClear();
     mockPublishTrack.mockClear();
     mockUnpublishTrack.mockClear();
@@ -372,6 +382,32 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   });
 
   // ── 3b. Cleanup preservation (stopNativeCapture) ───────────────
+
+  it('falls back before the timeout when Rust reports repeated WGC readback failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      pollReturnsFrames = false;
+      const mod = new LiveKitModule(createMockCallbacks());
+      await driveToConnected(mod);
+
+      const capturePromise = mod.startNativeCapture();
+      for (let i = 0; i < 10 && !nativeCaptureFailureHandler; i++) {
+        await Promise.resolve();
+      }
+      expect(nativeCaptureFailureHandler).not.toBeNull();
+
+      nativeCaptureFailureHandler!({
+        payload: { reason: 'WGC readback failed repeatedly before first frame' },
+      });
+
+      await expect(capturePromise).rejects.toThrow(
+        'WGC readback failed repeatedly before first frame',
+      );
+      expect(mockUnlisten).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   describe('3b. Cleanup preservation (stopNativeCapture)', () => {
     it('unpublishes iff publication exists, removes canvas iff it exists, and nulls all references', async () => {

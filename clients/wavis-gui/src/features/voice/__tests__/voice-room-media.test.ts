@@ -2655,6 +2655,29 @@ describe('Edge case unit tests', () => {
       leaveRoom();
     });
 
+    it('terminal media disconnect requests a fresh media token once', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      const module = lastLkModule!;
+      sentMessages = [];
+
+      module.callbacks.onMediaDisconnected();
+      await tick();
+      await tick();
+
+      expect(latestState!.mediaState).toBe('disconnected');
+      expect(module.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+
+      leaveRoom();
+    });
+
     it('LiveKit reconnect success restores active voice state and share availability', async () => {
       resetAll();
       await driveToActive();

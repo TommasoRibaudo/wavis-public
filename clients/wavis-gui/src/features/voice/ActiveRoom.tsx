@@ -107,6 +107,11 @@ import {
   shouldDisableCameraButton,
   shouldMountCameraButton,
 } from './active-room-camera';
+import {
+  SHARE_PICKER_LOADING_LABEL,
+  SHARE_STARTING_LOADING_LABEL,
+  isVideoShareSelectionMode,
+} from './active-room-share-loading';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
 import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
@@ -286,6 +291,27 @@ function mediaIndicator(state: MediaState, error: string | null): { color: strin
     case 'disconnected':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Media: disconnected' };
   }
+}
+
+function shareLoadingNotice(label: string, className: string): ReactNode {
+  return (
+    <div className={className}>
+      <div className="flex items-center gap-1">
+        {[0, 1, 2].map((bar) => (
+          <span
+            key={bar}
+            className="inline-block w-1 bg-wavis-purple"
+            style={{
+              height: '0.55rem',
+              animation: 'pulse 1.2s ease-in-out infinite',
+              animationDelay: `${bar * 0.16}s`,
+            }}
+          />
+        ))}
+      </div>
+      <span className="text-wavis-text-secondary">{label}</span>
+    </div>
+  );
 }
 
 function combinedStatusBadge(
@@ -734,6 +760,8 @@ export default function ActiveRoom() {
   const shareEnumerating = useRef(false);
   // True while waiting for the OS screen picker to appear (macOS getDisplayMedia)
   const [sharePickerLoading, setSharePickerLoading] = useState(false);
+  // True while a selected video share source is starting publication.
+  const [shareStarting, setShareStarting] = useState(false);
   // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
   const [winSharePicker, setWinSharePicker] = useState<{
     enumResult: EnumerationResult;
@@ -1361,11 +1389,15 @@ export default function ActiveRoom() {
     cleanups.push(
       listen<ShareSelection>('share-picker:selected', async (event) => {
         setPendingSharePickerData(null);
+        const showStartingIndicator = isVideoShareSelectionMode(event.payload.mode);
+        if (showStartingIndicator) setShareStarting(true);
         try {
           await startCustomShare(event.payload);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           showTransientScreenShareError(msg);
+        } finally {
+          if (showStartingIndicator) setShareStarting(false);
         }
       }),
     );
@@ -2950,7 +2982,7 @@ export default function ActiveRoom() {
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={isVideoOrFallbackSharing ? stopShareAction : handleStartShare}
-              disabled={!isVideoOrFallbackSharing && (!shareEnabled || sharePickerLoading)}
+              disabled={!isVideoOrFallbackSharing && (!shareEnabled || sharePickerLoading || shareStarting)}
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: isVideoOrFallbackSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
@@ -2986,25 +3018,15 @@ export default function ActiveRoom() {
                     >
                       /stopshare
                     </button>
-                    {sharePickerLoading && (
-                      <div className="-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
-                        <div className="flex items-center gap-1">
-                          {[0, 1, 2].map((bar) => (
-                            <span
-                              key={bar}
-                              className="inline-block w-1 bg-wavis-purple"
-                              style={{
-                                height: '0.55rem',
-                                animation: 'pulse 1.2s ease-in-out infinite',
-                                animationDelay: `${bar * 0.16}s`,
-                              }}
-                            />
-                          ))}
-                        </div>
-                        <span className="text-wavis-text-secondary">waiting for screen picker...</span>
-                      </div>
+                    {sharePickerLoading && shareLoadingNotice(
+                      SHARE_PICKER_LOADING_LABEL,
+                      '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
                     )}
-                    {isVideoActive && (
+                    {shareStarting && shareLoadingNotice(
+                      SHARE_STARTING_LOADING_LABEL,
+                      '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+                    )}
+                    {isVideoActive && !shareStarting && (
                       <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
                         <div className="flex gap-1">
                           <button
@@ -3088,7 +3110,7 @@ export default function ActiveRoom() {
                   </>
                 );
               }
-              const shareDisabled = !shareEnabled || sharePickerLoading;
+              const shareDisabled = !shareEnabled || sharePickerLoading || shareStarting;
               return (
                 <>
                   <button
@@ -3098,23 +3120,13 @@ export default function ActiveRoom() {
                   >
                     {shareButtonLabel(shareEnabled, false, roomState.sharePermission, isHost)}
                   </button>
-                  {sharePickerLoading && (
-                    <div className="-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
-                      <div className="flex items-center gap-1">
-                        {[0, 1, 2].map((bar) => (
-                          <span
-                            key={bar}
-                            className="inline-block w-1 bg-wavis-purple"
-                            style={{
-                              height: '0.55rem',
-                              animation: 'pulse 1.2s ease-in-out infinite',
-                              animationDelay: `${bar * 0.16}s`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <span className="text-wavis-text-secondary">waiting for screen picker...</span>
-                    </div>
+                  {sharePickerLoading && shareLoadingNotice(
+                    SHARE_PICKER_LOADING_LABEL,
+                    '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+                  )}
+                  {shareStarting && shareLoadingNotice(
+                    SHARE_STARTING_LOADING_LABEL,
+                    '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
                   )}
                 </>
               );
@@ -3148,23 +3160,13 @@ export default function ActiveRoom() {
           </div>
         </div>
       )}
-      {!expandedSections.you && sharePickerLoading && (
-        <div className="ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
-          <div className="flex items-center gap-1">
-            {[0, 1, 2].map((bar) => (
-              <span
-                key={bar}
-                className="inline-block w-1 bg-wavis-purple"
-                style={{
-                  height: '0.55rem',
-                  animation: 'pulse 1.2s ease-in-out infinite',
-                  animationDelay: `${bar * 0.16}s`,
-                }}
-              />
-            ))}
-          </div>
-          <span className="text-wavis-text-secondary">waiting for screen picker...</span>
-        </div>
+      {!expandedSections.you && sharePickerLoading && shareLoadingNotice(
+        SHARE_PICKER_LOADING_LABEL,
+        'ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+      )}
+      {!expandedSections.you && shareStarting && shareLoadingNotice(
+        SHARE_STARTING_LOADING_LABEL,
+        'ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
       )}
       {screenShareError && (
         <div className="mx-4 mt-2 border border-wavis-danger bg-wavis-panel p-2 text-xs text-wavis-danger flex items-start gap-2">
@@ -3483,6 +3485,8 @@ export default function ActiveRoom() {
                 const wasChangingSource = winSharePicker.isChangingSource ?? false;
                 const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
                 setWinSharePicker(null);
+                const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
+                if (showStartingIndicator) setShareStarting(true);
                 try {
                   const nextSelection = wasChangingSource
                     ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
@@ -3504,6 +3508,8 @@ export default function ActiveRoom() {
                   const detail = err instanceof Error ? err.message : String(err);
                   showTransientScreenShareError(`Screen sharing failed: ${detail}`);
                   toast.error(`Screen sharing failed: ${detail}`);
+                } finally {
+                  if (showStartingIndicator) setShareStarting(false);
                 }
               }}
               onCancel={() => setWinSharePicker(null)}

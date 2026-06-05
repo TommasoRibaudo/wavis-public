@@ -216,6 +216,22 @@ pub async fn submit_bug_report(
         return Err(rate_limited_response(retry_secs));
     }
 
+    // --- Ban check: reject banned users ---
+    if let Some(ref auth_user) = user {
+        let is_banned: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM bug_report_bans WHERE user_id = $1)",
+        )
+        .bind(auth_user.user_id)
+        .fetch_one(&state.db_pool)
+        .await
+        .unwrap_or(false);
+
+        if is_banned {
+            warn!(user_id = %auth_user.user_id, "bug report blocked: user is banned");
+            return Err(error_response(StatusCode::FORBIDDEN, "bug report submission blocked"));
+        }
+    }
+
     // --- Validate payload size (decoded) ---
     let mut decoded_size = payload.title.len() + payload.body.len() + payload.category.len();
     if let Some(ref screenshot_b64) = payload.screenshot {
@@ -335,12 +351,12 @@ pub async fn analyze_bug_report(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &state.ip_config);
     let now = Instant::now();
 
-    // Rate limit: per-IP (reuse bug report rate limiter)
+    // Rate limit: per-IP using the separate daily LLM rate limiter (5/day)
     if let Some(retry_secs) = state
-        .bug_report_rate_limiter
+        .llm_rate_limiter
         .seconds_until_retry_ip(client_ip, now)
     {
-        warn!(ip = %client_ip, retry_after = retry_secs, "bug report analyze rate limit exceeded (IP)");
+        warn!(ip = %client_ip, retry_after = retry_secs, "LLM analyze rate limit exceeded (IP)");
         return Err(rate_limited_response(retry_secs));
     }
 
@@ -365,11 +381,14 @@ pub async fn analyze_bug_report(
         .analyze_bug_report(&payload.description, &payload.context, previous)
         .await
     {
-        Ok(analysis) => Ok(Json(AnalyzeResponse {
-            category: analysis.category,
-            questions: analysis.questions, // Vec<LlmQuestion> — serializes with optional "options" field
-            needs_follow_up: analysis.needs_follow_up,
-        })),
+        Ok(analysis) => {
+            state.llm_rate_limiter.record_ip(client_ip, now);
+            Ok(Json(AnalyzeResponse {
+                category: analysis.category,
+                questions: analysis.questions,
+                needs_follow_up: analysis.needs_follow_up,
+            }))
+        }
         Err(e) => {
             warn!(error = %e, "LLM analyze failed");
             let (status, msg) = map_llm_error(&e);
@@ -391,9 +410,9 @@ pub async fn generate_bug_report_body(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &state.ip_config);
     let now = Instant::now();
 
-    // Rate limit: per-IP
+    // Rate limit: per-IP using the separate daily LLM rate limiter (5/day)
     if let Some(retry_secs) = state
-        .bug_report_rate_limiter
+        .llm_rate_limiter
         .seconds_until_retry_ip(client_ip, now)
     {
         return Err(rate_limited_response(retry_secs));
@@ -416,10 +435,13 @@ pub async fn generate_bug_report_body(
         )
         .await
     {
-        Ok(result) => Ok(Json(GenerateBodyResponse {
-            title: result.title,
-            body: result.body,
-        })),
+        Ok(result) => {
+            state.llm_rate_limiter.record_ip(client_ip, now);
+            Ok(Json(GenerateBodyResponse {
+                title: result.title,
+                body: result.body,
+            }))
+        }
         Err(e) => {
             warn!(error = %e, "LLM generate body failed");
             let (status, msg) = map_llm_error(&e);

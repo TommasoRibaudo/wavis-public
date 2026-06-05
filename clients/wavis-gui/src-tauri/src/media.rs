@@ -524,9 +524,52 @@ pub struct LatestFrame {
 struct NativeShareLeakSession {
     share_session_id: String,
     source_id: String,
+    source_kind: WindowsSourceKind,
+    capture_backend: WindowsCaptureBackend,
     started_at_ms: u64,
     first_rust_frame_at_ms: Option<u64>,
     frames_buffered: u64,
+    diagnostics: screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsSourceKind {
+    Screen,
+    Window,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsCaptureBackend {
+    Wgc,
+    GdiPoll,
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_source_kind(value: Option<&str>) -> Result<WindowsSourceKind, String> {
+    match value {
+        Some("screen") => Ok(WindowsSourceKind::Screen),
+        Some("window") => Ok(WindowsSourceKind::Window),
+        _ => Err("screen_share_start_source requires sourceKind='screen' or 'window'".to_string()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn select_windows_capture_backend(
+    source_kind: WindowsSourceKind,
+    compatibility_mode: bool,
+    requested_backend: Option<&str>,
+) -> Result<WindowsCaptureBackend, String> {
+    match requested_backend {
+        Some("wgc") => Ok(WindowsCaptureBackend::Wgc),
+        Some("gdi_poll") => Ok(WindowsCaptureBackend::GdiPoll),
+        Some(other) => Err(format!("unsupported Windows capture backend '{other}'")),
+        None if compatibility_mode && source_kind == WindowsSourceKind::Window => {
+            Ok(WindowsCaptureBackend::GdiPoll)
+        }
+        None => Ok(WindowsCaptureBackend::Wgc),
+    }
 }
 
 pub struct MediaState {
@@ -595,6 +638,9 @@ pub struct MediaState {
     pub latest_frame: Arc<Mutex<Option<LatestFrame>>>,
     #[cfg(target_os = "windows")]
     native_share_leak_session: Arc<Mutex<Option<NativeShareLeakSession>>>,
+    #[cfg(target_os = "windows")]
+    windows_capture_diagnostics:
+        Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>,
 }
 
 impl MediaState {
@@ -670,6 +716,8 @@ impl MediaState {
             latest_frame: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "windows")]
             native_share_leak_session: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "windows")]
+            windows_capture_diagnostics: Mutex::new(None),
         }
     }
 
@@ -1966,17 +2014,48 @@ pub fn screen_share_start_source(
 pub fn screen_share_start_source(
     source_id: String,
     share_session_id: Option<String>,
+    source_kind: Option<String>,
+    capture_backend: Option<String>,
     compatibility_mode: Option<bool>,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
     use screen_capture::frame_processor::{cap_resolution, FrameThrottler};
-    use screen_capture::gdi_capture::{GdiCapture, GdiCaptureConfig};
-    use screen_capture::win_capture::{WinCapture, WinCaptureConfig};
+    use screen_capture::gdi_capture::{GdiCapture, GdiCaptureConfig, GdiCaptureTarget};
+    use screen_capture::win_capture::{
+        WinCapture, WinCaptureConfig, WinCaptureSourceKind, WindowsNativeCaptureDiagnostics,
+    };
     use screen_capture::ScreenCapture;
 
+    let source_kind = parse_windows_source_kind(source_kind.as_deref())?;
+    let capture_backend = select_windows_capture_backend(
+        source_kind,
+        compatibility_mode.unwrap_or(false),
+        capture_backend.as_deref(),
+    )?;
+    let source_kind_label = match source_kind {
+        WindowsSourceKind::Screen => "screen",
+        WindowsSourceKind::Window => "window",
+    };
+    let backend_label = match capture_backend {
+        WindowsCaptureBackend::Wgc => "wgc",
+        WindowsCaptureBackend::GdiPoll => "gdi_poll",
+    };
+    let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+        backend_label,
+        source_kind_label,
+        0,
+        0,
+    )));
+    {
+        let mut guard = state
+            .windows_capture_diagnostics
+            .lock()
+            .map_err(|e| format!("windows_capture_diagnostics lock: {e}"))?;
+        *guard = Some(Arc::clone(&diagnostics));
+    }
     log::info!(
-        "{LOG} [diag] screen_share_start_source ENTERED, source_id={source_id}, share_session_id={}",
+        "{LOG} [diag] screen_share_start_source ENTERED, source_id={source_id}, source_kind={source_kind:?}, backend={capture_backend:?}, share_session_id={}",
         share_session_id.as_deref().unwrap_or("none")
     );
 
@@ -2001,20 +2080,31 @@ pub fn screen_share_start_source(
     // The native-LK frame-feeding path lives in the Linux `screen_share_start()`
     // function (no `_source` suffix) which is #[cfg(target_os = "linux")].
 
-    // Route to GDI or WGC capture backend.
-    let capture: Box<dyn ScreenCapture> = if compatibility_mode.unwrap_or(false) {
+    // Route to the requested native backend. GDI polling is source-kind-specific:
+    // monitor shares use BitBlt and window shares use PrintWindow.
+    let capture: Box<dyn ScreenCapture> = if capture_backend == WindowsCaptureBackend::GdiPoll {
         let handle_val: isize = source_id
             .parse()
-            .map_err(|_| format!("compatibility mode: invalid source id '{source_id}'"))?;
-        let hwnd = windows::Win32::Foundation::HWND(handle_val as *mut _);
-        log::info!("{LOG} compatibility mode: using GDI capture for source {source_id}");
+            .map_err(|_| format!("GDI polling: invalid source id '{source_id}'"))?;
+        let target = match source_kind {
+            WindowsSourceKind::Screen => GdiCaptureTarget::Monitor(
+                windows::Win32::Graphics::Gdi::HMONITOR(handle_val as *mut _),
+            ),
+            WindowsSourceKind::Window => GdiCaptureTarget::Window(
+                windows::Win32::Foundation::HWND(handle_val as *mut _),
+            ),
+        };
         Box::new(
             GdiCapture::start(GdiCaptureConfig {
-                hwnd,
+                target,
                 app_handle: app.clone(),
                 target_fps: state.screen_share_config.max_fps(),
+                diagnostics: Arc::clone(&diagnostics),
             })
             .map_err(|e| {
+                log::warn!(
+                    "{LOG} native capture startup failure: source_kind={source_kind:?} backend={capture_backend:?} last_stage=backend_start error={e}"
+                );
                 log::error!("{LOG} GdiCapture::start() FAILED: {e}");
                 format!("{e}")
             })?,
@@ -2023,9 +2113,17 @@ pub fn screen_share_start_source(
         Box::new(
             WinCapture::start(WinCaptureConfig {
                 source_id: source_id.clone(),
+                source_kind: match source_kind {
+                    WindowsSourceKind::Screen => WinCaptureSourceKind::Screen,
+                    WindowsSourceKind::Window => WinCaptureSourceKind::Window,
+                },
                 app_handle: app.clone(),
+                diagnostics: Arc::clone(&diagnostics),
             })
             .map_err(|e| {
+                log::warn!(
+                    "{LOG} native capture startup failure: source_kind={source_kind:?} backend={capture_backend:?} last_stage=backend_start error={e}"
+                );
                 log::error!("{LOG} [diag] WinCapture::start() FAILED: {e}");
                 format!("{e}")
             })?,
@@ -2047,15 +2145,20 @@ pub fn screen_share_start_source(
             .map(|session_id| NativeShareLeakSession {
                 share_session_id: session_id.clone(),
                 source_id: source_id.clone(),
+                source_kind,
+                capture_backend,
                 started_at_ms: unix_now_ms(),
                 first_rust_frame_at_ms: None,
                 frames_buffered: 0,
+                diagnostics: Arc::clone(&diagnostics),
             });
         if let Some(session) = leak_guard.as_ref() {
             log::info!(
-                "{LOG} native capture: session={} stage=native_capture_start source_id={}",
+                "{LOG} native capture: session={} stage=native_capture_start source_id={} source_kind={:?} backend={:?}",
                 session.share_session_id,
-                session.source_id
+                session.source_id,
+                session.source_kind,
+                session.capture_backend,
             );
         }
     }
@@ -2112,9 +2215,11 @@ pub fn screen_share_start_source(
                         let first_frame_at_ms = unix_now_ms();
                         session.first_rust_frame_at_ms = Some(first_frame_at_ms);
                         log::info!(
-                            "{LOG} native capture: session={} stage=first_rust_frame source_id={} elapsed_ms={}",
+                            "{LOG} native capture: session={} stage=first_rust_frame source_id={} source_kind={:?} backend={:?} elapsed_ms={}",
                             session.share_session_id,
                             session.source_id,
+                            session.source_kind,
+                            session.capture_backend,
                             first_frame_at_ms.saturating_sub(session.started_at_ms)
                         );
                     }
@@ -2173,6 +2278,15 @@ pub fn screen_share_start_source(
 
             if n == 0 {
                 log::info!("{LOG} first JPEG: {} bytes", jpeg_guard.len());
+                if let Ok(leak_guard) = native_share_leak_session.lock() {
+                    if let Some(session) = leak_guard.as_ref() {
+                        if let Ok(mut diagnostics) = session.diagnostics.lock() {
+                            diagnostics.first_buffered_jpeg_latency_ms =
+                                Some(unix_now_ms().saturating_sub(session.started_at_ms));
+                            diagnostics.startup_stage = "first_buffered_jpeg".to_string();
+                        }
+                    }
+                }
             }
 
             let b64 = base64::engine::general_purpose::STANDARD.encode(&*jpeg_guard);
@@ -2270,10 +2384,25 @@ pub fn screen_share_stop(state: State<'_, MediaState>) -> Result<(), String> {
                 let first_rust_frame_latency_ms = session
                     .first_rust_frame_at_ms
                     .map(|ts| ts.saturating_sub(session.started_at_ms));
+                if session.frames_buffered == 0 {
+                    let diagnostics_summary = session
+                        .diagnostics
+                        .lock()
+                        .map(|diag| diag.compact_summary())
+                        .unwrap_or_else(|_| "diagnostics unavailable".to_string());
+                    log::warn!(
+                        "{LOG} native capture first-frame failure: session={} source_kind={:?} backend={:?} {diagnostics_summary}",
+                        session.share_session_id,
+                        session.source_kind,
+                        session.capture_backend,
+                    );
+                }
                 log::info!(
-                    "{LOG} native capture: session={} stage=session_closed source_id={} duration_ms={} frames_buffered={} first_rust_frame_latency_ms={}",
+                    "{LOG} native capture: session={} stage=session_closed source_id={} source_kind={:?} backend={:?} duration_ms={} frames_buffered={} first_rust_frame_latency_ms={}",
                     session.share_session_id,
                     session.source_id,
+                    session.source_kind,
+                    session.capture_backend,
                     ended_at_ms.saturating_sub(session.started_at_ms),
                     session.frames_buffered,
                     first_rust_frame_latency_ms
@@ -2295,6 +2424,32 @@ pub fn screen_share_stop(state: State<'_, MediaState>) -> Result<(), String> {
 /// immune to HWND corruption from child windows.
 ///
 /// JS calls this in a tight `requestAnimationFrame` loop during native capture.
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn screen_share_get_capture_diagnostics(
+    state: State<'_, MediaState>,
+) -> Result<Option<screen_capture::win_capture::WindowsNativeCaptureDiagnostics>, String> {
+    let guard = state
+        .windows_capture_diagnostics
+        .lock()
+        .map_err(|e| format!("windows_capture_diagnostics lock: {e}"))?;
+    guard
+        .as_ref()
+        .map(|diagnostics| {
+            diagnostics
+                .lock()
+                .map(|snapshot| snapshot.clone())
+                .map_err(|e| format!("capture diagnostics lock: {e}"))
+        })
+        .transpose()
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+pub fn screen_share_get_capture_diagnostics() -> Result<Option<()>, String> {
+    Ok(None)
+}
+
 #[tauri::command]
 #[cfg(target_os = "windows")]
 pub fn screen_share_poll_frame(
@@ -2674,6 +2829,33 @@ pub fn media_set_screen_share_quality(_quality: String) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 pub fn screen_share_start() -> Result<bool, String> {
     Err("screen sharing via native capture is only available on Linux".to_string())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_capture_routing_tests {
+    use super::{
+        parse_windows_source_kind, select_windows_capture_backend, WindowsCaptureBackend,
+        WindowsSourceKind,
+    };
+
+    #[test]
+    fn source_kind_routes_without_handle_probing() {
+        assert_eq!(parse_windows_source_kind(Some("screen")).unwrap(), WindowsSourceKind::Screen);
+        assert_eq!(parse_windows_source_kind(Some("window")).unwrap(), WindowsSourceKind::Window);
+        assert!(parse_windows_source_kind(None).is_err());
+    }
+
+    #[test]
+    fn compatibility_mode_only_skips_wgc_for_windows() {
+        assert_eq!(
+            select_windows_capture_backend(WindowsSourceKind::Window, true, None).unwrap(),
+            WindowsCaptureBackend::GdiPoll,
+        );
+        assert_eq!(
+            select_windows_capture_backend(WindowsSourceKind::Screen, true, None).unwrap(),
+            WindowsCaptureBackend::Wgc,
+        );
+    }
 }
 
 /// Non-Linux/non-Windows stub — screen sharing is handled by LiveKit JS SDK on other platforms.

@@ -526,6 +526,7 @@ fn main() {
             media::screen_share_start,
             media::screen_share_start_source,
             media::screen_share_stop,
+            media::screen_share_get_capture_diagnostics,
             media::screen_share_poll_frame,
             media::media_poll_screen_share_frame,
             media::media_poll_camera_frame,

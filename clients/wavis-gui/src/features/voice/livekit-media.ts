@@ -39,6 +39,7 @@ import type {
   ShareLeakMemorySample,
   ShareLeakSenderReuseDiagnostics,
   ShareSessionLeakSummary,
+  WindowsNativeCaptureDiagnostics,
 } from './share-leak-diagnostics';
 import { getDefaultCodecPolicy } from './codec-policy';
 import { emitTelemetryEvent } from './telemetry';
@@ -891,7 +892,7 @@ function toShareLeakMemorySample(
 }
 
 function leakSessionBackendForStage(stage: NativeShareLeakStage): ShareLeakCaptureBackend {
-  return stage === 'native_capture_start' ? 'native-poll' : 'browser-display-media';
+  return stage === 'native_capture_start' ? 'native-wgc' : 'browser-display-media';
 }
 
 const publisherPeerConnectionIds = new WeakMap<RTCPeerConnection, string>();
@@ -1399,6 +1400,8 @@ export class LiveKitModule {
     sourceId: string;
     sourceName: string;
     startStage: NativeShareLeakStage;
+    captureBackend?: ShareLeakCaptureBackend;
+    sourceKind?: 'screen' | 'window';
   }): void {
     // Both Windows browser/WebView capture and the native picker path feed the
     // same leak-session summary. Keep instrumentation on both entry points:
@@ -1406,7 +1409,7 @@ export class LiveKitModule {
     // beginNativeCaptureLeakSession() for the custom Rust capture path.
     const shareSessionId = details.shareSessionId ?? makeShareLeakSessionId();
     const startedAt = new Date().toISOString();
-    const captureBackend = leakSessionBackendForStage(details.startStage);
+    const captureBackend = details.captureBackend ?? leakSessionBackendForStage(details.startStage);
     this.nativeCaptureLeakSession = {
       summary: {
         shareSessionId,
@@ -1414,6 +1417,7 @@ export class LiveKitModule {
         sourceName: details.sourceName,
         mode: details.mode,
         captureBackend,
+        sourceKind: details.sourceKind,
         startedAt,
         endedAt: startedAt,
         stages: {},
@@ -1466,6 +1470,8 @@ export class LiveKitModule {
     mode: 'screen_audio' | 'window';
     sourceId: string;
     sourceName: string;
+    sourceKind: 'screen' | 'window';
+    captureBackend: Extract<ShareLeakCaptureBackend, 'native-wgc' | 'native-gdi-screen' | 'native-gdi-window'>;
   }): void {
     if (!details.shareSessionId) return;
     // This is only the custom native-source path used by the share picker.
@@ -1477,6 +1483,8 @@ export class LiveKitModule {
       sourceId: details.sourceId,
       sourceName: details.sourceName,
       startStage: 'native_capture_start',
+      sourceKind: details.sourceKind,
+      captureBackend: details.captureBackend,
     });
   }
 
@@ -1487,6 +1495,13 @@ export class LiveKitModule {
       LOG,
       `native capture: session=${this.nativeCaptureLeakSession.summary.shareSessionId} failure=${reason}`,
     );
+  }
+
+  attachWindowsNativeCaptureDiagnostics(
+    diagnostics: WindowsNativeCaptureDiagnostics | null,
+  ): void {
+    if (!this.nativeCaptureLeakSession || !diagnostics) return;
+    this.nativeCaptureLeakSession.summary.windowsNativeCaptureDiagnostics = diagnostics;
   }
 
   private getPublisherPeerConnection(): RTCPeerConnection | null {
@@ -2869,6 +2884,13 @@ export class LiveKitModule {
       clearInterval(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
+    if (this.nativeCaptureFailureUnlisten) {
+      this.nativeCaptureFailureUnlisten();
+      this.nativeCaptureFailureUnlisten = null;
+    }
+    this.nativeCaptureFailureReason = null;
+    this.nativeCaptureFailureReject = null;
+    this.nativeCaptureFailureListenerPromise = null;
     this.nativeCaptureUnlisten = null;
     this.nativeCaptureFrameHandler = null;
     this.nativeCaptureEarlyFrames = [];
@@ -5513,6 +5535,11 @@ export class LiveKitModule {
   private nativeCaptureFrameHandler: ((payload: { frame: string; width: number; height: number }) => void) | null = null;
   /** Polling interval ID for screen_share_poll_frame (Windows JS SDK path). */
   private nativeCapturePollInterval: ReturnType<typeof setInterval> | null = null;
+  /** Listener for definitive Rust-side WGC readback failures. */
+  private nativeCaptureFailureUnlisten: (() => void) | null = null;
+  private nativeCaptureFailureListenerPromise: Promise<void> | null = null;
+  private nativeCaptureFailureReason: string | null = null;
+  private nativeCaptureFailureReject: ((error: Error) => void) | null = null;
   /** Last seen sequence number from poll — used to skip duplicate frames. */
   private nativeCapturePollLastSeq = 0;
   /**
@@ -5525,6 +5552,30 @@ export class LiveKitModule {
    * so the livekit-fix can still claim it.
    */
   private screenShareTransceiverForReuse: RTCRtpTransceiver | null = null;
+
+  private ensureNativeCaptureFailureListener(): Promise<void> {
+    if (this.nativeCaptureFailureListenerPromise) {
+      return this.nativeCaptureFailureListenerPromise;
+    }
+    this.nativeCaptureFailureListenerPromise =
+      listen<{ reason: string }>('windows-native-capture-failed', ({ payload }) => {
+        this.nativeCaptureFailureReason = payload.reason;
+        this.nativeCaptureFailureReject?.(new Error(payload.reason));
+      }).then((unlisten) => {
+        if (this.nativeCaptureUnlisten) {
+          this.nativeCaptureFailureUnlisten = unlisten;
+        } else {
+          unlisten();
+        }
+      }).catch((err) => {
+        console.warn(LOG, 'native capture: failed to register native failure listener:', err);
+      });
+    return this.nativeCaptureFailureListenerPromise;
+  }
+
+  async prepareNativeCaptureFailureListener(): Promise<void> {
+    await this.ensureNativeCaptureFailureListener();
+  }
 
   /**
    * Pre-register the frame buffering handler so that frames arriving via
@@ -5569,6 +5620,8 @@ export class LiveKitModule {
     // startNativeCapture knows preparation has happened.
     this.nativeCaptureUnlisten = () => { /* no-op — Channel doesn't need unlistening */ };
 
+    void this.ensureNativeCaptureFailureListener();
+
     console.log(LOG, 'native capture: prepared frame handler (Channel mode, synchronous)');
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: pre-registration complete, timestamp:', performance.now());
   }
@@ -5601,6 +5654,10 @@ export class LiveKitModule {
     if (!this.room) throw new Error('not connected to a room');
     // If already fully active (not just prepared), skip.
     if (this.nativeCapturePublication) return;
+    if (!this.nativeCaptureUnlisten) {
+      this.nativeCaptureUnlisten = () => { /* no-op */ };
+    }
+    await this.ensureNativeCaptureFailureListener();
 
     const pubOpts = await this.prepareScreenSharePublishOptions();
     const targetFps = pubOpts.screenShareEncoding.maxFramerate || 30;
@@ -5799,8 +5856,15 @@ export class LiveKitModule {
     // ── Wait for first frame with timeout ──
     // If early frames already resolved the gate, this resolves immediately.
     const FIRST_FRAME_TIMEOUT_MS = 5000;
+    const nativeFailurePromise = new Promise<void>((_, reject) => {
+      this.nativeCaptureFailureReject = reject;
+      if (this.nativeCaptureFailureReason) {
+        reject(new Error(this.nativeCaptureFailureReason));
+      }
+    });
     await Promise.race([
       firstFramePromise,
+      nativeFailurePromise,
       new Promise<void>((_, reject) =>
         setTimeout(() => reject(new Error('native capture: first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
       ),
@@ -5973,6 +6037,13 @@ export class LiveKitModule {
       clearInterval(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
+    if (this.nativeCaptureFailureUnlisten) {
+      this.nativeCaptureFailureUnlisten();
+      this.nativeCaptureFailureUnlisten = null;
+    }
+    this.nativeCaptureFailureReason = null;
+    this.nativeCaptureFailureReject = null;
+    this.nativeCaptureFailureListenerPromise = null;
     if (leakSession) {
       leakSession.summary.cleanupFlags.pollIntervalCleared = this.nativeCapturePollInterval === null;
     }

@@ -375,6 +375,14 @@ async fn main() -> io::Result<()> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600),
+        llm_rate_limit_max: env::var("LLM_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5),
+        llm_rate_limit_window_secs: env::var("LLM_RATE_LIMIT_WINDOW_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(86400),
         github_bug_report_token_set: !env::var("GITHUB_BUG_REPORT_TOKEN")
             .unwrap_or_default()
             .is_empty(),
@@ -644,6 +652,15 @@ async fn main() -> io::Result<()> {
         .route(
             "/bug-report/generate-body",
             post(diagnostics::routes::generate_bug_report_body),
+        )
+        .route(
+            "/admin/bug-report/stats",
+            get(diagnostics::admin_routes::get_bug_report_stats),
+        )
+        .route(
+            "/admin/bug-report/bans/{user_id}",
+            post(diagnostics::admin_routes::ban_user)
+                .delete(diagnostics::admin_routes::unban_user),
         );
 
     if debug_routes_enabled {

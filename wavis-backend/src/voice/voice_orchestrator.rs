@@ -185,12 +185,12 @@ fn normalize_passthrough_pair(
         .rooms
         .iter()
         .find(|room| room.sub_room_id == source_sub_room_id)
-        .ok_or_else(|| "source sub-room not found".to_string())?;
+        .ok_or_else(|| "source room not found".to_string())?;
     let target_room = sub_rooms
         .rooms
         .iter()
         .find(|room| room.sub_room_id == target_sub_room_id)
-        .ok_or_else(|| "target sub-room not found".to_string())?;
+        .ok_or_else(|| "target room not found".to_string())?;
 
     if source_room.room_number <= target_room.room_number {
         Ok(PassthroughPair {
@@ -568,7 +568,7 @@ pub fn create_sub_room(
     });
 
     let Some(created_room) = created_room else {
-        return Err("sub-room state unavailable".to_string());
+        return Err("room state unavailable".to_string());
     };
 
     let mut signals = vec![OutboundSignal::broadcast_all(
@@ -591,7 +591,7 @@ pub fn join_sub_room(
         .with_room_write(voice_room_id, |members| {
             ensure_room_sub_rooms(&mut members.info);
             let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
-                return Err("sub-room state unavailable".to_string());
+                return Err("room state unavailable".to_string());
             };
             clear_invalid_passthrough_locked(sub_rooms);
 
@@ -600,7 +600,7 @@ pub fn join_sub_room(
                 .rooms
                 .iter()
                 .position(|room| room.sub_room_id == target_room_id)
-                .ok_or_else(|| "sub-room not found".to_string())?;
+                .ok_or_else(|| "room not found".to_string())?;
 
             let previous_room_id = sub_rooms
                 .participant_assignments
@@ -734,7 +734,7 @@ pub fn set_passthrough(
     let changed = room_state
         .with_room_write(room_id, |members| {
             let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
-                return Err("sub-room state unavailable".to_string());
+                return Err("room state unavailable".to_string());
             };
             clear_invalid_passthrough_locked(sub_rooms);
             if !sub_rooms.passthrough_enabled {
@@ -788,7 +788,7 @@ pub fn clear_passthrough(
     let changed = room_state
         .with_room_write(room_id, |members| {
             let Some(sub_rooms) = members.info.sub_room_state.as_mut() else {
-                return Err("sub-room state unavailable".to_string());
+                return Err("room state unavailable".to_string());
             };
             clear_invalid_passthrough_locked(sub_rooms);
 

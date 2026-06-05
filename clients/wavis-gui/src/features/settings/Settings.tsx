@@ -526,7 +526,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         />
                       </div>
                       <p className="text-xs text-wavis-text-secondary/70">
-                        Link two sub-rooms so their participants can hear each other
+                        Link two rooms so their participants can hear each other
                       </p>
                       {showPassthroughControls && (
                         <>
@@ -535,7 +535,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                               Passthrough volume ({passthroughVolume}%)
                             </label>
                             <p className="text-xs text-wavis-text-secondary/70 mb-1">
-                              Attenuates audio from the linked sub-room — applies to all participants
+                              Attenuates audio from the linked room — applies to all participants
                             </p>
                             <VolumeSlider
                               value={passthroughVolume}
@@ -608,7 +608,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                               </div>
                             ) : passthroughEnabled ? (
                               <p className="text-xs text-wavis-text-secondary/70">
-                                Join a sub-room to link rooms
+                                Join a room to link rooms
                               </p>
                             ) : null}
                           </div>
@@ -1163,10 +1163,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
                 <span className="text-wavis-text-secondary">sounds: </span>
-                <span>Universfield, floraphonic, humordome, pixabay, SoundReality</span>
-              </div>
-              <div>
-                <span className="text-wavis-text-secondary">source: </span>
+                <span>Universfield, floraphonic, humordome, pixabay, SoundReality - </span>
                 <button
                   onClick={() => open('https://pixabay.com')}
                   className="hover:text-wavis-accent hover:underline"

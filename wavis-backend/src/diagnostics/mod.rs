@@ -1,3 +1,4 @@
+pub mod admin_routes;
 pub mod bug_report;
 pub mod bug_report_rate_limiter;
 pub mod llm_client;
