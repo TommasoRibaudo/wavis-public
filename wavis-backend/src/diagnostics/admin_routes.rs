@@ -8,6 +8,7 @@
 //!   POST   /admin/bug-report/bans/{user_id}     — ban a user from bug reports
 //!   DELETE /admin/bug-report/bans/{user_id}     — unban a user
 
+use std::cmp::Reverse;
 use std::time::Instant;
 
 use axum::Json;
@@ -92,7 +93,7 @@ pub async fn get_bug_report_stats(
             count,
         })
         .collect();
-    ip_counts.sort_by(|a, b| b.count.cmp(&a.count));
+    ip_counts.sort_by_key(|entry| Reverse(entry.count));
 
     let mut user_counts: Vec<UserCount> = state
         .bug_report_rate_limiter
@@ -104,7 +105,7 @@ pub async fn get_bug_report_stats(
             count,
         })
         .collect();
-    user_counts.sort_by(|a, b| b.count.cmp(&a.count));
+    user_counts.sort_by_key(|entry| Reverse(entry.count));
 
     // Banned users from DB
     let banned_users: Vec<BannedUserEntry> = sqlx::query_as(
