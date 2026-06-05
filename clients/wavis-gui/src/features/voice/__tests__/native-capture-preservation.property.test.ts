@@ -65,6 +65,7 @@ vi.mock('livekit-client', () => ({
     this.disconnect = vi.fn();
     this.on = vi.fn(() => this);
     this.off = vi.fn(() => this);
+    this.remoteParticipants = new Map();
     this.localParticipant = {
       setMicrophoneEnabled: vi.fn(async () => {}),
       publishTrack: mockPublishTrack,
