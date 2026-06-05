@@ -232,7 +232,6 @@ import {
   startCustomShare,
   stopCustomShare,
   startPortalShare,
-  stopCustomShare,
   toggleShareAudio,
   resetWindowsWgcSessionBypassForTests,
 } from '../voice-room';

@@ -4470,16 +4470,20 @@ export async function startCustomShare(selection: ShareSelection, options: Start
     // 3. Start video first (if needed)
     if (needsVideo) {
       const sourceKind = selection.sourceKind ?? (selection.mode === 'window' ? 'window' : 'screen');
+      const defaultNativeLeakBackend = sourceKind === 'screen'
+        ? 'native-gdi-screen'
+        : 'native-gdi-window';
       const startWindowsNativeAttempt = async (
         captureBackend: 'wgc' | 'gdi_poll',
       ): Promise<void> => {
-        if (!(lkModule instanceof LiveKitModule)) return;
+        const liveKitModule = lkModule;
+        if (!(liveKitModule instanceof LiveKitModule)) return;
         const attachRustDiagnostics = async (): Promise<void> => {
           try {
             const diagnostics = await invoke<WindowsNativeCaptureDiagnostics | null>(
               'screen_share_get_capture_diagnostics',
             );
-            lkModule.attachWindowsNativeCaptureDiagnostics(diagnostics);
+            liveKitModule.attachWindowsNativeCaptureDiagnostics(diagnostics);
           } catch (error) {
             console.warn(LOG, 'best-effort native capture diagnostics fetch failed:', error);
           }
@@ -4490,7 +4494,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             ? 'native-gdi-screen'
             : 'native-gdi-window';
         if (!options.isSourceChange) {
-          lkModule.beginNativeCaptureLeakSession({
+          liveKitModule.beginNativeCaptureLeakSession({
             shareSessionId,
             mode: selection.mode as 'screen_audio' | 'window',
             sourceId: selection.sourceId,
@@ -4498,8 +4502,8 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             sourceKind,
             captureBackend: leakBackend,
           });
-          lkModule.prepareNativeCapture();
-          await lkModule.prepareNativeCaptureFailureListener();
+          liveKitModule.prepareNativeCapture();
+          await liveKitModule.prepareNativeCaptureFailureListener();
         }
         emitTelemetryEvent({
           name: 'capture.path.selected',
@@ -4520,19 +4524,19 @@ export async function startCustomShare(selection: ShareSelection, options: Start
           });
           rustCaptureStarted = true;
           if (options.isSourceChange) {
-            await lkModule.replaceNativeCaptureSource();
+            await liveKitModule.replaceNativeCaptureSource();
           } else {
-            await lkModule.startNativeCapture();
+            await liveKitModule.startNativeCapture();
           }
           await attachRustDiagnostics();
         } catch (error) {
           if (!options.isSourceChange) {
-            lkModule.markNativeCaptureFailure(error instanceof Error ? error.message : String(error));
+            liveKitModule.markNativeCaptureFailure(error instanceof Error ? error.message : String(error));
           }
           await attachRustDiagnostics();
           if (!options.isSourceChange) {
             try {
-              await lkModule.stopNativeCapture();
+              await liveKitModule.stopNativeCapture();
             } catch (stopError) {
               console.warn(LOG, 'best-effort stopNativeCapture between native attempts failed:', stopError);
             }
@@ -4620,6 +4624,8 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             mode: selection.mode as 'screen_audio' | 'window',
             sourceId: selection.sourceId,
             sourceName: selection.sourceName,
+            sourceKind,
+            captureBackend: defaultNativeLeakBackend,
           });
           lkModule.prepareNativeCapture();
         }
@@ -4633,6 +4639,8 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             mode: selection.mode as 'screen_audio' | 'window',
             sourceId: selection.sourceId,
             sourceName: selection.sourceName,
+            sourceKind,
+            captureBackend: defaultNativeLeakBackend,
           });
           lkModule.prepareNativeCapture();
         }
