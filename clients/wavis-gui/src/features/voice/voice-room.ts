@@ -28,6 +28,8 @@ import { NativeMediaModule } from './native-media';
 import { setActiveLiveKitModule } from './audio-devices';
 import {
   getDefaultVolume,
+  getNotificationVolume,
+  getSoundVolumes,
   getReconnectConfig,
   getMuteHotkey,
   getProfileColor,
@@ -47,7 +49,7 @@ import {
   type LinuxCapabilityRow,
 } from './linux-capability-matrix';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
-import { playNotificationSound } from './notification-sounds';
+import { playNotificationSound, prewarmAudioContext, updateCachedNotificationVolume, updateCachedSoundVolumes } from './notification-sounds';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -2586,6 +2588,10 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
   state.noiseSuppressionActive = false;
   markAllParticipantsMediaConnecting();
   suppressReconnectJoinForParticipantIds.clear();
+  // Pre-warm the notification-sounds AudioContext before the join sound fires.
+  // Without this, the AudioContext is created lazily inside an async callback
+  // where the browser may refuse to resume it (no active user gesture).
+  prewarmAudioContext();
   notify();
 
   const restoreConnectedMediaState = (
@@ -4095,14 +4101,18 @@ export function initSession(
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
     // Load display name, default volume, profile color, persisted channel volumes,
-    // and the Windows share-path preference before connecting.
+    // notification volumes, and the Windows share-path preference before connecting.
+    // Notification volumes are pre-cached here so playNotificationSound() on the
+    // first join does not make IPC calls that break the user-activation chain.
     Promise.all([
       getUsername(),
       getDefaultVolume(),
       getProfileColor(),
       getChannelVolumes(channelId),
       getWindowsSharePath(),
-    ]).then(([name, vol, profileColor, savedVols, windowsSharePath]) => {
+      getNotificationVolume(),
+      getSoundVolumes(),
+    ]).then(([name, vol, profileColor, savedVols, windowsSharePath, notifVol, soundVols]) => {
       if (client !== thisClient) return;
       sessionUsername = name;
       sessionProfileColor = profileColor;
@@ -4110,6 +4120,8 @@ export function initSession(
       state.defaultVolume = vol;
       state.masterVolume = savedVols?.master ?? vol;
       state.windowsSharePath = resolveWindowsSharePathPreference(windowsSharePath);
+      updateCachedNotificationVolume(notifVol);
+      updateCachedSoundVolumes(soundVols);
       client.connectWithAuth(wsUrl).catch((err) => {
         console.error(LOG, 'connect failed:', err);
         if (client !== thisClient) return;
