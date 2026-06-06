@@ -37,8 +37,23 @@ export interface DiagnosticsConfig {
   renderWarnMs: number;
 }
 
+export interface AppDimensions {
+  nativeWindow: {
+    width: number;
+    height: number;
+  };
+  viewport: {
+    width: number;
+    height: number;
+  };
+  devicePixelRatio: number;
+  capturedAt: number;
+}
+
 export interface DiagnosticsSnapshot {
   timestamp: number;
+  /** Main Wavis app window dimensions, pushed from the main webview. */
+  appDimensions: AppDimensions | null;
   rss: { mb: number; childCount: number } | null;
   /** JS heap size. Null on macOS (WKWebView does not expose performance.memory). */
   jsHeap: { usedMb: number; totalMb: number } | null;
@@ -142,6 +157,7 @@ interface DiagnosticsVoiceStatsPayload {
   videoReceiveStats: VideoReceiveStats | null;
   participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
   selfParticipantId: string | null;
+  appDimensions?: AppDimensions;
 }
 
 /* ─── Module state ──────────────────────────────────────────────── */
@@ -169,8 +185,14 @@ let prevWasSharing = false;
 /** Latest voice-room stats received from the main window via 'diagnostics:voice-stats' event. */
 let cachedVoiceStats: DiagnosticsVoiceStatsPayload | null = null;
 
+/** Latest main app dimensions received from the main window via 'diagnostics:app-dimensions'. */
+let cachedAppDimensions: AppDimensions | null = null;
+
 /** Unlisten function for the 'diagnostics:voice-stats' event listener. */
 let unlistenVoiceStats: UnlistenFn | null = null;
+
+/** Unlisten function for the 'diagnostics:app-dimensions' event listener. */
+let unlistenAppDimensions: UnlistenFn | null = null;
 
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
@@ -254,6 +276,10 @@ export async function initDiagnostics(
     'diagnostics:voice-stats',
     (event) => { cachedVoiceStats = event.payload; },
   );
+  unlistenAppDimensions = await listen<AppDimensions>(
+    'diagnostics:app-dimensions',
+    (event) => { cachedAppDimensions = event.payload; },
+  );
 
   // VITE_DIAGNOSTICS=true is the build-time gate; the Rust `enabled` flag is
   // unreliable in release builds (dotenvy only loads .env in debug mode).
@@ -280,7 +306,10 @@ export function destroyDiagnostics(): void {
   shareStoppedAt = null;
   unlistenVoiceStats?.();
   unlistenVoiceStats = null;
+  unlistenAppDimensions?.();
+  unlistenAppDimensions = null;
   cachedVoiceStats = null;
+  cachedAppDimensions = null;
 }
 
 /** Store a baseline snapshot for delta display. */
@@ -319,6 +348,17 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
 
   lines.push('=== WAVIS DIAGNOSTICS SNAPSHOT ===');
   lines.push(`Captured: ${now.toISOString()}`);
+  lines.push('');
+
+  // App dimensions
+  lines.push('[APP DIMENSIONS]');
+  if (snap.appDimensions) {
+    lines.push(pad('Window:', `${snap.appDimensions.nativeWindow.width}x${snap.appDimensions.nativeWindow.height} physical px`));
+    lines.push(pad('Viewport:', `${snap.appDimensions.viewport.width}x${snap.appDimensions.viewport.height} CSS px`));
+    lines.push(pad('DPR:', snap.appDimensions.devicePixelRatio.toFixed(2)));
+  } else {
+    lines.push(pad('Status:', 'Waiting for main app dimensions'));
+  }
   lines.push('');
 
   // Memory
@@ -484,6 +524,7 @@ async function poll(): Promise<void> {
   const videoReceiveStats = voiceStats?.videoReceiveStats ?? null;
   const participants = voiceStats?.participants ?? [];
   const selfParticipantId = voiceStats?.selfParticipantId ?? null;
+  const appDimensions = cachedAppDimensions ?? voiceStats?.appDimensions ?? null;
 
   // Show network block whenever we're in a session (selfParticipantId is non-null).
   // Avoid gating on rttMs > 0: the subscriber PC often returns RTT=0 on cycles where
@@ -559,6 +600,7 @@ async function poll(): Promise<void> {
 
   const snap: DiagnosticsSnapshot = {
     timestamp: Date.now(),
+    appDimensions,
     rss,
     jsHeap,
     domNodes,
