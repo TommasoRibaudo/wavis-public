@@ -2017,6 +2017,12 @@ async fn test_list_bans_owner_gets_200_with_banned_list() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
+    sqlx::query("UPDATE users SET username = $1 WHERE user_id = $2")
+        .bind("Banned User")
+        .bind(member)
+        .execute(&pool)
+        .await
+        .expect("set username");
     let owner_token = sign_test_token(&owner);
     let member_token = sign_test_token(&member);
     let app = build_channel_router(build_test_app_state(pool));
@@ -2073,6 +2079,7 @@ async fn test_list_bans_owner_gets_200_with_banned_list() {
     let banned = body["banned"].as_array().unwrap();
     assert_eq!(banned.len(), 1);
     assert_eq!(banned[0]["user_id"], member.to_string());
+    assert_eq!(banned[0]["display_name"], "Banned User");
     assert!(banned[0]["banned_at"].as_str().is_some());
 }
 

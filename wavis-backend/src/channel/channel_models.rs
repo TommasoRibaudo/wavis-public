@@ -113,6 +113,7 @@ pub struct RoleChangeResult {
 pub struct BannedMemberInfo {
     pub user_id: Uuid,
     pub banned_at: DateTime<Utc>,
+    pub display_name: String,
 }
 
 #[derive(Debug, thiserror::Error)]
