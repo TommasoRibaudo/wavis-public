@@ -2875,6 +2875,9 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     onAudioOnlySharerAdded: (identity) => {
       state.audioOnlySharers = new Set(state.audioOnlySharers);
       state.audioOnlySharers.add(identity);
+      // Silence immediately so the gain node is created at 0 before any audio
+      // plays. The viewer un-mutes by clicking the music icon to restore volume.
+      setScreenShareAudioVolume(identity, 0);
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
