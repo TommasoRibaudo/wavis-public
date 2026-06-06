@@ -611,6 +611,8 @@ function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
     onSystemEvent: (msg) => calls.push({ method: 'onSystemEvent', args: [msg] }),
     onShareLeakSummary: (summary) => calls.push({ method: 'onShareLeakSummary', args: [summary] }),
     onNoiseSuppressionState: (active) => calls.push({ method: 'onNoiseSuppressionState', args: [active] }),
+    onAudioOnlySharerAdded: (identity) => calls.push({ method: 'onAudioOnlySharerAdded', args: [identity] }),
+    onAudioOnlySharerRemoved: (identity) => calls.push({ method: 'onAudioOnlySharerRemoved', args: [identity] }),
   };
 }
 
@@ -2507,7 +2509,7 @@ describe('Screen share and device selection', () => {
       mod.disconnect();
     });
 
-    it('keeps legacy screen share audio silent until watched even when video has not arrived yet', async () => {
+    it('infers legacy ScreenShareAudio without video as audio-only and autoplays it', async () => {
       resetAll();
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
@@ -2522,8 +2524,32 @@ describe('Screen share and device selection', () => {
       );
 
       const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
-      expect(setSubscribed).toHaveBeenCalledWith(false);
-      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+      expect(setSubscribed).toHaveBeenCalledWith(true);
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
+
+      mod.disconnect();
+    });
+
+    it('infers already-present ScreenShareAudio without video as audio-only on connect', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      const setSubscribed = vi.fn();
+      const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-existing-audio-only' } };
+      const publication = { source: 'screen_share_audio', kind: 'audio', track: remoteTrack, setSubscribed };
+      mockRoom.remoteParticipants.set('alice', {
+        identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share_audio' ? publication : undefined),
+        trackPublications: new Map([['ssa-existing', publication]]),
+      });
+
+      await driveToConnected(mod);
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(setSubscribed).toHaveBeenCalledWith(true);
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
 
       mod.disconnect();
     });

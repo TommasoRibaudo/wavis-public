@@ -2281,6 +2281,7 @@ export class LiveKitModule {
         listenOnly = true;
         for (const participant of this.room?.remoteParticipants.values() ?? []) {
           this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+          this.syncRemoteParticipantPublications(participant, 'connected');
         }
         // Watch for OS device changes so the routing survives plug/unplug events.
         this.startDeviceChangeWatcher();
@@ -2322,6 +2323,7 @@ export class LiveKitModule {
         this.callbacks.onMediaReconnected?.();
         for (const participant of this.room?.remoteParticipants.values() ?? []) {
           this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+          this.syncRemoteParticipantPublications(participant, 'reconnected');
         }
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
@@ -2363,6 +2365,10 @@ export class LiveKitModule {
         if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
           if (DEBUG_SHARE_TRACK_SUB) {
             console.log(LOG, `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`);
+          }
+          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video published', { identity: participant.identity });
+            this.setRemoteShareType(participant.identity, undefined);
           }
           publication.setSubscribed?.(true);
           publication.setEnabled?.(true);
@@ -2456,6 +2462,16 @@ export class LiveKitModule {
                 settings,
               });
             }
+            // Infer audio-only when share_started WS message omits shareType
+            // (older sender clients). ScreenShareAudio with no ScreenShare video = audio-only.
+            if (publication.source === Track.Source.ScreenShareAudio &&
+                this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
+              const hasVideoShare = !!participant.getTrackPublication(Track.Source.ScreenShare);
+              if (!hasVideoShare) {
+                if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] inferred audio_only: ScreenShareAudio present but no ScreenShare video', { identity: participant.identity });
+                this.setRemoteShareType(participant.identity, 'audio_only');
+              }
+            }
             if (this.shouldPlayScreenShareAudio(participant.identity)) {
               this.attachDesiredScreenShareAudio(participant.identity);
             } else if (typeof publication.setSubscribed === 'function') {
@@ -2467,6 +2483,10 @@ export class LiveKitModule {
         } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
           if (DEBUG_SHARE_TRACK_SUB) {
             console.log(LOG, `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`);
+          }
+          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video subscribed', { identity: participant.identity });
+            this.setRemoteShareType(participant.identity, undefined);
           }
           this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
         }
@@ -2562,25 +2582,7 @@ export class LiveKitModule {
       addListener(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
         this.callbacks.onRemoteParticipantConnected?.(participant.identity);
-        const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
-        if (screenShareAudioPub) {
-          this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
-          screenShareAudioPub.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
-        }
-        const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
-        const screenShareVideoTrack = screenShareVideoPub?.track;
-        if (
-          screenShareVideoPub &&
-          screenShareVideoTrack &&
-          screenShareVideoTrack.kind === Track.Kind.Video
-        ) {
-          this.attachRemoteScreenShareTrack(
-            participant,
-            screenShareVideoPub,
-            screenShareVideoTrack as RemoteTrack,
-            'participant_connected_recovery',
-          );
-        }
+        this.syncRemoteParticipantPublications(participant, 'participant_connected');
         // Only act if we're already waiting for this participant's audio
         // (viewer window opened before TrackSubscribed could fire).
         if (!this.screenShareAudioPending.has(participant.identity)) return;
@@ -5384,6 +5386,52 @@ export class LiveKitModule {
   attachScreenShareAudio(participantIdentity: string): void {
     this.screenShareAudioViewerOwners.add(participantIdentity);
     this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  private syncRemoteParticipantPublications(participant: RemoteParticipant, reason: string): void {
+    const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
+
+    if (screenShareVideoPub && this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+      if (DEBUG_SHARE_AUDIO) {
+        console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video present during sync', { identity: participant.identity, reason });
+      }
+      this.setRemoteShareType(participant.identity, undefined);
+    }
+
+    if (screenShareAudioPub) {
+      this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
+      if (!screenShareVideoPub && this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
+        if (DEBUG_SHARE_AUDIO) {
+          console.log(LOG, '[audio-only-diag] inferred audio_only during participant sync: no ScreenShare video', { identity: participant.identity, reason });
+        }
+        this.setRemoteShareType(participant.identity, 'audio_only');
+      }
+      screenShareAudioPub.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
+
+      const screenShareAudioTrack = screenShareAudioPub.track;
+      if (screenShareAudioTrack && screenShareAudioTrack.kind === Track.Kind.Audio) {
+        this.screenShareAudioTracks.set(participant.identity, {
+          track: screenShareAudioTrack as RemoteTrack,
+          participant,
+        });
+        this.syncScreenShareAudioPolicy(participant.identity);
+      }
+    }
+
+    const screenShareVideoTrack = screenShareVideoPub?.track;
+    if (
+      screenShareVideoPub &&
+      screenShareVideoTrack &&
+      screenShareVideoTrack.kind === Track.Kind.Video
+    ) {
+      this.attachRemoteScreenShareTrack(
+        participant,
+        screenShareVideoPub,
+        screenShareVideoTrack as RemoteTrack,
+        'participant_connected_recovery',
+      );
+    }
   }
 
   /** Update the server-authoritative remote share type for audio policy decisions. */

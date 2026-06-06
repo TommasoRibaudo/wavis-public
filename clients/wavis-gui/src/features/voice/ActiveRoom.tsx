@@ -2655,8 +2655,9 @@ export default function ActiveRoom() {
                   <button
                     className="text-sm leading-none hover:opacity-70 transition-opacity"
                     style={{
-                      color: isAudioMuted ? 'var(--wavis-text-secondary)' : 'var(--wavis-danger)',
-                      animation: isAudioMuted ? undefined : 'watchPulse 2s ease-in-out infinite',
+                      color: isAudioMuted ? 'var(--wavis-danger)' : 'transparent',
+                      WebkitTextStroke: isAudioMuted ? undefined : '1px var(--wavis-danger)',
+                      animation: isAudioMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
                     }}
                     title={isAudioMuted ? 'unmute audio share' : 'mute audio share'}
                     onClick={(e) => {

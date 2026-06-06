@@ -674,7 +674,11 @@ const AudioOnlyTile = memo(function AudioOnlyTile({
     <div className="flex items-center gap-3 px-3 py-2 text-xs font-mono select-none">
       <button
         className="shrink-0 hover:opacity-70 transition-opacity"
-        style={{ color: muted ? 'var(--wavis-text-secondary)' : color }}
+        style={{
+          color: muted ? 'var(--wavis-danger)' : 'transparent',
+          WebkitTextStroke: muted ? undefined : '1px var(--wavis-danger)',
+          animation: muted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+        }}
         onClick={() => onToggleMute(participantId)}
         aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
         title={muted ? 'click to unmute' : 'click to mute'}
