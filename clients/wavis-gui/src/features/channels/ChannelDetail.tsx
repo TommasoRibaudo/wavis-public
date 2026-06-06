@@ -902,8 +902,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
                       (cmd === '/invite' && activePanel === 'invite') ||
                       (cmd === '/revoke' && activePanel === 'revoke') ||
                       (cmd === '/ban' && activePanel === 'ban') ||
-                      (cmd === '/unban' && activePanel === 'unban') ||
-                      (cmd === '/role' && activePanel === 'role')
+                      (cmd === '/unban' && activePanel === 'unban')
                     }
                     danger={cmd === '/delete'}
                     disabled={submitting && cmd !== '/back'}
@@ -1071,8 +1070,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
                       (cmd === '/invite' && activePanel === 'invite') ||
                       (cmd === '/revoke' && activePanel === 'revoke') ||
                       (cmd === '/ban' && activePanel === 'ban') ||
-                      (cmd === '/unban' && activePanel === 'unban') ||
-                      (cmd === '/role' && activePanel === 'role')
+                      (cmd === '/unban' && activePanel === 'unban')
                     }
                     className="text-sm px-3 py-1 flex-1"
                     disabled={submitting}
