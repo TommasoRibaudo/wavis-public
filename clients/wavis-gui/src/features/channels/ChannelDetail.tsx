@@ -43,9 +43,31 @@ function apiErrorMessage(err: ApiError): string {
 const DETAIL_POLL_MS = 15_000;
 const VOICE_POLL_MS = 5_000;
 const SUCCESS_DISPLAY_MS = 2_000;
+const MEMBER_ROW_GRID_CLASS =
+  'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 @[480px]:grid-cols-[minmax(0,1fr)_5rem_4.5rem_6.5rem] @[480px]:gap-2';
+const MEMBER_JOINED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
+
+function formatMemberJoinedDate(joinedAt: string): string {
+  return MEMBER_JOINED_DATE_FORMATTER.format(new Date(joinedAt));
+}
 const DIVIDER = '─'.repeat(48);
 
 /* ─── Sub-components ────────────────────────────────────────────── */
+
+function MembersHeader() {
+  return (
+    <div className={`${MEMBER_ROW_GRID_CLASS} hidden px-3 py-1 text-xs text-wavis-text-secondary @[480px]:grid`}>
+      <span />
+      <span />
+      <span />
+      <span className="text-right">Date joined</span>
+    </div>
+  );
+}
 
 function MemberRow({
   member,
@@ -72,56 +94,58 @@ function MemberRow({
   const isRoleTarget = roleTarget === member.userId;
 
   return (
-    <div className={`flex items-center gap-3 px-3 py-2 ${isMe ? 'text-wavis-accent' : ''}`}>
+    <div className={`${MEMBER_ROW_GRID_CLASS} px-3 py-2 ${isMe ? 'text-wavis-accent' : ''}`}>
       <span className="min-w-0 truncate flex-1 text-sm">
         {member.displayName || member.userId}
         {isMe && <span className="text-xs ml-1">(you)</span>}
       </span>
-      <ChannelRoleBadge role={member.role} className="shrink-0" />
-      {showRoleBtn && !isRoleTarget && (
-        <button
-          onClick={() => onRole?.(member.userId)}
-          disabled={submitting}
-          className="text-xs text-wavis-text-secondary disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-        >
-          /role
-        </button>
-      )}
-      {isRoleTarget && (
-        <div className="flex items-center gap-1 shrink-0">
+      <ChannelRoleBadge role={member.role} className="justify-self-end @[480px]:justify-self-end" />
+      <div className="col-span-2 row-start-2 min-w-0 flex flex-wrap items-center justify-start gap-1 @[480px]:col-auto @[480px]:row-auto @[480px]:justify-end @[480px]:flex-nowrap">
+        {showRoleBtn && !isRoleTarget && (
           <button
-            onClick={() => { onRoleChange(member.userId, 'admin'); setRoleTarget(null); }}
-            disabled={submitting || member.role === 'admin'}
-            className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={() => onRole?.(member.userId)}
+            disabled={submitting}
+            className="text-xs text-wavis-text-secondary disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
           >
-            ADMIN
+            /role
           </button>
+        )}
+        {isRoleTarget && (
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              onClick={() => { onRoleChange(member.userId, 'admin'); setRoleTarget(null); }}
+              disabled={submitting || member.role === 'admin'}
+              className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ADMIN
+            </button>
+            <button
+              onClick={() => { onRoleChange(member.userId, 'member'); setRoleTarget(null); }}
+              disabled={submitting || member.role === 'member'}
+              className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              MEMBER
+            </button>
+            <button
+              onClick={() => setRoleTarget(null)}
+              className="text-xs text-wavis-text-secondary hover:text-wavis-text ml-1"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {onBan && !isMe && member.role !== 'owner' && (myRole === 'owner' || (myRole === 'admin' && member.role !== 'admin')) && (
           <button
-            onClick={() => { onRoleChange(member.userId, 'member'); setRoleTarget(null); }}
-            disabled={submitting || member.role === 'member'}
-            className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={() => onBan(member.userId)}
+            disabled={submitting}
+            className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
           >
-            MEMBER
+            /ban
           </button>
-          <button
-            onClick={() => setRoleTarget(null)}
-            className="text-xs text-wavis-text-secondary hover:text-wavis-text ml-1"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-      {onBan && !isMe && member.role !== 'owner' && (myRole === 'owner' || (myRole === 'admin' && member.role !== 'admin')) && (
-        <button
-          onClick={() => onBan(member.userId)}
-          disabled={submitting}
-          className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
-        >
-          /ban
-        </button>
-      )}
-      <span className="text-xs text-wavis-text-secondary shrink-0 ml-auto">
-        {new Date(member.joinedAt).toLocaleDateString()}
+        )}
+      </div>
+      <span className="col-span-2 row-start-3 justify-self-start text-right text-xs text-wavis-text-secondary font-mono tabular-nums @[480px]:col-auto @[480px]:row-auto @[480px]:justify-self-auto">
+        {formatMemberJoinedDate(member.joinedAt)}
       </span>
     </div>
   );
@@ -785,7 +809,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
   // Embedded (in-room settings) groups commands into settings-style sections:
   // management actions vs. destructive membership actions.
   const managementCommands = allCommands.filter((c) =>
-    c === '/invite' || c === '/revoke' || c === '/ban' || c === '/unban' || c === '/role',
+    c === '/invite' || c === '/revoke' || c === '/ban' || c === '/unban',
   );
   const dangerCommands = allCommands.filter((c) => c === '/delete' || c === '/leave');
   const sorted = detail ? sortMembers(detail.members) : [];
@@ -845,7 +869,8 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
             <p className="text-sm text-wavis-text-secondary mb-2">
               MEMBERS ({detail.members.length}/6)
             </p>
-            <div className="flex flex-col">
+            <div className="flex flex-col @container">
+              <MembersHeader />
               {sorted.map((m) => (
                 <MemberRow
                   key={m.userId}
@@ -1013,7 +1038,8 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
           <p className="text-sm text-wavis-text-secondary mb-2">
             MEMBERS ({detail.members.length}/6)
           </p>
-          <div className="bg-wavis-panel border border-wavis-text-secondary divide-y divide-wavis-text-secondary/20">
+          <div className="bg-wavis-panel border border-wavis-text-secondary divide-y divide-wavis-text-secondary/20 @container">
+            <MembersHeader />
             {sorted.map((m) => (
               <MemberRow
                 key={m.userId}
@@ -1030,7 +1056,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
           </div>
         </div>
 
-        {/* Administration (invite / revoke / ban / unban / role) */}
+        {/* Administration (invite / revoke / ban / unban) */}
         {managementCommands.length > 0 && (
           <div>
             <p className="text-sm text-wavis-text-secondary mb-2">ADMINISTRATION</p>
@@ -1061,23 +1087,35 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
 
         {embeddedMiddle}
 
-        {/* Membership / danger zone (delete for owner, leave otherwise) */}
+        {/* Danger zone (delete for owner, leave otherwise) */}
         {dangerCommands.length > 0 && (
           <div>
-            <p className="text-sm text-wavis-text-secondary mb-2">MEMBERSHIP</p>
-            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
-              <div className="flex flex-wrap gap-2">
-                {dangerCommands.map((cmd) => (
-                  <CmdButton
-                    key={cmd}
-                    label={cmd}
-                    onClick={() => handleCmdClick(cmd)}
-                    danger
-                    className="text-sm px-3 py-1 flex-1"
-                    disabled={submitting}
-                  />
-                ))}
-              </div>
+            <p className="text-sm text-wavis-danger mb-2">DANGER ZONE</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-danger space-y-3 text-sm">
+              {dangerCommands.map((cmd) => {
+                const isDelete = cmd === '/delete';
+                return (
+                  <div key={cmd} className="space-y-2">
+                    <div>
+                      <p className="text-sm">
+                        {isDelete ? 'Delete channel' : 'Leave channel'}
+                      </p>
+                      <p className="text-xs text-wavis-text-secondary mt-1">
+                        {isDelete
+                          ? 'Deleting permanently removes this channel and its membership.'
+                          : 'Leaving removes you from this channel. You will need a new invite to return.'}
+                      </p>
+                    </div>
+                    <CmdButton
+                      label={isDelete ? '/delete-channel' : cmd}
+                      onClick={() => handleCmdClick(cmd)}
+                      danger
+                      className="text-sm px-3 py-1 w-full"
+                      disabled={submitting}
+                    />
+                  </div>
+                );
+              })}
               {confirmAction === 'delete' && (
                 <ConfirmTextGate
                   requiredText="YES"

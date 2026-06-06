@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LoadingBars } from '@shared/LoadingBars';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip';
 import type {
   ShareMode,
   ShareSource,
@@ -222,9 +224,10 @@ function SourceItem({
               onError={onThumbnailError}
             />
           ) : isThumbnailLoading ? (
-            <div
-              className="w-5 h-5 rounded-full border-2 border-wavis-text-secondary border-t-wavis-accent animate-spin"
-              aria-label="Loading thumbnail"
+            <LoadingBars
+              className="flex items-center justify-center"
+              barClassName="w-1 bg-wavis-purple"
+              ariaLabel="Loading thumbnail"
             />
           ) : (
             <span className="text-wavis-text-secondary text-[0.625rem] text-center px-1 truncate">
@@ -538,8 +541,10 @@ export default function SharePicker(props: SharePickerProps) {
             tabIndex={0}
             onKeyDown={handleListKeyDown}
             className={[
-              'grid gap-2',
-              isVisualMode ? 'grid-cols-1 @[480px]:grid-cols-2' : 'grid-cols-1',
+              'grid',
+              isVisualMode
+                ? 'grid-cols-1 gap-2 @[480px]:grid-cols-2'
+                : 'grid-cols-1 divide-y divide-wavis-text-secondary/20',
               'focus:outline focus:outline-2 focus:outline-wavis-accent',
             ].join(' ')}
           >
@@ -562,8 +567,8 @@ export default function SharePicker(props: SharePickerProps) {
       </div>
 
       {/* ── Footer ── */}
-      <div className="border-t border-wavis-text-secondary px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="border-t border-wavis-text-secondary px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-3">
           {showAudioCheckbox && (
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
@@ -584,19 +589,39 @@ export default function SharePicker(props: SharePickerProps) {
               </span>
             </label>
           )}
-          {selectedSource?.source_type === 'window' && isWindowsPlatform && (
-            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={compatibilityMode}
-                onChange={(e) => setCompatibilityMode(e.target.checked)}
-                className="accent-wavis-accent"
-              />
-              <span className="text-wavis-text-secondary">Game compatibility mode</span>
-            </label>
+          {activeMode === 'window' && isWindowsPlatform && (
+            <div className="flex items-center gap-1 text-sm select-none">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={compatibilityMode}
+                  onChange={(e) => setCompatibilityMode(e.target.checked)}
+                  className="accent-wavis-accent"
+                />
+                <span className="text-wavis-text-secondary">Game compatibility mode</span>
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Game compatibility mode help"
+                    className="inline-flex h-5 w-5 items-center justify-center border border-wavis-text-secondary text-[0.6875rem] text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent focus:outline focus:outline-2 focus:outline-wavis-accent"
+                  >
+                    ?
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  sideOffset={6}
+                  className="max-w-72 border border-wavis-text-secondary bg-wavis-panel text-wavis-text shadow-lg"
+                >
+                  Use this for games or apps that show a black screen, missing cursor, or fail to capture with the default method.
+                </TooltipContent>
+              </Tooltip>
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
           <button
             onClick={handleCancel}
             className="border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"

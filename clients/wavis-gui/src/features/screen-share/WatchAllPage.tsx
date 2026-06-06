@@ -597,6 +597,7 @@ const ShareTile = memo(function ShareTile({
           className="absolute top-1 right-1 text-wavis-text hover:text-wavis-accent text-xs bg-wavis-overlay-base/60 px-1 py-0.5 rounded"
           onClick={(e) => { e.stopPropagation(); onPopOut(participantId, volume, muted); }}
           aria-label={`Pop out ${displayName}`}
+          title="Pop out window"
         >
           ⧉
         </button>
@@ -637,6 +638,7 @@ const ShareTile = memo(function ShareTile({
               style={{ color: muted ? 'var(--wavis-text-secondary)' : color }}
               onClick={(e) => { e.stopPropagation(); onToggleMute(participantId); }}
               aria-label={muted ? `Unmute ${displayName}` : `Mute ${displayName}`}
+              title="Mute stream"
             >
               {muted ? STREAM_MUTED_ICON : STREAM_UNMUTED_ICON}
             </button>
@@ -693,6 +695,7 @@ const AudioOnlyTile = memo(function AudioOnlyTile({
           style={{ color: muted ? 'var(--wavis-text-secondary)' : color }}
           onClick={() => onToggleMute(participantId)}
           aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
+          title="Mute stream"
         >
           {muted ? STREAM_MUTED_ICON : STREAM_UNMUTED_ICON}
         </button>
