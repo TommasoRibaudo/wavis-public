@@ -2563,7 +2563,7 @@ export default function ActiveRoom() {
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
     const videoTile = roomState.videoTilesById[p.id];
     const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
-    const nameVisual = participantNameVisualState(p);
+    const nameVisual = participantNameVisualState(p, isSelf);
 
     return (
       <div key={p.id} className="pl-2">

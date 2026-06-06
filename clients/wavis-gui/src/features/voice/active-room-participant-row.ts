@@ -1,6 +1,6 @@
 import type { RoomParticipant } from './voice-room';
 
-export function participantNameVisualState(p: RoomParticipant): {
+export function participantNameVisualState(p: RoomParticipant, isSelf = false): {
   color: string;
   opacity: number;
   animation: string;
@@ -13,6 +13,6 @@ export function participantNameVisualState(p: RoomParticipant): {
     opacity: mediaConnected ? 1 : 0.68,
     animation: mediaConnected && p.isSpeaking && !p.isMuted ? 'pulse 3s ease-in-out infinite' : 'none',
     filter: mediaConnected && p.isSpeaking && !p.isMuted ? 'brightness(1.5)' : 'brightness(0.7)',
-    showConnecting: !mediaConnected,
+    showConnecting: isSelf && !mediaConnected,
   };
 }
