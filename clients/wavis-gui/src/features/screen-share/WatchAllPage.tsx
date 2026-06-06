@@ -6,7 +6,7 @@ import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { StreamReceiver } from './screen-share-viewer';
 import { computeWatchAllLayout } from './watch-all-grid';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
-import { isPlaybackHealthyWithoutFreshFrames } from './useVideoStallDetector';
+import { isPlaybackHealthyWithoutFreshFrames, STATIC_CONTENT_HEALTH_PING_MS } from './useVideoStallDetector';
 import {
   WATCH_ALL_TEST_READY_EVENT,
   WATCH_ALL_TEST_STATE_EVENT,
@@ -428,7 +428,7 @@ const ShareTile = memo(function ShareTile({
       if (isPlaybackHealthyWithoutFreshFrames(video, stream)) {
         markFrameRendered();
       }
-    }, 1000);
+    }, STATIC_CONTENT_HEALTH_PING_MS);
 
     if (hasRvfc) {
       const scheduleRvfc = () => {

@@ -4,6 +4,14 @@ import { isVideoTrackAlive } from './screen-share-viewer';
 
 const HAVE_CURRENT_DATA = 2;
 
+/**
+ * How often to ping markFrameRendered when rvfc stops for static content.
+ * Must be small enough that lastFrameAt never goes stale past
+ * SHARE_TRANSITION_THRESHOLD_MS (1200ms) due to timer jitter.
+ * 400ms gives 800ms of margin.
+ */
+export const STATIC_CONTENT_HEALTH_PING_MS = 400;
+
 interface UseVideoStallDetectorOptions {
   videoRef: RefObject<HTMLVideoElement | null>;
   stream: MediaStream | null;
@@ -69,17 +77,24 @@ export function useVideoStallDetector({
       video.addEventListener('timeupdate', timeupdateHandler);
     }
 
+    // Health ping: keeps onFrameDetected alive when rvfc stops for static content.
+    // Runs at STATIC_CONTENT_HEALTH_PING_MS (400ms) to stay well below the
+    // 1200ms overlay threshold even with timer jitter.
+    const healthPing = setInterval(() => {
+      if (disposed) return;
+      const elapsed = Date.now() - lastFrameTime;
+      if (elapsed >= STATIC_CONTENT_HEALTH_PING_MS && isPlaybackHealthyWithoutFreshFrames(video, stream)) {
+        lastFrameTime = Date.now();
+        onFrameDetected?.();
+      }
+    }, STATIC_CONTENT_HEALTH_PING_MS);
+
+    // Stall detection: fires when no frame (real or healthy-ping) has arrived
+    // for stallThresholdMs. Separate from the health ping so detection timing
+    // is not coupled to the ping frequency.
     const interval = setInterval(() => {
       if (disposed) return;
       const elapsed = Date.now() - lastFrameTime;
-      if (
-        elapsed >= checkIntervalMs &&
-        isPlaybackHealthyWithoutFreshFrames(video, stream)
-      ) {
-        lastFrameTime = Date.now();
-        onFrameDetected?.();
-        return;
-      }
       if (elapsed <= stallThresholdMs) return;
 
       if (!isVideoTrackAlive(stream)) {
@@ -103,6 +118,7 @@ export function useVideoStallDetector({
 
     return () => {
       disposed = true;
+      clearInterval(healthPing);
       clearInterval(interval);
       if (timeupdateHandler) {
         video.removeEventListener('timeupdate', timeupdateHandler);
