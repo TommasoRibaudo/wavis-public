@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fc from 'fast-check';
-import { isPlaybackHealthyWithoutFreshFrames } from '../useVideoStallDetector';
+import { isPlaybackHealthyWithoutFreshFrames, STATIC_CONTENT_HEALTH_PING_MS } from '../useVideoStallDetector';
 
 const HAVE_METADATA = 1;
 const HAVE_CURRENT_DATA = 2;
@@ -449,6 +449,93 @@ describe('useVideoStallDetector stall-check logic', () => {
         checkStall({ elapsed, stallThresholdMs: 3000, trackAlive: true, onReattach: () => { calls += 1; } });
         expect(calls).toBe(1);
       }),
+    );
+  });
+});
+
+/* ═══ Static-content health ping ══════════════════════════════════
+ *
+ * The health ping fires onFrameDetected when rvfc stops for static content.
+ * It must keep lastFrameAt fresh enough that the share-transition overlay
+ * (threshold 1200ms) never triggers falsely due to timer jitter.
+ *
+ * Core contract:
+ *   - fires when elapsed >= STATIC_CONTENT_HEALTH_PING_MS AND stream is healthy
+ *   - does not fire when elapsed is too small (rvfc still delivering frames)
+ *   - does not fire when the stream is unhealthy (genuine interruption)
+ * ================================================================= */
+
+function checkHealthPing({
+  elapsed,
+  isHealthy,
+  pingMs = STATIC_CONTENT_HEALTH_PING_MS,
+}: {
+  elapsed: number;
+  isHealthy: boolean;
+  pingMs?: number;
+}): boolean {
+  return elapsed >= pingMs && isHealthy;
+}
+
+describe('static content health ping', () => {
+  it('fires when elapsed >= pingMs and stream is healthy', () => {
+    expect(checkHealthPing({ elapsed: STATIC_CONTENT_HEALTH_PING_MS, isHealthy: true })).toBe(true);
+  });
+
+  it('fires for any elapsed well above pingMs with a healthy stream', () => {
+    expect(checkHealthPing({ elapsed: 2000, isHealthy: true })).toBe(true);
+  });
+
+  it('does not fire when elapsed is below pingMs (rvfc recently delivered a frame)', () => {
+    expect(checkHealthPing({ elapsed: STATIC_CONTENT_HEALTH_PING_MS - 1, isHealthy: true })).toBe(false);
+  });
+
+  it('does not fire when stream is unhealthy even if elapsed is large (genuine interruption)', () => {
+    expect(checkHealthPing({ elapsed: 5000, isHealthy: false })).toBe(false);
+  });
+
+  it('health ping interval leaves 800ms margin below the 1200ms overlay threshold', () => {
+    // The overlay triggers at SHARE_TRANSITION_THRESHOLD_MS = 1200ms.
+    // The health ping fires at most STATIC_CONTENT_HEALTH_PING_MS after the
+    // previous markFrameRendered call. The remaining margin must be > 0.
+    const SHARE_TRANSITION_THRESHOLD_MS = 1200;
+    const margin = SHARE_TRANSITION_THRESHOLD_MS - STATIC_CONTENT_HEALTH_PING_MS;
+    expect(margin).toBeGreaterThan(0);
+    // Require at least 500ms margin to absorb timer jitter.
+    expect(margin).toBeGreaterThanOrEqual(500);
+  });
+
+  it('property: always fires when elapsed >= pingMs and stream is healthy', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: STATIC_CONTENT_HEALTH_PING_MS, max: 10_000 }),
+        (elapsed) => {
+          expect(checkHealthPing({ elapsed, isHealthy: true })).toBe(true);
+        },
+      ),
+    );
+  });
+
+  it('property: never fires when elapsed < pingMs', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: STATIC_CONTENT_HEALTH_PING_MS - 1 }),
+        fc.boolean(),
+        (elapsed, isHealthy) => {
+          expect(checkHealthPing({ elapsed, isHealthy })).toBe(false);
+        },
+      ),
+    );
+  });
+
+  it('property: never fires when stream is unhealthy', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 10_000 }),
+        (elapsed) => {
+          expect(checkHealthPing({ elapsed, isHealthy: false })).toBe(false);
+        },
+      ),
     );
   });
 });
