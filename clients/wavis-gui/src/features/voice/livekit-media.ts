@@ -675,6 +675,10 @@ export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {
     /** Estimated available outgoing bandwidth in kbps (0 = unavailable). */
     availableBandwidthKbps: number;
   }) => void;
+  /** Called when LiveKit reports a remote participant media connection. */
+  onRemoteParticipantConnected?: (identity: string) => void;
+  /** Called when LiveKit reports a remote participant media disconnection. */
+  onRemoteParticipantDisconnected?: (identity: string) => void;
   /** Called when a remote screen share track is subscribed. Passes MediaStream, NOT a DOM element. */
   onScreenShareSubscribed: (identity: string, stream: MediaStream) => void;
   /** Called when a remote screen share track is unsubscribed. */
@@ -2275,6 +2279,9 @@ export class LiveKitModule {
         if (this.disposed) return;
         lkConnected = true;
         listenOnly = true;
+        for (const participant of this.room?.remoteParticipants.values() ?? []) {
+          this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+        }
         // Watch for OS device changes so the routing survives plug/unplug events.
         this.startDeviceChangeWatcher();
         checkReady();
@@ -2283,12 +2290,18 @@ export class LiveKitModule {
       // b. Disconnected
       addListener(RoomEvent.Disconnected, () => {
         if (this.disposed) return;
+        for (const participant of this.room?.remoteParticipants.values() ?? []) {
+          this.callbacks.onRemoteParticipantDisconnected?.(participant.identity);
+        }
         this.callbacks.onMediaDisconnected();
       });
 
       // c. Reconnecting
       addListener(RoomEvent.Reconnecting, () => {
         if (this.disposed) return;
+        for (const participant of this.room?.remoteParticipants.values() ?? []) {
+          this.callbacks.onRemoteParticipantDisconnected?.(participant.identity);
+        }
         this.callbacks.onMediaReconnecting?.();
         this.callbacks.onSystemEvent('LiveKit reconnecting…');
       });
@@ -2307,6 +2320,9 @@ export class LiveKitModule {
       addListener(RoomEvent.Reconnected, () => {
         if (this.disposed) return;
         this.callbacks.onMediaReconnected?.();
+        for (const participant of this.room?.remoteParticipants.values() ?? []) {
+          this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+        }
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
         // audio elements are recreated and lose the previous sinkId.
@@ -2512,6 +2528,7 @@ export class LiveKitModule {
       // h. ParticipantDisconnected
       addListener(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
+        this.callbacks.onRemoteParticipantDisconnected?.(participant.identity);
         if (this.cameraTracks.has(participant.identity)) {
           this.clearRemoteCameraEntry(participant.identity);
           this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
@@ -2544,6 +2561,7 @@ export class LiveKitModule {
       // Fires for existing participants on room join as well as new joiners.
       addListener(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
+        this.callbacks.onRemoteParticipantConnected?.(participant.identity);
         const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
         if (screenShareAudioPub) {
           this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);

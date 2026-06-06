@@ -1076,8 +1076,15 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual([]);
   });
 
-  it('plays join when the local user is assigned into a sub-room', async () => {
+  it('keeps self connecting after room assignment and plays join when local media connects', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'media_token',
+      sfuUrl: 'wss://sfu',
+      token: 'tok',
+    });
+    await tick();
 
     messageHandler!({
       type: 'sub_room_state',
@@ -1088,6 +1095,13 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     });
     await tick();
 
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(false);
+    expect(playNotificationSoundCalls).toEqual([]);
+
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
@@ -1101,6 +1115,10 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1126,6 +1144,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
     playNotificationSoundCalls = [];
 
     messageHandler!({
@@ -1139,6 +1162,33 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
+  it('does not play remote join until the remote participant is media-connected', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(false);
+    expect(playNotificationSoundCalls).toEqual([]);
+
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
   it('plays leave when another user leaves the local user current room', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
 
@@ -1148,6 +1198,10 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1170,6 +1224,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1197,6 +1256,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
     playNotificationSoundCalls = [];
 
     messageHandler!({
@@ -1216,6 +1280,78 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     await tick();
 
     expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
+  it('does not replay remote join for duplicate signaling snapshots after media readiness', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+    expect(playNotificationSoundCalls).toEqual(['join', 'join']);
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+  });
+
+  it('media reconnect marks participants connecting and restores readiness without replaying join', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    playNotificationSoundCalls = [];
+
+    lastLkModule!.callbacks.onMediaReconnecting?.();
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(false);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(false);
+
+    lastLkModule!.callbacks.onMediaReconnected?.();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    expect(playNotificationSoundCalls).toEqual([]);
   });
 
   it('plays leave sound for explicit whole-session leave', async () => {
