@@ -251,6 +251,9 @@ vi.mock('../notification-sounds', () => ({
   playNotificationSound: vi.fn(async (name: string) => {
     playNotificationSoundCalls.push(name);
   }),
+  updateCachedNotificationVolume: vi.fn(),
+  updateCachedSoundVolumes: vi.fn(),
+  prewarmAudioContext: vi.fn(),
 }));
 
 // ─── Mock Tauri APIs ───────────────────────────────────────────────

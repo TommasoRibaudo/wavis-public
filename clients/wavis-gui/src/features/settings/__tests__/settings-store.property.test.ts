@@ -174,6 +174,9 @@ vi.mock('../../voice/audio-devices', () => ({
 
 vi.mock('../../voice/notification-sounds', () => ({
   playNotificationSound: vi.fn(async () => {}),
+  updateCachedNotificationVolume: vi.fn(),
+  updateCachedSoundVolumes: vi.fn(),
+  prewarmAudioContext: vi.fn(),
 }));
 
 vi.mock('@shared/hotkey-bridge', () => ({

@@ -392,6 +392,9 @@ async function loadVoiceRoomIntegrationHarness() {
 
   vi.doMock('../notification-sounds', () => ({
     playNotificationSound: vi.fn(async () => {}),
+    updateCachedNotificationVolume: vi.fn(),
+    updateCachedSoundVolumes: vi.fn(),
+    prewarmAudioContext: vi.fn(),
   }));
 
   vi.doMock('@tauri-apps/api/core', () => ({

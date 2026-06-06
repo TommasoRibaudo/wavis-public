@@ -45,6 +45,9 @@ vi.mock('@shared/hotkey-bridge', () => ({
 }));
 vi.mock('../notification-sounds', () => ({
   playNotificationSound: vi.fn().mockResolvedValue(undefined),
+  updateCachedNotificationVolume: vi.fn(),
+  updateCachedSoundVolumes: vi.fn(),
+  prewarmAudioContext: vi.fn(),
 }));
 vi.mock('../livekit-media', () => ({
   LiveKitModule: vi.fn().mockImplementation(() => ({
@@ -107,6 +110,8 @@ vi.mock('@features/settings/settings-store', () => ({
   setChannelVolumes: vi.fn().mockResolvedValue(undefined),
   getVideoInputDevice: vi.fn().mockResolvedValue(null),
   setVideoInputDevice: vi.fn().mockResolvedValue(undefined),
+  getNotificationVolume: vi.fn().mockResolvedValue(100),
+  getSoundVolumes: vi.fn().mockResolvedValue({}),
   DEFAULT_PASSTHROUGH_VOLUME: 20,
 }));
 // ─── Message injection state ──────────────────────────────────────
