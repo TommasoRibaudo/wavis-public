@@ -1,5 +1,6 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
 import { VolumeSlider } from '@shared/VolumeSlider';
+import { LoadingBars } from '@shared/LoadingBars';
 import { useBlocker, useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
 import type { Channel } from '@features/channels/channels';
@@ -294,32 +295,9 @@ function mediaIndicator(state: MediaState, error: string | null): { color: strin
   }
 }
 
-function LoadingBars({ size = 'md' }: { size?: 'sm' | 'md' }): ReactNode {
-  const barHeight = size === 'sm' ? '0.42rem' : '0.55rem';
-  const barWidthClass = size === 'sm' ? 'w-0.5' : 'w-1';
-  return (
-    <div className="flex items-center gap-1" aria-hidden="true">
-      {[0, 1, 2].map((bar) => (
-        <span
-          key={bar}
-          className={`inline-block ${barWidthClass} bg-wavis-purple`}
-          style={{
-            height: barHeight,
-            animation: 'pulse 1.2s ease-in-out infinite',
-            animationDelay: `${bar * 0.16}s`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
 function shareLoadingNotice(label: string, className: string): ReactNode {
   return (
-    <div className={className}>
-      <LoadingBars />
-      <span className="text-wavis-text-secondary">{label}</span>
-    </div>
+    <LoadingBars label={label} className={className} />
   );
 }
 
@@ -2585,7 +2563,7 @@ export default function ActiveRoom() {
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
     const videoTile = roomState.videoTilesById[p.id];
     const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
-    const nameVisual = participantNameVisualState(p);
+    const nameVisual = participantNameVisualState(p, isSelf);
 
     return (
       <div key={p.id} className="pl-2">
@@ -2747,7 +2725,6 @@ export default function ActiveRoom() {
                   ? <button onClick={() => unmuteParticipant(p.id)} className="text-xs text-center border border-wavis-accent text-wavis-accent px-1 py-0.5 transition-colors hover:opacity-70">/unmute</button>
                   : !p.isMuted && <button onClick={() => muteParticipant(p.id)} className="text-xs text-center border px-1 py-0.5 transition-colors hover:opacity-70" style={{ color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }}>/mute</button>
                 }
-                {p.isSharing && <button onClick={() => stopParticipantShare(p.id)} className="text-xs text-center border border-wavis-danger text-wavis-danger px-1 py-0.5 transition-colors hover:opacity-70">/revoke</button>}
               </div>
             )}
           </div>
@@ -2964,7 +2941,7 @@ export default function ActiveRoom() {
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: selfP?.isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`}
-            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">○</span></button>
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none -translate-y-px">○</span></button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={toggleSelfDeafen}
@@ -2979,7 +2956,7 @@ export default function ActiveRoom() {
                   onClick={toggleCameraIntent}
                   disabled={cameraButtonDisabled}
                   className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ color: roomState.cameraIntent ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
+                  style={{ color: roomState.cameraIntent ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
                   title={cameraLabel}
                   aria-label={videoButtonLabel}
                 ><span style={{
