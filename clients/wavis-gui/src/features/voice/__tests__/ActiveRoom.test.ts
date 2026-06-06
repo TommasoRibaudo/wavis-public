@@ -259,13 +259,23 @@ describe('Participant Row Media Readiness', () => {
     volume: 70,
   };
 
-  it('grays the name and suppresses speaking effects while connecting', () => {
-    expect(participantNameVisualState(participant)).toMatchObject({
+  it('grays the name and suppresses speaking effects while connecting self', () => {
+    expect(participantNameVisualState(participant, true)).toMatchObject({
       color: 'var(--wavis-text-secondary)',
       opacity: 0.68,
       animation: 'none',
       filter: 'brightness(0.7)',
       showConnecting: true,
+    });
+  });
+
+  it('does not show the connecting label for remote participants', () => {
+    expect(participantNameVisualState(participant, false)).toMatchObject({
+      color: 'var(--wavis-text-secondary)',
+      opacity: 0.68,
+      animation: 'none',
+      filter: 'brightness(0.7)',
+      showConnecting: false,
     });
   });
 });
