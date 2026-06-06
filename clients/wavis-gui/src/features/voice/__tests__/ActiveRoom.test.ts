@@ -20,6 +20,8 @@ import {
   SHARE_STARTING_LOADING_LABEL,
   isVideoShareSelectionMode,
 } from '../active-room-share-loading';
+import { participantNameVisualState } from '../active-room-participant-row';
+import type { RoomParticipant } from '../voice-room';
 
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 
@@ -238,6 +240,33 @@ describe('Quality Indicator Rendering', () => {
 
   it('returns null when not self share and info is null', () => {
     expect(formatQualityIndicator(false, null)).toBeNull();
+  });
+});
+
+describe('Participant Row Media Readiness', () => {
+  const participant: RoomParticipant = {
+    id: 'peer-1',
+    displayName: 'Alice',
+    color: '#44AA88',
+    role: 'guest',
+    isSpeaking: true,
+    isMuted: false,
+    isHostMuted: false,
+    isDeafened: false,
+    isSharing: false,
+    mediaConnected: false,
+    rmsLevel: 0.8,
+    volume: 70,
+  };
+
+  it('grays the name and suppresses speaking effects while connecting', () => {
+    expect(participantNameVisualState(participant)).toMatchObject({
+      color: 'var(--wavis-text-secondary)',
+      opacity: 0.68,
+      animation: 'none',
+      filter: 'brightness(0.7)',
+      showConnecting: true,
+    });
   });
 });
 

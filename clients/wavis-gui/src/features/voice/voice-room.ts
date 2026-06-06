@@ -87,6 +87,7 @@ export interface RoomParticipant {
   isDeafened: boolean;
   isSharing: boolean;
   shareType?: string;
+  mediaConnected: boolean;
   rmsLevel: number;
   volume: number;
 }
@@ -559,10 +560,14 @@ export function mergeParticipantsWithVolume(
   oldList: RoomParticipant[],
   newList: RoomParticipant[],
 ): RoomParticipant[] {
-  const volumeMap = new Map(oldList.map((p) => [p.id, p.volume]));
+  const preserved = new Map(oldList.map((p) => [p.id, {
+    volume: p.volume,
+    mediaConnected: p.mediaConnected,
+  }]));
   return newList.map((p) => ({
     ...p,
-    volume: volumeMap.get(p.id) ?? p.volume,
+    volume: preserved.get(p.id)?.volume ?? p.volume,
+    mediaConnected: preserved.get(p.id)?.mediaConnected ?? p.mediaConnected,
   }));
 }
 
@@ -592,6 +597,51 @@ function applyEffectiveParticipantVolumes(): void {
 
 function selfParticipant(): RoomParticipant | undefined {
   return state.participants.find((p) => p.id === state.selfParticipantId);
+}
+
+function markParticipantMediaConnected(
+  participantId: string,
+  mediaConnected: boolean,
+  options: { playJoinSound: boolean } = { playJoinSound: true },
+): void {
+  const participant = state.participants.find((p) => p.id === participantId);
+  if (mediaConnected) {
+    mediaConnectedParticipantIds.add(participantId);
+  } else {
+    mediaConnectedParticipantIds.delete(participantId);
+  }
+  if (!participant || participant.mediaConnected === mediaConnected) return;
+
+  participant.mediaConnected = mediaConnected;
+  if (!mediaConnected) {
+    participant.isSpeaking = false;
+    participant.rmsLevel = 0;
+  }
+
+  if (
+    mediaConnected
+    && options.playJoinSound
+    && state.joinedSubRoomId !== null
+    && state.participantSubRoomById[participantId] === state.joinedSubRoomId
+  ) {
+    void playNotificationSound('join');
+  }
+}
+
+function markAllRemoteParticipantsMediaConnected(
+  mediaConnected: boolean,
+  options: { playJoinSound: boolean } = { playJoinSound: true },
+): void {
+  for (const participant of state.participants) {
+    if (participant.id === state.selfParticipantId) continue;
+    markParticipantMediaConnected(participant.id, mediaConnected, options);
+  }
+}
+
+function markAllParticipantsMediaConnecting(): void {
+  for (const participant of state.participants) {
+    markParticipantMediaConnected(participant.id, false, { playJoinSound: false });
+  }
 }
 
 function clearSelfAudioActivity(self: RoomParticipant): void {
@@ -1563,6 +1613,8 @@ let localDisconnectSoundPlayed = false;
  * late-arriving events (share_stopped, etc.) can still resolve display names.
  */
 const displayNameCache = new Map<string, string>();
+const mediaConnectedParticipantIds = new Set<string>();
+let suppressReconnectJoinForParticipantIds = new Set<string>();
 
 function playLocalDisconnectSoundOnce(): void {
   const wasInLocalSession =
@@ -2112,7 +2164,7 @@ function playSubRoomMembershipSounds(
       if (previousRoomId) {
         void playNotificationSound('leave');
       }
-      if (currentRoomId) {
+      if (currentRoomId && state.participants.find((p) => p.id === participantId)?.mediaConnected) {
         void playNotificationSound('join');
       }
       continue;
@@ -2121,7 +2173,11 @@ function playSubRoomMembershipSounds(
     if (previousJoinedSubRoomId && previousRoomId === previousJoinedSubRoomId) {
       void playNotificationSound('leave');
     }
-    if (currentJoinedSubRoomId && currentRoomId === currentJoinedSubRoomId) {
+    if (
+      currentJoinedSubRoomId
+      && currentRoomId === currentJoinedSubRoomId
+      && state.participants.find((p) => p.id === participantId)?.mediaConnected
+    ) {
       void playNotificationSound('join');
     }
   }
@@ -2180,6 +2236,7 @@ function buildSyntheticSelfParticipant(): RoomParticipant | null {
     isHostMuted: false,
     isDeafened: state.isDeafened,
     isSharing: false,
+    mediaConnected: false,
     rmsLevel: 0,
     volume: state.defaultVolume,
   };
@@ -2527,14 +2584,24 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
   state.mediaError = null;
   state.nativeMicBridgeActive = false;
   state.noiseSuppressionActive = false;
+  markAllParticipantsMediaConnecting();
+  suppressReconnectJoinForParticipantIds.clear();
   notify();
 
-  const restoreConnectedMediaState = (): void => {
+  const restoreConnectedMediaState = (
+    options: { playJoinSound: boolean } = { playJoinSound: true },
+  ): void => {
     state.mediaState = 'connected';
     state.mediaError = null;
     state.mediaReconnectFailures = 0;
     stopPeriodicMediaRetry();
     const self = selfParticipant();
+    if (self) {
+      markParticipantMediaConnected(self.id, true, { playJoinSound: options.playJoinSound });
+    }
+    if (lkModule instanceof NativeMediaModule) {
+      markAllRemoteParticipantsMediaConnected(true, { playJoinSound: options.playJoinSound });
+    }
     setLocalMicPublishing(shouldPublishLocalMic(self));
     // Apply persisted master volume to the media layer
     if (lkModule) {
@@ -2557,7 +2624,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
 
   const callbacks: MediaCallbacks = {
     onMediaConnected: () => {
-      restoreConnectedMediaState();
+      restoreConnectedMediaState({ playJoinSound: true });
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
     },
@@ -2565,16 +2632,24 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (state.mediaState === 'failed' || state.mediaState === 'disconnected') return;
       state.mediaState = 'reconnecting';
       state.mediaError = null;
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds = new Set(
+        state.participants
+          .filter((p) => p.id !== state.selfParticipantId)
+          .map((p) => p.id),
+      );
       notify();
     },
     onMediaReconnected: () => {
-      restoreConnectedMediaState();
+      restoreConnectedMediaState({ playJoinSound: false });
       void restorePublishedCameraAfterReconnect();
     },
     onMediaFailed: (reason) => {
       state.mediaReconnectFailures += 1;
       state.mediaState = 'failed';
       state.mediaError = reason;
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds.clear();
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: `media failed: ${reason}` });
       notify();
     },
@@ -2585,6 +2660,8 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         && state.mediaState !== 'disconnected'
         && state.mediaState !== 'failed';
       state.mediaState = 'disconnected';
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds.clear();
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'media disconnected — attempting reconnect' });
       notify();
       if (shouldReconnect) {
@@ -2629,6 +2706,15 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     },
     onConnectionQuality: (stats) => {
       state.networkStats = stats;
+      notify();
+    },
+    onRemoteParticipantConnected: (identity) => {
+      const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(identity);
+      markParticipantMediaConnected(identity, true, { playJoinSound: !suppressJoinSound });
+      notify();
+    },
+    onRemoteParticipantDisconnected: (identity) => {
+      markParticipantMediaConnected(identity, false, { playJoinSound: false });
       notify();
     },
     onScreenShareSubscribed: (identity, stream) => {
@@ -2917,7 +3003,7 @@ function dispatchMessage(raw: unknown): void {
       syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
       const participants = (msg.participants as Array<Record<string, unknown>>) || [];
-      state.participants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
+      const incomingParticipants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
         displayNameCache.set(p.participantId as string, p.displayName as string);
         const isSelf = p.participantId === state.selfParticipantId;
         const pUserId = p.userId as string | undefined;
@@ -2932,10 +3018,12 @@ function dispatchMessage(raw: unknown): void {
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
         };
       });
+      state.participants = mergeParticipantsWithVolume(state.participants, incomingParticipants);
       ensureSelfParticipant('joined');
       state.machineState = 'active';
 
@@ -3036,10 +3124,15 @@ function dispatchMessage(raw: unknown): void {
         isHostMuted: false,
         isDeafened: false,
         isSharing: false,
+        mediaConnected: pjId !== state.selfParticipantId && mediaConnectedParticipantIds.has(pjId),
         rmsLevel: 0,
         volume: resolvePersistedVolume(pjUserId, state.defaultVolume),
       };
-      state.participants = [...state.participants, newParticipant];
+      const withoutExisting = state.participants.filter((p) => p.id !== pjId);
+      state.participants = mergeParticipantsWithVolume(
+        state.participants,
+        [...withoutExisting, newParticipant],
+      ).slice(0, MAX_PARTICIPANTS);
       if (lkModule && state.mediaState === 'connected' && pjId !== state.selfParticipantId) {
         applyEffectiveParticipantVolume(newParticipant);
       }
@@ -3053,6 +3146,8 @@ function dispatchMessage(raw: unknown): void {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const leftId = msg.participantId as string;
       const leftP = state.participants.find((p) => p.id === leftId);
+      mediaConnectedParticipantIds.delete(leftId);
+      suppressReconnectJoinForParticipantIds.delete(leftId);
       state.participants = state.participants.filter((p) => p.id !== leftId);
       if (state.participantSubRoomById[leftId]) {
         const leftRoomId = state.participantSubRoomById[leftId];
@@ -3311,6 +3406,7 @@ function dispatchMessage(raw: unknown): void {
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
         };
@@ -3349,6 +3445,8 @@ function dispatchMessage(raw: unknown): void {
     case 'participant_kicked': {
       const kickedId = msg.participantId as string;
       const kickedP = state.participants.find((p) => p.id === kickedId);
+      mediaConnectedParticipantIds.delete(kickedId);
+      suppressReconnectJoinForParticipantIds.delete(kickedId);
       state.participants = state.participants.filter((p) => p.id !== kickedId);
       const kickedName = kickedP?.displayName ?? displayNameCache.get(kickedId) ?? kickedId;
       appendEvent({
@@ -3911,6 +4009,8 @@ export function initSession(
     screenShareStreams: new Map(),
   };
   resetCameraRuntimeState();
+  mediaConnectedParticipantIds.clear();
+  suppressReconnectJoinForParticipantIds.clear();
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
@@ -4104,6 +4204,8 @@ export function leaveRoom(): void {
 
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+  mediaConnectedParticipantIds.clear();
+  suppressReconnectJoinForParticipantIds.clear();
   remoteCameraTilesById = {};
   roomPanelHadAnyVideoActive = false;
   resetCameraQualityController();

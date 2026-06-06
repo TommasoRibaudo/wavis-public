@@ -113,6 +113,7 @@ import {
   SHARE_STARTING_LOADING_LABEL,
   isVideoShareSelectionMode,
 } from './active-room-share-loading';
+import { participantNameVisualState } from './active-room-participant-row';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
 import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
@@ -2562,6 +2563,7 @@ export default function ActiveRoom() {
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
     const videoTile = roomState.videoTilesById[p.id];
     const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
+    const nameVisual = participantNameVisualState(p);
 
     return (
       <div key={p.id} className="pl-2">
@@ -2574,12 +2576,21 @@ export default function ActiveRoom() {
           style={{ cursor: isSelf ? 'default' : 'pointer' }}
         >
           {isSelf ? <span className="text-xs text-wavis-accent inline-block w-6 text-center flex-none">&gt;</span> : <span className="text-[0.625rem] text-wavis-text-secondary inline-block w-6 text-center flex-none">{expandedUser === p.id ? '[-]' : '[+]'}</span>}
-          <span style={{
-            color: p.color,
-            animation: p.isSpeaking && !p.isMuted ? 'pulse 3s ease-in-out infinite' : 'none',
-            filter: p.isSpeaking && !p.isMuted ? 'brightness(1.5)' : 'brightness(0.7)',
-          }}>{p.displayName}</span>
+          <span className="inline-flex min-h-5 items-center gap-1.5">
+            <span style={{
+              color: nameVisual.color,
+              opacity: nameVisual.opacity,
+              animation: nameVisual.animation,
+              filter: nameVisual.filter,
+            }}>{p.displayName}</span>
+          </span>
           <span style={{ color: icon.color, textDecoration: icon.strikethrough ? 'line-through' : undefined, ...(icon.transform ? { display: 'inline-block', transform: icon.transform } : {}) }}>{icon.char}</span>
+          {nameVisual.showConnecting && (
+            <span className="inline-flex h-4 items-center gap-1 text-[0.625rem] leading-none text-wavis-text-secondary opacity-80">
+              <LoadingBars size="sm" />
+              <span>connecting</span>
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-1">
             {cameraOn && (
               <span
