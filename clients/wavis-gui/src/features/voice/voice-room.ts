@@ -2875,6 +2875,9 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     onAudioOnlySharerAdded: (identity) => {
       state.audioOnlySharers = new Set(state.audioOnlySharers);
       state.audioOnlySharers.add(identity);
+      // Silence immediately so the gain node is created at 0 before any audio
+      // plays. The viewer un-mutes by clicking the music icon to restore volume.
+      setScreenShareAudioVolume(identity, 0);
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
@@ -2897,7 +2900,10 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
 
   for (const participant of state.participants) {
     if (participant.isSharing) {
-      updateRemoteShareType(participant.id, parseRemoteShareType(participant.shareType));
+      const shareType = parseRemoteShareType(participant.shareType);
+      if (shareType !== undefined || !state.audioOnlySharers.has(participant.id)) {
+        updateRemoteShareType(participant.id, shareType);
+      }
     }
   }
 
@@ -3693,8 +3699,24 @@ function dispatchMessage(raw: unknown): void {
         sp.isSharing = true;
         sp.shareType = remoteShareType;
       }
-      updateRemoteShareType(shareStartId, remoteShareType);
-      if (remoteShareType !== 'audio_only') {
+      // Keep audioOnlySharers in sync directly — updateRemoteShareType is a no-op
+      // when lkModule is not yet initialized, which would leave the UI stuck on ◉.
+      if (remoteShareType === 'audio_only' && !state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.add(shareStartId);
+      } else if (remoteShareType !== undefined && remoteShareType !== 'audio_only' && state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStartId);
+      }
+      // Don't pass undefined to lkModule when the track was already inferred as audio-only —
+      // setRemoteShareType(undefined) would clear the inference and fire onAudioOnlySharerRemoved.
+      if (remoteShareType !== undefined || !state.audioOnlySharers.has(shareStartId)) {
+        updateRemoteShareType(shareStartId, remoteShareType);
+      }
+      const shareStartIsAudioOnly =
+        remoteShareType === 'audio_only' ||
+        (remoteShareType === undefined && state.audioOnlySharers.has(shareStartId));
+      if (!shareStartIsAudioOnly) {
         refreshRemoteScreenShare(shareStartId);
         // Schedule retries for the case where TrackSubscribed is delayed or the SFU
         // treats the republish as a track resume (no TrackPublished/TrackSubscribed).
@@ -3730,6 +3752,10 @@ function dispatchMessage(raw: unknown): void {
       if (ssp) {
         ssp.isSharing = false;
         ssp.shareType = undefined;
+      }
+      if (state.audioOnlySharers.has(shareStopId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStopId);
       }
       clearRemoteShareType(shareStopId);
       refreshRetryGenerations.delete(shareStopId);
@@ -3779,6 +3805,10 @@ function dispatchMessage(raw: unknown): void {
           // Server says they're not sharing — clear stale flag + stream
           p.isSharing = false;
           p.shareType = undefined;
+          if (state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
           clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
@@ -3789,8 +3819,21 @@ function dispatchMessage(raw: unknown): void {
         }
         if (shouldBeSharing) {
           p.shareType = typedShares.get(p.id);
-          updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
-          if (p.shareType !== 'audio_only') {
+          const resolvedType = p.shareType as RemoteShareType | undefined;
+          if (resolvedType === 'audio_only' && !state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.add(p.id);
+          } else if (resolvedType !== undefined && resolvedType !== 'audio_only' && state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
+          if (resolvedType !== undefined || !state.audioOnlySharers.has(p.id)) {
+            updateRemoteShareType(p.id, resolvedType);
+          }
+          const isAudioOnlyShare =
+            resolvedType === 'audio_only' ||
+            (resolvedType === undefined && state.audioOnlySharers.has(p.id));
+          if (!isAudioOnlyShare) {
             refreshRemoteScreenShare(p.id);
             // Schedule retries for late joiners or post-reconnect cases where
             // the stream isn't available yet. share_state doesn't schedule

@@ -1358,16 +1358,22 @@ export default function ActiveRoom() {
       const participant = roomState.participants.find((p) => p.id === identity);
       if (!participant) continue;
       const vol = getSavedShareVolume(identity);
-      const muted = getSavedShareMuted(identity);
-      applySavedScreenShareAudio(identity);
-      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted });
+      // Always start audio shares muted; preserve the last-set volume for restore.
+      shareMutedRef.current.set(identity, true);
+      setShareMuted((prev) => {
+        if (prev.get(identity) === true) return prev;
+        const next = new Map(prev);
+        next.set(identity, true);
+        return next;
+      });
+      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
     }
     for (const identity of prev) {
       if (curr.has(identity)) continue;
       void emit('watch-all:audio-share-removed', { participantId: identity });
     }
     prevAudioOnlySharersRef.current = new Set(curr);
-  }, [applySavedScreenShareAudio, getSavedShareMuted, getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);
+  }, [getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -1822,14 +1828,20 @@ export default function ActiveRoom() {
         // Seed the dynamic tracking ref so the useEffect doesn't
         // re-emit these same shares as "new".
         prevWatchAllStreamsRef.current = new Map(scope.streams);
-        // Seed audio-only sharers into Watch All
+        // Seed audio-only sharers into Watch All — always start muted
         for (const identity of rs.audioOnlySharers) {
           const participant = scope.participants.find((p) => p.id === identity);
           if (!participant) continue;
           const vol = getSavedShareVolume(identity);
-          const muted = getSavedShareMuted(identity);
-          applySavedScreenShareAudio(identity);
-          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted });
+          shareMutedRef.current.set(identity, true);
+          setShareMuted((prev) => {
+            if (prev.get(identity) === true) return prev;
+            const next = new Map(prev);
+            next.set(identity, true);
+            return next;
+          });
+          setScreenShareAudioVolume(identity, 0);
+          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
         }
         prevAudioOnlySharersRef.current = new Set(rs.audioOnlySharers);
       });
@@ -2663,14 +2675,23 @@ export default function ActiveRoom() {
             {!isSelf && p.isSharing && (() => {
               const isAudioOnly = roomState.audioOnlySharers.has(p.id);
               if (isAudioOnly) {
+                const isAudioMuted = getSavedShareMuted(p.id);
                 return (
-                  <span
-                    className="text-sm leading-none"
-                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
-                    title="sharing audio"
+                  <button
+                    className="text-sm leading-none hover:opacity-70 transition-opacity"
+                    style={{
+                      color: isAudioMuted ? 'var(--wavis-danger)' : 'transparent',
+                      WebkitTextStroke: isAudioMuted ? undefined : '1px var(--wavis-danger)',
+                      animation: isAudioMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+                    }}
+                    title={isAudioMuted ? 'unmute audio share' : 'mute audio share'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      syncScreenShareMuted(p.id, !isAudioMuted);
+                    }}
                   >
                     {"\u266A"}
-                  </span>
+                  </button>
                 );
               }
               const hasStream = roomState.screenShareStreams.has(p.id);

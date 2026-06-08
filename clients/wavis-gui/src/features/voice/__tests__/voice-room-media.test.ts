@@ -407,6 +407,73 @@ describe('VoiceRoom screen share audio delegation', () => {
     leaveRoom();
   });
 
+  it('keeps LiveKit-inferred audio-only state across legacy share_state without shareType', async () => {
+    resetAll();
+    await driveToActive();
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    lastLkModule!.callbacks.onAudioOnlySharerAdded('peer-2');
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    messageHandler!({
+      type: 'share_state',
+      participantIds: ['peer-2'],
+      activeShares: [{ participantId: 'peer-2' }],
+    });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')).toMatchObject({
+      isSharing: true,
+      shareType: undefined,
+    });
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    messageHandler!({
+      type: 'share_state',
+      participantIds: ['peer-2'],
+      activeShares: [{ participantId: 'peer-2', shareType: 'screen_audio' }],
+    });
+    await tick();
+
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(false);
+
+    leaveRoom();
+  });
+
+  it('keeps LiveKit-inferred audio-only state when share_started arrives without shareType', async () => {
+    resetAll();
+    await driveToActive();
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    // Simulate lkModule inferring audio-only from TrackSubscribed before share_started arrives
+    lastLkModule!.callbacks.onAudioOnlySharerAdded('peer-2');
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    // share_started arrives without shareType (older sender client)
+    messageHandler!({ type: 'share_started', participantId: 'peer-2' });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')).toMatchObject({
+      isSharing: true,
+      shareType: undefined,
+    });
+    // Inferred audio-only state must be preserved
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    // An explicit non-audio-only type should still clear it
+    messageHandler!({ type: 'share_started', participantId: 'peer-2', shareType: 'screen_audio' });
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(false);
+
+    leaveRoom();
+  });
+
   it('attachScreenShareAudio and detachScreenShareAudio delegate to the media module', async () => {
     resetAll();
     await driveToActive();
