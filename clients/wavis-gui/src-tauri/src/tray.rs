@@ -90,6 +90,24 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Show and focus the main window from any state (tray-hidden, minimized, or normal).
+/// Clears the hidden flag and emits `window-visibility-changed` so the frontend
+/// tracks tray state correctly regardless of how the window was restored.
+#[tauri::command]
+pub fn show_main_window(
+    app: tauri::AppHandle,
+    visibility: tauri::State<'_, WindowVisibility>,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    visibility.hidden.store(false, Ordering::SeqCst);
+    let _ = app.emit("window-visibility-changed", WindowVisibilityPayload { visible: true });
+    Ok(())
+}
+
 /// Handle the window close event. If minimize-to-tray is enabled, hide the
 /// window instead of closing it. Returns `true` if the close was intercepted.
 pub fn handle_close_requested(

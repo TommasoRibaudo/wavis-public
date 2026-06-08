@@ -1476,13 +1476,10 @@ export default function ActiveRoom() {
   useEffect(() => {
     console.log('[wavis:focus-main] registering focus-main-window listener');
     const unlisten = listen('focus-main-window', async () => {
-      console.log('[wavis:focus-main] event received — calling unminimize + setFocus');
+      console.log('[wavis:focus-main] event received — calling show_main_window');
       try {
-        const win = getCurrentWindow();
-        await win.unminimize();
-        console.log('[wavis:focus-main] unminimize done');
-        await win.setFocus();
-        console.log('[wavis:focus-main] setFocus done');
+        await invoke('show_main_window');
+        console.log('[wavis:focus-main] show_main_window done');
       } catch (e) {
         console.error('[wavis:focus-main] error:', e);
       }
@@ -1965,7 +1962,7 @@ export default function ActiveRoom() {
     getFocusMainHotkey().then((hotkey) => {
       if (cancelled) return;
       focusMainHotkeyRef.current = hotkey;
-      registerFocusMainHotkey(hotkey, () => { console.log('[wavis:focus-main] hotkey fired'); void getCurrentWindow().unminimize().then(() => getCurrentWindow().setFocus()).catch((e) => console.error('[wavis:focus-main] hotkey error:', e)); });
+      registerFocusMainHotkey(hotkey, () => { console.log('[wavis:focus-main] hotkey fired'); void invoke('show_main_window').catch((e) => console.error('[wavis:focus-main] hotkey error:', e)); });
     });
 
     return () => {
