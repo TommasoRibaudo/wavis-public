@@ -445,6 +445,8 @@ export default function ActiveRoom() {
   // Mobile tab state
   type MobileTab = 'participants' | 'chat' | 'log' | 'video';
   const [mobileTab, setMobileTab] = useState<MobileTab>('participants');
+  type GroupedPanelTab = 'chat' | 'log' | 'video';
+  const [groupedPanelTab, setGroupedPanelTab] = useState<GroupedPanelTab>('chat');
 
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     shouldBlockRoomNavigation(
@@ -726,6 +728,29 @@ export default function ActiveRoom() {
   const watchAllHotkeyRef = useRef<string | null>(null);
   const focusMainHotkeyRef = useRef<string | null>(null);
   const toggleWatchAllRef = useRef<() => void>(() => { });
+  const groupedPanelVideoActivityKey = roomState
+    ? Object.entries(roomState.videoTilesById)
+      .filter(([, tile]) => !tile.isMuted)
+      .map(([participantId]) => participantId)
+      .sort()
+      .join('|')
+    : '';
+  const groupedPanelVideoActivityRef = useRef(groupedPanelVideoActivityKey);
+
+  useEffect(() => {
+    const previous = groupedPanelVideoActivityRef.current;
+    if (previous === groupedPanelVideoActivityKey) return;
+    groupedPanelVideoActivityRef.current = groupedPanelVideoActivityKey;
+    setGroupedPanelTab((current) => {
+      if (groupedPanelVideoActivityKey !== '') return 'video';
+      return current === 'video' ? 'chat' : current;
+    });
+  }, [groupedPanelVideoActivityKey]);
+
+  useEffect(() => {
+    if (!videoPopoutOpen) return;
+    setGroupedPanelTab((current) => (current === 'video' ? 'chat' : current));
+  }, [videoPopoutOpen]);
 
   // Screen share window state (multi-window: one per sharer)
   const [watchingShareIds, setWatchingShareIds] = useState<Set<string>>(new Set());
@@ -3295,6 +3320,20 @@ export default function ActiveRoom() {
     </>
   );
 
+  const videoPanel = (
+    <div className="flex flex-col flex-1 min-h-0">
+      <VideoTab videoTilesById={videoTilesById} />
+      <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
+        <button
+          onClick={() => { void openVideoPopoutWindow(); }}
+          className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+        >
+          /pop-out
+        </button>
+      </div>
+    </div>
+  );
+
   // Desktop right-panel: LOGS / VIDEOS tab switcher
   const logPanel = (
     <div className="flex-1 flex flex-col min-h-0">
@@ -3333,19 +3372,65 @@ export default function ActiveRoom() {
       </div>
       {/* ── Tab body ── */}
       {currentPanelTab === 'video' && !videoPopoutOpen ? (
-        <>
-          <VideoTab videoTilesById={videoTilesById} />
-          <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
-            <button
-              onClick={() => { void openVideoPopoutWindow(); }}
-              className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-            >
-              /pop-out
-            </button>
-          </div>
-        </>
+        videoPanel
       ) : (
         logsContent
+      )}
+    </div>
+  );
+
+  const groupedPanel = (
+    <div className="flex-1 flex flex-col min-h-0">
+      {showSettings ? (
+        <Settings onClose={() => setShowSettings(false)} onNavigateAway={navigateAwayFromRoom} channelId={channelId} />
+      ) : channelSwitcherOpen ? (
+        <ChannelSwitcherPanel
+          onChannelSelect={handleChannelSwitch}
+          onClose={() => setChannelSwitcherOpen(false)}
+          currentChannelId={channelId}
+        />
+      ) : (
+        <>
+          <div className="flex h-[4.5rem] border-b border-wavis-text-secondary bg-wavis-panel">
+            {(['chat', 'log', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
+              const active = groupedPanelTab === tab;
+              const label = tab === 'chat'
+                ? `CHAT (${roomState.chatMessages.length})`
+                : tab === 'log'
+                  ? `LOG (${roomState.events.length})`
+                  : 'VIDEO';
+              return (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setGroupedPanelTab(tab)}
+                  onDoubleClick={() => {
+                    if (tab !== 'video') return;
+                    setGroupedPanelTab('video');
+                    void openVideoPopoutWindow();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setGroupedPanelTab(tab);
+                    }
+                  }}
+                  className="flex-1 flex items-center justify-center font-bold text-xs border-r border-wavis-text-secondary last:border-r-0 transition-colors"
+                  style={{
+                    color: active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                    backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {groupedPanelTab === 'chat' && chatPanel}
+          {groupedPanelTab === 'log' && logsContent}
+          {groupedPanelTab === 'video' && !videoPopoutOpen && videoPanel}
+        </>
       )}
     </div>
   );
@@ -3426,25 +3511,28 @@ export default function ActiveRoom() {
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
               {mobileTab === 'chat' && chatPanel}
               {mobileTab === 'log' && logsContent}
-              {mobileTab === 'video' && !videoPopoutOpen && (
-                <div className="flex flex-col flex-1 min-h-0">
-                  <VideoTab videoTilesById={videoTilesById} />
-                  <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
-                    <button
-                      onClick={() => { void openVideoPopoutWindow(); }}
-                      className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-                    >
-                      /pop-out
-                    </button>
-                  </div>
-                </div>
-              )}
+              {mobileTab === 'video' && !videoPopoutOpen && videoPanel}
             </>
           )}
         </div>
       </div>
 
-      {/* ═══ DESKTOP LAYOUT (md+) ═══ */}
+      {/* Intermediate layout (md to 1038px) */}
+      <div className="wavis-room-intermediate-layout flex-1 overflow-hidden">
+        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col">
+          {roomHeader}
+          {mediaReconnectingBanner}
+          {mediaRetryBanner}
+          {reconnectBanner}
+          {participantsSections}
+          {youBar}
+        </div>
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+          {groupedPanel}
+        </div>
+      </div>
+
+      {/* Desktop layout (1039px+) */}
       <div className="hidden md:flex flex-1 overflow-hidden">
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}

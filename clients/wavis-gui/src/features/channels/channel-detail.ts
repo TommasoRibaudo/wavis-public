@@ -48,6 +48,7 @@ export interface ChannelInvite {
 export interface BannedMember {
   userId: string;
   bannedAt: string;
+  displayName: string;
 }
 
 
@@ -90,7 +91,7 @@ interface BackendInviteListItem {
 }
 
 interface BackendBanListResponse {
-  banned: Array<{ user_id: string; banned_at: string }>;
+  banned: Array<{ user_id: string; banned_at: string; display_name?: string }>;
 }
 
 interface BackendBanResponse {
@@ -208,6 +209,7 @@ export async function fetchBannedMembers(
   return res.banned.map((b) => ({
     userId: b.user_id,
     bannedAt: b.banned_at,
+    displayName: b.display_name ?? '',
   }));
 }
 

@@ -44,7 +44,7 @@ const DETAIL_POLL_MS = 15_000;
 const VOICE_POLL_MS = 5_000;
 const SUCCESS_DISPLAY_MS = 2_000;
 const MEMBER_ROW_GRID_CLASS =
-  'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 @[480px]:grid-cols-[minmax(0,1fr)_5rem_4.5rem_6.5rem] @[480px]:gap-2';
+  'grid grid-cols-[minmax(0,1fr)_4rem_4rem_5.75rem] items-center gap-1';
 const MEMBER_JOINED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -54,13 +54,18 @@ const MEMBER_JOINED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
 function formatMemberJoinedDate(joinedAt: string): string {
   return MEMBER_JOINED_DATE_FORMATTER.format(new Date(joinedAt));
 }
+
+function formatUserTargetLabel(userId: string, displayName?: string): string {
+  const trimmedDisplayName = displayName?.trim() ?? '';
+  return trimmedDisplayName ? `${trimmedDisplayName} (${userId})` : userId;
+}
 const DIVIDER = '─'.repeat(48);
 
 /* ─── Sub-components ────────────────────────────────────────────── */
 
 function MembersHeader() {
   return (
-    <div className={`${MEMBER_ROW_GRID_CLASS} hidden px-3 py-1 text-xs text-wavis-text-secondary @[480px]:grid`}>
+    <div className={`${MEMBER_ROW_GRID_CLASS} px-3 py-1 text-xs text-wavis-text-secondary`}>
       <span />
       <span />
       <span />
@@ -95,13 +100,39 @@ function MemberRow({
 
   return (
     <div className={`${MEMBER_ROW_GRID_CLASS} px-3 py-2 ${isMe ? 'text-wavis-accent' : ''}`}>
-      <span className="min-w-0 truncate flex-1 text-sm">
+      <span className="min-w-0 truncate text-sm">
         {member.displayName || member.userId}
         {isMe && <span className="text-xs ml-1">(you)</span>}
       </span>
-      <ChannelRoleBadge role={member.role} className="justify-self-end @[480px]:justify-self-end" />
-      <div className="col-span-2 row-start-2 min-w-0 flex flex-wrap items-center justify-start gap-1 @[480px]:col-auto @[480px]:row-auto @[480px]:justify-end @[480px]:flex-nowrap">
-        {showRoleBtn && !isRoleTarget && (
+      {!isRoleTarget && (
+        <ChannelRoleBadge role={member.role} className="min-w-0 justify-self-end" />
+      )}
+      {isRoleTarget ? (
+        <div className="col-start-2 col-span-2 min-w-0 flex items-center justify-end gap-1.5">
+          <button
+            onClick={() => { onRoleChange(member.userId, 'admin'); setRoleTarget(null); }}
+            disabled={submitting || member.role === 'admin'}
+            className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ADMIN
+          </button>
+          <button
+            onClick={() => { onRoleChange(member.userId, 'member'); setRoleTarget(null); }}
+            disabled={submitting || member.role === 'member'}
+            className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            MEMBER
+          </button>
+          <button
+            onClick={() => setRoleTarget(null)}
+            className="text-xs text-wavis-text-secondary hover:text-wavis-text"
+          >
+            [x]
+          </button>
+        </div>
+      ) : (
+        <div className="min-w-0 flex items-center justify-end gap-1">
+        {showRoleBtn && (
           <button
             onClick={() => onRole?.(member.userId)}
             disabled={submitting}
@@ -143,8 +174,9 @@ function MemberRow({
             /ban
           </button>
         )}
-      </div>
-      <span className="col-span-2 row-start-3 justify-self-start text-right text-xs text-wavis-text-secondary font-mono tabular-nums @[480px]:col-auto @[480px]:row-auto @[480px]:justify-self-auto">
+        </div>
+      )}
+      <span className="justify-self-end text-right text-xs text-wavis-text-secondary font-mono tabular-nums">
         {formatMemberJoinedDate(member.joinedAt)}
       </span>
     </div>
@@ -398,7 +430,9 @@ function BanPanel({
       {bannable.map((m) => {
         return (
           <div key={m.userId} className="flex items-center gap-3 py-1">
-            <span className="text-sm text-wavis-text truncate flex-1">{m.userId}</span>
+            <span className="min-w-0 text-sm text-wavis-text truncate flex-1">
+              {formatUserTargetLabel(m.userId, m.displayName)}
+            </span>
             <ChannelRoleBadge role={m.role} className="shrink-0" />
             <button
               onClick={() => {
@@ -419,10 +453,12 @@ function BanPanel({
 
 function UnbanPanel({
   channelId,
+  knownDisplayNames,
   submitting,
   onMutation,
 }: {
   channelId: string;
+  knownDisplayNames: Map<string, string>;
   submitting: boolean;
   onMutation: (fn: () => Promise<void>, msg: string) => Promise<void>;
 }) {
@@ -434,7 +470,14 @@ function UnbanPanel({
     (async () => {
       try {
         const list = await fetchBannedMembers(channelId);
-        if (!cancelled) setBanned(list);
+        if (!cancelled) {
+          setBanned(
+            list.map((member) => ({
+              ...member,
+              displayName: member.displayName || knownDisplayNames.get(member.userId) || '',
+            })),
+          );
+        }
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof ApiError ? apiErrorMessage(err) : 'failed to load bans');
@@ -442,7 +485,7 @@ function UnbanPanel({
       }
     })();
     return () => { cancelled = true; };
-  }, [channelId]);
+  }, [channelId, knownDisplayNames]);
 
   if (loadError) {
     return (
@@ -470,9 +513,11 @@ function UnbanPanel({
       <p className="text-sm text-wavis-text-secondary mb-2">banned members</p>
       {banned.map((b) => (
         <div key={b.userId} className="flex items-center gap-3 py-1">
-          <span className="text-sm text-wavis-text truncate flex-1">{b.userId}</span>
+          <span className="min-w-0 text-sm text-wavis-text truncate flex-1">
+            {formatUserTargetLabel(b.userId, b.displayName)}
+          </span>
           <span className="text-xs text-wavis-text-secondary shrink-0">
-            {new Date(b.bannedAt).toLocaleDateString()}
+            {MEMBER_JOINED_DATE_FORMATTER.format(new Date(b.bannedAt))}
           </span>
           <button
             onClick={() =>
@@ -558,6 +603,16 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
   const skipNextRefresh = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const hasLoaded = useRef(false);
+  const memberDisplayNamesRef = useRef(new Map<string, string>());
+
+  const rememberMemberDisplayNames = useCallback((data: ChannelDetailData) => {
+    for (const member of data.members) {
+      const displayName = member.displayName.trim();
+      if (displayName) {
+        memberDisplayNamesRef.current.set(member.userId, displayName);
+      }
+    }
+  }, []);
 
   /* ── Resolve device ID once ── */
   useEffect(() => {
@@ -587,6 +642,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
 
       try {
         const data = await fetchChannelDetail(channelId, controller.signal);
+        rememberMemberDisplayNames(data);
         setDetail(data);
         hasLoaded.current = true;
       } catch (err) {
@@ -608,7 +664,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         if (!silent) setLoading(false);
       }
     },
-    [channelId, navigateAway],
+    [channelId, navigateAway, rememberMemberDisplayNames],
   );
 
   /* ── loadVoice ── */
@@ -654,6 +710,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         if (abortRef.current) abortRef.current.abort();
         try {
           const data = await fetchChannelDetail(channelId);
+          rememberMemberDisplayNames(data);
           setDetail(data);
         } catch {
           // re-fetch failed, will catch up on next poll
@@ -667,6 +724,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
             if (abortRef.current) abortRef.current.abort();
             try {
               const data = await fetchChannelDetail(channelId);
+              rememberMemberDisplayNames(data);
               setDetail(data);
             } catch {
               // re-fetch failed
@@ -682,7 +740,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
         setSubmitting(false);
       }
     },
-    [channelId],
+    [channelId, rememberMemberDisplayNames],
   );
 
   /* ── Panel toggle ── */
@@ -946,6 +1004,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
               {activePanel === 'unban' && (
                 <UnbanPanel
                   channelId={channelId!}
+                  knownDisplayNames={memberDisplayNamesRef.current}
                   submitting={submitting}
                   onMutation={handleMutation}
                 />
@@ -1016,7 +1075,12 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
           />
         )}
         {activePanel === 'unban' && (
-          <UnbanPanel channelId={channelId!} submitting={submitting} onMutation={handleMutation} />
+          <UnbanPanel
+            channelId={channelId!}
+            knownDisplayNames={memberDisplayNamesRef.current}
+            submitting={submitting}
+            onMutation={handleMutation}
+          />
         )}
       </>
     );
