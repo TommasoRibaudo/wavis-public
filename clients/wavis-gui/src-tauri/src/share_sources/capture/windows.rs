@@ -441,9 +441,10 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDC, GetMonitorInfoW, GetWindowDC, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
+        GetDC, GetMonitorInfoW, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PW_RENDERFULLCONTENT};
 
     let handle_val: isize = match source_id.parse() {
         Ok(value) => value,
@@ -460,46 +461,51 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
 
         if got_rect.is_ok() {
             crate::debug_eprintln!("[share-thumb] capturing window handle {}", handle_val);
-            let mut win_rect = std::mem::zeroed();
-            if GetWindowRect(hwnd, &mut win_rect).is_err() {
-                crate::debug_eprintln!("[share-thumb] GetWindowRect failed for handle {}", handle_val);
-                return Ok(None);
-            }
-            let w = (win_rect.right - win_rect.left) as u32;
-            let h = (win_rect.bottom - win_rect.top) as u32;
+            // Use client-area dimensions — PW_CLIENTONLY captures only the client area,
+            // which excludes title bars and borders (cleaner thumbnails, consistent with
+            // the live capture path in gdi_capture.rs).
+            let w = (client_rect.right - client_rect.left) as u32;
+            let h = (client_rect.bottom - client_rect.top) as u32;
             if w == 0 || h == 0 {
-                crate::debug_eprintln!("[share-thumb] window {}x{} has zero dimension", w, h);
+                crate::debug_eprintln!("[share-thumb] window {}x{} has zero client dimension", w, h);
                 return Ok(None);
             }
 
-            let wnd_dc = GetWindowDC(hwnd);
-            if wnd_dc.is_invalid() {
-                crate::debug_eprintln!("[share-thumb] GetWindowDC failed");
+            // PrintWindow(PW_RENDERFULLCONTENT) renders hardware-accelerated content
+            // (GPU-rendered UI, embedded video players, DirectX surfaces) that
+            // GetWindowDC+BitBlt cannot read, causing those regions to show black.
+            let screen_dc = GetDC(HWND::default());
+            if screen_dc.is_invalid() {
+                crate::debug_eprintln!("[share-thumb] GetDC(NULL) failed (window)");
                 return Ok(None);
             }
 
-            let mem_dc = CreateCompatibleDC(wnd_dc);
+            let mem_dc = CreateCompatibleDC(screen_dc);
             if mem_dc.is_invalid() {
-                ReleaseDC(hwnd, wnd_dc);
+                ReleaseDC(HWND::default(), screen_dc);
                 crate::debug_eprintln!("[share-thumb] CreateCompatibleDC failed (window)");
                 return Ok(None);
             }
-            let bitmap = CreateCompatibleBitmap(wnd_dc, w as i32, h as i32);
+            let bitmap = CreateCompatibleBitmap(screen_dc, w as i32, h as i32);
             if bitmap.is_invalid() {
                 let _ = DeleteDC(mem_dc);
-                let _ = ReleaseDC(hwnd, wnd_dc);
+                ReleaseDC(HWND::default(), screen_dc);
                 crate::debug_eprintln!("[share-thumb] CreateCompatibleBitmap failed (window)");
                 return Ok(None);
             }
             let old_bmp = SelectObject(mem_dc, bitmap);
-            let _ = BitBlt(mem_dc, 0, 0, w as i32, h as i32, wnd_dc, 0, 0, SRCCOPY);
+            let _ = PrintWindow(
+                hwnd,
+                mem_dc,
+                PRINT_WINDOW_FLAGS(PW_CLIENTONLY.0 | PW_RENDERFULLCONTENT),
+            );
             // Deselect before GetDIBits — GDI requires the bitmap not be selected
             // into any DC when GetDIBits reads its pixel data.
             SelectObject(mem_dc, old_bmp);
-            let rgba = read_bitmap_rgba(bitmap, wnd_dc, w, h);
+            let rgba = read_bitmap_rgba(bitmap, screen_dc, w, h);
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(hwnd, wnd_dc);
+            ReleaseDC(HWND::default(), screen_dc);
             crate::debug_eprintln!("[share-thumb] window capture {}x{}: rgba={}", w, h, rgba.is_some());
 
             return match rgba {
