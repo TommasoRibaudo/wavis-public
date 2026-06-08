@@ -2900,7 +2900,10 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
 
   for (const participant of state.participants) {
     if (participant.isSharing) {
-      updateRemoteShareType(participant.id, parseRemoteShareType(participant.shareType));
+      const shareType = parseRemoteShareType(participant.shareType);
+      if (shareType !== undefined || !state.audioOnlySharers.has(participant.id)) {
+        updateRemoteShareType(participant.id, shareType);
+      }
     }
   }
 
@@ -3705,7 +3708,11 @@ function dispatchMessage(raw: unknown): void {
         state.audioOnlySharers = new Set(state.audioOnlySharers);
         state.audioOnlySharers.delete(shareStartId);
       }
-      updateRemoteShareType(shareStartId, remoteShareType);
+      // Don't pass undefined to lkModule when the track was already inferred as audio-only —
+      // setRemoteShareType(undefined) would clear the inference and fire onAudioOnlySharerRemoved.
+      if (remoteShareType !== undefined || !state.audioOnlySharers.has(shareStartId)) {
+        updateRemoteShareType(shareStartId, remoteShareType);
+      }
       const shareStartIsAudioOnly =
         remoteShareType === 'audio_only' ||
         (remoteShareType === undefined && state.audioOnlySharers.has(shareStartId));
