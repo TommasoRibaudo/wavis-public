@@ -536,6 +536,7 @@ fn main() {
             media::media_close_native_screen_share_viewer,
             media::media_set_screen_share_quality,
             is_window_visible,
+            tray::show_main_window,
             share_sources::list_share_sources,
             share_sources::fetch_source_thumbnail,
             share_sources::share_picker_select,
