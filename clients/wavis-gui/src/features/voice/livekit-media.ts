@@ -366,9 +366,14 @@ function isLinux(): boolean {
   return /Linux/i.test(navigator.userAgent) && !/Android/i.test(navigator.userAgent);
 }
 
-/** Windows and macOS use the native Rust PCM bridge for screen-share audio. */
+/** Windows and macOS use the JS AudioWorklet bridge for native screen-share audio. */
 function usesNativeScreenShareAudio(): boolean {
   return isWindows() || isMac();
+}
+
+/** Linux captures share audio via the Rust PulseAudio/LiveKit pipeline. */
+function usesRustScreenShareAudio(): boolean {
+  return isLinux();
 }
 
 function isInactiveVideoLeakCandidate(transceiver: RTCRtpTransceiver): boolean {
@@ -3152,6 +3157,7 @@ export class LiveKitModule {
     const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
     const nativeShareAudio = usesNativeScreenShareAudio();
+    const rustShareAudio = usesRustScreenShareAudio();
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
       nativeShareAudio, profile.audio, navigator.userAgent.slice(0, 60));
 
@@ -3164,9 +3170,9 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      // Windows and macOS capture system audio via the native Rust bridge, so
-      // getDisplayMedia stays video-only and audio can be toggled independently.
-      audio: nativeShareAudio ? false : profile.audio,
+      // Windows/macOS and Linux capture system audio outside getDisplayMedia,
+      // so browser capture stays video-only and audio can be isolated.
+      audio: nativeShareAudio || rustShareAudio ? false : profile.audio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -3199,6 +3205,9 @@ export class LiveKitModule {
         await this.startWasapiScreenShareAudio();
         this.suppressLocalScreenShareAudio();
       }
+      if (rustShareAudio && profile.audio) {
+        await this.startLinuxScreenShareAudio();
+      }
       // Initialize adaptive quality state
       this.adaptiveState = {
         currentTier: 'full',
@@ -3225,9 +3234,12 @@ export class LiveKitModule {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
+          const fallbackCaptureOpts = nativeShareAudio || rustShareAudio
+            ? { audio: false }
+            : undefined;
           this.stopAllInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
-          await this.room.localParticipant.setScreenShareEnabled(true);
+          await this.room.localParticipant.setScreenShareEnabled(true, fallbackCaptureOpts);
           this.captureShareLeakPublishDiagnostics();
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
@@ -3239,6 +3251,9 @@ export class LiveKitModule {
           if (nativeShareAudio && profile.audio) {
             await this.startWasapiScreenShareAudio();
             this.suppressLocalScreenShareAudio();
+          }
+          if (rustShareAudio && profile.audio) {
+            await this.startLinuxScreenShareAudio();
           }
           // Initialize adaptive quality state for fallback path too
           this.adaptiveState = {
@@ -3443,6 +3458,9 @@ export class LiveKitModule {
     this.clearScreenShareRuntimeState();
     if (usesNativeScreenShareAudio()) {
       await this.stopWasapiScreenShareAudio();
+    }
+    if (usesRustScreenShareAudio()) {
+      await this.stopLinuxScreenShareAudio();
     }
     await this.room.localParticipant.setScreenShareEnabled(false);
   }
@@ -3661,7 +3679,7 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      audio: usesNativeScreenShareAudio() ? false : withAudio,
+      audio: usesNativeScreenShareAudio() || usesRustScreenShareAudio() ? false : withAudio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -3727,7 +3745,7 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      audio: usesNativeScreenShareAudio() ? false : profile.audio,
+      audio: usesNativeScreenShareAudio() || usesRustScreenShareAudio() ? false : profile.audio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -5085,6 +5103,35 @@ export class LiveKitModule {
       await this.stopWasapiScreenShareAudio().catch(() => {});
       console.warn(LOG, '[wasapi] startWasapiScreenShareAudio FAILED:', err instanceof Error ? err.message : String(err), err);
       throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /**
+   * Start Linux screen-share audio through the Rust PulseAudio pipeline.
+   *
+   * Unlike Windows/macOS, Linux publishes the ScreenShareAudio track from the
+   * Rust LiveKit connection, so the JS AudioWorklet bridge is not involved.
+   */
+  private async startLinuxScreenShareAudio(): Promise<void> {
+    try {
+      const sourceId = await invoke<string>('get_default_audio_monitor_fast');
+      const result = await invoke<AudioShareStartResult>('audio_share_start', { sourceId });
+      emitAudioCaptureSelectionTelemetry(result);
+      console.log(LOG, 'linux screen share audio started');
+    } catch (err) {
+      await this.stopLinuxScreenShareAudio().catch(() => {});
+      console.warn(LOG, '[linux-share-audio] start failed:', err instanceof Error ? err.message : String(err), err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /** Stop Linux screen-share audio capture. Idempotent on the Rust side. */
+  private async stopLinuxScreenShareAudio(): Promise<void> {
+    try {
+      await invoke('audio_share_stop');
+      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[linux-share-audio] audio_share_stop invoked');
+    } catch (e) {
+      if (DEBUG_SHARE_AUDIO) console.warn(LOG, '[linux-share-audio] audio_share_stop failed (best-effort):', e);
     }
   }
 
