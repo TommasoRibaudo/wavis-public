@@ -1604,6 +1604,7 @@ async function resumePendingWasapiCapture(): Promise<void> {
 }
 
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
+let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 let suppressMediaDisconnectedReconnect = false;
@@ -1902,6 +1903,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   resetCameraRuntimeState();
 
   bufferedMediaToken = null;
+  bufferedIceConfig = null;
   externalShareHelperActive = false;
   reusePatchGuardCheckedForSession = false;
   reusePatchGuardPassedForSession = false;
@@ -2642,6 +2644,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     }
     // Register global mute hotkey on media connect success (R22.1)
     getMuteHotkey().then((hotkey) => {
+      if (registeredHotkey === hotkey) return;
+      if (registeredHotkey) {
+        unregisterMuteHotkey(registeredHotkey).catch(() => {});
+        registeredHotkey = null;
+      }
       registerMuteHotkey(hotkey, toggleSelfMute)
         .then(() => { registeredHotkey = hotkey; })
         .catch((err) => {
@@ -3032,6 +3039,7 @@ function dispatchMessage(raw: unknown): void {
       state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
+      bufferedIceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
@@ -3936,12 +3944,14 @@ function dispatchMessage(raw: unknown): void {
     case 'media_token': {
       const token = msg.token as string;
       const sfuUrl = msg.sfuUrl as string;
-      const iceConfig = msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined;
+      // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
+      const iceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? bufferedIceConfig ?? undefined;
 
-      console.log(LOG, 'media_token received:', { 
-        hasToken: !!token, 
-        hasSfuUrl: !!sfuUrl, 
+      console.log(LOG, 'media_token received:', {
+        hasToken: !!token,
+        hasSfuUrl: !!sfuUrl,
         hasIceConfig: !!iceConfig,
+        iceConfigSource: msg.iceConfig ? 'media_token' : bufferedIceConfig ? 'joined' : 'none',
         iceConfig: iceConfig ? {
           stunUrls: iceConfig.stunUrls,
           turnUrls: iceConfig.turnUrls,
