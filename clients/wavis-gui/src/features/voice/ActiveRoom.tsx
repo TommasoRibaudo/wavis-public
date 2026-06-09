@@ -56,6 +56,7 @@ import {
   startPortalShare,
   setPendingSharePickerData,
   buildChatDisplayItems,
+  buildRoomEventDisplayItems,
   resolveChatMessageDisplayColor,
   preserveVideoShareSelectionForSourceChange,
 } from './voice-room';
@@ -3280,7 +3281,16 @@ export default function ActiveRoom() {
   const logsContent = (
     <>
       <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
-        {roomState.events.map((evt) => {
+        {buildRoomEventDisplayItems(roomState.events).map((item) => {
+          if (item.type === 'date-divider') {
+            return (
+              <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
+                {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
+              </div>
+            );
+          }
+
+          const evt = item.event;
           const username = getEventUsername(evt);
           const userColor = getUserColor(roomState.participants, evt.participantId);
           return (

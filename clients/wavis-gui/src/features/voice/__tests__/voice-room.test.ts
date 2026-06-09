@@ -445,10 +445,11 @@ import {
   leaveRoom,
   computeSinceCursor,
   buildChatDisplayItems,
+  buildRoomEventDisplayItems,
   shouldPlayChatNotification,
   resolveChatMessageDisplayColor,
 } from '../voice-room';
-import type { ChatMessage } from '../voice-room';
+import type { ChatMessage, RoomEvent } from '../voice-room';
 
 /* ═══ Ephemeral Room Chat — Client Property Tests ═══════════════════ */
 
@@ -851,6 +852,45 @@ describe('Chat date dividers', () => {
 
     expect(items.some((item) => item.type === 'message' && item.message.id === 'history-divider')).toBe(false);
     expect(items.filter((item) => item.type === 'date-divider')).toHaveLength(1);
+  });
+});
+
+describe('Log date dividers', () => {
+  function localIso(year: number, month: number, day: number, hour = 10): string {
+    return new Date(year, month - 1, day, hour).toISOString();
+  }
+
+  function roomEvent(id: string, timestamp: string): RoomEvent {
+    return {
+      id,
+      timestamp,
+      type: 'system',
+      message: `event ${id}`,
+    };
+  }
+
+  it('uses the chat date label format for event dividers', () => {
+    const items = buildRoomEventDisplayItems([
+      roomEvent('1', localIso(2026, 4, 30, 10)),
+      roomEvent('2', localIso(2026, 4, 30, 12)),
+    ]);
+
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({ type: 'date-divider', label: 'April 30, 2026' });
+    expect(items.filter((item) => item.type === 'date-divider')).toHaveLength(1);
+  });
+
+  it('inserts a new event divider when the local date changes', () => {
+    const items = buildRoomEventDisplayItems([
+      roomEvent('1', localIso(2026, 4, 30)),
+      roomEvent('2', localIso(2026, 5, 1)),
+    ]);
+
+    const labels = items.flatMap((item) => item.type === 'date-divider' ? [item.label] : []);
+    expect(labels).toEqual([
+      'April 30, 2026',
+      'May 1, 2026',
+    ]);
   });
 });
 
