@@ -1434,12 +1434,15 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
     playNotificationSoundCalls = [];
 
     leaveRoom();
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(sentMessages).toContainEqual({ type: 'leave' });
+    expect(lastLkModule!.disconnectCalls).toBe(1);
   });
 
   it('keeps the room connected until the background leave timeout elapses', async () => {
