@@ -3519,6 +3519,10 @@ describe('Screen share quality optimization', () => {
      */
     it('falls back to defaults when first call throws OverconstrainedError, returns true', async () => {
       resetAll();
+      vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0',
+        mediaDevices: createMockMediaDevices(),
+      });
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
@@ -3543,9 +3547,12 @@ describe('Screen share quality optimization', () => {
       expect(calls[0][1]).toBeDefined(); // captureOpts
       expect(calls[0][2]).toBeDefined(); // publishOpts
 
-      // Second call: fallback with just `true` (no constraints)
+      // Second call: fallback without video constraints. Native/Rust audio
+      // platforms may still pass audio:false so browser audio stays disabled.
       expect(calls[1][0]).toBe(true);
-      expect(calls[1].length).toBe(1);
+      if (calls[1][1] !== undefined) {
+        expect(calls[1][1]).toEqual({ audio: false });
+      }
 
       // onSystemEvent called with constraint rejection message
       const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
@@ -3554,6 +3561,7 @@ describe('Screen share quality optimization', () => {
       )).toBe(true);
 
       mod.disconnect();
+      vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
     });
 
     it('returns false when both constrained and fallback calls fail', async () => {
@@ -4926,6 +4934,9 @@ let audioShareStartResult: {
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     tauriInvokeCalls.push({ cmd, args });
+    if (cmd === 'get_default_audio_monitor_fast') {
+      return 'alsa_output.test.monitor';
+    }
     if (cmd === 'audio_share_start') {
       return audioShareStartResult;
     }
@@ -5561,11 +5572,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
   /**
    * Validates: Requirements 3.3
    *
-   * Preservation Property 1: For all non-Windows platforms with audio: true,
-   * captureOpts.audio === true is passed to setScreenShareEnabled.
-   * macOS getDisplayMedia audio path unchanged.
+   * Linux share audio must use the Rust PulseAudio path. Browser-managed
+   * getDisplayMedia audio can capture the room output and feed it back.
    */
-  it('non-Windows platforms with audio:true → captureOpts.audio === true (PBT)', async () => {
+  it('Linux startScreenShare with audio:true → browser video-only plus PulseAudio IPC (PBT)', async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constant('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'),
@@ -5581,6 +5591,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           const cbs = createMockCallbacks();
           const mod = new LiveKitModule(cbs);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (mod as any).currentCaptureProfile = {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ...(mod as any).currentCaptureProfile,
+            audio: true,
+          };
           await driveToConnected(mod);
 
           await mod.startScreenShare();
@@ -5594,9 +5610,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
           const captureOpts = startCalls[0].args[1] as Record<string, unknown>;
           expect(captureOpts.audio).toBe(false);
 
-          // No audio_share_start should be called on non-Windows
+          const monitorCalls = tauriInvokeCalls.filter(c => c.cmd === 'get_default_audio_monitor_fast');
+          expect(monitorCalls).toHaveLength(1);
+
           const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
-          expect(audioStartCalls).toHaveLength(0);
+          expect(audioStartCalls).toHaveLength(1);
+          expect(audioStartCalls[0].args).toEqual({ sourceId: 'alsa_output.test.monitor' });
 
           mod.disconnect();
           vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
