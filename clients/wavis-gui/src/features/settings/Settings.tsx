@@ -81,13 +81,13 @@ export function describeDenoiseStatus(params: {
   if (isMacOrWindows) {
     return {
       tone: 'saved',
-      message: 'Saved. Will apply on next session.',
+      message: 'On. Will be active when you join a session.',
     };
   }
 
   return {
     tone: 'saved',
-    message: 'Saved. RNNoise applies on native Rust audio sessions; JS fallback sessions may not use it.',
+    message: 'On. Applies on native Rust audio sessions; JS fallback sessions may not use it.',
   };
 }
 
