@@ -17,7 +17,6 @@ import type { MediaState } from './livekit-media';
 import {
   initSession,
   leaveRoom,
-  scheduleLeaveRoom,
   toggleSelfMute,
   toggleSelfDeafen,
   toggleCameraIntent,
@@ -456,21 +455,11 @@ export default function ActiveRoom() {
       allowNavigationRef.current,
     ));
 
-  const leaveNavigationMode = roomState && (
-    roomState.machineState === 'active'
-    || roomState.machineState === 'reconnecting'
-  ) ? 'deferred' : 'immediate';
-
   const navigateAwayFromRoom = useCallback(
-    (target: string, leaveMode: 'none' | 'immediate' | 'deferred' = 'none') => {
+    (target: string, leaveMode: 'none' | 'immediate' = 'none') => {
       allowNavigationRef.current = true;
-      if (leaveMode === 'deferred') {
-        skipUnmountLeaveRef.current = true;
-        scheduleLeaveRoom();
-      } else {
-        skipUnmountLeaveRef.current = false;
-        if (leaveMode === 'immediate') leaveRoom();
-      }
+      skipUnmountLeaveRef.current = false;
+      if (leaveMode === 'immediate') leaveRoom();
       navigate(target);
     },
     [navigate],
@@ -605,7 +594,7 @@ export default function ActiveRoom() {
           toggleSelfMute();
           break;
         case 'leave':
-          navigateAwayFromRoom('/', leaveNavigationMode);
+          navigateAwayFromRoom('/', 'immediate');
           break;
         case 'show':
           // handled by Rust side (window.show + set_focus)
@@ -613,7 +602,7 @@ export default function ActiveRoom() {
       }
     });
     return cleanup;
-  }, [channelId, leaveNavigationMode, navigateAwayFromRoom]);
+  }, [channelId, navigateAwayFromRoom]);
 
   // Tray state sync: update tray menu items when voice/mute state changes
   useEffect(() => {
@@ -2298,7 +2287,6 @@ export default function ActiveRoom() {
           </div>
           <button
             className="mt-3 text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors"
-            onClick={() => navigateAwayFromRoom(`/channel/${channelId}`, 'immediate')}
           >
             /back
           </button>
@@ -2316,7 +2304,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.rejectionReason}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => navigateAwayFromRoom(`/channel/${channelId}`)}>/back</button>
+              <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/back</button>
             </div>
           </div>
         </div>
@@ -2333,7 +2321,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.error}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', leaveNavigationMode); }}>/leave</button>
+              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', 'immediate'); }}>/leave</button>
             </div>
           </div>
         </div>
@@ -2348,7 +2336,6 @@ export default function ActiveRoom() {
         <span>you were kicked from the room</span>
         <button
           className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-          onClick={() => navigateAwayFromRoom('/')}
         >/back</button>
       </div>
     );
@@ -2357,7 +2344,7 @@ export default function ActiveRoom() {
   /* ── Actions ── */
   const handleLeave = () => {
     setLeaving(true);
-    navigateAwayFromRoom('/', leaveNavigationMode);
+    navigateAwayFromRoom('/', 'immediate');
   };
 
   const handleChannelSwitch = async (ch: Channel) => {
