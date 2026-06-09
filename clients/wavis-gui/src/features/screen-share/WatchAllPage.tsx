@@ -20,6 +20,7 @@ import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixe
 import QuickActionButtons from '@shared/QuickActionButtons';
 import FocusMainButton from '@shared/FocusMainButton';
 import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 import ShareLoadingOverlay from './ShareLoadingOverlay';
 
@@ -1192,6 +1193,7 @@ export default function WatchAllPage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
           <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}

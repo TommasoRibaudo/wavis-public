@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react';
 import { RouterProvider } from 'react-router';
 import { router } from './routes';
 import TitleBar from '@shared/TitleBar';
-import BugReportButton from '@features/diagnostics/BugReportButton';
 import { DebugProvider } from '@shared/debug-context';
 import { initNotificationBridge } from '@shared/notification-bridge';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -173,7 +172,6 @@ export default function App() {
     <DebugProvider>
       <div className="flex flex-col h-full">
         <TitleBar />
-        <BugReportButton />
         <AppUpdatePrompt />
         <div className="flex-1 overflow-hidden">
           <RouterProvider router={router} />
