@@ -7,6 +7,7 @@ import { StreamReceiver } from '@features/screen-share/screen-share-viewer';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
 import { useFullscreen } from '@shared/hooks/useFullscreen';
 import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import type { VideoTileSnapshot } from './camera-types';
 
 interface VideoPopoutParams {
@@ -303,6 +304,7 @@ export default function VideoPopoutPage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
           <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}

@@ -49,6 +49,7 @@ import {
   type ScreenShareCodecOverride,
 } from '@features/settings/settings-store';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
+import { FixedBugReportButton } from './BugReportButton';
 import {
   WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL,
   WATCH_ALL_TEST_CHANNEL_NAME,
@@ -548,6 +549,7 @@ export default function DiagnosticsPage() {
         </span>
         <div className="flex items-center gap-2">
           <span className="text-[0.6rem] text-wavis-text-secondary/60">{pollLabel}</span>
+          <FixedBugReportButton captureScreenshot={false} />
           <button
             onClick={() => { void closeWindow(); }}
             className="text-wavis-text-secondary hover:text-wavis-text leading-none px-1"

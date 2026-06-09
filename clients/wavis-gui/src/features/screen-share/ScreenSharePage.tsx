@@ -12,6 +12,7 @@ import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
 import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 import ShareLoadingOverlay from './ShareLoadingOverlay';
 
@@ -618,6 +619,7 @@ export default function ScreenSharePage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
           <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}
