@@ -6182,6 +6182,84 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     mod.disconnect();
   });
 
+  it('attaches the JS mic processor on macOS when denoiseEnabled=true', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', true);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { track, mediaStreamTrack } = await driveToConnectedWithMst(mod);
+
+    expect(track.setProcessor).toHaveBeenCalledTimes(1);
+    expect(track.setAudioContext).toHaveBeenCalledTimes(1);
+    expect(track.getProcessor()).toBeTruthy();
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+
+    mod.disconnect();
+  });
+
+  it('does not attach the JS mic processor on macOS when denoiseEnabled=false and gain is default', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', false);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { track, mediaStreamTrack } = await driveToConnectedWithMst(mod);
+
+    expect(track.setProcessor).not.toHaveBeenCalled();
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(false);
+
+    mod.disconnect();
+  });
+
+  it('setDenoiseEnabled(true) attaches the processor on the active mic track on macOS', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', false);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { mediaStreamTrack, track } = await driveToConnectedWithMst(mod);
+
+    await mod.setDenoiseEnabled(true);
+
+    expect(track.setProcessor).toHaveBeenCalledTimes(1);
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+
+    mod.disconnect();
+  });
+
+  it('setDenoiseEnabled(false) bypasses the processor but keeps the mic path alive on macOS', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', true);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { mediaStreamTrack, track } = await driveToConnectedWithMst(mod);
+
+    await mod.setDenoiseEnabled(false);
+
+    expect(track.stopProcessor).toHaveBeenCalledTimes(1);
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === false)).toBe(true);
+
+    mod.disconnect();
+  });
+
   it('re-attaches the processor when a new local mic track is published on reconnect', async () => {
     vi.stubGlobal('navigator', {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',

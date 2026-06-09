@@ -177,6 +177,41 @@ mod media {
     pub fn media_set_screen_share_quality(_quality: u8) -> Result<(), String> {
         Ok(())
     }
+
+    #[tauri::command]
+    pub fn media_camera_start(
+        _device_id: Option<String>,
+        _width: u32,
+        _height: u32,
+        _fps: u32,
+    ) -> Result<(), String> {
+        Err("camera is only available on Linux".to_string())
+    }
+
+    #[tauri::command]
+    pub fn media_camera_stop() -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn screen_share_get_capture_diagnostics() -> Result<Option<()>, String> {
+        Ok(None)
+    }
+
+    #[tauri::command]
+    pub fn media_poll_camera_frame(
+        _identity: String,
+        _last_seq: Option<u64>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
+    }
+
+    #[tauri::command]
+    pub fn media_poll_local_camera_frame(
+        _last_seq: Option<u64>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
+    }
 }
 #[cfg(target_os = "linux")]
 mod portal_auth;
