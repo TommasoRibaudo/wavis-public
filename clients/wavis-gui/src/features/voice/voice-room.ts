@@ -201,6 +201,10 @@ export interface RoomEvent {
   shouldToast?: boolean;
 }
 
+export type RoomEventDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'event'; event: RoomEvent };
+
 export interface NetworkStats {
   rttMs: number;
   packetLossPercent: number;
@@ -743,6 +747,27 @@ export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[
     }
 
     items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function buildRoomEventDisplayItems(events: RoomEvent[]): RoomEventDisplayItem[] {
+  const items: RoomEventDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const event of events) {
+    const dateKey = getLocalChatDateKey(event.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${event.id}`,
+        label: formatChatDateLabel(event.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'event', event });
   }
 
   return items;
