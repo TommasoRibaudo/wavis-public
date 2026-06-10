@@ -593,6 +593,9 @@ export default function ActiveRoom() {
         case 'toggle-mute':
           toggleSelfMute();
           break;
+        case 'toggle-deafen':
+          toggleSelfDeafen();
+          break;
         case 'leave':
           navigateAwayFromRoom('/', 'immediate');
           break;
@@ -612,13 +615,14 @@ export default function ActiveRoom() {
     updateTrayState({
       inVoiceSession: inVoice,
       isMuted: selfP?.isMuted ?? false,
+      isDeafened: roomState.isDeafened,
     });
-  }, [roomState?.machineState, roomState?.participants, roomState?.selfParticipantId]);
+  }, [roomState?.machineState, roomState?.participants, roomState?.selfParticipantId, roomState?.isDeafened]);
 
   // Send "not in voice" on unmount so tray items get disabled
   useEffect(() => {
     return () => {
-      updateTrayState({ inVoiceSession: false, isMuted: false });
+      updateTrayState({ inVoiceSession: false, isMuted: false, isDeafened: false });
     };
   }, []);
 
@@ -3014,6 +3018,13 @@ export default function ActiveRoom() {
               style={{ color: isVideoOrFallbackSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">◉</span></button>
+            <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
+            <button
+              onClick={() => navigateAwayFromRoom('/', 'immediate')}
+              className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity"
+              style={{ color: 'var(--wavis-danger)' }}
+              title="/leave"
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">x</span></button>
           </div>
         )}
       </div>
@@ -3023,6 +3034,7 @@ export default function ActiveRoom() {
             <div className="flex flex-col md:flex-row gap-1">
               <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
               <button onClick={toggleSelfDeafen} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{roomState.isDeafened ? '/undeafen' : '/deafen'}</button>
+              <button onClick={() => navigateAwayFromRoom('/', 'immediate')} className="flex-1 py-0.5 px-1 text-xs text-center transition-colors border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg">/leave</button>
             </div>
             {showCameraButton && (
               <button
