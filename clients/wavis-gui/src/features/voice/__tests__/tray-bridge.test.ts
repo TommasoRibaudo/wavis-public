@@ -19,7 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 /* ─── Import after mock ─────────────────────────────────────────── */
 
-import { computeTrayMenuState, muteMenuLabel } from '../tray-bridge';
+import { computeTrayMenuState, deafenMenuLabel, muteMenuLabel, shouldHideOnClose } from '../tray-bridge';
 import type { TrayStateUpdate } from '../tray-bridge';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
@@ -27,6 +27,7 @@ import type { TrayStateUpdate } from '../tray-bridge';
 const arbTrayStateUpdate: fc.Arbitrary<TrayStateUpdate> = fc.record({
   inVoiceSession: fc.boolean(),
   isMuted: fc.boolean(),
+  isDeafened: fc.boolean(),
 });
 
 /* ═══ Property 12: Tray menu items disabled when no voice session ══ */
@@ -34,13 +35,14 @@ const arbTrayStateUpdate: fc.Arbitrary<TrayStateUpdate> = fc.record({
 // **Validates: Requirements 1.3**
 
 describe('Property 12: Tray menu items disabled when no voice session', () => {
-  it('when inVoiceSession is false, mute and leave are disabled', () => {
+  it('when inVoiceSession is false, mute, deafen, and leave are disabled', () => {
     fc.assert(
       fc.property(
         arbTrayStateUpdate.filter((u) => !u.inVoiceSession),
         (update) => {
           const state = computeTrayMenuState(update);
           expect(state.muteEnabled).toBe(false);
+          expect(state.deafenEnabled).toBe(false);
           expect(state.leaveEnabled).toBe(false);
         },
       ),
@@ -48,13 +50,14 @@ describe('Property 12: Tray menu items disabled when no voice session', () => {
     );
   });
 
-  it('when inVoiceSession is true, mute and leave are enabled', () => {
+  it('when inVoiceSession is true, mute, deafen, and leave are enabled', () => {
     fc.assert(
       fc.property(
         arbTrayStateUpdate.filter((u) => u.inVoiceSession),
         (update) => {
           const state = computeTrayMenuState(update);
           expect(state.muteEnabled).toBe(true);
+          expect(state.deafenEnabled).toBe(true);
           expect(state.leaveEnabled).toBe(true);
         },
       ),
@@ -62,11 +65,12 @@ describe('Property 12: Tray menu items disabled when no voice session', () => {
     );
   });
 
-  it('muteEnabled and leaveEnabled always equal inVoiceSession', () => {
+  it('muteEnabled, deafenEnabled, and leaveEnabled always equal inVoiceSession', () => {
     fc.assert(
       fc.property(arbTrayStateUpdate, (update) => {
         const state = computeTrayMenuState(update);
         expect(state.muteEnabled).toBe(update.inVoiceSession);
+        expect(state.deafenEnabled).toBe(update.inVoiceSession);
         expect(state.leaveEnabled).toBe(update.inVoiceSession);
       }),
       { numRuns: 100 },
@@ -116,7 +120,21 @@ describe('Property 13: Mute label reflects mute state', () => {
 // Feature: gui-feature-completion, Property 7
 // **Validates: Requirements 18.1, 18.2**
 
-import { shouldHideOnClose } from '../tray-bridge';
+describe('Deafen label reflects deafen state', () => {
+  it('for any boolean isDeafened, label is "Undeafen" iff deafened, "Deafen" iff not', () => {
+    fc.assert(
+      fc.property(fc.boolean(), (isDeafened) => {
+        const label = deafenMenuLabel(isDeafened);
+        if (isDeafened) {
+          expect(label).toBe('Undeafen');
+        } else {
+          expect(label).toBe('Deafen');
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
 
 describe('Property 7: Close behavior follows minimize-to-tray setting', () => {
   it('window is hidden on close iff minimizeToTray is true', () => {
