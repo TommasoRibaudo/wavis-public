@@ -70,7 +70,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({
   }),
 }));
 
-describe('recovery ID keychain helpers', () => {
+describe('recovery ID storage helpers', () => {
   beforeEach(() => {
     mockStore = {};
     mockKeychain = {};
@@ -84,9 +84,11 @@ describe('recovery ID keychain helpers', () => {
     const auth = await import('../auth');
 
     await auth.storeRecoveryId('wvs-ABCD-1234');
+    expect(mockStore['recovery_id']).toBe('wvs-ABCD-1234');
     expect(await auth.getStoredRecoveryId()).toBe('wvs-ABCD-1234');
 
     await auth.deleteStoredRecoveryId();
+    expect(mockStore['recovery_id']).toBeUndefined();
     expect(await auth.getStoredRecoveryId()).toBeNull();
   });
 
@@ -104,11 +106,7 @@ describe('recovery ID keychain helpers', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(mockKeychain['wavis_recovery_id']).toBe('wvs-TRIM-0001');
-    expect(invoke).toHaveBeenCalledWith('store_token', {
-      key: 'wavis_recovery_id',
-      value: 'wvs-TRIM-0001',
-    });
+    expect(mockStore['recovery_id']).toBe('wvs-TRIM-0001');
     expect(fetchBodies).toMatchObject([
       { recovery_id: 'wvs-TRIM-0001', phrase: 'passphrase' },
     ]);
@@ -117,7 +115,7 @@ describe('recovery ID keychain helpers', () => {
 
   it('recoverAccount can skip storing the recovery ID', async () => {
     mockFetchMode = 'recover_ok';
-    mockKeychain = { wavis_recovery_id: 'wvs-OLD-0001' };
+    mockStore = { recovery_id: 'wvs-OLD-0001' };
     const auth = await import('../auth');
 
     const result = await auth.recoverAccount(
@@ -131,7 +129,7 @@ describe('recovery ID keychain helpers', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(mockKeychain['wavis_recovery_id']).toBeUndefined();
+    expect(mockStore['recovery_id']).toBeUndefined();
   });
 
   it('registerUser stores the response recovery ID after success', async () => {
@@ -147,7 +145,7 @@ describe('recovery ID keychain helpers', () => {
     );
 
     expect(result).toEqual({ success: true, recovery_id: 'wvs-REG-0001' });
-    expect(mockKeychain['wavis_recovery_id']).toBe('wvs-REG-0001');
+    expect(mockStore['recovery_id']).toBe('wvs-REG-0001');
   });
 
   it('resetAuth deletes the stored recovery ID', async () => {
@@ -157,17 +155,17 @@ describe('recovery ID keychain helpers', () => {
       access_token: 'token',
       access_token_exp: Date.now() + 60_000,
       username: 'user',
+      recovery_id: 'wvs-OLD-0001',
     };
     mockKeychain = {
       wavis_refresh_token: 'refresh-token',
-      wavis_recovery_id: 'wvs-OLD-0001',
     };
     const auth = await import('../auth');
 
     await auth.resetAuth();
 
     expect(mockKeychain['wavis_refresh_token']).toBeUndefined();
-    expect(mockKeychain['wavis_recovery_id']).toBeUndefined();
-    expect(invoke).toHaveBeenCalledWith('delete_token', { key: 'wavis_recovery_id' });
+    expect(mockStore['recovery_id']).toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith('delete_token', { key: 'wavis_refresh_token' });
   });
 });
