@@ -2157,8 +2157,19 @@ export class LiveKitModule {
    */
   private async applyAudioInputDevice(): Promise<void> {
     if (!this.room) return;
+    const resolvedId = await this.resolveSavedAudioInputDeviceId();
+    if (!resolvedId) return;
+
+    try {
+      await this.room.switchActiveDevice('audioinput', resolvedId);
+    } catch (err) {
+      console.warn(LOG, '[audio-input] switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async resolveSavedAudioInputDeviceId(): Promise<string | null> {
     const savedId = await getAudioInputDevice();
-    if (!savedId) return;
+    if (!savedId) return null;
 
     let resolvedId = savedId;
     if (_realEnumerateDevices) {
@@ -2176,11 +2187,18 @@ export class LiveKitModule {
       }
     }
 
-    try {
-      await this.room.switchActiveDevice('audioinput', resolvedId);
-    } catch (err) {
-      console.warn(LOG, '[audio-input] switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+    return resolvedId;
+  }
+
+  private async buildMicrophoneCaptureOptions(): Promise<Record<string, unknown>> {
+    const options: Record<string, unknown> = {
+      noiseSuppression: false,
+    };
+    const deviceId = await this.resolveSavedAudioInputDeviceId();
+    if (deviceId) {
+      options.deviceId = deviceId;
     }
+    return options;
   }
 
   /**
@@ -3088,9 +3106,10 @@ export class LiveKitModule {
       }
     }
     try {
-      await this.room.localParticipant.setMicrophoneEnabled(enabled, {
-        noiseSuppression: false,
-      });
+      await this.room.localParticipant.setMicrophoneEnabled(
+        enabled,
+        enabled ? await this.buildMicrophoneCaptureOptions() : { noiseSuppression: false },
+      );
     } catch (err) {
       if (enabled) {
         this.callbacks.onSystemEvent(
