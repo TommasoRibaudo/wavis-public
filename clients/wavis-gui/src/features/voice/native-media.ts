@@ -11,7 +11,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
 import type { CameraQuality } from './camera-types';
-import { getDenoiseEnabled, inputVolumeToGain } from '@features/settings/settings-store';
+import {
+  getAudioInputDevice,
+  getAudioOutputDevice,
+  getDenoiseEnabled,
+  inputVolumeToGain,
+} from '@features/settings/settings-store';
 
 const LOG = '[wavis:native-media]';
 
@@ -239,9 +244,19 @@ export class NativeMediaModule {
       this.handleCameraEnded(event.payload.identity);
     });
 
-    // 6. Tell Rust to connect
+    // 6. Tell Rust which persisted devices to open before it starts CPAL streams.
     try {
       const denoiseEnabled = await getDenoiseEnabled();
+      const [inputDeviceId, outputDeviceId] = await Promise.all([
+        getAudioInputDevice().catch(() => null),
+        getAudioOutputDevice().catch(() => null),
+      ]);
+      if (inputDeviceId) {
+        await invoke('set_audio_device', { deviceId: inputDeviceId, kind: 'input' });
+      }
+      if (outputDeviceId) {
+        await invoke('set_audio_device', { deviceId: outputDeviceId, kind: 'output' });
+      }
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
     } catch (err) {
       this.callbacks.onMediaFailed(

@@ -197,8 +197,16 @@ let unlistenAppDimensions: UnlistenFn | null = null;
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
-function formatTime(date: Date): string {
-  return date.toTimeString().slice(0, 8); // HH:MM:SS
+function formatTimestamp(date: Date): string {
+  return date.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
 }
 
 function readJsHeap(): DiagnosticsSnapshot['jsHeap'] {
@@ -575,10 +583,10 @@ async function poll(): Promise<void> {
   // 6. Track share lifecycle events for correlation with RSS deltas
   const isSharing = shareStats !== null;
   if (isSharing && !prevWasSharing) {
-    shareStartedAt = formatTime(new Date());
+    shareStartedAt = formatTimestamp(new Date());
     shareStoppedAt = null;
   } else if (!isSharing && prevWasSharing) {
-    shareStoppedAt = formatTime(new Date());
+    shareStoppedAt = formatTimestamp(new Date());
   }
   prevWasSharing = isSharing;
 

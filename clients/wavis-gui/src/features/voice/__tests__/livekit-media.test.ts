@@ -2151,6 +2151,60 @@ describe('Screen share and device selection', () => {
 
   // Feature: gui-livekit-media, Property 15: Device switching delegates to LiveKit SDK
   describe('P15: Device switching delegates to LiveKit SDK', () => {
+    it('passes the saved input device to the initial microphone capture request', async () => {
+      resetAll();
+      mockSettingsStorage.set('wavis_audio_input_device', 'input:Headset Microphone');
+      realEnumerateDevicesMock.mockResolvedValue([
+        {
+          kind: 'audioinput',
+          deviceId: 'browser-headset-id',
+          groupId: '',
+          label: 'Headset Microphone (USB Audio)',
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ]);
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await mod.connect('wss://sfu.test', 'tok');
+      emitRoomEvent('connected');
+      await mod.setMicEnabled(true);
+
+      const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+      expect(micCall?.args[0]).toBe(true);
+      expect(micCall?.args[1]).toMatchObject({
+        deviceId: 'browser-headset-id',
+        noiseSuppression: false,
+      });
+
+      mod.disconnect();
+    });
+
+    it('does not retry microphone capture on the system default when the saved input device fails', async () => {
+      resetAll();
+      mockSettingsStorage.set('wavis_audio_input_device', 'missing-input-device');
+      micShouldReject = true;
+      micRejectMsg = 'Requested device not found';
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await mod.connect('wss://sfu.test', 'tok');
+      emitRoomEvent('connected');
+      await mod.setMicEnabled(true);
+
+      const micCalls = sdkCalls.filter(c => c.method === 'setMicrophoneEnabled');
+      expect(micCalls).toHaveLength(1);
+      expect(micCalls[0].args[1]).toMatchObject({
+        deviceId: 'missing-input-device',
+        noiseSuppression: false,
+      });
+      expect(cbs.calls.some(c =>
+        c.method === 'onSystemEvent'
+        && String(c.args[0]).includes('listen-only mode'),
+      )).toBe(true);
+
+      mod.disconnect();
+    });
+
     it('setInputDevice and setOutputDevice call switchActiveDevice with correct kind and id', async () => {
       /**
        * Validates: Requirements 10.2, 10.3
