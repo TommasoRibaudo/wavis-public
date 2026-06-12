@@ -85,6 +85,12 @@ export interface DiagnosticsSnapshot {
     nackCount: number;
     availableBandwidthKbps: number;
   } | null;
+  /** True when a local screen share is active even if sender stats have not arrived. */
+  shareActive: boolean;
+  /** Local share mode reported by the voice room, when active. */
+  shareMode: string | null;
+  /** Local share source name reported by the voice room, when active. */
+  shareSourceName: string | null;
   /** Wall-clock HH:MM:SS when share last started. */
   shareStartedAt: string | null;
   /** Wall-clock HH:MM:SS when share last stopped. */
@@ -140,6 +146,9 @@ interface DiagnosticsVoiceStatsPayload {
   networkStats: NetworkStats;
   shareStats: ShareStats | null;
   videoReceiveStats: VideoReceiveStats | null;
+  isSharing: boolean;
+  shareMode: string | null;
+  shareSourceName: string | null;
   participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
   selfParticipantId: string | null;
 }
@@ -372,7 +381,11 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
 
   // Screen Share
   lines.push('[SCREEN SHARE]');
-  if (snap.share) {
+  if (snap.shareActive && !snap.share) {
+    lines.push(pad('Status:', 'Sharing, waiting for stats'));
+    if (snap.shareMode) lines.push(pad('Mode:', snap.shareMode));
+    if (snap.shareSourceName) lines.push(pad('Source:', snap.shareSourceName));
+  } else if (snap.share) {
     lines.push(pad('Sender Bitrate:', `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`));
     lines.push(pad('FPS:', snap.share.fps.toFixed(1)));
     lines.push(pad('Resolution:', snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A'));
@@ -481,6 +494,9 @@ async function poll(): Promise<void> {
     availableBandwidthKbps: 0,
   };
   const shareStats = voiceStats?.shareStats ?? null;
+  const shareActive = voiceStats?.isSharing ?? false;
+  const shareMode = voiceStats?.shareMode ?? null;
+  const shareSourceName = voiceStats?.shareSourceName ?? null;
   const videoReceiveStats = voiceStats?.videoReceiveStats ?? null;
   const participants = voiceStats?.participants ?? [];
   const selfParticipantId = voiceStats?.selfParticipantId ?? null;
@@ -532,14 +548,13 @@ async function poll(): Promise<void> {
   }
 
   // 6. Track share lifecycle events for correlation with RSS deltas
-  const isSharing = shareStats !== null;
-  if (isSharing && !prevWasSharing) {
+  if (shareActive && !prevWasSharing) {
     shareStartedAt = formatTime(new Date());
     shareStoppedAt = null;
-  } else if (!isSharing && prevWasSharing) {
+  } else if (!shareActive && prevWasSharing) {
     shareStoppedAt = formatTime(new Date());
   }
-  prevWasSharing = isSharing;
+  prevWasSharing = shareActive;
 
   const videoReceive = videoReceiveStats
     ? {
@@ -566,6 +581,9 @@ async function poll(): Promise<void> {
     network,
     audio,
     share,
+    shareActive,
+    shareMode,
+    shareSourceName,
     shareStartedAt,
     shareStoppedAt,
     videoReceive,

@@ -374,14 +374,19 @@ describe('Property 2: Preservation — NativeMediaModule startScreenShare baseli
    * happens and the result is forwarded.
    */
   it('startScreenShare() invokes screen_share_start IPC (fixed)', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(true);
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(true);
     const result = await mod_.startScreenShare();
+    expect(invoke).toHaveBeenCalledWith('media_set_screen_share_quality', { quality: 'high' });
     expect(invoke).toHaveBeenCalledWith('screen_share_start');
     expect(result).toBe(true);
   });
 
   it('startScreenShare() does not emit "not available" system event (fixed)', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(true);
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(true);
     await mod_.startScreenShare();
     expect(callbacks.onSystemEvent).not.toHaveBeenCalled();
   });

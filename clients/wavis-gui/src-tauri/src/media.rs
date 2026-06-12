@@ -572,6 +572,302 @@ fn select_windows_capture_backend(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn collect_windows_startup_environment(
+    diagnostics: &screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
+    selected_width: u32,
+    selected_height: u32,
+    target_fps: u32,
+    jpeg_quality: u8,
+) {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    sys.refresh_processes(ProcessesToUpdate::All, false);
+    let own_pid = Pid::from_u32(std::process::id());
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (pid, process) in sys.processes() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+    let mut tree = HashSet::new();
+    let mut queue = VecDeque::new();
+    tree.insert(own_pid);
+    queue.push_back(own_pid);
+    while let Some(pid) = queue.pop_front() {
+        if let Some(kids) = children.get(&pid) {
+            for child in kids {
+                if tree.insert(*child) {
+                    queue.push_back(*child);
+                }
+            }
+        }
+    }
+
+    let process_tree_rss_mb = tree
+        .iter()
+        .filter_map(|pid| sys.process(*pid))
+        .map(|process| process.memory())
+        .sum::<u64>() as f64
+        / 1024.0
+        / 1024.0;
+    let process_tree_cpu_percent = tree
+        .iter()
+        .filter_map(|pid| sys.process(*pid))
+        .map(|process| f64::from(process.cpu_usage()))
+        .sum::<f64>();
+    let webview_process_count = sys
+        .processes()
+        .values()
+        .filter(|process| {
+            process
+                .name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("webview")
+        })
+        .count();
+    let overlay_names = [
+        "discord",
+        "obs",
+        "gamebar",
+        "xbox",
+        "nvidia",
+        "amd",
+        "radeon",
+        "rtss",
+        "rivatuner",
+        "msiafterburner",
+    ];
+    let overlay_processes = sys
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let name = process.name().to_string_lossy().to_string();
+            let lower = name.to_ascii_lowercase();
+            overlay_names
+                .iter()
+                .any(|needle| lower.contains(needle))
+                .then(|| screen_capture::win_capture::WindowsOverlayProcess {
+                    name,
+                    pid: pid.as_u32(),
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if let Ok(mut diag) = diagnostics.lock() {
+        diag.environment.global_cpu_percent = Some(f64::from(sys.global_cpu_usage()));
+        diag.environment.process_tree_rss_mb = Some(process_tree_rss_mb);
+        diag.environment.process_tree_cpu_percent = Some(process_tree_cpu_percent);
+        diag.environment.child_process_count = Some(tree.len().saturating_sub(1));
+        diag.environment.webview_process_count = Some(webview_process_count);
+        diag.environment.monitor_count = None;
+        diag.environment.selected_source_width = selected_width;
+        diag.environment.selected_source_height = selected_height;
+        diag.environment.target_fps = target_fps;
+        diag.environment.jpeg_quality = jpeg_quality;
+        diag.environment.overlay_processes = overlay_processes;
+    }
+    collect_windows_video_driver_info(diagnostics);
+}
+
+#[cfg(target_os = "windows")]
+fn collect_windows_video_driver_info(
+    diagnostics: &screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
+) {
+    let mut child = match std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Select-Object -First 1 DriverProviderName,DriverVersion,DriverDate | ConvertTo-Json -Compress",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            if let Ok(mut diag) = diagnostics.lock() {
+                diag.environment.video_driver_query_error = Some(error.to_string());
+            }
+            return;
+        }
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < std::time::Duration::from_millis(900) => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.environment.video_driver_query_error =
+                        Some("video driver query timed out".to_string());
+                }
+                return;
+            }
+            Err(error) => {
+                let _ = child.kill();
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.environment.video_driver_query_error = Some(error.to_string());
+                }
+                return;
+            }
+        }
+    }
+
+    let output = child.wait_with_output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let parsed = serde_json::from_str::<serde_json::Value>(&text);
+            if let (Ok(value), Ok(mut diag)) = (parsed, diagnostics.lock()) {
+                diag.environment.video_driver_provider = value
+                    .get("DriverProviderName")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                diag.environment.video_driver_version = value
+                    .get("DriverVersion")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                diag.environment.video_driver_date = value
+                    .get("DriverDate")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+            }
+        }
+        Ok(output) => {
+            if let Ok(mut diag) = diagnostics.lock() {
+                diag.environment.video_driver_query_error =
+                    Some(format!("powershell exited with {}", output.status));
+            }
+        }
+        Err(error) => {
+            if let Ok(mut diag) = diagnostics.lock() {
+                diag.environment.video_driver_query_error = Some(error.to_string());
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_capture_setup_error(stage: &str) -> bool {
+    stage.ends_with("_error")
+        && stage != "cursor_border_config_error"
+        && stage != "closed_handler_register_error"
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_first_pollable_frame(
+    latest_frame: &Arc<Mutex<Option<LatestFrame>>>,
+    diagnostics: &screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
+    raw_frame_timeout_ms: u64,
+    first_pollable_processing_timeout_ms: u64,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut first_frame_processing_started_at = None;
+    loop {
+        if latest_frame
+            .lock()
+            .map_err(|e| format!("latest_frame lock: {e}"))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let setup_error = diagnostics.lock().ok().and_then(|diag| {
+            if is_windows_capture_setup_error(&diag.startup_stage) {
+                Some(diag.compact_summary())
+            } else {
+                None
+            }
+        });
+        if let Some(summary) = setup_error {
+            return Err(format!(
+                "native capture setup failed before a pollable first frame was produced; {summary}"
+            ));
+        }
+        let first_frame_processing_started = diagnostics
+            .lock()
+            .map(|diag| {
+                diag.frame_arrived_callbacks > 0
+                    || diag.usable_frames > 0
+                    || diag.timing.first_raw_frame_latency_ms.is_some()
+                    || diag.timing.first_raw_to_pollable_frame_ms.is_some()
+                    || diag.first_raw_frame_latency_ms.is_some()
+                    || diag.first_buffered_jpeg_latency_ms.is_some()
+                    || diag
+                        .startup_step_timings
+                        .iter()
+                        .any(|timing| {
+                            timing.stage == "first_frame_arrived"
+                                || timing.stage == "first_buffered_jpeg"
+                                || timing.stage == "first_pollable_frame_written"
+                        })
+            })
+            .unwrap_or(false);
+        if first_frame_processing_started && first_frame_processing_started_at.is_none() {
+            first_frame_processing_started_at = Some(std::time::Instant::now());
+        }
+        let phase_elapsed = first_frame_processing_started_at
+            .unwrap_or(started)
+            .elapsed();
+        let timeout_ms = if first_frame_processing_started {
+            first_pollable_processing_timeout_ms
+        } else {
+            raw_frame_timeout_ms
+        };
+        if phase_elapsed >= std::time::Duration::from_millis(timeout_ms) {
+            let summary = diagnostics
+                .lock()
+                .map(|mut diag| {
+                    let timeout_elapsed_ms = diag
+                        .startup_elapsed_ms
+                        .unwrap_or(0)
+                        .saturating_add(phase_elapsed.as_millis() as u64);
+                    let post_start_no_frame = diag.backend == "wgc"
+                        && diag.frame_arrived_callbacks == 0
+                        && diag
+                            .startup_step_timings
+                            .iter()
+                            .any(|timing| timing.stage == "start_capture_done");
+                    if post_start_no_frame {
+                        diag.record_startup_stage(
+                            "post_start_no_frame_timeout",
+                            "awaiting first FrameArrived callback",
+                            timeout_elapsed_ms,
+                        );
+                        format!(
+                            "post_start_no_frame=true stalled_after=start_capture_done awaiting_first_frame {}",
+                            diag.compact_summary()
+                        )
+                    } else {
+                        let stage = if first_frame_processing_started {
+                            "first_pollable_processing_timeout"
+                        } else {
+                            "first_pollable_frame_timeout"
+                        };
+                        diag.record_startup_stage(
+                            stage,
+                            "wait for first pollable frame",
+                            timeout_elapsed_ms,
+                        );
+                        diag.compact_summary()
+                    }
+                })
+                .unwrap_or_else(|_| "diagnostics unavailable".to_string());
+            return Err(format!(
+                "native capture did not produce a pollable first frame within {timeout_ms}ms; {summary}"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 pub struct MediaState {
     pub(crate) runtime: Runtime,
     audio: CpalAudioBackend,
@@ -2079,6 +2375,7 @@ pub fn screen_share_start_source(
     // WebView2; `state.lk` is always `None`, making that branch unreachable.
     // The native-LK frame-feeding path lives in the Linux `screen_share_start()`
     // function (no `_source` suffix) which is #[cfg(target_os = "linux")].
+    let bridge_transport_fps = state.screen_share_config.max_fps().min(15);
 
     // Route to the requested native backend. GDI polling is source-kind-specific:
     // monitor shares use BitBlt and window shares use PrintWindow.
@@ -2098,7 +2395,7 @@ pub fn screen_share_start_source(
             GdiCapture::start(GdiCaptureConfig {
                 target,
                 app_handle: app.clone(),
-                target_fps: state.screen_share_config.max_fps(),
+                target_fps: bridge_transport_fps,
                 diagnostics: Arc::clone(&diagnostics),
             })
             .map_err(|e| {
@@ -2131,6 +2428,21 @@ pub fn screen_share_start_source(
     };
 
     log::info!("{LOG} [diag] capture backend started");
+    collect_windows_startup_environment(
+        &diagnostics,
+        diagnostics
+            .lock()
+            .ok()
+            .map(|diag| diag.item_width)
+            .unwrap_or(0),
+        diagnostics
+            .lock()
+            .ok()
+            .map(|diag| diag.item_height)
+            .unwrap_or(0),
+        bridge_transport_fps,
+        state.screen_share_config.jpeg_quality(),
+    );
 
     let config = state.screen_share_config.clone();
     let native_share_leak_session = Arc::clone(&state.native_share_leak_session);
@@ -2171,9 +2483,10 @@ pub fn screen_share_start_source(
         // ERROR_INVALID_WINDOW_HANDLE (0x80070578) corruption caused by
         // child windows (SharePicker) opening/closing.
         let debug_capture = screen_capture::frame_processor::is_debug_capture_enabled();
-        let throttler = Arc::new(FrameThrottler::new(config.max_fps()));
+        let throttler = Arc::new(FrameThrottler::new(bridge_transport_fps));
         let frame_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let latest_frame = Arc::clone(&state.latest_frame);
+        let diagnostics_for_frames = Arc::clone(&diagnostics);
 
         // Pre-allocate reusable buffers to avoid per-frame allocation.
         // RGB buffer: 1920*1080*3 ≈ 6MB initial capacity (grows if needed).
@@ -2198,19 +2511,21 @@ pub fn screen_share_start_source(
 
             let max_w = config.max_width();
             let max_h = config.max_height();
-            throttler.set_fps(config.max_fps());
+            throttler.set_fps(bridge_transport_fps);
 
             // Throttle BEFORE downscaling — no point processing a frame we'll drop.
             if !throttler.should_emit() {
                 return;
             }
 
+            let raw_to_pollable_start = std::time::Instant::now();
+            let cap_start = std::time::Instant::now();
             let capped = cap_resolution(frame, max_w, max_h);
+            let cap_downscale_ms = cap_start.elapsed().as_millis() as u64;
 
             let n = frame_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if let Ok(mut leak_guard) = native_share_leak_session.lock() {
                 if let Some(session) = leak_guard.as_mut() {
-                    session.frames_buffered = n + 1;
                     if session.first_rust_frame_at_ms.is_none() {
                         let first_frame_at_ms = unix_now_ms();
                         session.first_rust_frame_at_ms = Some(first_frame_at_ms);
@@ -2240,6 +2555,7 @@ pub fn screen_share_start_source(
             // Strip alpha channel into reusable RGB buffer (JPEG only supports RGB).
             let pixel_count = (capped.width * capped.height) as usize;
             let rgb_len = pixel_count * 3;
+            let rgb_start = std::time::Instant::now();
             let mut rgb_guard = match rgb_buf.lock() {
                 Ok(g) => g,
                 Err(_) => return,
@@ -2252,6 +2568,7 @@ pub fn screen_share_start_source(
                 rgb_guard.push(rgba[1]);
                 rgb_guard.push(rgba[2]);
             }
+            let rgba_to_rgb_ms = rgb_start.elapsed().as_millis() as u64;
 
             // Encode RGB → JPEG into reusable buffer.
             let jpeg_quality = config.jpeg_quality();
@@ -2260,6 +2577,7 @@ pub fn screen_share_start_source(
                 Err(_) => return,
             };
             jpeg_guard.clear();
+            let jpeg_start = std::time::Instant::now();
             let mut cursor = Cursor::new(&mut *jpeg_guard);
             let mut encoder = JpegEncoder::new_with_quality(&mut cursor, jpeg_quality);
             if let Err(e) = encoder.encode(
@@ -2275,21 +2593,28 @@ pub fn screen_share_start_source(
             drop(encoder);
             #[allow(clippy::drop_non_drop)] // intentional: ends mutable borrow on jpeg_guard
             drop(cursor);
+            let jpeg_encode_ms = jpeg_start.elapsed().as_millis() as u64;
 
             if n == 0 {
                 log::info!("{LOG} first JPEG: {} bytes", jpeg_guard.len());
                 if let Ok(leak_guard) = native_share_leak_session.lock() {
                     if let Some(session) = leak_guard.as_ref() {
                         if let Ok(mut diagnostics) = session.diagnostics.lock() {
-                            diagnostics.first_buffered_jpeg_latency_ms =
-                                Some(unix_now_ms().saturating_sub(session.started_at_ms));
-                            diagnostics.startup_stage = "first_buffered_jpeg".to_string();
+                            let elapsed_ms = unix_now_ms().saturating_sub(session.started_at_ms);
+                            diagnostics.first_buffered_jpeg_latency_ms = Some(elapsed_ms);
+                            diagnostics.record_startup_stage(
+                                "first_buffered_jpeg",
+                                "JPEG/base64 bridge",
+                                elapsed_ms,
+                            );
                         }
                     }
                 }
             }
 
+            let base64_start = std::time::Instant::now();
             let b64 = base64::engine::general_purpose::STANDARD.encode(&*jpeg_guard);
+            let base64_encode_ms = base64_start.elapsed().as_millis() as u64;
 
             // Drop buffers before taking the latest_frame lock to minimize hold time.
             drop(rgb_guard);
@@ -2297,6 +2622,7 @@ pub fn screen_share_start_source(
 
             // Write to shared buffer — JS polls this via screen_share_poll_frame.
             // No PostMessage, no HWND, no window handle dependency.
+            let write_start = std::time::Instant::now();
             if let Ok(mut lf) = latest_frame.lock() {
                 *lf = Some(LatestFrame {
                     frame: b64,
@@ -2304,6 +2630,40 @@ pub fn screen_share_start_source(
                     height: capped.height,
                     seq: n + 1,
                 });
+            }
+            let latest_frame_write_ms = write_start.elapsed().as_millis() as u64;
+            let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
+            let mut first_pollable_elapsed_ms = raw_to_pollable_frame_ms;
+            if let Ok(mut leak_guard) = native_share_leak_session.lock() {
+                if let Some(session) = leak_guard.as_mut() {
+                    session.frames_buffered = n + 1;
+                    first_pollable_elapsed_ms = unix_now_ms().saturating_sub(session.started_at_ms);
+                }
+            }
+            if n == 0 {
+                if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                    diag_guard.timing.first_cap_downscale_ms = Some(cap_downscale_ms);
+                    diag_guard.timing.first_rgba_to_rgb_ms = Some(rgba_to_rgb_ms);
+                    diag_guard.timing.first_jpeg_encode_ms = Some(jpeg_encode_ms);
+                    diag_guard.timing.first_base64_encode_ms = Some(base64_encode_ms);
+                    diag_guard.timing.first_latest_frame_write_ms = Some(latest_frame_write_ms);
+                    diag_guard.timing.first_raw_to_pollable_frame_ms =
+                        Some(raw_to_pollable_frame_ms);
+                    diag_guard.record_startup_stage(
+                        "first_pollable_frame_written",
+                        "write latest pollable frame",
+                        first_pollable_elapsed_ms,
+                    );
+                }
+                log::info!(
+                    "{LOG} native capture first pollable frame timing: cap_downscale_ms={} rgba_to_rgb_ms={} jpeg_encode_ms={} base64_encode_ms={} latest_frame_write_ms={} raw_to_pollable_ms={}",
+                    cap_downscale_ms,
+                    rgba_to_rgb_ms,
+                    jpeg_encode_ms,
+                    base64_encode_ms,
+                    latest_frame_write_ms,
+                    raw_to_pollable_frame_ms,
+                );
             }
 
             if debug_capture {
@@ -2328,8 +2688,29 @@ pub fn screen_share_start_source(
         .map_err(|e| format!("screen_capture lock: {e}"))?;
     *sc_guard = Some(capture);
 
-    log::info!("{LOG} [diag] capture stored in MediaState, function complete");
+    log::info!("{LOG} [diag] capture stored in MediaState, waiting for first pollable frame");
+    if let Err(error) = wait_for_first_pollable_frame(
+        &state.latest_frame,
+        &diagnostics,
+        if capture_backend == WindowsCaptureBackend::GdiPoll {
+            5000
+        } else {
+            2500
+        },
+        if capture_backend == WindowsCaptureBackend::GdiPoll {
+            5000
+        } else {
+            7500
+        },
+    ) {
+        if let Some(cap) = sc_guard.take() {
+            cap.stop();
+        }
+        log::warn!("{LOG} native capture startup failure: {error}");
+        return Err(error);
+    }
 
+    log::info!("{LOG} [diag] first pollable frame ready, function complete");
     Ok(true)
 }
 
@@ -2455,11 +2836,47 @@ pub fn screen_share_get_capture_diagnostics() -> Result<Option<()>, String> {
 pub fn screen_share_poll_frame(
     state: State<'_, MediaState>,
 ) -> Result<Option<LatestFrame>, String> {
-    let lf = state
-        .latest_frame
-        .lock()
-        .map_err(|e| format!("latest_frame lock: {e}"))?;
-    Ok(lf.clone())
+    let latest = {
+        let lf = state
+            .latest_frame
+            .lock()
+            .map_err(|e| format!("latest_frame lock: {e}"))?;
+        lf.clone()
+    };
+
+    if let Ok(diag_guard) = state.windows_capture_diagnostics.lock() {
+        if let Some(diagnostics) = diag_guard.as_ref() {
+            if let Ok(mut diagnostics) = diagnostics.lock() {
+                diagnostics.poll_calls = diagnostics.poll_calls.saturating_add(1);
+                if let Some(frame) = latest.as_ref() {
+                    diagnostics.poll_hits = diagnostics.poll_hits.saturating_add(1);
+                    diagnostics.latest_polled_seq = Some(frame.seq);
+                    if diagnostics.first_poll_hit_latency_ms.is_none() {
+                        if let Ok(leak_guard) = state.native_share_leak_session.lock() {
+                            if let Some(session) = leak_guard.as_ref() {
+                                diagnostics.first_poll_hit_latency_ms =
+                                    Some(unix_now_ms().saturating_sub(session.started_at_ms));
+                            }
+                        }
+                    }
+                    if diagnostics.startup_stage == "first_buffered_jpeg"
+                        || diagnostics.startup_stage == "first_pollable_frame_written"
+                    {
+                        let elapsed_ms = diagnostics.first_poll_hit_latency_ms.unwrap_or(0);
+                        diagnostics.record_startup_stage(
+                            "first_poll_hit",
+                            "screen_share_poll_frame",
+                            elapsed_ms,
+                        );
+                    }
+                } else {
+                    diagnostics.poll_misses = diagnostics.poll_misses.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    Ok(latest)
 }
 
 /// Non-Windows stub for `screen_share_poll_frame`.
@@ -2834,9 +3251,13 @@ pub fn screen_share_start() -> Result<bool, String> {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_capture_routing_tests {
     use super::{
-        parse_windows_source_kind, select_windows_capture_backend, WindowsCaptureBackend,
-        WindowsSourceKind,
+        is_windows_capture_setup_error, parse_windows_source_kind, select_windows_capture_backend,
+        wait_for_first_pollable_frame, LatestFrame, WindowsCaptureBackend, WindowsSourceKind,
     };
+    use crate::screen_capture::win_capture::WindowsNativeCaptureDiagnostics;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn source_kind_routes_without_handle_probing() {
@@ -2855,6 +3276,201 @@ mod windows_capture_routing_tests {
             select_windows_capture_backend(WindowsSourceKind::Screen, true, None).unwrap(),
             WindowsCaptureBackend::Wgc,
         );
+    }
+
+    #[test]
+    fn first_pollable_timeout_reports_current_operation_and_elapsed_time() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("frame_pool_create_start", "CreateFreeThreaded", 12);
+        }
+
+        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+
+        assert!(error.contains("stalled_in=first_pollable_frame_timeout"));
+        assert!(error.contains("current_operation=wait for first pollable frame"));
+        assert!(error.contains("startup_elapsed_ms="));
+    }
+
+    #[test]
+    fn capture_session_create_error_reports_setup_failure() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("frame_pool_create_done", "CreateFreeThreaded", 18);
+            diag.record_startup_error(
+                "capture_session_create_error",
+                "CreateCaptureSession",
+                20,
+                "0x8001010E",
+            );
+        }
+
+        let error =
+            wait_for_first_pollable_frame(&latest_frame, &diagnostics, 5_000, 7_500).unwrap_err();
+
+        assert!(error.contains("native capture setup failed"));
+        assert!(error.contains("stalled_in=capture_session_create_error"));
+        assert!(error.contains("first_error=capture_session_create_error: 0x8001010E"));
+        assert!(!error.contains("first_pollable_frame_timeout"));
+    }
+
+    #[test]
+    fn first_pollable_timeout_remains_distinct_from_capture_session_error() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("capture_session_create_done", "CreateCaptureSession", 20);
+            diag.record_startup_stage("frame_arrived_handler_register_done", "FrameArrived", 25);
+        }
+
+        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+
+        assert!(error.contains("stalled_in=first_pollable_frame_timeout"));
+        assert!(!error.contains("native capture setup failed"));
+        assert!(!error.contains("capture_session_create_error"));
+    }
+
+    #[test]
+    fn startup_setup_error_classification_ignores_nonfatal_configuration_errors() {
+        assert!(is_windows_capture_setup_error("capture_item_create_error"));
+        assert!(is_windows_capture_setup_error("capture_session_create_error"));
+        assert!(!is_windows_capture_setup_error("cursor_border_config_error"));
+        assert!(!is_windows_capture_setup_error("closed_handler_register_error"));
+        assert!(!is_windows_capture_setup_error("first_pollable_frame_timeout"));
+    }
+
+    #[test]
+    fn cursor_border_unsupported_error_does_not_become_primary_first_error() {
+        let mut diagnostics =
+            WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+
+        diagnostics.record_nonfatal_startup_error(
+            "cursor_border_config_error",
+            "SetIsBorderRequired",
+            22,
+            "0x80004002",
+        );
+        diagnostics.record_startup_error(
+            "capture_session_create_error",
+            "CreateCaptureSession",
+            30,
+            "0x8001010E",
+        );
+
+        assert_eq!(
+            diagnostics.first_error.as_deref(),
+            Some("capture_session_create_error: 0x8001010E")
+        );
+        assert!(diagnostics
+            .startup_step_timing_summary()
+            .contains("cursor_border_config_error:22ms"));
+    }
+
+    #[test]
+    fn raw_frame_arrived_keeps_waiting_past_raw_frame_deadline() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("start_capture_done", "StartCapture", 20);
+            diag.record_startup_stage("first_frame_arrived", "FrameArrived callback", 25);
+            diag.frame_arrived_callbacks = 1;
+        }
+        let latest_frame_for_thread = latest_frame.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            *latest_frame_for_thread.lock().unwrap() = Some(LatestFrame {
+                frame: "jpeg".to_string(),
+                width: 1920,
+                height: 1080,
+                seq: 1,
+            });
+        });
+
+        let result = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 1, 250);
+
+        writer.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pollable_frame_after_old_wgc_boundary_succeeds() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 3440, 1440,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("start_capture_done", "StartCapture", 20);
+            diag.record_startup_stage("first_frame_arrived", "FrameArrived callback", 25);
+            diag.usable_frames = 1;
+        }
+        let latest_frame_for_thread = latest_frame.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(35));
+            *latest_frame_for_thread.lock().unwrap() = Some(LatestFrame {
+                frame: "jpeg".to_string(),
+                width: 2560,
+                height: 1072,
+                seq: 1,
+            });
+        });
+
+        let result = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 10, 250);
+
+        writer.join().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn first_pollable_processing_timeout_reports_processing_stage() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 3440, 1440,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("start_capture_done", "StartCapture", 20);
+            diag.record_startup_stage("first_frame_arrived", "FrameArrived callback", 25);
+            diag.frame_arrived_callbacks = 1;
+        }
+
+        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 1, 0).unwrap_err();
+
+        assert!(error.contains("stalled_in=first_pollable_processing_timeout"));
+        assert!(error.contains("current_operation=wait for first pollable frame"));
+    }
+
+    #[test]
+    fn first_pollable_timeout_distinguishes_post_start_no_frame() {
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("start_capture_done", "StartCapture", 20);
+            diag.record_startup_stage("awaiting_first_frame", "FrameArrived callback", 21);
+        }
+
+        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+
+        assert!(error.contains("post_start_no_frame=true"));
+        assert!(error.contains("stalled_after=start_capture_done awaiting_first_frame"));
+        assert!(error.contains("stalled_in=post_start_no_frame_timeout"));
     }
 }
 

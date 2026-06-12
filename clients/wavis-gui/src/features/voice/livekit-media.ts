@@ -538,6 +538,18 @@ function buildSdkScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): 
   } as unknown as TrackPublishOptions;
 }
 
+function buildNativeScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): TrackPublishOptions {
+  return {
+    ...buildSdkScreenSharePublishOptions(pubOpts),
+    simulcast: false,
+    videoEncoding: {
+      maxBitrate: pubOpts.screenShareEncoding.maxBitrate,
+      maxFramerate: pubOpts.screenShareEncoding.maxFramerate,
+    },
+    screenShareSimulcastLayers: [],
+  } as unknown as TrackPublishOptions;
+}
+
 /* ─── Adaptive Quality ──────────────────────────────────────────── */
 
 export type AdaptiveTier = 'full' | 'reduced-fps' | 'reduced-resolution';
@@ -1427,8 +1439,12 @@ export class LiveKitModule {
         stages: {},
         counters: {
           pollTicks: 0,
+          pollErrors: 0,
           newFrames: 0,
           duplicateFrameSkips: 0,
+          coalescedFrames: 0,
+          skippedPollsFrameWorkInFlight: 0,
+          overlappingPollSkips: 0,
           decodeFailures: 0,
           earlyFrameBufferPeak: 0,
           firstFrameLatencyMs: null,
@@ -2899,7 +2915,7 @@ export class LiveKitModule {
 
     // 4d. Clean up native capture bridge (Windows custom share)
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
     if (this.nativeCaptureFailureUnlisten) {
@@ -3508,12 +3524,13 @@ export class LiveKitModule {
    * On failure, logs a warning and retains the previous quality setting.
    */
   async setScreenShareQuality(quality: ShareQuality): Promise<void> {
+    const previousQuality = this.currentQuality;
+    this.currentQuality = quality;
     if (!this.room) return;
     const pub = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     if (!pub || !pub.track) return;
 
     const preset = QUALITY_PRESETS[quality];
-    const previousQuality = this.currentQuality;
     try {
       const track = pub.track.mediaStreamTrack;
       track.contentHint = preset.contentHint;
@@ -3522,7 +3539,6 @@ export class LiveKitModule {
         height: { ideal: preset.resolution.height },
         frameRate: { max: preset.maxFramerate },
       });
-      this.currentQuality = quality;
       this.callbacks.onSystemEvent(`screen share quality: ${quality}`);
       // Re-report actual quality info so the UI updates
       const settings = getTrackSettingsSafe(track);
@@ -5551,8 +5567,8 @@ export class LiveKitModule {
    * The polling loop calls feedNativeFrame() which delegates here.
    */
   private nativeCaptureFrameHandler: ((payload: { frame: string; width: number; height: number }) => void) | null = null;
-  /** Polling interval ID for screen_share_poll_frame (Windows JS SDK path). */
-  private nativeCapturePollInterval: ReturnType<typeof setInterval> | null = null;
+  /** Polling timer ID for screen_share_poll_frame (Windows JS SDK path). */
+  private nativeCapturePollInterval: ReturnType<typeof setTimeout> | null = null;
   /** Listener for definitive Rust-side WGC readback failures. */
   private nativeCaptureFailureUnlisten: (() => void) | null = null;
   private nativeCaptureFailureListenerPromise: Promise<void> | null = null;
@@ -5597,14 +5613,14 @@ export class LiveKitModule {
 
   /**
    * Pre-register the frame buffering handler so that frames arriving via
-   * the Tauri Channel are captured immediately.
+   * direct calls to `feedNativeFrame()` can be captured immediately.
    *
    * Must be called BEFORE `invoke('screen_share_start_source')` to
    * eliminate the race where Rust sends frames before the JS handler
    * exists. Buffered frames are drained by `startNativeCapture()`.
    *
    * This is now synchronous — no Tauri event listener needed because
-   * frames arrive via a Tauri Channel (direct IPC pipe), not events.
+   * frames are polled from Rust's latest-frame buffer, not pushed as events.
    *
    * Safe to call multiple times — subsequent calls are no-ops.
    */
@@ -5634,13 +5650,13 @@ export class LiveKitModule {
       }
     };
 
-    // Set a no-op unlisten marker so subsequent calls are no-ops and
+    // Set a no-op marker so subsequent calls are no-ops and
     // startNativeCapture knows preparation has happened.
-    this.nativeCaptureUnlisten = () => { /* no-op — Channel doesn't need unlistening */ };
+    this.nativeCaptureUnlisten = () => { /* no-op: latest-frame polling has no listener */ };
 
     void this.ensureNativeCaptureFailureListener();
 
-    console.log(LOG, 'native capture: prepared frame handler (Channel mode, synchronous)');
+    console.log(LOG, 'native capture: prepared frame handler for latest-frame polling');
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: pre-registration complete, timestamp:', performance.now());
   }
 
@@ -5651,6 +5667,14 @@ export class LiveKitModule {
   feedNativeFrame(payload: { frame: string; width: number; height: number }): void {
     if (this.nativeCaptureFrameHandler) {
       this.nativeCaptureFrameHandler(payload);
+    }
+  }
+
+  private async captureWindowsNativeDiagnosticsSnapshot(): Promise<WindowsNativeCaptureDiagnostics | null> {
+    try {
+      return await invoke<WindowsNativeCaptureDiagnostics | null>('screen_share_get_capture_diagnostics');
+    } catch {
+      return null;
     }
   }
 
@@ -5668,7 +5692,7 @@ export class LiveKitModule {
    * If `prepareNativeCapture()` was called first, the handler is already
    * active and buffered frames are drained immediately — no frames lost.
    */
-  async startNativeCapture(): Promise<void> {
+  async startNativeCapture(options: { firstFrameTimeoutMs?: number } = {}): Promise<void> {
     if (!this.room) throw new Error('not connected to a room');
     // If already fully active (not just prepared), skip.
     if (this.nativeCapturePublication) return;
@@ -5678,7 +5702,9 @@ export class LiveKitModule {
     await this.ensureNativeCaptureFailureListener();
 
     const pubOpts = await this.prepareScreenSharePublishOptions();
+    this.markNativeCaptureLeakStage('quality_sync_done');
     const targetFps = pubOpts.screenShareEncoding.maxFramerate || 30;
+    const bridgeTransportFps = Math.min(targetFps, 15);
 
     // ── Strategy: MediaStreamTrackGenerator (preferred) or canvas fallback ──
     // MediaStreamTrackGenerator (WebCodecs API, Chromium 94+) writes
@@ -5722,10 +5748,10 @@ export class LiveKitModule {
 
       // Use fps-driven captureStream instead of manual requestFrame() —
       // captureStream(0) + requestFrame() has known Chromium bugs in WebView2.
-      canvasStream = canvas.captureStream(targetFps);
+      canvasStream = canvas.captureStream(bridgeTransportFps);
       videoTrack = canvasStream.getVideoTracks()[0];
       if (!videoTrack) throw new Error('canvas captureStream produced no video track');
-      console.log(LOG, `native capture: using canvas.captureStream(${targetFps}) fallback (DOM-attached)`);
+      console.log(LOG, `native capture: using canvas.captureStream(${bridgeTransportFps}) fallback (DOM-attached)`);
     }
 
     // Fast base64 → ArrayBuffer via fetch (avoids slow atob + char-by-char copy)
@@ -5736,18 +5762,51 @@ export class LiveKitModule {
 
     // ── Frame handler shared by both early-frame drain and live listener ──
     let frameCount = 0;
+    let firstJsFrameSeen = false;
+    let firstFrameResolved = false;
+    let frameWorkInFlight = false;
+    let pendingFrame: { frame: string; width: number; height: number } | null = null;
     let firstFrameResolve: (() => void) | null = null;
     const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
 
+    const resolveFirstFrame = () => {
+      if (firstFrameResolve) {
+        firstFrameResolved = true;
+        firstFrameResolve();
+        firstFrameResolve = null;
+      }
+    };
+
+    const processNextPendingFrame = () => {
+      const next = pendingFrame;
+      pendingFrame = null;
+      if (next) {
+        handleFrame(next);
+      }
+    };
+
     const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.coalescedFrames++;
+        }
+        pendingFrame = payload;
+        return;
+      }
+      frameWorkInFlight = true;
       const { frame, width, height } = payload;
       if (DEBUG_CAPTURE) console.log(LOG, 'native capture: frame received #' + frameCount, width + 'x' + height);
-      if (frameCount === 0) {
+      if (!firstJsFrameSeen) {
+        firstJsFrameSeen = true;
         this.markNativeCaptureLeakStage('first_js_frame_seen');
         console.log(LOG, `native capture: first event received (${width}x${height}, payload_len=${frame.length})`);
       }
 
       if (trackWriter) {
+        if (frameCount === 0) {
+          this.markNativeCaptureLeakStage('first_js_decode_start');
+          console.log(LOG, 'native capture: first decode started');
+        }
         // ── MediaStreamTrackGenerator path: decode → VideoFrame → write ──
         decodeBase64(frame).then((buf) => {
           const blob = new Blob([buf], { type: 'image/jpeg' });
@@ -5758,22 +5817,31 @@ export class LiveKitModule {
             timestamp: performance.now() * 1000, // microseconds
           });
           bitmap.close();
-          // Write then close the VideoFrame to prevent backpressure stall
-          trackWriter.write(vf).then(() => {
+          let writePromise: Promise<void>;
+          try {
+            writePromise = Promise.resolve(trackWriter.write(vf));
+          } catch (err) {
             vf.close();
-            frameCount++;
-            if (frameCount === 1) {
-              if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first VideoFrame written to generator');
-              if (firstFrameResolve) {
-                firstFrameResolve();
-                firstFrameResolve = null;
-              }
-            }
-            if (frameCount === 1 || frameCount % 60 === 0) {
-              console.log(LOG, `native capture: wrote VideoFrame #${frameCount} (${width}x${height})`);
-            }
+            throw err;
+          }
+          frameCount++;
+          if (frameCount === 1) {
+            this.markNativeCaptureLeakStage('first_js_frame_decoded');
+            this.markNativeCaptureLeakStage('first_generator_write_queued');
+            if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first VideoFrame queued to generator');
+            resolveFirstFrame();
+          }
+          if (frameCount === 1 || frameCount % 60 === 0) {
+            console.log(LOG, `native capture: queued VideoFrame #${frameCount} (${width}x${height})`);
+          }
+          writePromise.then(() => {
+            vf.close();
+            frameWorkInFlight = false;
+            processNextPendingFrame();
           }).catch(() => {
             vf.close();
+            frameWorkInFlight = false;
+            processNextPendingFrame();
           });
         }).catch((err) => {
           if (this.nativeCaptureLeakSession) {
@@ -5782,8 +5850,14 @@ export class LiveKitModule {
           if (frameCount === 0) {
             console.warn(LOG, 'native capture: first frame decode failed:', err);
           }
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         });
       } else if (canvas && ctx) {
+        if (frameCount === 0) {
+          this.markNativeCaptureLeakStage('first_js_decode_start');
+          console.log(LOG, 'native capture: first decode started');
+        }
         // ── Canvas fallback path ──
         if (canvas.width !== width || canvas.height !== height) {
           canvas.width = width;
@@ -5794,26 +5868,28 @@ export class LiveKitModule {
 
         const img = new Image();
         img.onload = () => {
+          this.markNativeCaptureLeakStage('first_js_frame_decoded');
           ctx!.drawImage(img, 0, 0);
           frameCount++;
           if (DEBUG_CAPTURE && frameCount === 1) {
             console.log(LOG, 'native capture: first canvas frame painted, timestamp:', performance.now());
           }
           if (frameCount === 1) {
-            if (firstFrameResolve) {
-              firstFrameResolve();
-              firstFrameResolve = null;
-            }
+            resolveFirstFrame();
           }
           if (frameCount === 1 || frameCount % 60 === 0) {
             console.log(LOG, `native capture: painted frame #${frameCount} (${width}x${height})`);
           }
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         };
         img.onerror = () => {
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.summary.counters.decodeFailures++;
           }
           console.warn(LOG, 'native capture: failed to decode JPEG frame');
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         };
         img.src = `data:image/jpeg;base64,${frame}`;
       }
@@ -5841,59 +5917,156 @@ export class LiveKitModule {
       this.nativeCaptureUnlisten = () => { /* no-op */ };
     }
 
-    // Poll at ~60Hz via setInterval. Each poll calls invoke('screen_share_poll_frame')
-    // which returns the latest frame from the Rust shared buffer, or null.
-    const POLL_INTERVAL_MS = 16; // ~60fps
-    this.nativeCapturePollInterval = setInterval(async () => {
-      if (this.nativeCaptureLeakSession) {
-        this.nativeCaptureLeakSession.summary.counters.pollTicks++;
-      }
-      try {
-        const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
-          'screen_share_poll_frame',
-        );
-        if (result && result.seq > this.nativeCapturePollLastSeq) {
-          if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
-            this.markNativeCaptureLeakStage('first_rust_frame');
-          }
-          this.nativeCapturePollLastSeq = result.seq;
+    // Poll the Windows native bridge at a capped transport FPS. If decode/write
+    // falls behind, pause polling and let Rust keep only the latest frame.
+    const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
+    const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+    const pollNativeFrameForStartup = async (): Promise<void> => {
+      this.markNativeCaptureLeakStage('poll_started');
+      console.log(LOG, 'native capture: startup poll started');
+      while (!firstFrameResolved && this.nativeCaptureUnlisten) {
+        if (frameWorkInFlight) {
           if (this.nativeCaptureLeakSession) {
-            this.nativeCaptureLeakSession.summary.counters.newFrames++;
+            this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
           }
-          handleFrame({ frame: result.frame, width: result.width, height: result.height });
-        } else if (result && this.nativeCaptureLeakSession) {
-          this.nativeCaptureLeakSession.summary.counters.duplicateFrameSkips++;
+          await sleep(POLL_INTERVAL_MS);
+          continue;
         }
-      } catch {
-        // invoke failed — capture may have stopped, ignore
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+        }
+        try {
+          const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
+            'screen_share_poll_frame',
+          );
+          if (result && result.seq > this.nativeCapturePollLastSeq) {
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_poll_frame) {
+              this.markNativeCaptureLeakStage('first_poll_frame');
+              console.log(LOG, `native capture: first poll hit seq=${result.seq}`);
+            }
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+              this.markNativeCaptureLeakStage('first_rust_frame');
+            }
+            this.nativeCapturePollLastSeq = result.seq;
+            if (this.nativeCaptureLeakSession) {
+              this.nativeCaptureLeakSession.summary.counters.newFrames++;
+            }
+            handleFrame({ frame: result.frame, width: result.width, height: result.height });
+          } else if (result && this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.duplicateFrameSkips++;
+          }
+        } catch (error) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.pollErrors++;
+            if (!this.nativeCaptureLeakSession.summary.stages.poll_error) {
+              this.markNativeCaptureLeakStage('poll_error');
+            }
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`native capture: screen_share_poll_frame failed during startup: ${message}`);
+        }
+        if (!firstFrameResolved) {
+          await sleep(POLL_INTERVAL_MS);
+        }
       }
-    }, POLL_INTERVAL_MS);
+    };
+    const startSteadyNativePoll = () => {
+      let pollInFlight = false;
+      const scheduleNextPoll = () => {
+        if (!this.nativeCaptureUnlisten || this.nativeCapturePollInterval !== null) return;
+        this.nativeCapturePollInterval = setTimeout(() => {
+          this.nativeCapturePollInterval = null;
+          void pollOnce();
+        }, POLL_INTERVAL_MS);
+      };
+      const pollOnce = async () => {
+        if (!this.nativeCaptureUnlisten) return;
+        if (pollInFlight) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.overlappingPollSkips++;
+          }
+          scheduleNextPoll();
+          return;
+        }
+        if (frameWorkInFlight) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
+          }
+          scheduleNextPoll();
+          return;
+        }
+        pollInFlight = true;
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+        }
+        try {
+          const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
+            'screen_share_poll_frame',
+          );
+          if (result && result.seq > this.nativeCapturePollLastSeq) {
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+              this.markNativeCaptureLeakStage('first_rust_frame');
+            }
+            this.nativeCapturePollLastSeq = result.seq;
+            if (this.nativeCaptureLeakSession) {
+              this.nativeCaptureLeakSession.summary.counters.newFrames++;
+            }
+            handleFrame({ frame: result.frame, width: result.width, height: result.height });
+          } else if (result && this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.duplicateFrameSkips++;
+          }
+        } catch {
+          // invoke failed - capture may have stopped, ignore
+        } finally {
+          pollInFlight = false;
+          scheduleNextPoll();
+        }
+      };
+      scheduleNextPoll();
+    };
 
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: polling loop started, timestamp:', performance.now());
+    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: startup polling started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS);
 
     // ── Wait for first frame with timeout ──
     // If early frames already resolved the gate, this resolves immediately.
-    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    const FIRST_FRAME_TIMEOUT_MS = options.firstFrameTimeoutMs ?? 2000;
     const nativeFailurePromise = new Promise<void>((_, reject) => {
       this.nativeCaptureFailureReject = reject;
       if (this.nativeCaptureFailureReason) {
         reject(new Error(this.nativeCaptureFailureReason));
       }
     });
+    const nativeStartupDiagnostics = () => {
+      const summary = this.nativeCaptureLeakSession?.summary;
+      return JSON.stringify({
+        counters: summary?.counters ?? null,
+        stages: summary?.stages ?? null,
+        rust: summary?.windowsNativeCaptureDiagnostics ?? null,
+      });
+    };
     await Promise.race([
       firstFramePromise,
       nativeFailurePromise,
+      pollNativeFrameForStartup(),
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('native capture: first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(() => reject(new Error(`native capture: first frame timeout (${FIRST_FRAME_TIMEOUT_MS}ms); diagnostics=${nativeStartupDiagnostics()}`)), FIRST_FRAME_TIMEOUT_MS),
       ),
     ]).catch(async (err) => {
-      this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      const diagnostics = await this.captureWindowsNativeDiagnosticsSnapshot();
+      if (diagnostics) {
+        this.attachWindowsNativeCaptureDiagnostics(diagnostics);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      const enrichedError = message.includes('diagnostics=')
+        ? new Error(`${message}; rust=${JSON.stringify(diagnostics ?? null)}`)
+        : err;
+      this.markNativeCaptureFailure(enrichedError instanceof Error ? enrichedError.message : String(enrichedError));
       // Clean up the polling interval, canvas, and any state we set up before the
       // first-frame gate. Without this, a first-frame timeout (or a concurrent
       // stopNativeCapture() that races with this startup) leaves the poll
       // setInterval running and the canvas attached to document.body.
       await this.stopNativeCapture();
-      throw err;
+      throw enrichedError;
     });
 
     // Check if stopNativeCapture() was called during the first-frame await
@@ -5905,6 +6078,8 @@ export class LiveKitModule {
     // ── Publish track AFTER first frame confirms pipeline is live ──
     // Wrap in try/catch: if publishTrack throws, the polling interval is already
     // running and must be stopped to avoid an orphaned 60Hz IPC loop.
+    startSteadyNativePoll();
+    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: steady polling loop started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS);
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
@@ -5912,17 +6087,13 @@ export class LiveKitModule {
       // Release the preserved transceiver reference so livekit-fix can find
       // and reuse it via getTransceivers() inside publishTrack below.
       this.screenShareTransceiverForReuse = null;
+      this.markNativeCaptureLeakStage('publish_track_start');
+      this.noteShareLeakPublishStart();
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
+        ...buildNativeScreenSharePublishOptions(pubOpts),
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
         stream: Track.Source.ScreenShare,
-        videoCodec: pubOpts.videoCodec,
-        backupCodec: pubOpts.backupCodec,
-        simulcast: pubOpts.simulcast,
-        videoEncoding: {
-          maxBitrate: pubOpts.screenShareEncoding.maxBitrate,
-          maxFramerate: targetFps,
-        },
       } as unknown as TrackPublishOptions);
     } catch (err) {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
@@ -5931,9 +6102,26 @@ export class LiveKitModule {
     }
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: publishTrack completed, timestamp:', performance.now());
     this.nativeCapturePublication = publication;
+    this.captureShareLeakPublishDiagnostics();
+    if (this.nativeCaptureLeakSession) {
+      this.nativeCaptureLeakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
+    }
     this.markNativeCaptureLeakStage('publish_track_done');
+    this.adaptiveState = {
+      currentTier: 'full',
+      consecutiveLossPolls: 0,
+      consecutiveRecoveryPolls: 0,
+      consecutiveBandwidthPolls: 0,
+      basePreset: this.currentQuality,
+    };
+    this.postPublishRetryTimeout = setTimeout(() => {
+      this.postPublishRetryTimeout = null;
+      this.applyPostPublishTuning();
+    }, 100);
+    this.startScreenShareStatsPolling();
+    this.markNativeCaptureLeakStage('stats_polling_start');
 
-    console.log(LOG, `native capture bridge started (fps=${targetFps})`);
+    console.log(LOG, `native capture bridge started (publish_fps=${targetFps}, bridge_fps=${bridgeTransportFps})`);
   }
 
   /**
@@ -5959,7 +6147,7 @@ export class LiveKitModule {
 
     // Stop old polling loop (keeps publication + generator alive).
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
     this.nativeCaptureEarlyFrames = [];
@@ -5968,6 +6156,8 @@ export class LiveKitModule {
 
     // Build a new frame handler that writes into the SAME writer.
     let frameCount = 0;
+    let frameWorkInFlight = false;
+    let pendingFrame: { frame: string; width: number; height: number } | null = null;
     let firstFrameResolve: (() => void) | null = null;
     const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
 
@@ -5976,7 +6166,30 @@ export class LiveKitModule {
       return resp.arrayBuffer();
     };
 
+    const resolveFirstFrame = () => {
+      if (firstFrameResolve) {
+        firstFrameResolve();
+        firstFrameResolve = null;
+      }
+    };
+
+    const processNextPendingFrame = () => {
+      const next = pendingFrame;
+      pendingFrame = null;
+      if (next) {
+        handleFrame(next);
+      }
+    };
+
     const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.coalescedFrames++;
+        }
+        pendingFrame = payload;
+        return;
+      }
+      frameWorkInFlight = true;
       const { frame, width, height } = payload;
       decodeBase64(frame).then((buf) => {
         const blob = new Blob([buf], { type: 'image/jpeg' });
@@ -5985,27 +6198,68 @@ export class LiveKitModule {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const vf = new (globalThis as any).VideoFrame(bitmap, { timestamp: performance.now() * 1000 });
         bitmap.close();
-        tw.write(vf).then(() => {
+        let writePromise: Promise<void>;
+        try {
+          writePromise = Promise.resolve(tw.write(vf));
+        } catch (err) {
           vf.close();
-          frameCount++;
-          if (frameCount === 1) {
-            console.log(LOG, `[replace-source] first frame into existing generator (${width}x${height})`);
-            if (firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
-          }
-          if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
-            console.log(LOG, `[replace-source] wrote VideoFrame #${frameCount} (${width}x${height})`);
-          }
-        }).catch(() => { vf.close(); });
+          throw err;
+        }
+        frameCount++;
+        if (frameCount === 1) {
+          console.log(LOG, `[replace-source] first frame queued to existing generator (${width}x${height})`);
+          resolveFirstFrame();
+        }
+        if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
+          console.log(LOG, `[replace-source] queued VideoFrame #${frameCount} (${width}x${height})`);
+        }
+        writePromise.then(() => {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        }).catch(() => {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        });
       }).catch((err) => {
         if (frameCount === 0) console.warn(LOG, '[replace-source] first frame decode failed:', err);
+        frameWorkInFlight = false;
+        processNextPendingFrame();
       });
     };
 
     this.nativeCaptureFrameHandler = handleFrame;
 
     // ── Start new polling loop for the new Rust source ──
-    const POLL_INTERVAL_MS = 16;
-    this.nativeCapturePollInterval = setInterval(async () => {
+    const targetFps = this.currentPublishOptions.screenShareEncoding.maxFramerate || QUALITY_PRESETS[this.currentQuality].maxFramerate || 30;
+    const bridgeTransportFps = Math.min(targetFps, 15);
+    const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
+    let pollInFlight = false;
+    const scheduleNextPoll = () => {
+      if (!this.nativeCaptureUnlisten || this.nativeCapturePollInterval !== null) return;
+      this.nativeCapturePollInterval = setTimeout(() => {
+        this.nativeCapturePollInterval = null;
+        void pollOnce();
+      }, POLL_INTERVAL_MS);
+    };
+    const pollOnce = async () => {
+      if (!this.nativeCaptureUnlisten) return;
+      if (pollInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.overlappingPollSkips++;
+        }
+        scheduleNextPoll();
+        return;
+      }
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
+        }
+        scheduleNextPoll();
+        return;
+      }
+      pollInFlight = true;
       try {
         const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
           'screen_share_poll_frame',
@@ -6015,18 +6269,23 @@ export class LiveKitModule {
           handleFrame({ frame: result.frame, width: result.width, height: result.height });
         }
       } catch { /* capture may have stopped */ }
-    }, POLL_INTERVAL_MS);
+      finally {
+        pollInFlight = false;
+        scheduleNextPoll();
+      }
+    };
+    scheduleNextPoll();
 
     // ── Wait for first frame (5s timeout) ──
-    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    const FIRST_FRAME_TIMEOUT_MS = 2000;
     await Promise.race([
       firstFramePromise,
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('[replace-source] first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(() => reject(new Error('[replace-source] first frame timeout (2s)')), FIRST_FRAME_TIMEOUT_MS),
       ),
     ]).catch((err) => {
       if (this.nativeCapturePollInterval !== null) {
-        clearInterval(this.nativeCapturePollInterval);
+        clearTimeout(this.nativeCapturePollInterval);
         this.nativeCapturePollInterval = null;
       }
       this.nativeCaptureFrameHandler = null;
@@ -6052,7 +6311,7 @@ export class LiveKitModule {
 
     // Stop the polling loop
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
     if (this.nativeCaptureFailureUnlisten) {

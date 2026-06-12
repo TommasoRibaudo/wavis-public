@@ -72,7 +72,7 @@ impl ScreenShareConfig {
             "high" => {
                 self.max_width.store(2560, Ordering::Relaxed);
                 self.max_height.store(1440, Ordering::Relaxed);
-                self.max_fps.store(60, Ordering::Relaxed);
+                self.max_fps.store(30, Ordering::Relaxed);
                 self.jpeg_quality.store(92, Ordering::Relaxed);
             }
             "max" => {
@@ -391,6 +391,16 @@ mod tests {
         assert_eq!(cfg.max_height(), 1080);
         assert_eq!(cfg.max_fps(), 60);
         assert_eq!(cfg.jpeg_quality(), 85);
+    }
+
+    #[test]
+    fn config_apply_high_preset() {
+        let cfg = ScreenShareConfig::new();
+        cfg.apply_preset("high").unwrap();
+        assert_eq!(cfg.max_width(), 2560);
+        assert_eq!(cfg.max_height(), 1440);
+        assert_eq!(cfg.max_fps(), 30);
+        assert_eq!(cfg.jpeg_quality(), 92);
     }
 
     #[test]

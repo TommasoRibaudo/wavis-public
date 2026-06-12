@@ -1,9 +1,18 @@
 export type NativeShareLeakStage =
   | 'browser_capture_start'
   | 'native_capture_start'
+  | 'quality_sync_done'
+  | 'poll_started'
+  | 'poll_error'
+  | 'first_poll_frame'
+  | 'first_js_decode_start'
+  | 'first_js_frame_decoded'
+  | 'first_generator_write_queued'
+  | 'publish_track_start'
   | 'first_rust_frame'
   | 'first_js_frame_seen'
   | 'publish_track_done'
+  | 'stats_polling_start'
   | 'share_stop_requested'
   | 'unpublish_done'
   | 'track_stopped'
@@ -29,8 +38,12 @@ export interface ShareLeakMemorySample {
 
 export interface ShareLeakCounters {
   pollTicks: number;
+  pollErrors: number;
   newFrames: number;
   duplicateFrameSkips: number;
+  coalescedFrames: number;
+  skippedPollsFrameWorkInFlight: number;
+  overlappingPollSkips: number;
   decodeFailures: number;
   earlyFrameBufferPeak: number;
   firstFrameLatencyMs: number | null;
@@ -41,11 +54,22 @@ export interface WindowsNativeCaptureDiagnostics {
   backend: string;
   sourceKind: 'screen' | 'window';
   startupStage: string;
+  currentOperation: string;
+  startupElapsedMs: number | null;
+  startupStepTimings: WindowsNativeStartupStepTiming[];
+  captureThreadStartedAtMs: number | null;
+  lastStageUpdateAtMs: number | null;
+  captureThreadAlive: boolean;
   itemWidth: number;
   itemHeight: number;
   adapterDescription: string | null;
   adapterVendorId: number | null;
   adapterDeviceId: number | null;
+  adapterDedicatedVideoMemoryMb: number | null;
+  adapterDedicatedSystemMemoryMb: number | null;
+  adapterSharedSystemMemoryMb: number | null;
+  environment: WindowsNativeCaptureEnvironment;
+  timing: WindowsNativeCaptureTiming;
   frameArrivedCallbacks: number;
   usableFrames: number;
   tryGetNextFrameFailures: number;
@@ -58,6 +82,45 @@ export interface WindowsNativeCaptureDiagnostics {
   firstError: string | null;
   firstRawFrameLatencyMs: number | null;
   firstBufferedJpegLatencyMs: number | null;
+  pollCalls: number;
+  pollHits: number;
+  pollMisses: number;
+  firstPollHitLatencyMs: number | null;
+  latestPolledSeq: number | null;
+}
+
+export interface WindowsNativeStartupStepTiming {
+  stage: string;
+  elapsedMs: number;
+}
+
+export interface WindowsNativeCaptureEnvironment {
+  processId: number;
+  globalCpuPercent: number | null;
+  processTreeRssMb: number | null;
+  processTreeCpuPercent: number | null;
+  childProcessCount: number | null;
+  webviewProcessCount: number | null;
+  monitorCount: number | null;
+  selectedSourceWidth: number;
+  selectedSourceHeight: number;
+  targetFps: number;
+  jpegQuality: number;
+  videoDriverProvider: string | null;
+  videoDriverVersion: string | null;
+  videoDriverDate: string | null;
+  videoDriverQueryError: string | null;
+  overlayProcesses: Array<{ name: string; pid: number }>;
+}
+
+export interface WindowsNativeCaptureTiming {
+  firstRawFrameLatencyMs: number | null;
+  firstCapDownscaleMs: number | null;
+  firstRgbaToRgbMs: number | null;
+  firstJpegEncodeMs: number | null;
+  firstBase64EncodeMs: number | null;
+  firstLatestFrameWriteMs: number | null;
+  firstRawToPollableFrameMs: number | null;
 }
 
 export interface ShareLeakCleanupFlags {

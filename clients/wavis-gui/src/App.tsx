@@ -63,11 +63,24 @@ export default function App() {
     if (isChromelessWindow()) return;
 
     const intervalId = setInterval(() => {
-      const { networkStats, shareStats, videoReceiveStats, participants, selfParticipantId } = getState();
+      const {
+        networkStats,
+        shareStats,
+        videoReceiveStats,
+        participants,
+        selfParticipantId,
+        activeVideoShare,
+      } = getState();
+      const self = participants.find((p) => p.id === selfParticipantId);
+      const fallbackShareActive = self?.isSharing === true && self.shareType !== 'audio_only';
+      const isSharing = activeVideoShare !== null || fallbackShareActive;
       void emit('diagnostics:voice-stats', {
         networkStats,
         shareStats,
         videoReceiveStats,
+        isSharing,
+        shareMode: activeVideoShare?.mode ?? (fallbackShareActive ? self?.shareType ?? 'browser' : null),
+        shareSourceName: activeVideoShare?.sourceName ?? (fallbackShareActive ? 'Browser screen share' : null),
         // Serialize only what diagnostics needs — avoids MediaStream and other non-serialisable fields.
         participants: participants.map((p) => ({
           id: p.id,

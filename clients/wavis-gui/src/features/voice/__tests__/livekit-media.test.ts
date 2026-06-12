@@ -3704,6 +3704,18 @@ describe('Screen share quality optimization', () => {
       );
     });
 
+    it('stores selected quality before a room or screen-share publication exists', async () => {
+      resetAll();
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+
+      await mod.setScreenShareQuality('max');
+
+      expect((mod as unknown as Record<string, unknown>).currentQuality).toBe('max');
+      expect(cbs.calls.filter(c => c.method === 'onSystemEvent')).toHaveLength(0);
+    });
+
     it('quality preset failure retains previous quality and does not emit event', async () => {
       /**
        * Validates: Requirement 4.6

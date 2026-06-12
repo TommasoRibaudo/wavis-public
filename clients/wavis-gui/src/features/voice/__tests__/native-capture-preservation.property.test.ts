@@ -39,9 +39,14 @@ vi.mock('@tauri-apps/api/event', () => ({
 let pollSeq = 0;
 /** Whether invoke should return frames (true) or null (false). */
 let pollReturnsFrames = true;
+/** Whether invoke should reject to simulate a broken Tauri poll bridge. */
+let pollRejects = false;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
+    if (cmd === 'screen_share_poll_frame' && pollRejects) {
+      throw new Error('IPC bridge unavailable');
+    }
     if (cmd === 'screen_share_poll_frame' && pollReturnsFrames) {
       pollSeq++;
       return { frame: 'AAAA', width: 1920, height: 1080, seq: pollSeq };
@@ -267,6 +272,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   beforeEach(() => {
     pollSeq = 0;
     pollReturnsFrames = true;
+    pollRejects = false;
     nativeCaptureFailureHandler = null;
     mockUnlisten.mockClear();
     mockPublishTrack.mockClear();
@@ -286,7 +292,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   // ── 3a. Canvas fallback path preservation ──────────────────────
 
   describe('3a. Canvas fallback path preservation', () => {
-    it('creates canvas, appends to DOM, primes with #000001, calls captureStream(targetFps), and publishes track with ScreenShare source', async () => {
+    it('creates canvas, appends to DOM, primes with #000001, caps captureStream FPS, and publishes track with ScreenShare source', async () => {
       /**
        * **Validates: Requirements 3.3**
        *
@@ -315,7 +321,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
           fc.asyncProperty(
             fc.constantFrom('low', 'high', 'max'), // quality preset
             async (quality) => {
-              const expectedFps = presetFpsMap[quality];
+              const expectedFps = Math.min(presetFpsMap[quality], 15);
 
               // Reset mocks for each property run
               pollSeq = 0;
@@ -384,6 +390,41 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
 
   // ── 3b. Cleanup preservation (stopNativeCapture) ───────────────
 
+  it('polls native frames at the capped Windows bridge FPS interval', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      pollSeq = 0;
+      pollReturnsFrames = true;
+      mockPublishTrack.mockClear();
+      delete (globalThis as Record<string, unknown>).MediaStreamTrackGenerator;
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await driveToConnected(mod);
+      (mod as any).currentQuality = 'high';
+
+      const capturePromise = mod.startNativeCapture();
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      await capturePromise;
+
+      expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 67)).toBe(true);
+      const publishArgs = mockPublishTrack.mock.calls[0] as unknown[];
+      expect(publishArgs[1]).toMatchObject({
+        source: 'screen_share',
+        simulcast: false,
+        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 30 },
+        screenShareSimulcastLayers: [],
+      });
+
+      await mod.stopNativeCapture();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back before the timeout when Rust reports repeated WGC readback failures', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -404,6 +445,28 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
       await expect(capturePromise).rejects.toThrow(
         'WGC readback failed repeatedly before first frame',
       );
+      expect(mockUnlisten).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects with the invoke error when startup polling fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      pollRejects = true;
+      mockPublishTrack.mockClear();
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await driveToConnected(mod);
+
+      const capturePromise = mod.startNativeCapture();
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(capturePromise).rejects.toThrow(
+        'native capture: screen_share_poll_frame failed during startup: IPC bridge unavailable',
+      );
+      expect(mockPublishTrack).not.toHaveBeenCalled();
       expect(mockUnlisten).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
