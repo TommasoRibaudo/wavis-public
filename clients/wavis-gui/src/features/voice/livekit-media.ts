@@ -2172,9 +2172,10 @@ export class LiveKitModule {
     if (!savedId) return null;
 
     let resolvedId = savedId;
-    if (_realEnumerateDevices) {
+    const browserEnumerateDevices = getBrowserEnumerateDevices();
+    if (browserEnumerateDevices) {
       try {
-        const realDevices = await _realEnumerateDevices();
+        const realDevices = await browserEnumerateDevices();
         const wasapiLabel = savedId.startsWith('input:') ? savedId.slice('input:'.length) : savedId;
         const match = realDevices.find(
           (d) => d.kind === 'audioinput' && d.label.startsWith(wasapiLabel),
