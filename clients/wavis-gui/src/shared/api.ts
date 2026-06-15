@@ -71,6 +71,17 @@ function refreshSucceeded(result: RefreshResult): boolean {
   return result.status === 'success';
 }
 
+/**
+ * Signal to AuthGate that the session is definitively dead (refresh returned
+ * a non-transient error). AuthGate listens for this event and navigates to
+ * /login immediately, bypassing the scheduled-refresh wait.
+ */
+function emitAuthExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('wavis:auth-expired'));
+  }
+}
+
 async function doFetch(
   endpoint: string,
   init: RequestInit,
@@ -113,6 +124,7 @@ export async function apiFetch<T = unknown>(
   if (await isTokenExpired()) {
     const result = await refreshTokens();
     if (!refreshSucceeded(result)) {
+      emitAuthExpired();
       throw new ApiError(401, 'Session expired', 'Unauthorized');
     }
   }
@@ -140,6 +152,7 @@ export async function apiFetch<T = unknown>(
   if (res.status === 401) {
     const refreshed = await refreshTokens();
     if (!refreshSucceeded(refreshed)) {
+      emitAuthExpired();
       throw new ApiError(401, 'Session expired', 'Unauthorized');
     }
 
