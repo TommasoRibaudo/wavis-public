@@ -21,6 +21,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_capture;
+#[cfg(target_os = "windows")]
+mod taskbar_toolbar;
 #[cfg(target_os = "linux")]
 mod external_share_helper;
 #[cfg(not(target_os = "linux"))]
@@ -449,6 +451,11 @@ fn main() {
 
                 if let Err(err) = tray::setup_tray(app) {
                     eprintln!("wavis: tray unavailable: {err}");
+                }
+
+                #[cfg(target_os = "windows")]
+                if let Err(err) = taskbar_toolbar::setup_taskbar_toolbar(app) {
+                    log::warn!("wavis: taskbar toolbar unavailable: {err}");
                 }
             }
 

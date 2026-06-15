@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useLocation } from 'react-router';
 import { clearLastChannel, getLastChannel } from '@features/settings/settings-store';
 import ChannelsList from './ChannelsList';
 import { fetchChannels, type Channel } from './channels';
@@ -22,9 +22,17 @@ export function resolveInitialRedirect(
  */
 export default function InitialRedirect() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [showChannelsList, setShowChannelsList] = useState(false);
 
   useEffect(() => {
+    // If we arrived here after an explicit room leave, skip the auto-redirect to
+    // /room — the user intentionally left and should see the channels list.
+    if ((location.state as Record<string, unknown> | null)?.skipAutoRedirect) {
+      setShowChannelsList(true);
+      return;
+    }
+
     let cancelled = false;
     (async () => {
       const lastChannel = await getLastChannel();
@@ -59,7 +67,7 @@ export default function InitialRedirect() {
     return () => {
       cancelled = true;
     };
-  }, [navigate]);
+  }, [navigate, location.state]);
 
   if (!showChannelsList) return null;
   return <ChannelsList />;

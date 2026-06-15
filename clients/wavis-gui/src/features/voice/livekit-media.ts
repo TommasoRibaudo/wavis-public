@@ -3381,12 +3381,16 @@ export class LiveKitModule {
     if (leakSession && leakSession.stopRequestedAtMs === null) {
       leakSession.stopRequestedAtMs = Date.now();
       leakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
+      // Guard against concurrent disconnect() nulling this.room while awaiting above.
+      if (this.disposed || !this.room) return;
       leakSession.summary.browserWebRtcBeforeStop = this.captureBrowserWebRtcSnapshot(expectedTrackId);
       this.markNativeCaptureLeakStage('share_stop_requested');
     }
 
     if (options.stopNativeAudio && usesNativeScreenShareAudio()) {
       await this.stopWasapiScreenShareAudio();
+      // Guard against concurrent disconnect() nulling this.room while awaiting above.
+      if (this.disposed || !this.room) return;
     }
 
     let disableFailed = false;
@@ -3439,7 +3443,7 @@ export class LiveKitModule {
     } finally {
       if (leakSession) {
         leakSession.summary.cleanupFlags.publicationCleared =
-          this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare) === undefined;
+          this.room?.localParticipant?.getTrackPublication(Track.Source.ScreenShare) === undefined;
       }
       if (mediaTrack) {
         try {
@@ -3482,6 +3486,8 @@ export class LiveKitModule {
     if (usesRustScreenShareAudio()) {
       await this.stopLinuxScreenShareAudio();
     }
+    // Guard: disconnect() may have run while awaiting audio teardown above.
+    if (this.disposed || !this.room) return;
     await this.room.localParticipant.setScreenShareEnabled(false);
   }
 

@@ -1159,6 +1159,7 @@ export function buildStartShareMessage(mode: ShareMode): { type: string; shareTy
 
 let client: SignalingClient | null = null;
 let unsubscribe: (() => void) | null = null;
+let unsubStatusChange: (() => void) | null = null;
 let onChange: ((state: VoiceRoomState) => void) | null = null;
 let channelRole: ChannelRole | null = null;
 let sessionUsername: string | null = null;
@@ -4124,7 +4125,7 @@ export function initSession(
   unsubscribe = client.onMessage(dispatchMessage);
 
   // Detect disconnection during active session for reconnection flow
-  client.onStatusChange((status) => {
+  unsubStatusChange = client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
       if (state.machineState === 'active' || state.machineState === 'joining') {
@@ -4262,6 +4263,13 @@ export function leaveRoom(): void {
   }
   authRefreshRetries = 0;
   wasReconnecting = false;
+
+  // Unregister status-change handler before disconnecting so the intentional
+  // disconnect does not trigger the reconnect/error logic in that handler.
+  if (unsubStatusChange) {
+    unsubStatusChange();
+    unsubStatusChange = null;
+  }
 
   // Disconnect the client
   if (client) {
