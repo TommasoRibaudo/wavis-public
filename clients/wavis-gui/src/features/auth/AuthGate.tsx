@@ -8,6 +8,8 @@ import {
   getTokenExpiryMs,
   getServerUrl,
   getUsername,
+  fetchMyUsername,
+  setUsername,
 } from './auth';
 import type { RefreshResult } from './auth';
 import { parseHostname } from '@shared/helpers';
@@ -114,6 +116,21 @@ export default function AuthGate() {
     }, delay);
   }, [navigate, cancelScheduledRefresh]);
 
+  // Listen for auth-expired signals from apiFetch. This fires when an API call
+  // gets a server-side 401 and the token refresh also fails — the session is
+  // definitively dead. Navigate to /login immediately rather than waiting for
+  // the scheduled refresh timer (which may be many minutes away).
+  useEffect(() => {
+    async function handleAuthExpired() {
+      console.warn(LOG_PREFIX, 'Auth-expired signal from API call — navigating to /login');
+      cancelScheduledRefresh();
+      await clearAccessTokens();
+      navigate('/login', { replace: true });
+    }
+    window.addEventListener('wavis:auth-expired', handleAuthExpired);
+    return () => window.removeEventListener('wavis:auth-expired', handleAuthExpired);
+  }, [navigate, cancelScheduledRefresh]);
+
   // Re-evaluate token state when app regains focus. Covers two cases:
   // 1. Token expired while backgrounded (setTimeout didn't fire) → refresh now
   // 2. Token still valid but timer was killed → re-schedule so we don't miss the window
@@ -159,9 +176,9 @@ export default function AuthGate() {
         setHostname(parseHostname(url));
       }
 
-      const name = await getUsername();
-      if (!cancelled && name) {
-        setUsernameState(name);
+      const localName = await getUsername();
+      if (!cancelled && localName) {
+        setUsernameState(localName);
       }
 
       // 2. Check token expiry
@@ -213,7 +230,22 @@ export default function AuthGate() {
         }
       }
 
-      // 3. Token is valid (or just refreshed) — schedule background refresh
+      // 3. If no username in local store, sync from server now that token is valid.
+      // This recovers accounts where username was never persisted locally (e.g.
+      // after device pairing when the best-effort sync failed, or after a store reset).
+      if (!localName) {
+        try {
+          const serverName = await fetchMyUsername();
+          if (!cancelled && serverName) {
+            await setUsername(serverName);
+            setUsernameState(serverName);
+          }
+        } catch {
+          // Best-effort — missing username is cosmetic, proceed without blocking
+        }
+      }
+
+      // 4. Token is valid (or just refreshed) — schedule background refresh
       if (!cancelled) {
         setReady(true);
         scheduleRefresh();

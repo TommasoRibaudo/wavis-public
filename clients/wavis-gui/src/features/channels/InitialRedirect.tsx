@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { clearLastChannel, getLastChannel } from '@features/settings/settings-store';
+import { getLastChannel } from '@features/settings/settings-store';
 import ChannelsList from './ChannelsList';
 import { fetchChannels, type Channel } from './channels';
 
@@ -9,10 +9,10 @@ type LastChannel = { id: string; name: string; role: Channel['role'] };
 export function resolveInitialRedirect(
   lastChannel: LastChannel | null,
   channels: Channel[],
-): { kind: 'room'; channel: Channel } | { kind: 'list'; clearStaleLastChannel: boolean } {
-  if (!lastChannel) return { kind: 'list', clearStaleLastChannel: false };
+): { kind: 'room'; channel: Channel } | { kind: 'list' } {
+  if (!lastChannel) return { kind: 'list' };
   const channel = channels.find((ch) => ch.id === lastChannel.id);
-  if (!channel) return { kind: 'list', clearStaleLastChannel: true };
+  if (!channel) return { kind: 'list' };
   return { kind: 'room', channel };
 }
 
@@ -55,9 +55,6 @@ export default function InitialRedirect() {
           return;
         }
 
-        if (target.clearStaleLastChannel) {
-          await clearLastChannel();
-        }
         if (!cancelled) setShowChannelsList(true);
       } catch {
         if (!cancelled) setShowChannelsList(true);
