@@ -178,6 +178,15 @@ pub fn share_picker_cancel(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("failed to emit share-picker:cancelled: {e}"))
 }
 
+/// Relay a request to use the native portal/system picker to the main window.
+#[tauri::command]
+pub fn share_picker_use_portal(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+
+    app.emit_to("main", "share-picker:use-portal", ())
+        .map_err(|e| format!("failed to emit share-picker:use-portal: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

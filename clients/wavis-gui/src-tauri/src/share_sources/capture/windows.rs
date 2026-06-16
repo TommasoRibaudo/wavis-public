@@ -440,8 +440,8 @@ fn enumerate_window_audio_sources(
 fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDC, GetMonitorInfoW, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetMonitorInfoW, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
     };
     use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
     use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PW_RENDERFULLCONTENT};
@@ -449,7 +449,10 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
     let handle_val: isize = match source_id.parse() {
         Ok(value) => value,
         Err(_) => {
-            crate::debug_eprintln!("[share-thumb] source_id '{}' is not an isize handle", source_id);
+            crate::debug_eprintln!(
+                "[share-thumb] source_id '{}' is not an isize handle",
+                source_id
+            );
             return Ok(None);
         }
     };
@@ -467,7 +470,11 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             let w = (client_rect.right - client_rect.left) as u32;
             let h = (client_rect.bottom - client_rect.top) as u32;
             if w == 0 || h == 0 {
-                crate::debug_eprintln!("[share-thumb] window {}x{} has zero client dimension", w, h);
+                crate::debug_eprintln!(
+                    "[share-thumb] window {}x{} has zero client dimension",
+                    w,
+                    h
+                );
                 return Ok(None);
             }
 
@@ -506,7 +513,12 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
             ReleaseDC(HWND::default(), screen_dc);
-            crate::debug_eprintln!("[share-thumb] window capture {}x{}: rgba={}", w, h, rgba.is_some());
+            crate::debug_eprintln!(
+                "[share-thumb] window capture {}x{}: rgba={}",
+                w,
+                h,
+                rgba.is_some()
+            );
 
             return match rgba {
                 Some(data) => Ok(Some((data, w, h))),
@@ -522,13 +534,22 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             ..std::mem::zeroed()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            crate::debug_eprintln!("[share-thumb] GetMonitorInfoW failed for handle {}", handle_val);
+            crate::debug_eprintln!(
+                "[share-thumb] GetMonitorInfoW failed for handle {}",
+                handle_val
+            );
             return Ok(None);
         }
 
         let w = (mi.rcMonitor.right - mi.rcMonitor.left) as u32;
         let h = (mi.rcMonitor.bottom - mi.rcMonitor.top) as u32;
-        crate::debug_eprintln!("[share-thumb] monitor rect ({},{}) {}x{}", mi.rcMonitor.left, mi.rcMonitor.top, w, h);
+        crate::debug_eprintln!(
+            "[share-thumb] monitor rect ({},{}) {}x{}",
+            mi.rcMonitor.left,
+            mi.rcMonitor.top,
+            w,
+            h
+        );
         if w == 0 || h == 0 {
             crate::debug_eprintln!("[share-thumb] monitor has zero dimension");
             return Ok(None);
@@ -557,7 +578,8 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
         let old_bmp = SelectObject(mem_dc, bitmap);
         let _ = BitBlt(
             mem_dc,
-            0, 0,
+            0,
+            0,
             w as i32,
             h as i32,
             screen_dc,
@@ -572,7 +594,12 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
         let _ = DeleteObject(bitmap);
         let _ = DeleteDC(mem_dc);
         ReleaseDC(HWND::default(), screen_dc);
-        crate::debug_eprintln!("[share-thumb] monitor capture {}x{}: rgba={}", w, h, rgba.is_some());
+        crate::debug_eprintln!(
+            "[share-thumb] monitor capture {}x{}: rgba={}",
+            w,
+            h,
+            rgba.is_some()
+        );
 
         match rgba {
             Some(data) => Ok(Some((data, w, h))),
@@ -608,7 +635,12 @@ unsafe fn read_bitmap_rgba(
     };
 
     let mut bgra = vec![0u8; (w * h * 4) as usize];
-    crate::debug_eprintln!("[share-thumb] GetDIBits: {}x{} ({} bytes)", w, h, bgra.len());
+    crate::debug_eprintln!(
+        "[share-thumb] GetDIBits: {}x{} ({} bytes)",
+        w,
+        h,
+        bgra.len()
+    );
     let rows = GetDIBits(
         screen_dc,
         bitmap,
@@ -633,9 +665,13 @@ unsafe fn read_bitmap_rgba(
     // GDI BitBlt returns a valid (non-zero row count) but all-black bitmap for
     // GPU/DirectX-rendered windows it cannot read. Treat a fully-black frame as
     // a capture failure so callers show the name fallback instead.
-    let is_all_black = bgra.chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
+    let is_all_black = bgra
+        .chunks_exact(4)
+        .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
     if is_all_black {
-        crate::debug_eprintln!("[share-thumb] all-black frame detected, treating as capture failure");
+        crate::debug_eprintln!(
+            "[share-thumb] all-black frame detected, treating as capture failure"
+        );
         return None;
     }
 

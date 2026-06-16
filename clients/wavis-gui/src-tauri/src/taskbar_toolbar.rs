@@ -19,7 +19,7 @@ use tauri::{App, Emitter, Listener, Manager};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
-        CallWindowProcW, PostMessageW, SetWindowLongPtrW, GWLP_WNDPROC, WNDPROC, WM_COMMAND,
+        CallWindowProcW, PostMessageW, SetWindowLongPtrW, GWLP_WNDPROC, WM_COMMAND, WNDPROC,
     },
 };
 

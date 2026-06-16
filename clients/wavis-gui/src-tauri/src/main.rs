@@ -583,6 +583,7 @@ fn main() {
             share_sources::fetch_source_thumbnail,
             share_sources::share_picker_select,
             share_sources::share_picker_cancel,
+            share_sources::share_picker_use_portal,
             portal_auth::authorize_screen_capture,
             portal_auth::get_capture_auth_status,
             screen_recording_auth::ensure_screen_recording_access,

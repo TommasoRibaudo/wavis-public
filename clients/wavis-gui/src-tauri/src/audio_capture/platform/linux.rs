@@ -1322,13 +1322,14 @@ fn wait_for_pa_source(source_id: &str, timeout: std::time::Duration) -> bool {
 /// pulled in automatically by `pipewire-pulse`.
 #[cfg(target_os = "linux")]
 fn ensure_pactl_available() -> Result<(), String> {
-    match std::process::Command::new("pactl").arg("--version").output() {
+    match std::process::Command::new("pactl")
+        .arg("--version")
+        .output()
+    {
         Ok(o) if o.status.success() => Ok(()),
-        _ => Err(
-            "system audio sharing requires `pactl` — install it with: \
+        _ => Err("system audio sharing requires `pactl` — install it with: \
              sudo apt install pulseaudio-utils"
-                .to_string(),
-        ),
+            .to_string()),
     }
 }
 
@@ -1539,9 +1540,7 @@ fn audio_capture_loop(
             ) {
                 Ok(s) => {
                     if attempt > 1 {
-                        log::info!(
-                            "[audio_capture] pa_simple open succeeded on attempt {attempt}"
-                        );
+                        log::info!("[audio_capture] pa_simple open succeeded on attempt {attempt}");
                     }
                     opened = Some(s);
                     break;

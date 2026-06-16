@@ -22,6 +22,7 @@ const MODES: { key: ShareMode; label: string; sourceType: ShareSourceType }[] = 
 const ECHO_WARNING_SUBSTRING = 'echo possible';
 const DEBUG_SCREEN_CAPTURE = import.meta.env.VITE_DEBUG_SCREEN_CAPTURE === 'true';
 const LOG = '[share-picker]';
+const PORTAL_SOURCE_ID = 'portal';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -42,6 +43,7 @@ export interface SharePickerProps {
   modeScope?: 'all' | 'video_only';
   initialWithAudio?: boolean;
   onSelect?: (selection: ShareSelection) => void;
+  onPortalFallback?: () => void;
   onCancel?: () => void;
 }
 
@@ -76,6 +78,36 @@ export function filterSourcesByMode(
   return sources.filter((s) => s.source_type === entry.sourceType);
 }
 
+function isPortalSource(source: ShareSource): boolean {
+  return source.id === PORTAL_SOURCE_ID;
+}
+
+function withPortalFallbackSources(enumResult: EnumerationResult | null): ShareSource[] {
+  const sources = enumResult?.sources ?? [];
+  if (enumResult?.fallback_reason !== 'portal') return sources;
+
+  const next = [...sources];
+  if (!next.some((source) => source.source_type === 'screen')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Screen or display',
+      source_type: 'screen',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  if (!next.some((source) => source.source_type === 'window')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Window or app',
+      source_type: 'window',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  return next;
+}
+
 /** Pick the first mode that has sources, or default to screen_audio. */
 function pickDefaultMode(sources: ShareSource[]): ShareMode {
   for (const m of MODES) {
@@ -86,10 +118,15 @@ function pickDefaultMode(sources: ShareSource[]): ShareMode {
 
 /** Pick the first mode that has sources and is not blocked by an occupied slot. */
 export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
-  for (const m of MODES) {
-    const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
-    if (!blocked && sources.some((s) => s.source_type === m.sourceType)) {
-      return m.key;
+  for (const allowPortal of [false, true]) {
+    for (const m of MODES) {
+      const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
+      const hasSource = sources.some((s) =>
+        s.source_type === m.sourceType && (allowPortal || !isPortalSource(s)),
+      );
+      if (!blocked && hasSource) {
+        return m.key;
+      }
     }
   }
   return pickDefaultMode(sources);
@@ -279,18 +316,18 @@ export default function SharePicker(props: SharePickerProps) {
     ? (props.occupied ?? { videoOccupied: false, audioOccupied: false })
     : (parsed?.occupied ?? { videoOccupied: false, audioOccupied: false });
 
-  const initSources = enumResult?.sources ?? [];
+  const initPickerSources = withPortalFallbackSources(enumResult);
   const modeScope = props.modeScope ?? 'all';
   const initialMode = modeScope === 'video_only'
-    ? pickInitialVideoMode(initSources, occupied)
-    : pickInitialMode(initSources, occupied);
+    ? pickInitialVideoMode(initPickerSources, occupied)
+    : pickInitialMode(initPickerSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
-    initSources.length > 0 ? initialMode : 'screen_audio',
+    initPickerSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
   const [withAudio, setWithAudio] = useState<boolean>(() =>
-    props.initialWithAudio ?? defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
+    props.initialWithAudio ?? defaultWithAudioForMode(initPickerSources.length > 0 ? initialMode : 'screen_audio', occupied),
   );
   // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
   const [compatibilityMode, setCompatibilityMode] = useState(false);
@@ -307,7 +344,7 @@ export default function SharePicker(props: SharePickerProps) {
     let cancelled = false;
 
     const visualSources = enumResult.sources.filter(
-      (s) => s.source_type === 'screen' || s.source_type === 'window',
+      (s) => !isPortalSource(s) && (s.source_type === 'screen' || s.source_type === 'window'),
     );
 
     if (visualSources.length > 0) {
@@ -340,7 +377,7 @@ export default function SharePicker(props: SharePickerProps) {
   const isWindowsPlatform = /Windows NT/i.test(navigator.userAgent || '');
 
   /* ── Derived ── */
-  const sources = enumResult?.sources ?? [];
+  const sources = withPortalFallbackSources(enumResult);
   const warnings = enumResult?.warnings ?? [];
   const filteredSources = filterSourcesByMode(sources, activeMode);
   const isVisualMode = activeMode !== 'audio_only';
@@ -429,7 +466,7 @@ export default function SharePicker(props: SharePickerProps) {
     const selection: ShareSelection = {
       mode: activeMode,
       sourceId: selectedSource.id,
-      sourceName: selectedSource.name,
+      sourceName: isPortalSource(selectedSource) ? 'System picker' : selectedSource.name,
       withAudio: activeMode === 'audio_only' ? false : withAudio,
       sourceKind: selectedSource.source_type === 'window' ? 'window' : 'screen',
       compatibilityMode,
@@ -451,6 +488,16 @@ export default function SharePicker(props: SharePickerProps) {
       props.onCancel?.();
     } else {
       await invoke('share_picker_cancel');
+      await getCurrentWindow().close();
+    }
+  }, [isInline, props]);
+
+  /* ── Portal fallback action ── */
+  const handlePortalFallback = useCallback(async () => {
+    if (isInline) {
+      props.onPortalFallback?.();
+    } else {
+      await invoke('share_picker_use_portal');
       await getCurrentWindow().close();
     }
   }, [isInline, props]);
@@ -524,7 +571,7 @@ export default function SharePicker(props: SharePickerProps) {
               ⚠ Direct access unavailable
             </span>
             <button
-              onClick={handleCancel}
+              onClick={handlePortalFallback}
               className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"
             >
               Use system picker
