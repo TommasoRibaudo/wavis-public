@@ -3097,7 +3097,7 @@ export default function ActiveRoom() {
                           className="w-full bg-wavis-panel border border-wavis-text-secondary text-wavis-text text-xs py-0.5 px-1 cursor-pointer"
                         >
                           {(['low', 'high', 'max'] as const).map((q) => {
-                            const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 60fps' : 'Max     1440p @ 60fps';
+                            const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1080p @ 60fps' : 'Max     1080p @ 60fps';
                             return <option key={q} value={q}>{label}</option>;
                           })}
                         </select>

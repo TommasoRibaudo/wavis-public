@@ -39,10 +39,29 @@ pub struct WindowsNativeCaptureDiagnostics {
     pub adapter_dedicated_video_memory_mb: Option<u64>,
     pub adapter_dedicated_system_memory_mb: Option<u64>,
     pub adapter_shared_system_memory_mb: Option<u64>,
+    pub border_required_disabled: Option<bool>,
+    pub border_required_error: Option<String>,
+    pub capture_indicator_note: Option<String>,
     pub environment: WindowsNativeCaptureEnvironment,
     pub timing: WindowsNativeCaptureTiming,
     pub frame_arrived_callbacks: u64,
+    pub raw_backend_callback_fps: f64,
     pub usable_frames: u64,
+    pub emitted_pollable_frames: u64,
+    pub emitted_pollable_frame_fps: f64,
+    pub throttle_drop_count: u64,
+    pub throttle_drop_fps: f64,
+    pub cap_downscale_avg_ms: f64,
+    pub i420_convert_avg_ms: f64,
+    pub rgba_to_rgb_avg_ms: f64,
+    pub jpeg_encode_avg_ms: f64,
+    pub base64_encode_avg_ms: f64,
+    pub latest_frame_write_avg_ms: f64,
+    pub raw_to_pollable_frame_avg_ms: f64,
+    pub active_backend: String,
+    pub previous_backend: Option<String>,
+    pub retry_reason: Option<String>,
+    pub retry_at_ms: Option<u64>,
     pub try_get_next_frame_failures: u64,
     pub surface_failures: u64,
     pub surface_cast_failures: u64,
@@ -58,6 +77,14 @@ pub struct WindowsNativeCaptureDiagnostics {
     pub poll_misses: u64,
     pub first_poll_hit_latency_ms: Option<u64>,
     pub latest_polled_seq: Option<u64>,
+    #[serde(skip)]
+    interval_started_at_ms: u64,
+    #[serde(skip)]
+    interval_frame_arrived_callbacks: u64,
+    #[serde(skip)]
+    interval_emitted_pollable_frames: u64,
+    #[serde(skip)]
+    interval_throttle_drop_count: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,6 +127,7 @@ pub struct WindowsOverlayProcess {
 pub struct WindowsNativeCaptureTiming {
     pub first_raw_frame_latency_ms: Option<u64>,
     pub first_cap_downscale_ms: Option<u64>,
+    pub first_i420_convert_ms: Option<u64>,
     pub first_rgba_to_rgb_ms: Option<u64>,
     pub first_jpeg_encode_ms: Option<u64>,
     pub first_base64_encode_ms: Option<u64>,
@@ -127,6 +155,9 @@ impl WindowsNativeCaptureDiagnostics {
             adapter_dedicated_video_memory_mb: None,
             adapter_dedicated_system_memory_mb: None,
             adapter_shared_system_memory_mb: None,
+            border_required_disabled: None,
+            border_required_error: None,
+            capture_indicator_note: None,
             environment: WindowsNativeCaptureEnvironment {
                 process_id: std::process::id(),
                 selected_source_width: item_width,
@@ -135,7 +166,23 @@ impl WindowsNativeCaptureDiagnostics {
             },
             timing: WindowsNativeCaptureTiming::default(),
             frame_arrived_callbacks: 0,
+            raw_backend_callback_fps: 0.0,
             usable_frames: 0,
+            emitted_pollable_frames: 0,
+            emitted_pollable_frame_fps: 0.0,
+            throttle_drop_count: 0,
+            throttle_drop_fps: 0.0,
+            cap_downscale_avg_ms: 0.0,
+            i420_convert_avg_ms: 0.0,
+            rgba_to_rgb_avg_ms: 0.0,
+            jpeg_encode_avg_ms: 0.0,
+            base64_encode_avg_ms: 0.0,
+            latest_frame_write_avg_ms: 0.0,
+            raw_to_pollable_frame_avg_ms: 0.0,
+            active_backend: backend.to_string(),
+            previous_backend: None,
+            retry_reason: None,
+            retry_at_ms: None,
             try_get_next_frame_failures: 0,
             surface_failures: 0,
             surface_cast_failures: 0,
@@ -151,7 +198,89 @@ impl WindowsNativeCaptureDiagnostics {
             poll_misses: 0,
             first_poll_hit_latency_ms: None,
             latest_polled_seq: None,
+            interval_started_at_ms: unix_now_ms(),
+            interval_frame_arrived_callbacks: 0,
+            interval_emitted_pollable_frames: 0,
+            interval_throttle_drop_count: 0,
         }
+    }
+
+    pub fn refresh_interval_rates(&mut self) {
+        let now = unix_now_ms();
+        let elapsed_ms = now.saturating_sub(self.interval_started_at_ms);
+        if elapsed_ms < 1000 {
+            return;
+        }
+        let elapsed_s = elapsed_ms as f64 / 1000.0;
+        self.raw_backend_callback_fps = self
+            .frame_arrived_callbacks
+            .saturating_sub(self.interval_frame_arrived_callbacks) as f64
+            / elapsed_s;
+        self.emitted_pollable_frame_fps = self
+            .emitted_pollable_frames
+            .saturating_sub(self.interval_emitted_pollable_frames) as f64
+            / elapsed_s;
+        self.throttle_drop_fps = self
+            .throttle_drop_count
+            .saturating_sub(self.interval_throttle_drop_count) as f64
+            / elapsed_s;
+        self.interval_started_at_ms = now;
+        self.interval_frame_arrived_callbacks = self.frame_arrived_callbacks;
+        self.interval_emitted_pollable_frames = self.emitted_pollable_frames;
+        self.interval_throttle_drop_count = self.throttle_drop_count;
+    }
+
+    pub fn record_backend_callback(&mut self) {
+        self.frame_arrived_callbacks = self.frame_arrived_callbacks.saturating_add(1);
+        self.refresh_interval_rates();
+    }
+
+    pub fn record_throttle_drop(&mut self) {
+        self.throttle_drop_count = self.throttle_drop_count.saturating_add(1);
+        self.refresh_interval_rates();
+    }
+
+    pub fn record_pollable_frame_timing(
+        &mut self,
+        cap_downscale_ms: u64,
+        i420_convert_ms: u64,
+        rgba_to_rgb_ms: u64,
+        jpeg_encode_ms: u64,
+        base64_encode_ms: u64,
+        latest_frame_write_ms: u64,
+        raw_to_pollable_frame_ms: u64,
+    ) {
+        self.emitted_pollable_frames = self.emitted_pollable_frames.saturating_add(1);
+        let n = self.emitted_pollable_frames as f64;
+        let update = |avg: &mut f64, value: u64| {
+            *avg = ((*avg * (n - 1.0)) + value as f64) / n;
+        };
+        update(&mut self.cap_downscale_avg_ms, cap_downscale_ms);
+        update(&mut self.i420_convert_avg_ms, i420_convert_ms);
+        update(&mut self.rgba_to_rgb_avg_ms, rgba_to_rgb_ms);
+        update(&mut self.jpeg_encode_avg_ms, jpeg_encode_ms);
+        update(&mut self.base64_encode_avg_ms, base64_encode_ms);
+        update(&mut self.latest_frame_write_avg_ms, latest_frame_write_ms);
+        update(&mut self.raw_to_pollable_frame_avg_ms, raw_to_pollable_frame_ms);
+        self.refresh_interval_rates();
+    }
+
+    pub fn record_border_required_disabled(&mut self) {
+        self.border_required_disabled = Some(true);
+        self.border_required_error = None;
+        self.capture_indicator_note = Some(
+            "SetIsBorderRequired(false) succeeded; if the yellow outline remains visible, Windows is enforcing the capture indicator, not rendering an app border"
+                .to_string(),
+        );
+    }
+
+    pub fn record_border_required_disable_error(&mut self, error: impl std::fmt::Display) {
+        self.border_required_disabled = Some(false);
+        self.border_required_error = Some(error.to_string());
+        self.capture_indicator_note = Some(
+            "SetIsBorderRequired(false) failed; Windows may keep showing the capture indicator"
+                .to_string(),
+        );
     }
 
     pub fn record_startup_stage(
@@ -218,7 +347,7 @@ impl WindowsNativeCaptureDiagnostics {
 
     pub fn compact_summary(&self) -> String {
         format!(
-            "backend={} source_kind={} stalled_in={} current_operation={} startup_elapsed_ms={} last_stage_update_at_ms={} capture_thread_alive={} callbacks={} usable_frames={} readback_failures={} poll_calls={} poll_hits={} poll_misses={} latest_polled_seq={} startup_step_timings={} first_error={}",
+            "backend={} source_kind={} stalled_in={} current_operation={} startup_elapsed_ms={} last_stage_update_at_ms={} capture_thread_alive={} border_required_disabled={} border_required_error={} callbacks={} raw_callback_fps={:.1} usable_frames={} emitted_pollable_frames={} emitted_pollable_fps={:.1} throttle_drops={} throttle_drop_fps={:.1} readback_failures={} poll_calls={} poll_hits={} poll_misses={} latest_polled_seq={} startup_step_timings={} first_error={}",
             self.backend,
             self.source_kind,
             self.startup_stage,
@@ -230,8 +359,17 @@ impl WindowsNativeCaptureDiagnostics {
                 .map(|ts| ts.to_string())
                 .unwrap_or_else(|| "none".to_string()),
             self.capture_thread_alive,
+            self.border_required_disabled
+                .map(|disabled| disabled.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.border_required_error.as_deref().unwrap_or("none"),
             self.frame_arrived_callbacks,
+            self.raw_backend_callback_fps,
             self.usable_frames,
+            self.emitted_pollable_frames,
+            self.emitted_pollable_frame_fps,
+            self.throttle_drop_count,
+            self.throttle_drop_fps,
             self.total_readback_failures(),
             self.poll_calls,
             self.poll_hits,
@@ -929,16 +1067,27 @@ impl WinCapture {
                 e,
             );
         }
-        if let Err(e) = session.SetIsBorderRequired(false) {
-            log::warn!("{LOG} SetIsBorderRequired failed: {e}");
-            record_wgc_startup_nonfatal_error(
-                &diagnostics,
-                &startup_stage,
-                startup_started,
-                "cursor_border_config_error",
-                "SetIsBorderRequired",
-                e,
-            );
+        match session.SetIsBorderRequired(false) {
+            Ok(()) => {
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.record_border_required_disabled();
+                }
+            }
+            Err(e) => {
+                let error = e.to_string();
+                log::warn!("{LOG} SetIsBorderRequired failed: {error}");
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.record_border_required_disable_error(&error);
+                }
+                record_wgc_startup_nonfatal_error(
+                    &diagnostics,
+                    &startup_stage,
+                    startup_started,
+                    "cursor_border_config_error",
+                    "SetIsBorderRequired",
+                    error,
+                );
+            }
         }
         record_wgc_startup_stage(
             &diagnostics,
@@ -978,7 +1127,7 @@ impl WinCapture {
                 return Ok(());
             }
             if let Ok(mut diag) = diagnostics_callback.lock() {
-                diag.frame_arrived_callbacks += 1;
+                diag.record_backend_callback();
             }
 
             let pool = match pool {
@@ -1481,5 +1630,53 @@ mod tests {
         let summary = diag.compact_summary();
         assert!(summary.contains("backend=gdi_poll"));
         assert!(summary.contains("source_kind=window"));
+    }
+
+    #[test]
+    fn border_required_result_is_recorded_for_diagnostics() {
+        let mut diag = WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+
+        diag.record_border_required_disabled();
+        assert_eq!(diag.border_required_disabled, Some(true));
+        assert_eq!(diag.border_required_error, None);
+        assert!(diag
+            .capture_indicator_note
+            .as_deref()
+            .unwrap()
+            .contains("Windows is enforcing the capture indicator"));
+        assert!(diag
+            .compact_summary()
+            .contains("border_required_disabled=true"));
+
+        diag.record_border_required_disable_error("E_ACCESSDENIED");
+        assert_eq!(diag.border_required_disabled, Some(false));
+        assert_eq!(
+            diag.border_required_error.as_deref(),
+            Some("E_ACCESSDENIED")
+        );
+        assert!(diag
+            .compact_summary()
+            .contains("border_required_error=E_ACCESSDENIED"));
+    }
+
+    #[test]
+    fn cadence_diagnostics_count_callbacks_emitted_frames_throttle_and_timings() {
+        let mut diag = WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+        diag.record_backend_callback();
+        diag.record_backend_callback();
+        diag.record_throttle_drop();
+        diag.record_pollable_frame_timing(1, 2, 3, 4, 5, 6, 7);
+        diag.record_pollable_frame_timing(3, 4, 5, 6, 7, 8, 9);
+
+        assert_eq!(diag.frame_arrived_callbacks, 2);
+        assert_eq!(diag.throttle_drop_count, 1);
+        assert_eq!(diag.emitted_pollable_frames, 2);
+        assert_eq!(diag.cap_downscale_avg_ms, 2.0);
+        assert_eq!(diag.i420_convert_avg_ms, 3.0);
+        assert_eq!(diag.rgba_to_rgb_avg_ms, 4.0);
+        assert_eq!(diag.jpeg_encode_avg_ms, 5.0);
+        assert_eq!(diag.base64_encode_avg_ms, 6.0);
+        assert_eq!(diag.latest_frame_write_avg_ms, 7.0);
+        assert_eq!(diag.raw_to_pollable_frame_avg_ms, 8.0);
     }
 }

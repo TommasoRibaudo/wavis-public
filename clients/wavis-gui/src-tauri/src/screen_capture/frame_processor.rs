@@ -92,6 +92,32 @@ impl ScreenShareConfig {
         );
         Ok(())
     }
+
+    /// Apply the effective preset used by the current Windows JS LiveKit native
+    /// capture bridge. That bridge still moves JPEG/base64 frames through the
+    /// webview, so it prioritizes stable 1080p60 over the generic 1440p detail
+    /// presets until a raw-frame or native-publisher transport replaces it.
+    pub fn apply_windows_native_bridge_preset(&self, preset: &str) -> Result<(), String> {
+        let jpeg_quality = match preset {
+            "low" => 80,
+            "high" => 82,
+            "max" => 85,
+            _ => return Err(format!("unknown quality preset: {preset}")),
+        };
+        self.max_width.store(1920, Ordering::Relaxed);
+        self.max_height.store(1080, Ordering::Relaxed);
+        self.max_fps.store(60, Ordering::Relaxed);
+        self.jpeg_quality
+            .store(jpeg_quality, Ordering::Relaxed);
+        log::info!(
+            "windows native screen share effective preset applied: {preset} ({}x{} @ {}fps, jpeg={})",
+            self.max_width(),
+            self.max_height(),
+            self.max_fps(),
+            self.jpeg_quality(),
+        );
+        Ok(())
+    }
 }
 
 impl Default for ScreenShareConfig {
@@ -103,7 +129,9 @@ impl Default for ScreenShareConfig {
 /// Cap frame resolution to the configured maximum, maintaining aspect ratio.
 ///
 /// If the frame is already within bounds, it is returned unchanged (no copy).
-/// Downscaling uses bilinear interpolation over RGBA pixels.
+/// Downscaling uses nearest-neighbor sampling over RGBA pixels. This is
+/// intentionally simple: screen-share capture must prioritize frame cadence,
+/// and the previous f64 bilinear scaler was the dominant 1080p60 bottleneck.
 pub fn cap_resolution(frame: CapturedFrame, max_width: u32, max_height: u32) -> CapturedFrame {
     if frame.width <= max_width && frame.height <= max_height {
         return frame;
@@ -123,30 +151,18 @@ pub fn cap_resolution(frame: CapturedFrame, max_width: u32, max_height: u32) -> 
     let dst_h = new_height as usize;
 
     let mut out = vec![0u8; dst_w * dst_h * 4];
+    let x_ratio = ((src_w as u64) << 32) / dst_w as u64;
+    let y_ratio = ((src_h as u64) << 32) / dst_h as u64;
 
     for dst_y in 0..dst_h {
-        // Map destination pixel center back to source coordinates.
-        let src_yf = (dst_y as f64 + 0.5) * (src_h as f64 / dst_h as f64) - 0.5;
-        let sy0 = (src_yf.floor() as isize).max(0) as usize;
-        let sy1 = (sy0 + 1).min(src_h - 1);
-        let fy = (src_yf - sy0 as f64).max(0.0);
-
+        let src_y = (((dst_y as u64) * y_ratio) >> 32) as usize;
+        let src_row = src_y.min(src_h - 1) * src_w * 4;
+        let dst_row = dst_y * dst_w * 4;
         for dst_x in 0..dst_w {
-            let src_xf = (dst_x as f64 + 0.5) * (src_w as f64 / dst_w as f64) - 0.5;
-            let sx0 = (src_xf.floor() as isize).max(0) as usize;
-            let sx1 = (sx0 + 1).min(src_w - 1);
-            let fx = (src_xf - sx0 as f64).max(0.0);
-
-            // Bilinear interpolation over 4 source pixels.
-            let idx = |x: usize, y: usize, c: usize| -> u8 { frame.data[(y * src_w + x) * 4 + c] };
-
-            let dst_idx = (dst_y * dst_w + dst_x) * 4;
-            for c in 0..4 {
-                let top = idx(sx0, sy0, c) as f64 * (1.0 - fx) + idx(sx1, sy0, c) as f64 * fx;
-                let bot = idx(sx0, sy1, c) as f64 * (1.0 - fx) + idx(sx1, sy1, c) as f64 * fx;
-                let val = top * (1.0 - fy) + bot * fy;
-                out[dst_idx + c] = val.round().clamp(0.0, 255.0) as u8;
-            }
+            let src_x = (((dst_x as u64) * x_ratio) >> 32) as usize;
+            let src_idx = src_row + src_x.min(src_w - 1) * 4;
+            let dst_idx = dst_row + dst_x * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&frame.data[src_idx..src_idx + 4]);
         }
     }
 
@@ -411,6 +427,26 @@ mod tests {
         assert_eq!(cfg.max_height(), 1440);
         assert_eq!(cfg.max_fps(), 60);
         assert_eq!(cfg.jpeg_quality(), 95);
+    }
+
+    #[test]
+    fn config_apply_windows_native_bridge_high_preset() {
+        let cfg = ScreenShareConfig::new();
+        cfg.apply_windows_native_bridge_preset("high").unwrap();
+        assert_eq!(cfg.max_width(), 1920);
+        assert_eq!(cfg.max_height(), 1080);
+        assert_eq!(cfg.max_fps(), 60);
+        assert_eq!(cfg.jpeg_quality(), 82);
+    }
+
+    #[test]
+    fn config_apply_windows_native_bridge_max_preset() {
+        let cfg = ScreenShareConfig::new();
+        cfg.apply_windows_native_bridge_preset("max").unwrap();
+        assert_eq!(cfg.max_width(), 1920);
+        assert_eq!(cfg.max_height(), 1080);
+        assert_eq!(cfg.max_fps(), 60);
+        assert_eq!(cfg.jpeg_quality(), 85);
     }
 
     #[test]

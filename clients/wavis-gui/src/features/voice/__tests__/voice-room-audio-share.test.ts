@@ -603,7 +603,14 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       args: undefined,
     });
     expect(lastLkModule!.stopNativeCapture).toHaveBeenCalled();
-    expect(lastLkModule!.startNativeCapture).toHaveBeenCalledWith({ firstFrameTimeoutMs: 2000 });
+    expect(lastLkModule!.startNativeCapture).toHaveBeenCalledWith({
+      firstFrameTimeoutMs: 2000,
+      lowJsBridgeFpsRetry: {
+        thresholdFps: 20,
+        durationMs: 2000,
+        reason: 'wgc_sustained_low_js_observed_sequence_fps',
+      },
+    });
     expect(lastLkModule!.attachWindowsNativeCaptureDiagnostics).toHaveBeenCalled();
     expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
     expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
@@ -671,6 +678,53 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
     expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'capture.native.failed', sourceKind: 'screen', backend: 'wgc' }),
+    ]));
+  });
+
+  it('retries Windows WGC native capture with GDI polling when JS-observed new-sequence cadence is too low', async () => {
+    resetAll();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: { getUserMedia: vi.fn(), getDisplayMedia: vi.fn() },
+    });
+    await driveToActive();
+
+    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('native capture: low JS-observed WGC new-sequence FPS (3.0 < 20) after 2000ms; retryReason=wgc_sustained_low_js_observed_sequence_fps'))
+      .mockResolvedValueOnce(undefined);
+
+    await startCustomShare({
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      sourceKind: 'screen',
+      withAudio: false,
+    });
+
+    expect(invokeCalls
+      .filter((call) => call.command === 'screen_share_start_source')
+      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'gdi_poll']);
+    expect(invokeCalls
+      .filter((call) => call.command === 'screen_share_start_source')
+      .at(-1)?.args).toEqual(expect.objectContaining({
+        previousBackend: 'wgc',
+        retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
+      }));
+    expect(lastLkModule!.startNativeCapture).toHaveBeenCalledTimes(2);
+    expect(lastLkModule!.startNativeCapture).toHaveBeenLastCalledWith({
+      firstFrameTimeoutMs: 4500,
+      lowJsBridgeFpsRetry: undefined,
+    });
+    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'capture.fallback.activated',
+        os: 'windows',
+        from: 'wgc',
+        to: 'gdi_poll',
+        reason: 'wgc_sustained_low_js_observed_sequence_fps',
+      }),
     ]));
   });
 

@@ -4626,6 +4626,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         : 'native-gdi-window';
       const startWindowsNativeAttempt = async (
         captureBackend: 'wgc' | 'gdi_poll',
+        retryMetadata?: { previousBackend: 'wgc'; retryReason: 'wgc_sustained_low_js_observed_sequence_fps' },
       ): Promise<void> => {
         const liveKitModule = lkModule;
         if (!(liveKitModule instanceof LiveKitModule)) return;
@@ -4673,6 +4674,8 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             sourceKind,
             captureBackend,
             compatibilityMode: selection.compatibilityMode ?? false,
+            previousBackend: retryMetadata?.previousBackend ?? null,
+            retryReason: retryMetadata?.retryReason ?? null,
           });
           rustCaptureStarted = true;
           if (options.isSourceChange) {
@@ -4680,6 +4683,13 @@ export async function startCustomShare(selection: ShareSelection, options: Start
           } else {
             await liveKitModule.startNativeCapture({
               firstFrameTimeoutMs: captureBackend === 'gdi_poll' ? 4500 : 2000,
+              lowJsBridgeFpsRetry: captureBackend === 'wgc'
+                ? {
+                    thresholdFps: 20,
+                    durationMs: 2000,
+                    reason: 'wgc_sustained_low_js_observed_sequence_fps',
+                  }
+                : undefined,
             });
           }
           await attachRustDiagnostics();
@@ -4728,7 +4738,27 @@ export async function startCustomShare(selection: ShareSelection, options: Start
             reason: error instanceof Error ? error.message : String(error),
             ts: Date.now(),
           });
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          const shouldRetryGdi =
+            firstBackend === 'wgc' &&
+            !options.isSourceChange &&
+            message.includes('retryReason=wgc_sustained_low_js_observed_sequence_fps');
+          if (shouldRetryGdi) {
+            emitTelemetryEvent({
+              name: 'capture.fallback.activated',
+              os: 'windows',
+              from: 'wgc',
+              to: 'gdi_poll',
+              reason: 'wgc_sustained_low_js_observed_sequence_fps',
+              ts: Date.now(),
+            });
+            await startWindowsNativeAttempt('gdi_poll', {
+              previousBackend: 'wgc',
+              retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
+            });
+          } else {
+            throw error;
+          }
         }
         videoStarted = true;
       } else if (selection.sourceId === 'portal') {

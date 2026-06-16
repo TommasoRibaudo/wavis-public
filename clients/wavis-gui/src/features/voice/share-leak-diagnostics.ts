@@ -45,6 +45,7 @@ export interface ShareLeakCounters {
   skippedPollsFrameWorkInFlight: number;
   overlappingPollSkips: number;
   decodeFailures: number;
+  keepaliveWrites: number;
   earlyFrameBufferPeak: number;
   firstFrameLatencyMs: number | null;
   stopCleanupLatencyMs: number | null;
@@ -71,7 +72,23 @@ export interface WindowsNativeCaptureDiagnostics {
   environment: WindowsNativeCaptureEnvironment;
   timing: WindowsNativeCaptureTiming;
   frameArrivedCallbacks: number;
+  rawBackendCallbackFps: number;
   usableFrames: number;
+  emittedPollableFrames: number;
+  emittedPollableFrameFps: number;
+  throttleDropCount: number;
+  throttleDropFps: number;
+  capDownscaleAvgMs: number;
+  i420ConvertAvgMs: number;
+  rgbaToRgbAvgMs: number;
+  jpegEncodeAvgMs: number;
+  base64EncodeAvgMs: number;
+  latestFrameWriteAvgMs: number;
+  rawToPollableFrameAvgMs: number;
+  activeBackend: string;
+  previousBackend: string | null;
+  retryReason: string | null;
+  retryAtMs: number | null;
   tryGetNextFrameFailures: number;
   surfaceFailures: number;
   surfaceCastFailures: number;
@@ -116,6 +133,7 @@ export interface WindowsNativeCaptureEnvironment {
 export interface WindowsNativeCaptureTiming {
   firstRawFrameLatencyMs: number | null;
   firstCapDownscaleMs: number | null;
+  firstI420ConvertMs: number | null;
   firstRgbaToRgbMs: number | null;
   firstJpegEncodeMs: number | null;
   firstBase64EncodeMs: number | null;

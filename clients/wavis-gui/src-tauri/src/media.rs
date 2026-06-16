@@ -6,17 +6,22 @@
 //! swap transparently.
 
 use serde::Serialize;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle as StdJoinHandle;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    process::{Child, Command, Stdio},
     time::Duration,
+};
+#[cfg(target_os = "linux")]
+use std::{
+    process::{Child, Command, Stdio},
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::{Builder, Runtime};
@@ -35,6 +40,8 @@ use crate::screen_capture;
 use crate::screen_capture;
 
 const LOG: &str = "[wavis:native-media]";
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(target_os = "windows")]
 fn unix_now_ms() -> u64 {
@@ -275,6 +282,129 @@ fn start_remote_screen_share_stream_server(
         .ok()?;
 
     Some(port)
+}
+
+#[cfg(target_os = "windows")]
+fn start_windows_i420_stream_server(
+    latest_i420_frame: Arc<Mutex<Option<LatestI420Frame>>>,
+    diagnostics: Arc<Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>>,
+) -> Result<u16, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("failed to bind Windows I420 stream server: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("failed to read Windows I420 stream server port: {e}"))?
+        .port();
+
+    std::thread::Builder::new()
+        .name("wavis-windows-i420-stream".to_string())
+        .spawn(move || {
+            log::info!("{LOG} Windows I420 stream server listening on 127.0.0.1:{port}");
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else {
+                    continue;
+                };
+                let frames = Arc::clone(&latest_i420_frame);
+                let diag = Arc::clone(&diagnostics);
+                let _ = std::thread::Builder::new()
+                    .name("wavis-windows-i420-stream-client".to_string())
+                    .spawn(move || {
+                        if let Err(err) = handle_windows_i420_stream(stream, frames, diag) {
+                            log::debug!("{LOG} Windows I420 stream ended: {err}");
+                        }
+                    });
+            }
+        })
+        .map_err(|e| format!("failed to spawn Windows I420 stream server: {e}"))?;
+
+    Ok(port)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_i420_stream_frame_header(frame: &LatestI420Frame, byte_len: u32) -> [u8; 28] {
+    let mut frame_header = [0u8; 28];
+    frame_header[0..4].copy_from_slice(&frame.width.to_le_bytes());
+    frame_header[4..8].copy_from_slice(&frame.height.to_le_bytes());
+    frame_header[8..16].copy_from_slice(&frame.seq.to_le_bytes());
+    frame_header[16..24].copy_from_slice(&frame.timestamp_us.to_le_bytes());
+    frame_header[24..28].copy_from_slice(&byte_len.to_le_bytes());
+    frame_header
+}
+
+#[cfg(target_os = "windows")]
+fn handle_windows_i420_stream(
+    mut stream: TcpStream,
+    latest_i420_frame: Arc<Mutex<Option<LatestI420Frame>>>,
+    diagnostics: Arc<Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>>,
+) -> Result<(), String> {
+    stream
+        .set_nodelay(true)
+        .map_err(|e| format!("I420 stream set_nodelay failed: {e}"))?;
+    let mut req = [0u8; 1024];
+    let _ = stream
+        .read(&mut req)
+        .map_err(|e| format!("I420 stream request read failed: {e}"))?;
+    let header = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: application/octet-stream\r\n",
+        "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n",
+        "Pragma: no-cache\r\n",
+        "Connection: close\r\n",
+        "Access-Control-Allow-Origin: *\r\n",
+        "\r\n"
+    );
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| format!("I420 stream header write failed: {e}"))?;
+
+    let mut last_seq = 0u64;
+    loop {
+        let latest = latest_i420_frame
+            .lock()
+            .map_err(|e| format!("latest_i420_frame lock: {e}"))?
+            .clone();
+
+        let Some(latest) = latest else {
+            record_windows_i420_stream_read(&diagnostics, None);
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        };
+        if latest.seq == last_seq {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+
+        last_seq = latest.seq;
+        let len = u32::try_from(latest.frame.len())
+            .map_err(|_| "I420 frame too large to stream".to_string())?;
+        let frame_header = windows_i420_stream_frame_header(&latest, len);
+
+        stream
+            .write_all(&frame_header)
+            .and_then(|_| stream.write_all(latest.frame.as_slice()))
+            .map_err(|e| format!("I420 stream frame write failed: {e}"))?;
+        record_windows_i420_stream_read(&diagnostics, Some((&latest, len)));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn record_windows_i420_stream_read(
+    diagnostics: &Arc<Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>>,
+    frame: Option<(&LatestI420Frame, u32)>,
+) {
+    if let Ok(diag_guard) = diagnostics.lock() {
+        if let Some(diagnostics) = diag_guard.as_ref() {
+            if let Ok(mut diagnostics) = diagnostics.lock() {
+                diagnostics.poll_calls = diagnostics.poll_calls.saturating_add(1);
+                if let Some((frame, _len)) = frame {
+                    diagnostics.poll_hits = diagnostics.poll_hits.saturating_add(1);
+                    diagnostics.latest_polled_seq = Some(frame.seq);
+                } else {
+                    diagnostics.poll_misses = diagnostics.poll_misses.saturating_add(1);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -520,6 +650,84 @@ pub struct LatestFrame {
     pub seq: u64,
 }
 
+/// A single raw I420 frame buffered for JS polling (Windows JS SDK path).
+#[cfg(target_os = "windows")]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestI420Frame {
+    pub frame: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub timestamp_us: u64,
+    /// Monotonic sequence number so JS can detect duplicates.
+    pub seq: u64,
+}
+
+#[cfg(target_os = "windows")]
+fn clamp_u8(value: i32) -> u8 {
+    value.clamp(0, 255) as u8
+}
+
+#[cfg(target_os = "windows")]
+fn rgba_to_i420(data: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let src_width = width;
+    let src_height = height;
+    let out_width = src_width & !1;
+    let out_height = src_height & !1;
+    if out_width == 0 || out_height == 0 {
+        return None;
+    }
+    let required_len = (src_width as usize)
+        .checked_mul(src_height as usize)?
+        .checked_mul(4)?;
+    if data.len() < required_len {
+        return None;
+    }
+
+    let y_len = (out_width as usize).checked_mul(out_height as usize)?;
+    let chroma_len = y_len / 4;
+    let mut out = vec![0u8; y_len + chroma_len * 2];
+    let (y_plane, chroma) = out.split_at_mut(y_len);
+    let (u_plane, v_plane) = chroma.split_at_mut(chroma_len);
+    let src_stride = src_width as usize * 4;
+    let out_width_usize = out_width as usize;
+
+    for y in 0..out_height as usize {
+        for x in 0..out_width as usize {
+            let idx = y * src_stride + x * 4;
+            let r = data[idx] as i32;
+            let g = data[idx + 1] as i32;
+            let b = data[idx + 2] as i32;
+            y_plane[y * out_width_usize + x] =
+                clamp_u8(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+        }
+    }
+
+    for y in (0..out_height as usize).step_by(2) {
+        for x in (0..out_width as usize).step_by(2) {
+            let mut r_sum = 0i32;
+            let mut g_sum = 0i32;
+            let mut b_sum = 0i32;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let idx = (y + dy) * src_stride + (x + dx) * 4;
+                    r_sum += data[idx] as i32;
+                    g_sum += data[idx + 1] as i32;
+                    b_sum += data[idx + 2] as i32;
+                }
+            }
+            let r = r_sum / 4;
+            let g = g_sum / 4;
+            let b = b_sum / 4;
+            let chroma_idx = (y / 2) * (out_width_usize / 2) + (x / 2);
+            u_plane[chroma_idx] = clamp_u8(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+            v_plane[chroma_idx] = clamp_u8(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+        }
+    }
+
+    Some((out, out_width, out_height))
+}
+
 #[cfg(target_os = "windows")]
 struct NativeShareLeakSession {
     share_session_id: String,
@@ -570,6 +778,13 @@ fn select_windows_capture_backend(
         }
         None => Ok(WindowsCaptureBackend::Wgc),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_bridge_transport_fps(
+    config: &screen_capture::frame_processor::ScreenShareConfig,
+) -> u32 {
+    config.max_fps()
 }
 
 #[cfg(target_os = "windows")]
@@ -679,6 +894,7 @@ fn collect_windows_video_driver_info(
     diagnostics: &screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
 ) {
     let mut child = match std::process::Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-Command",
@@ -764,6 +980,7 @@ fn is_windows_capture_setup_error(stage: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn wait_for_first_pollable_frame(
+    latest_i420_frame: &Arc<Mutex<Option<LatestI420Frame>>>,
     latest_frame: &Arc<Mutex<Option<LatestFrame>>>,
     diagnostics: &screen_capture::win_capture::SharedWindowsCaptureDiagnostics,
     raw_frame_timeout_ms: u64,
@@ -772,11 +989,15 @@ fn wait_for_first_pollable_frame(
     let started = std::time::Instant::now();
     let mut first_frame_processing_started_at = None;
     loop {
-        if latest_frame
+        let has_i420 = latest_i420_frame
+            .lock()
+            .map_err(|e| format!("latest_i420_frame lock: {e}"))?
+            .is_some();
+        let has_jpeg = latest_frame
             .lock()
             .map_err(|e| format!("latest_frame lock: {e}"))?
-            .is_some()
-        {
+            .is_some();
+        if has_i420 || has_jpeg {
             return Ok(());
         }
         let setup_error = diagnostics.lock().ok().and_then(|diag| {
@@ -932,11 +1153,20 @@ pub struct MediaState {
     /// Using a parking_lot Mutex for low-contention fast lock.
     #[cfg(target_os = "windows")]
     pub latest_frame: Arc<Mutex<Option<LatestFrame>>>,
+    /// Latest raw I420 frame for JS polling (Windows JS SDK path only).
+    #[cfg(target_os = "windows")]
+    pub latest_i420_frame: Arc<Mutex<Option<LatestI420Frame>>>,
+    #[cfg(target_os = "windows")]
+    windows_i420_stream_port: u16,
+    /// Enables the temporary JPEG/base64 polling fallback for JS runtimes that
+    /// cannot construct VideoFrame directly from I420 bytes.
+    #[cfg(target_os = "windows")]
+    pub windows_jpeg_fallback_enabled: Arc<AtomicBool>,
     #[cfg(target_os = "windows")]
     native_share_leak_session: Arc<Mutex<Option<NativeShareLeakSession>>>,
     #[cfg(target_os = "windows")]
     windows_capture_diagnostics:
-        Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>,
+        Arc<Mutex<Option<screen_capture::win_capture::SharedWindowsCaptureDiagnostics>>>,
 }
 
 impl MediaState {
@@ -962,6 +1192,17 @@ impl MediaState {
         >::new()));
         #[cfg(target_os = "linux")]
         let local_camera_frame = Arc::new(Mutex::new(None));
+
+        #[cfg(target_os = "windows")]
+        let latest_i420_frame = Arc::new(Mutex::new(None));
+        #[cfg(target_os = "windows")]
+        let windows_capture_diagnostics = Arc::new(Mutex::new(None));
+        #[cfg(target_os = "windows")]
+        let windows_i420_stream_port = start_windows_i420_stream_server(
+            Arc::clone(&latest_i420_frame),
+            Arc::clone(&windows_capture_diagnostics),
+        )
+        .unwrap_or(0);
 
         Self {
             runtime: Builder::new_multi_thread()
@@ -1011,9 +1252,15 @@ impl MediaState {
             #[cfg(target_os = "windows")]
             latest_frame: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "windows")]
+            latest_i420_frame,
+            #[cfg(target_os = "windows")]
+            windows_i420_stream_port,
+            #[cfg(target_os = "windows")]
+            windows_jpeg_fallback_enabled: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "windows")]
             native_share_leak_session: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "windows")]
-            windows_capture_diagnostics: Mutex::new(None),
+            windows_capture_diagnostics,
         }
     }
 
@@ -2313,6 +2560,8 @@ pub fn screen_share_start_source(
     source_kind: Option<String>,
     capture_backend: Option<String>,
     compatibility_mode: Option<bool>,
+    previous_backend: Option<String>,
+    retry_reason: Option<String>,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
@@ -2343,6 +2592,12 @@ pub fn screen_share_start_source(
         0,
         0,
     )));
+    let retry_at_ms = retry_reason.as_ref().map(|_| unix_now_ms());
+    if let Ok(mut diag) = diagnostics.lock() {
+        diag.previous_backend = previous_backend;
+        diag.retry_reason = retry_reason;
+        diag.retry_at_ms = retry_at_ms;
+    }
     {
         let mut guard = state
             .windows_capture_diagnostics
@@ -2368,6 +2623,9 @@ pub fn screen_share_start_source(
     }
 
     log::info!("{LOG} [diag] past double-start guard");
+    state
+        .windows_jpeg_fallback_enabled
+        .store(false, Ordering::Relaxed);
 
     // NOTE (cleanup 2026-03): the `has_native_lk` branch that published a video
     // track via the Rust LiveKit SDK and fed frames with `conn.feed_video_frame()`
@@ -2375,7 +2633,7 @@ pub fn screen_share_start_source(
     // WebView2; `state.lk` is always `None`, making that branch unreachable.
     // The native-LK frame-feeding path lives in the Linux `screen_share_start()`
     // function (no `_source` suffix) which is #[cfg(target_os = "linux")].
-    let bridge_transport_fps = state.screen_share_config.max_fps().min(15);
+    let bridge_transport_fps = windows_bridge_transport_fps(&state.screen_share_config);
 
     // Route to the requested native backend. GDI polling is source-kind-specific:
     // monitor shares use BitBlt and window shares use PrintWindow.
@@ -2486,6 +2744,8 @@ pub fn screen_share_start_source(
         let throttler = Arc::new(FrameThrottler::new(bridge_transport_fps));
         let frame_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let latest_frame = Arc::clone(&state.latest_frame);
+        let latest_i420_frame = Arc::clone(&state.latest_i420_frame);
+        let jpeg_fallback_enabled = Arc::clone(&state.windows_jpeg_fallback_enabled);
         let diagnostics_for_frames = Arc::clone(&diagnostics);
 
         // Pre-allocate reusable buffers to avoid per-frame allocation.
@@ -2503,18 +2763,32 @@ pub fn screen_share_start_source(
                 .map_err(|e| format!("latest_frame lock: {e}"))?;
             *lf = None;
         }
+        {
+            let mut lf = latest_i420_frame
+                .lock()
+                .map_err(|e| format!("latest_i420_frame lock: {e}"))?;
+            *lf = None;
+        }
 
         capture.on_frame(Box::new(move |frame| {
             use base64::Engine;
             use image::codecs::jpeg::JpegEncoder;
             use std::io::Cursor;
 
+            if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                if diag_guard.backend == "gdi_poll" {
+                    diag_guard.record_backend_callback();
+                }
+            }
             let max_w = config.max_width();
             let max_h = config.max_height();
             throttler.set_fps(bridge_transport_fps);
 
             // Throttle BEFORE downscaling — no point processing a frame we'll drop.
             if !throttler.should_emit() {
+                if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                    diag_guard.record_throttle_drop();
+                }
                 return;
             }
 
@@ -2524,6 +2798,7 @@ pub fn screen_share_start_source(
             let cap_downscale_ms = cap_start.elapsed().as_millis() as u64;
 
             let n = frame_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let seq = n + 1;
             if let Ok(mut leak_guard) = native_share_leak_session.lock() {
                 if let Some(session) = leak_guard.as_mut() {
                     if session.first_rust_frame_at_ms.is_none() {
@@ -2550,6 +2825,76 @@ pub fn screen_share_start_source(
                     capped.data.len(),
                     non_zero
                 );
+            }
+
+            let i420_start = std::time::Instant::now();
+            let i420 = rgba_to_i420(&capped.data, capped.width, capped.height);
+            let i420_convert_ms = i420_start.elapsed().as_millis() as u64;
+            let mut i420_write_ms = 0;
+            if let Some((i420_data, i420_width, i420_height)) = i420 {
+                let timestamp_us = capped.timestamp_ms.saturating_mul(1000);
+                let i420_write_start = std::time::Instant::now();
+                if let Ok(mut lf) = latest_i420_frame.lock() {
+                    *lf = Some(LatestI420Frame {
+                        frame: i420_data,
+                        width: i420_width,
+                        height: i420_height,
+                        timestamp_us,
+                        seq,
+                    });
+                }
+                i420_write_ms = i420_write_start.elapsed().as_millis() as u64;
+            }
+
+            if n > 0 && !jpeg_fallback_enabled.load(Ordering::Relaxed) {
+                let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
+                if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                    diag_guard.record_pollable_frame_timing(
+                        cap_downscale_ms,
+                        i420_convert_ms,
+                        0,
+                        0,
+                        0,
+                        i420_write_ms,
+                        raw_to_pollable_frame_ms,
+                    );
+                }
+                if let Ok(mut leak_guard) = native_share_leak_session.lock() {
+                    if let Some(session) = leak_guard.as_mut() {
+                        session.frames_buffered = seq;
+                    }
+                }
+                if n == 0 {
+                    let first_pollable_elapsed_ms = native_share_leak_session
+                        .lock()
+                        .ok()
+                        .and_then(|guard| {
+                            guard
+                                .as_ref()
+                                .map(|session| unix_now_ms().saturating_sub(session.started_at_ms))
+                        })
+                        .unwrap_or(raw_to_pollable_frame_ms);
+                    if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                        diag_guard.timing.first_cap_downscale_ms = Some(cap_downscale_ms);
+                        diag_guard.timing.first_i420_convert_ms = Some(i420_convert_ms);
+                        diag_guard.timing.first_latest_frame_write_ms = Some(i420_write_ms);
+                        diag_guard.timing.first_raw_to_pollable_frame_ms =
+                            Some(raw_to_pollable_frame_ms);
+                        diag_guard.record_startup_stage(
+                            "first_pollable_frame_written",
+                            "write latest I420 pollable frame",
+                            first_pollable_elapsed_ms,
+                        );
+                    }
+                    log::info!(
+                        "{LOG} native capture first I420 pollable frame timing: cap_downscale_ms={} i420_convert_ms={} latest_frame_write_ms={} raw_to_pollable_ms={}",
+                        cap_downscale_ms,
+                        i420_convert_ms,
+                        i420_write_ms,
+                        raw_to_pollable_frame_ms,
+                    );
+                }
+                return;
             }
 
             // Strip alpha channel into reusable RGB buffer (JPEG only supports RGB).
@@ -2628,11 +2973,22 @@ pub fn screen_share_start_source(
                     frame: b64,
                     width: capped.width,
                     height: capped.height,
-                    seq: n + 1,
+                    seq,
                 });
             }
             let latest_frame_write_ms = write_start.elapsed().as_millis() as u64;
             let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
+            if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
+                diag_guard.record_pollable_frame_timing(
+                    cap_downscale_ms,
+                    i420_convert_ms,
+                    rgba_to_rgb_ms,
+                    jpeg_encode_ms,
+                    base64_encode_ms,
+                    latest_frame_write_ms,
+                    raw_to_pollable_frame_ms,
+                );
+            }
             let mut first_pollable_elapsed_ms = raw_to_pollable_frame_ms;
             if let Ok(mut leak_guard) = native_share_leak_session.lock() {
                 if let Some(session) = leak_guard.as_mut() {
@@ -2643,6 +2999,7 @@ pub fn screen_share_start_source(
             if n == 0 {
                 if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
                     diag_guard.timing.first_cap_downscale_ms = Some(cap_downscale_ms);
+                    diag_guard.timing.first_i420_convert_ms = Some(i420_convert_ms);
                     diag_guard.timing.first_rgba_to_rgb_ms = Some(rgba_to_rgb_ms);
                     diag_guard.timing.first_jpeg_encode_ms = Some(jpeg_encode_ms);
                     diag_guard.timing.first_base64_encode_ms = Some(base64_encode_ms);
@@ -2656,8 +3013,9 @@ pub fn screen_share_start_source(
                     );
                 }
                 log::info!(
-                    "{LOG} native capture first pollable frame timing: cap_downscale_ms={} rgba_to_rgb_ms={} jpeg_encode_ms={} base64_encode_ms={} latest_frame_write_ms={} raw_to_pollable_ms={}",
+                    "{LOG} native capture first pollable frame timing: cap_downscale_ms={} i420_convert_ms={} rgba_to_rgb_ms={} jpeg_encode_ms={} base64_encode_ms={} latest_frame_write_ms={} raw_to_pollable_ms={}",
                     cap_downscale_ms,
+                    i420_convert_ms,
                     rgba_to_rgb_ms,
                     jpeg_encode_ms,
                     base64_encode_ms,
@@ -2690,6 +3048,7 @@ pub fn screen_share_start_source(
 
     log::info!("{LOG} [diag] capture stored in MediaState, waiting for first pollable frame");
     if let Err(error) = wait_for_first_pollable_frame(
+        &state.latest_i420_frame,
         &state.latest_frame,
         &diagnostics,
         if capture_backend == WindowsCaptureBackend::GdiPoll {
@@ -2759,6 +3118,12 @@ pub fn screen_share_stop(state: State<'_, MediaState>) -> Result<(), String> {
         if let Ok(mut lf) = state.latest_frame.lock() {
             *lf = None;
         }
+        if let Ok(mut lf) = state.latest_i420_frame.lock() {
+            *lf = None;
+        }
+        state
+            .windows_jpeg_fallback_enabled
+            .store(false, Ordering::Relaxed);
         if let Ok(mut leak_guard) = state.native_share_leak_session.lock() {
             if let Some(session) = leak_guard.take() {
                 let ended_at_ms = unix_now_ms();
@@ -2819,7 +3184,10 @@ pub fn screen_share_get_capture_diagnostics(
         .map(|diagnostics| {
             diagnostics
                 .lock()
-                .map(|snapshot| snapshot.clone())
+                .map(|mut snapshot| {
+                    snapshot.refresh_interval_rates();
+                    snapshot.clone()
+                })
                 .map_err(|e| format!("capture diagnostics lock: {e}"))
         })
         .transpose()
@@ -2879,11 +3247,103 @@ pub fn screen_share_poll_frame(
     Ok(latest)
 }
 
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn screen_share_poll_i420_frame(
+    state: State<'_, MediaState>,
+) -> Result<Option<LatestI420Frame>, String> {
+    let latest = {
+        let lf = state
+            .latest_i420_frame
+            .lock()
+            .map_err(|e| format!("latest_i420_frame lock: {e}"))?;
+        lf.clone()
+    };
+
+    if let Ok(diag_guard) = state.windows_capture_diagnostics.lock() {
+        if let Some(diagnostics) = diag_guard.as_ref() {
+            if let Ok(mut diagnostics) = diagnostics.lock() {
+                diagnostics.poll_calls = diagnostics.poll_calls.saturating_add(1);
+                if let Some(frame) = latest.as_ref() {
+                    diagnostics.poll_hits = diagnostics.poll_hits.saturating_add(1);
+                    diagnostics.latest_polled_seq = Some(frame.seq);
+                    if diagnostics.first_poll_hit_latency_ms.is_none() {
+                        if let Ok(leak_guard) = state.native_share_leak_session.lock() {
+                            if let Some(session) = leak_guard.as_ref() {
+                                diagnostics.first_poll_hit_latency_ms =
+                                    Some(unix_now_ms().saturating_sub(session.started_at_ms));
+                            }
+                        }
+                    }
+                    if diagnostics.startup_stage == "first_buffered_jpeg"
+                        || diagnostics.startup_stage == "first_pollable_frame_written"
+                    {
+                        let elapsed_ms = diagnostics.first_poll_hit_latency_ms.unwrap_or(0);
+                        diagnostics.record_startup_stage(
+                            "first_poll_hit",
+                            "screen_share_poll_i420_frame",
+                            elapsed_ms,
+                        );
+                    }
+                } else {
+                    diagnostics.poll_misses = diagnostics.poll_misses.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    Ok(latest)
+}
+
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn screen_share_set_jpeg_fallback_enabled(
+    enabled: bool,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    state
+        .windows_jpeg_fallback_enabled
+        .store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn screen_share_get_i420_stream_url(state: State<'_, MediaState>) -> Result<String, String> {
+    if state.windows_i420_stream_port == 0 {
+        return Err("Windows I420 stream server is unavailable".to_string());
+    }
+    Ok(format!(
+        "http://127.0.0.1:{}/screen-share/i420",
+        state.windows_i420_stream_port
+    ))
+}
+
 /// Non-Windows stub for `screen_share_poll_frame`.
 #[tauri::command]
 #[cfg(not(target_os = "windows"))]
 pub fn screen_share_poll_frame() -> Result<Option<()>, String> {
     Ok(None)
+}
+
+/// Non-Windows stub for `screen_share_poll_i420_frame`.
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+pub fn screen_share_poll_i420_frame() -> Result<Option<()>, String> {
+    Ok(None)
+}
+
+/// Non-Windows stub for `screen_share_set_jpeg_fallback_enabled`.
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+pub fn screen_share_set_jpeg_fallback_enabled(_enabled: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+pub fn screen_share_get_i420_stream_url() -> Result<String, String> {
+    Err("Windows I420 stream is only available on Windows".to_string())
 }
 
 /// Poll the latest remote screen-share frame for a participant (Linux viewer path).
@@ -3220,17 +3680,28 @@ pub fn media_close_native_screen_share_viewer(_identity: String) -> Result<(), S
 /// Accepts `"low"`, `"high"`, or `"max"`. Takes effect immediately on the
 /// next captured frame — no need to restart the capture pipeline.
 ///
-/// Preset values:
+/// Linux native preset values:
 /// - `low`:  1920×1080 @ 60fps, JPEG 85
-/// - `high`: 2560×1440 @ 60fps, JPEG 92
+/// - `high`: 2560×1440 @ 30fps, JPEG 92
 /// - `max`:  2560×1440 @ 60fps, JPEG 95
 #[tauri::command]
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn media_set_screen_share_quality(
     quality: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
     state.screen_share_config.apply_preset(&quality)
+}
+
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn media_set_screen_share_quality(
+    quality: String,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    state
+        .screen_share_config
+        .apply_windows_native_bridge_preset(&quality)
 }
 
 /// Non-Linux/non-Windows stub for `media_set_screen_share_quality`.
@@ -3252,12 +3723,56 @@ pub fn screen_share_start() -> Result<bool, String> {
 mod windows_capture_routing_tests {
     use super::{
         is_windows_capture_setup_error, parse_windows_source_kind, select_windows_capture_backend,
-        wait_for_first_pollable_frame, LatestFrame, WindowsCaptureBackend, WindowsSourceKind,
+        rgba_to_i420, wait_for_first_pollable_frame, windows_bridge_transport_fps, LatestFrame,
+        windows_i420_stream_frame_header, LatestI420Frame, WindowsCaptureBackend, WindowsSourceKind,
     };
+    use crate::screen_capture::frame_processor::ScreenShareConfig;
     use crate::screen_capture::win_capture::WindowsNativeCaptureDiagnostics;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
+
+    fn empty_i420_frame() -> Arc<Mutex<Option<LatestI420Frame>>> {
+        Arc::new(Mutex::new(None))
+    }
+
+    #[test]
+    fn rgba_to_i420_outputs_expected_length_for_even_dimensions() {
+        let data = vec![255u8; 4 * 4 * 4];
+        let (i420, width, height) = rgba_to_i420(&data, 4, 4).unwrap();
+
+        assert_eq!(width, 4);
+        assert_eq!(height, 4);
+        assert_eq!(i420.len(), 4 * 4 * 3 / 2);
+    }
+
+    #[test]
+    fn rgba_to_i420_crops_odd_dimensions_to_even_payload() {
+        let data = vec![128u8; 5 * 3 * 4];
+        let (i420, width, height) = rgba_to_i420(&data, 5, 3).unwrap();
+
+        assert_eq!(width, 4);
+        assert_eq!(height, 2);
+        assert_eq!(i420.len(), 4 * 2 * 3 / 2);
+    }
+
+    #[test]
+    fn i420_stream_header_encodes_fixed_wire_fields() {
+        let frame = LatestI420Frame {
+            frame: vec![0; 12],
+            width: 4,
+            height: 2,
+            timestamp_us: 123_456,
+            seq: 9,
+        };
+        let header = windows_i420_stream_frame_header(&frame, frame.frame.len() as u32);
+
+        assert_eq!(u32::from_le_bytes(header[0..4].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 2);
+        assert_eq!(u64::from_le_bytes(header[8..16].try_into().unwrap()), 9);
+        assert_eq!(u64::from_le_bytes(header[16..24].try_into().unwrap()), 123_456);
+        assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 12);
+    }
 
     #[test]
     fn source_kind_routes_without_handle_probing() {
@@ -3279,6 +3794,20 @@ mod windows_capture_routing_tests {
     }
 
     #[test]
+    fn bridge_transport_fps_follows_selected_preset() {
+        let cfg = ScreenShareConfig::new();
+
+        cfg.apply_preset("low").unwrap();
+        assert_eq!(windows_bridge_transport_fps(&cfg), 60);
+
+        cfg.apply_windows_native_bridge_preset("high").unwrap();
+        assert_eq!(windows_bridge_transport_fps(&cfg), 60);
+
+        cfg.apply_windows_native_bridge_preset("max").unwrap();
+        assert_eq!(windows_bridge_transport_fps(&cfg), 60);
+    }
+
+    #[test]
     fn first_pollable_timeout_reports_current_operation_and_elapsed_time() {
         let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
         let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
@@ -3289,7 +3818,9 @@ mod windows_capture_routing_tests {
             diag.record_startup_stage("frame_pool_create_start", "CreateFreeThreaded", 12);
         }
 
-        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+        let error =
+            wait_for_first_pollable_frame(&empty_i420_frame(), &latest_frame, &diagnostics, 0, 0)
+                .unwrap_err();
 
         assert!(error.contains("stalled_in=first_pollable_frame_timeout"));
         assert!(error.contains("current_operation=wait for first pollable frame"));
@@ -3313,8 +3844,14 @@ mod windows_capture_routing_tests {
             );
         }
 
-        let error =
-            wait_for_first_pollable_frame(&latest_frame, &diagnostics, 5_000, 7_500).unwrap_err();
+        let error = wait_for_first_pollable_frame(
+            &empty_i420_frame(),
+            &latest_frame,
+            &diagnostics,
+            5_000,
+            7_500,
+        )
+        .unwrap_err();
 
         assert!(error.contains("native capture setup failed"));
         assert!(error.contains("stalled_in=capture_session_create_error"));
@@ -3334,7 +3871,9 @@ mod windows_capture_routing_tests {
             diag.record_startup_stage("frame_arrived_handler_register_done", "FrameArrived", 25);
         }
 
-        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+        let error =
+            wait_for_first_pollable_frame(&empty_i420_frame(), &latest_frame, &diagnostics, 0, 0)
+                .unwrap_err();
 
         assert!(error.contains("stalled_in=first_pollable_frame_timeout"));
         assert!(!error.contains("native capture setup failed"));
@@ -3400,10 +3939,38 @@ mod windows_capture_routing_tests {
             });
         });
 
-        let result = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 1, 250);
+        let result =
+            wait_for_first_pollable_frame(&empty_i420_frame(), &latest_frame, &diagnostics, 1, 250);
 
         writer.join().unwrap();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn raw_i420_pollable_frame_satisfies_first_frame_gate_without_jpeg() {
+        let latest_i420_frame = Arc::new(Mutex::new(None::<LatestI420Frame>));
+        let latest_frame = Arc::new(Mutex::new(None::<LatestFrame>));
+        let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
+            "wgc", "screen", 1920, 1080,
+        )));
+        let latest_i420_for_thread = latest_i420_frame.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            *latest_i420_for_thread.lock().unwrap() = Some(LatestI420Frame {
+                frame: vec![0; 1920 * 1080 * 3 / 2],
+                width: 1920,
+                height: 1080,
+                timestamp_us: 16_667,
+                seq: 1,
+            });
+        });
+
+        let result =
+            wait_for_first_pollable_frame(&latest_i420_frame, &latest_frame, &diagnostics, 1, 250);
+
+        writer.join().unwrap();
+        assert!(result.is_ok());
+        assert!(latest_frame.lock().unwrap().is_none());
     }
 
     #[test]
@@ -3429,7 +3996,13 @@ mod windows_capture_routing_tests {
             });
         });
 
-        let result = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 10, 250);
+        let result = wait_for_first_pollable_frame(
+            &empty_i420_frame(),
+            &latest_frame,
+            &diagnostics,
+            10,
+            250,
+        );
 
         writer.join().unwrap();
         assert!(result.is_ok());
@@ -3448,7 +4021,9 @@ mod windows_capture_routing_tests {
             diag.frame_arrived_callbacks = 1;
         }
 
-        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 1, 0).unwrap_err();
+        let error =
+            wait_for_first_pollable_frame(&empty_i420_frame(), &latest_frame, &diagnostics, 1, 0)
+                .unwrap_err();
 
         assert!(error.contains("stalled_in=first_pollable_processing_timeout"));
         assert!(error.contains("current_operation=wait for first pollable frame"));
@@ -3466,7 +4041,9 @@ mod windows_capture_routing_tests {
             diag.record_startup_stage("awaiting_first_frame", "FrameArrived callback", 21);
         }
 
-        let error = wait_for_first_pollable_frame(&latest_frame, &diagnostics, 0, 0).unwrap_err();
+        let error =
+            wait_for_first_pollable_frame(&empty_i420_frame(), &latest_frame, &diagnostics, 0, 0)
+                .unwrap_err();
 
         assert!(error.contains("post_start_no_frame=true"));
         assert!(error.contains("stalled_after=start_capture_done awaiting_first_frame"));

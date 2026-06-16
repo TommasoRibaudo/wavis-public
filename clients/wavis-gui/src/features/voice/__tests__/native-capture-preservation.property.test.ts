@@ -409,12 +409,12 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
       }
       await capturePromise;
 
-      expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 67)).toBe(true);
+      expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 17)).toBe(true);
       const publishArgs = mockPublishTrack.mock.calls[0] as unknown[];
       expect(publishArgs[1]).toMatchObject({
         source: 'screen_share',
         simulcast: false,
-        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 30 },
+        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
         screenShareSimulcastLayers: [],
       });
 
