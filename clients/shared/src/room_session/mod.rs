@@ -146,6 +146,16 @@ pub trait LiveKitConnection: Send + Sync {
     /// Default: no-op.
     fn on_camera_track_ended(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
 
+    /// Register callback for when a remote screen-share audio track is
+    /// subscribed. Receives `(identity)`.
+    /// Default: no-op.
+    fn on_screen_share_audio_available(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
+
+    /// Register callback for when a remote screen-share audio track ends.
+    /// Receives `(identity)`.
+    /// Default: no-op.
+    fn on_screen_share_audio_ended(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
+
     /// Publish a second audio track for system audio capture (screen share audio).
     /// Creates a `NativeAudioSource` and `LocalAudioTrack` published with
     /// `TrackSource::ScreenShareAudio` so receivers can distinguish it from the mic.

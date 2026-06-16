@@ -218,6 +218,12 @@ struct ScreenShareAvailablePayload {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Serialize)]
+struct ScreenShareAudioPayload {
+    identity: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
 pub struct PolledCameraFrame {
     pub identity: String,
     pub frame: String,
@@ -1131,6 +1137,30 @@ pub fn media_connect(
                 serde_json::json!({
                     "identity": identity,
                 }),
+            );
+        }));
+
+        let app_audio_available = app.clone();
+        conn.on_screen_share_audio_available(Box::new(move |identity| {
+            log::info!("{LOG} remote screen share audio available: {identity}");
+            let _ = app_audio_available.emit_to(
+                "main",
+                "screen_share_audio_available",
+                ScreenShareAudioPayload {
+                    identity: identity.to_string(),
+                },
+            );
+        }));
+
+        let app_audio_ended = app.clone();
+        conn.on_screen_share_audio_ended(Box::new(move |identity| {
+            log::info!("{LOG} remote screen share audio ended: {identity}");
+            let _ = app_audio_ended.emit_to(
+                "main",
+                "screen_share_audio_ended",
+                ScreenShareAudioPayload {
+                    identity: identity.to_string(),
+                },
             );
         }));
 
