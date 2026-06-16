@@ -22,8 +22,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetClientRect, GetCursorInfo, GetIconInfo,
-    HICON, ICONINFO, IsIconic, PW_RENDERFULLCONTENT,
+    DrawIconEx, GetClientRect, GetCursorInfo, GetIconInfo, IsIconic, CURSORINFO, CURSOR_SHOWING,
+    DI_NORMAL, HICON, ICONINFO, PW_RENDERFULLCONTENT,
 };
 
 /// Windows handle newtypes do not auto-derive Send. These handles are safe to
@@ -34,8 +34,8 @@ enum SendCaptureTarget {
 }
 unsafe impl Send for SendCaptureTarget {}
 
-use super::{CaptureError, CapturedFrame, ScreenCapture};
 use super::win_capture::SharedWindowsCaptureDiagnostics;
+use super::{CaptureError, CapturedFrame, ScreenCapture};
 
 const LOG: &str = "[wavis:gdi-capture]";
 
@@ -92,7 +92,12 @@ unsafe fn alloc_gdi_resources(w: u32, h: u32) -> Option<GdiResources> {
         let _ = DeleteDC(mem_dc);
         return None;
     }
-    Some(GdiResources { mem_dc, bitmap, width: w, height: h })
+    Some(GdiResources {
+        mem_dc,
+        bitmap,
+        width: w,
+        height: h,
+    })
 }
 
 unsafe fn free_gdi_resources(r: GdiResources) {
@@ -258,7 +263,11 @@ fn capture_loop(
 
             // Reallocate if dimensions changed (e.g. window resize).
             if w != resources.width || h != resources.height {
-                log::info!("{LOG} window resized to {}x{}, reallocating GDI resources", w, h);
+                log::info!(
+                    "{LOG} window resized to {}x{}, reallocating GDI resources",
+                    w,
+                    h
+                );
                 let old = mem::replace(&mut resources, {
                     match alloc_gdi_resources(w, h) {
                         Some(r) => r,
@@ -382,11 +391,15 @@ fn capture_loop(
 
             let non_zero = data.iter().filter(|&&b| b != 0).count();
             if frame_count == 0 {
-                log::info!("{LOG} first frame: {}x{}, non_zero_bytes={}", w, h, non_zero);
+                log::info!(
+                    "{LOG} first frame: {}x{}, non_zero_bytes={}",
+                    w,
+                    h,
+                    non_zero
+                );
                 if let Ok(mut diag) = diagnostics.lock() {
                     diag.usable_frames = 1;
-                    diag.first_raw_frame_latency_ms =
-                        Some(started_at.elapsed().as_millis() as u64);
+                    diag.first_raw_frame_latency_ms = Some(started_at.elapsed().as_millis() as u64);
                     diag.startup_stage = "gdi_first_raw_frame".to_string();
                 }
             } else if frame_count.is_multiple_of(300) {
@@ -400,14 +413,26 @@ fn capture_loop(
             // DPI: PrintWindow uses the window's DPI context; GetClientRect returns physical
             // pixels on a per-monitor-V2-aware process (Tauri default). No scaling needed —
             // CapturedFrame dimensions match feed_video_frame and JPEG encode expectations.
-            crate::debug_eprintln!("{} frame #{} {}x{} non_zero={}", LOG, frame_count, w, h, non_zero);
+            crate::debug_eprintln!(
+                "{} frame #{} {}x{} non_zero={}",
+                LOG,
+                frame_count,
+                w,
+                h,
+                non_zero
+            );
 
             let timestamp_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            let captured = CapturedFrame { width: w, height: h, data, timestamp_ms };
+            let captured = CapturedFrame {
+                width: w,
+                height: h,
+                data,
+                timestamp_ms,
+            };
 
             if let Ok(guard) = frame_callback.lock() {
                 if let Some(ref cb) = *guard {
@@ -537,13 +562,21 @@ mod tests {
     #[test]
     fn window_offset_and_hotspot() {
         // Window origin (100,200), cursor at (150,250), hotspot (5,3)
-        assert_eq!(compute_cursor_draw_pos((100, 200), (150, 250), (5, 3)), (45, 47));
+        assert_eq!(
+            compute_cursor_draw_pos((100, 200), (150, 250), (5, 3)),
+            (45, 47)
+        );
     }
 
     #[test]
     fn monitor_rect_preserves_virtual_desktop_offset() {
         assert_eq!(
-            monitor_rect_dimensions(RECT { left: -1920, top: 0, right: 0, bottom: 1080 }),
+            monitor_rect_dimensions(RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080
+            }),
             Some((-1920, 0, 1920, 1080)),
         );
     }
@@ -551,7 +584,12 @@ mod tests {
     #[test]
     fn monitor_rect_rejects_empty_dimensions() {
         assert_eq!(
-            monitor_rect_dimensions(RECT { left: 10, top: 20, right: 10, bottom: 20 }),
+            monitor_rect_dimensions(RECT {
+                left: 10,
+                top: 20,
+                right: 10,
+                bottom: 20
+            }),
             None,
         );
     }

@@ -849,7 +849,10 @@ impl WinCapture {
         log::info!("{LOG} capture stopped");
         if let Ok(diag) = diagnostics.lock() {
             if diag.usable_frames == 0 {
-                log::warn!("{LOG} WGC stopped before first frame; {}", diag.compact_summary());
+                log::warn!(
+                    "{LOG} WGC stopped before first frame; {}",
+                    diag.compact_summary()
+                );
             }
         };
     }
@@ -922,9 +925,24 @@ mod tests {
 
     #[test]
     fn staging_texture_is_reused_only_for_matching_dimensions_and_format() {
-        assert!(staging_texture_matches(Some((1920, 1080, 87)), 1920, 1080, 87));
-        assert!(!staging_texture_matches(Some((1920, 1080, 87)), 1280, 720, 87));
-        assert!(!staging_texture_matches(Some((1920, 1080, 87)), 1920, 1080, 28));
+        assert!(staging_texture_matches(
+            Some((1920, 1080, 87)),
+            1920,
+            1080,
+            87
+        ));
+        assert!(!staging_texture_matches(
+            Some((1920, 1080, 87)),
+            1280,
+            720,
+            87
+        ));
+        assert!(!staging_texture_matches(
+            Some((1920, 1080, 87)),
+            1920,
+            1080,
+            28
+        ));
         assert!(!staging_texture_matches(None, 1920, 1080, 87));
     }
 

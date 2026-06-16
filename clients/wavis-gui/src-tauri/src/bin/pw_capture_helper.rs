@@ -570,6 +570,14 @@ fn process_frame(
         return;
     }
 
+    if data_ref.chunk.is_null() {
+        if frame_num <= 3 {
+            eprintln!("pw_capture_helper: frame #{frame_num}: null chunk, skipping");
+        }
+        unsafe { stream.queue_raw_buffer(buffer_ptr) };
+        return;
+    }
+
     let chunk = unsafe { &*data_ref.chunk };
     let chunk_size = chunk.size as usize;
     let stride = chunk.stride as usize;

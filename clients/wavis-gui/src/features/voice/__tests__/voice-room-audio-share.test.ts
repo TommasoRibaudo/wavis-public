@@ -432,7 +432,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       command: 'screen_share_start_source',
       args: expect.objectContaining({ sourceId: 'screen-1' }),
     });
-    expect(invokeCalls).toContainEqual({ command: 'get_default_audio_monitor', args: undefined });
+    expect(invokeCalls).toContainEqual({ command: 'get_default_audio_monitor_fast', args: undefined });
     expect(
       getState().events.some((event) =>
         event.message.includes('remote mic and system-audio still share one subscriber volume slot on Linux'),

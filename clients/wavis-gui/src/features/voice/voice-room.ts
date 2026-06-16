@@ -4670,6 +4670,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
     // 3. Start video first (if needed)
     if (needsVideo) {
       const sourceKind = selection.sourceKind ?? (selection.mode === 'window' ? 'window' : 'screen');
+      const isPortalVideo = selection.sourceId === 'portal';
       const defaultNativeLeakBackend = sourceKind === 'screen'
         ? 'native-gdi-screen'
         : 'native-gdi-window';
@@ -4816,19 +4817,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
           }
         }
         videoStarted = true;
-      } else if (selection.sourceId === 'portal') {
-        if (lkModule && lkModule instanceof LiveKitModule && !options.isSourceChange) {
-          // Normal start: set up early-frame buffering before Rust capture begins.
-          lkModule.beginNativeCaptureLeakSession({
-            shareSessionId,
-            mode: selection.mode as 'screen_audio' | 'window',
-            sourceId: selection.sourceId,
-            sourceName: selection.sourceName,
-            sourceKind,
-            captureBackend: defaultNativeLeakBackend,
-          });
-          lkModule.prepareNativeCapture();
-        }
+      } else if (isPortalVideo) {
         await invoke('screen_share_start');
         videoStarted = true;
       } else {
@@ -4858,7 +4847,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
       // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
       // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
       // to the HWND corruption caused by child windows (SharePicker).
-      if (!isWindowsPlatform() && lkModule && lkModule instanceof LiveKitModule) {
+      if (!isWindowsPlatform() && !isPortalVideo && lkModule && lkModule instanceof LiveKitModule) {
         if (options.isSourceChange) {
           // Source change: feed new Rust frames into the existing generator so
           // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
@@ -4878,8 +4867,11 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         if (selection.mode === 'audio_only') {
           audioSourceId = selection.sourceId;
         } else {
-          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via get_default_audio_monitor');
-          audioSourceId = await invoke<string>('get_default_audio_monitor');
+          const monitorCommand = isLinuxPlatform()
+            ? 'get_default_audio_monitor_fast'
+            : 'get_default_audio_monitor';
+          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via', monitorCommand);
+          audioSourceId = await invoke<string>(monitorCommand);
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] default audio monitor resolved:', audioSourceId);
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);

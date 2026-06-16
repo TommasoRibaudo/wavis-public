@@ -5,11 +5,11 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
+use std::cell::RefCell;
+#[cfg(target_os = "linux")]
 use std::io::{Read, Write};
 #[cfg(target_os = "linux")]
 use std::net::TcpStream;
-#[cfg(target_os = "linux")]
-use std::cell::RefCell;
 #[cfg(target_os = "linux")]
 use std::rc::Rc;
 #[cfg(target_os = "linux")]
@@ -31,7 +31,9 @@ fn main() {
         eprintln!("native_share_viewer: missing stream URL");
         std::process::exit(2);
     };
-    let title = args.next().unwrap_or_else(|| "Wavis screen share".to_string());
+    let title = args
+        .next()
+        .unwrap_or_else(|| "Wavis screen share".to_string());
 
     gtk::init().expect("native_share_viewer: GTK init failed");
 
@@ -236,7 +238,9 @@ fn read_raw_frame(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Result<Viewer
 
     let expected_len = width as usize * height as usize * 4;
     if width == 0 || height == 0 || len != expected_len || len > 100_000_000 {
-        return Err(format!("invalid raw frame header: {width}x{height} len={len}"));
+        return Err(format!(
+            "invalid raw frame header: {width}x{height} len={len}"
+        ));
     }
 
     while buffer.len() < len {

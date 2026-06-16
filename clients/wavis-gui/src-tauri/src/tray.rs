@@ -88,8 +88,11 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     app.listen("tray-state-update", move |event| {
         if let Ok(payload) = serde_json::from_str::<TrayStatePayload>(event.payload()) {
             let _ = mute_state_item.set_text(if payload.is_muted { "Unmute" } else { "Mute" });
-            let _ = deafen_state_item
-                .set_text(if payload.is_deafened { "Undeafen" } else { "Deafen" });
+            let _ = deafen_state_item.set_text(if payload.is_deafened {
+                "Undeafen"
+            } else {
+                "Deafen"
+            });
             let _ = mute_state_item.set_enabled(payload.in_voice_session);
             let _ = deafen_state_item.set_enabled(payload.in_voice_session);
             let _ = leave_state_item.set_enabled(payload.in_voice_session);
@@ -186,7 +189,10 @@ pub fn show_main_window(
         let _ = window.set_focus();
     }
     visibility.hidden.store(false, Ordering::SeqCst);
-    let _ = app.emit("window-visibility-changed", WindowVisibilityPayload { visible: true });
+    let _ = app.emit(
+        "window-visibility-changed",
+        WindowVisibilityPayload { visible: true },
+    );
     Ok(())
 }
 

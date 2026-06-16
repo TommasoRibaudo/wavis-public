@@ -1424,6 +1424,21 @@ export default function ActiveRoom() {
       }),
     );
 
+    cleanups.push(
+      listen('share-picker:use-portal', async () => {
+        setPendingSharePickerData(null);
+        setShareStarting(true);
+        try {
+          await startPortalShare();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          showTransientScreenShareError(msg);
+        } finally {
+          setShareStarting(false);
+        }
+      }),
+    );
+
     // Share indicator stop button (now with target: 'video' | 'audio' | 'all')
     cleanups.push(
       listen<{ target?: 'video' | 'audio' | 'all' }>('share-indicator:stop', (event) => {
@@ -2161,18 +2176,6 @@ export default function ActiveRoom() {
           showTransientScreenShareError(msg);
           toast.error(msg);
         }
-        return;
-      }
-
-      const captureAuthStatus = await invoke<{
-        display_server: string;
-        authorized: boolean;
-        needs_auth: boolean;
-        was_attempted: boolean;
-      }>('get_capture_auth_status');
-
-      if (captureAuthStatus.display_server === 'wayland') {
-        await startPortalShare();
         return;
       }
 
