@@ -38,7 +38,8 @@ export interface OccupiedSlots {
  * When omitted, falls back to URL hash + Tauri event relay (Linux path).
  */
 export interface SharePickerProps {
-  enumResult?: EnumerationResult;
+  inline?: boolean;
+  enumResult?: EnumerationResult | null;
   occupied?: OccupiedSlots;
   modeScope?: 'all' | 'video_only';
   initialWithAudio?: boolean;
@@ -48,16 +49,18 @@ export interface SharePickerProps {
 }
 
 /** Parse the picker data from the URL hash (standalone window mode). */
-function parseHashData(): { enumResult: EnumerationResult; occupied: OccupiedSlots } | null {
+function parseHashData(): { enumResult: EnumerationResult | null; occupied: OccupiedSlots } | null {
   try {
     const raw = decodeURIComponent(window.location.hash.slice(1));
     if (!raw) return null;
     const data = JSON.parse(raw);
-    const result: EnumerationResult = {
-      sources: Array.isArray(data.enumResult?.sources) ? data.enumResult.sources : [],
-      warnings: Array.isArray(data.enumResult?.warnings) ? data.enumResult.warnings : [],
-      fallback_reason: data.enumResult?.fallback_reason ?? null,
-    };
+    const result: EnumerationResult | null = data.enumResult
+      ? {
+        sources: Array.isArray(data.enumResult.sources) ? data.enumResult.sources : [],
+        warnings: Array.isArray(data.enumResult.warnings) ? data.enumResult.warnings : [],
+        fallback_reason: data.enumResult.fallback_reason ?? null,
+      }
+      : null;
     const occupied: OccupiedSlots = {
       videoOccupied: data.occupied?.videoOccupied ?? false,
       audioOccupied: data.occupied?.audioOccupied ?? false,
@@ -303,10 +306,10 @@ function SourceItem({
 
 export default function SharePicker(props: SharePickerProps) {
   // ── Mode detection: inline modal (props) vs standalone window (hash) ──
-  const isInline = props.enumResult !== undefined;
+  const isInline = props.inline === true || props.enumResult !== undefined;
 
   /* ── State ── */
-  const [parsed] = useState(() => (isInline ? null : parseHashData()));
+  const [parsed, setParsed] = useState(() => (isInline ? null : parseHashData()));
 
   const enumResult = isInline
     ? (props.enumResult ?? null)
@@ -337,6 +340,35 @@ export default function SharePicker(props: SharePickerProps) {
 
   const listboxRef = useRef<HTMLDivElement>(null);
   const activeIndexRef = useRef<number>(-1);
+
+  /* ── Standalone source loading ── */
+  useEffect(() => {
+    if (isInline || enumResult !== null) return;
+    let cancelled = false;
+
+    invoke<EnumerationResult>('list_share_sources')
+      .then((result) => {
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: result,
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      })
+      .catch((err: unknown) => {
+        if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'source enumeration failed', err);
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: { sources: [], warnings: [String(err)], fallback_reason: null },
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enumResult, isInline]);
 
   /* ── Lazy thumbnail loading ── */
   useEffect(() => {
