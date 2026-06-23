@@ -27,8 +27,17 @@ let navigateTarget: string | null = null;
 /** Count of tauriFetch calls to /auth/refresh */
 let refreshFetchCount = 0;
 
+/** Count of tauriFetch calls to /auth/me */
+let meFetchCount = 0;
+
 /** Mock tauriFetch behavior — set per test */
 let mockFetchBehavior: 'network_error' | '401' | '400' | '429' | '500' | '200' = 'network_error';
+
+/** Mock /auth/me behavior — set per test */
+let mockMeBehavior: 'network_error' | '401' | '200_with_username' | '200_null' = '200_with_username';
+
+/** Username returned by the mock /auth/me endpoint */
+let mockMeUsername = 'diego';
 
 /* ─── Module Mocks ──────────────────────────────────────────────── */
 
@@ -574,6 +583,36 @@ vi.mock('@tauri-apps/plugin-http', () => ({
         };
       }
     }
+    if (typeof url === 'string' && url.includes('/auth/me')) {
+      meFetchCount++;
+      if (mockMeBehavior === 'network_error') {
+        throw new Error('Network error: connection refused');
+      }
+      if (mockMeBehavior === '401') {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: () => null },
+          json: async () => ({ error: 'unauthorized' }),
+        };
+      }
+      if (mockMeBehavior === '200_with_username') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ username: mockMeUsername }),
+        };
+      }
+      if (mockMeBehavior === '200_null') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({}),
+        };
+      }
+    }
     throw new Error(`Unexpected fetch URL: ${url}`);
   }),
 }));
@@ -581,8 +620,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 /* ─── Fixed AuthGate Simulation Helpers ─────────────────────────── */
 
 /**
- * Simulate the FIXED AuthGate init() flow with retry logic.
- * Matches the actual implementation in AuthGate.tsx after tasks 4.1-4.4.
+ * Simulate the FIXED AuthGate init() flow with retry logic and username sync.
+ * Matches the actual implementation in AuthGate.tsx (including issue #197 fix).
  */
 async function runFixedAuthGateInit(options?: { onCancel?: () => boolean }): Promise<void> {
   const auth = await import('../auth');
@@ -594,58 +633,75 @@ async function runFixedAuthGateInit(options?: { onCancel?: () => boolean }): Pro
     return;
   }
 
+  // Read local username before token check (mirrors AuthGate step 1)
+  const localName = await auth.getUsername();
+
   const expired = await auth.isTokenExpired();
-  if (!expired) {
-    navigateTarget = null; // valid token, proceed to app
-    return;
+  if (expired) {
+    // Expired token — attempt refresh
+    const result = await auth.refreshTokens();
+
+    if (result.status !== 'success') {
+      // Check if non-recoverable
+      const isTransient = result.status === 'network_error' || result.status === 'server_error' || result.status === 'rate_limited';
+
+      if (!isTransient) {
+        if (result.status === 'unauthorized' || result.status === 'bad_request' || result.status === 'no_refresh_token') {
+          await auth.clearSessionFull();
+        } else {
+          await auth.clearAccessTokens();
+        }
+        navigateTarget = '/login';
+        return;
+      }
+
+      // Transient: retry loop
+      const RETRY_DELAYS = [250, 1000, 3000];
+      let lastResult: Awaited<ReturnType<typeof auth.refreshTokens>> = result;
+      for (let i = 0; i < RETRY_DELAYS.length; i++) {
+        if (isCancelled()) return;
+        const baseDelay = RETRY_DELAYS[i];
+        const jitter = baseDelay * 0.2 * (2 * Math.random() - 1);
+        const delay = Math.round(baseDelay + jitter);
+        await new Promise(r => setTimeout(r, delay));
+        if (isCancelled()) return;
+        lastResult = await auth.refreshTokens();
+        if (lastResult.status === 'success') break;
+        const stillTransient = lastResult.status === 'network_error' || lastResult.status === 'server_error' || lastResult.status === 'rate_limited';
+        if (!stillTransient) {
+          await auth.clearSessionFull();
+          navigateTarget = '/login';
+          return;
+        }
+      }
+
+      if (lastResult.status !== 'success') {
+        // All retries exhausted — transient
+        if (!isCancelled()) {
+          await auth.clearAccessTokens();
+          navigateTarget = '/login';
+        }
+        return;
+      }
+    }
   }
 
-  // Expired token — attempt refresh
-  const result = await auth.refreshTokens();
+  // Username sync: if no local username, fetch from server (mirrors AuthGate step 3)
+  if (!localName) {
+    try {
+      const serverName = await auth.fetchMyUsername();
+      if (!isCancelled() && serverName) {
+        await auth.setUsername(serverName);
+      }
+    } catch {
+      // Best-effort — proceed without blocking
+    }
+  }
 
-  if (result.status === 'success') {
+  // Token is valid — ready
+  if (!isCancelled()) {
     navigateTarget = null;
-    return;
   }
-
-  // Check if non-recoverable
-  const isTransient = result.status === 'network_error' || result.status === 'server_error' || result.status === 'rate_limited';
-
-  if (!isTransient) {
-    if (result.status === 'unauthorized' || result.status === 'bad_request' || result.status === 'no_refresh_token') {
-      await auth.clearSessionFull();
-    } else {
-      await auth.clearAccessTokens();
-    }
-    navigateTarget = '/login';
-    return;
-  }
-
-  // Transient: retry loop
-  const RETRY_DELAYS = [250, 1000, 3000];
-  for (let i = 0; i < RETRY_DELAYS.length; i++) {
-    if (isCancelled()) return;
-    const baseDelay = RETRY_DELAYS[i];
-    const jitter = baseDelay * 0.2 * (2 * Math.random() - 1);
-    const delay = Math.round(baseDelay + jitter);
-    await new Promise(r => setTimeout(r, delay));
-    if (isCancelled()) return;
-    const retryResult = await auth.refreshTokens();
-    if (retryResult.status === 'success') {
-      navigateTarget = null;
-      return;
-    }
-    const stillTransient = retryResult.status === 'network_error' || retryResult.status === 'server_error' || retryResult.status === 'rate_limited';
-    if (!stillTransient) {
-      await auth.clearSessionFull();
-      navigateTarget = '/login';
-      return;
-    }
-  }
-
-  // All retries exhausted
-  await auth.clearAccessTokens();
-  navigateTarget = '/login';
 }
 
 /**
@@ -1174,5 +1230,166 @@ describe('Race Safety — Scheduled Refresh Cancellation', () => {
     expect(mockStore['device_id']).toBe('device-123');
     expect(mockStore['server_url']).toBe('https://wavis.example.com');
     expect(mockStore['display_name']).toBe('TestUser');
+  });
+});
+
+/* ═══ Username Sync on Startup (issue #197 fix) ═════════════════════
+ *
+ * Tests for the startup username sync added in AuthGate.tsx step 3.
+ * Covers the case where username was never persisted locally after
+ * device pairing (best-effort sync silently failed), making the app
+ * appear as an "empty account" until the user re-logged in.
+ *
+ * **Validates: issue #197 acceptance criteria**
+ */
+
+/** Registered device with a valid (non-expired) token and no username in store. */
+function setupRegisteredDeviceWithValidTokenNoUsername(): void {
+  const validExp = Date.now() + 900_000; // 15 minutes from now
+  mockStore = {
+    device_id: 'device-123',
+    server_url: 'https://wavis.example.com',
+    access_token: makeJwt(validExp / 1000),
+    access_token_exp: validExp,
+    insecure_tls: false,
+    // no 'username' or 'display_name'
+  };
+  mockKeychain = { wavis_refresh_token: 'old-refresh-token' };
+}
+
+describe('Username Sync on Startup — issue #197', () => {
+  beforeEach(() => {
+    mockStore = {};
+    mockKeychain = {};
+    navigateTarget = null;
+    refreshFetchCount = 0;
+    meFetchCount = 0;
+    mockFetchBehavior = 'network_error';
+    mockFetchResponses = [];
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'diego';
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('no local username + server returns username → username synced to local store', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'diego';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(1);
+    expect(mockStore['username']).toBe('diego');
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('username already in local store → /auth/me not called', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockStore['username'] = 'existing-user';
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'other-user';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(0); // sync skipped
+    expect(mockStore['username']).toBe('existing-user'); // unchanged
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('display_name in local store counts as having a local username — /auth/me not called', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockStore['display_name'] = 'fallback-name';
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'server-name';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(0); // getUsername() returns display_name → sync skipped
+    expect(mockStore['display_name']).toBe('fallback-name'); // unchanged
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('no local username + /auth/me throws network error → best-effort, init completes', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockMeBehavior = 'network_error';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(1); // attempted
+    expect(mockStore['username']).toBeUndefined(); // not stored (error swallowed)
+    expect(navigateTarget).toBeNull(); // init still completes
+  });
+
+  it('no local username + /auth/me returns 401 → best-effort (non-ok treated as null), init completes', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockMeBehavior = '401';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(1);
+    // fetchMyUsername() returns null on non-ok response — setUsername not called
+    expect(mockStore['username']).toBeUndefined();
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('no local username + /auth/me returns 200 with no username field → store unchanged, init completes', async () => {
+    setupRegisteredDeviceWithValidTokenNoUsername();
+    mockMeBehavior = '200_null';
+
+    await runFixedAuthGateInit();
+
+    expect(meFetchCount).toBe(1);
+    expect(mockStore['username']).toBeUndefined(); // serverName was null → setUsername not called
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('username sync runs after token refresh when token was expired on startup', async () => {
+    // Expired token, no username — sync should still happen after successful refresh
+    const expiredExp = Date.now() - 120_000;
+    mockStore = {
+      device_id: 'device-123',
+      server_url: 'https://wavis.example.com',
+      access_token: makeJwt(expiredExp / 1000),
+      access_token_exp: expiredExp,
+      insecure_tls: false,
+      // no 'username' or 'display_name'
+    };
+    mockKeychain = { wavis_refresh_token: 'old-refresh-token' };
+    mockFetchBehavior = '200'; // refresh succeeds
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'diego';
+
+    await runFixedAuthGateInit();
+
+    expect(refreshFetchCount).toBe(1); // refresh fired
+    expect(meFetchCount).toBe(1); // username sync fired after refresh
+    expect(mockStore['username']).toBe('diego');
+    expect(navigateTarget).toBeNull();
+  });
+
+  it('token refresh failure → /auth/me not called (navigate to /login)', async () => {
+    const expiredExp = Date.now() - 120_000;
+    mockStore = {
+      device_id: 'device-123',
+      server_url: 'https://wavis.example.com',
+      access_token: makeJwt(expiredExp / 1000),
+      access_token_exp: expiredExp,
+      insecure_tls: false,
+    };
+    mockKeychain = { wavis_refresh_token: 'old-refresh-token' };
+    mockFetchBehavior = '401'; // non-recoverable
+    mockMeBehavior = '200_with_username';
+    mockMeUsername = 'diego';
+
+    await runFixedAuthGateInit();
+
+    expect(refreshFetchCount).toBe(1);
+    expect(meFetchCount).toBe(0); // never reached — returned early
+    expect(navigateTarget).toBe('/login');
   });
 });

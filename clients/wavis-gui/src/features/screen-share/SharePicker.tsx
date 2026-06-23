@@ -22,6 +22,7 @@ const MODES: { key: ShareMode; label: string; sourceType: ShareSourceType }[] = 
 const ECHO_WARNING_SUBSTRING = 'echo possible';
 const DEBUG_SCREEN_CAPTURE = import.meta.env.VITE_DEBUG_SCREEN_CAPTURE === 'true';
 const LOG = '[share-picker]';
+const PORTAL_SOURCE_ID = 'portal';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -37,25 +38,29 @@ export interface OccupiedSlots {
  * When omitted, falls back to URL hash + Tauri event relay (Linux path).
  */
 export interface SharePickerProps {
-  enumResult?: EnumerationResult;
+  inline?: boolean;
+  enumResult?: EnumerationResult | null;
   occupied?: OccupiedSlots;
   modeScope?: 'all' | 'video_only';
   initialWithAudio?: boolean;
   onSelect?: (selection: ShareSelection) => void;
+  onPortalFallback?: () => void;
   onCancel?: () => void;
 }
 
 /** Parse the picker data from the URL hash (standalone window mode). */
-function parseHashData(): { enumResult: EnumerationResult; occupied: OccupiedSlots } | null {
+function parseHashData(): { enumResult: EnumerationResult | null; occupied: OccupiedSlots } | null {
   try {
     const raw = decodeURIComponent(window.location.hash.slice(1));
     if (!raw) return null;
     const data = JSON.parse(raw);
-    const result: EnumerationResult = {
-      sources: Array.isArray(data.enumResult?.sources) ? data.enumResult.sources : [],
-      warnings: Array.isArray(data.enumResult?.warnings) ? data.enumResult.warnings : [],
-      fallback_reason: data.enumResult?.fallback_reason ?? null,
-    };
+    const result: EnumerationResult | null = data.enumResult
+      ? {
+        sources: Array.isArray(data.enumResult.sources) ? data.enumResult.sources : [],
+        warnings: Array.isArray(data.enumResult.warnings) ? data.enumResult.warnings : [],
+        fallback_reason: data.enumResult.fallback_reason ?? null,
+      }
+      : null;
     const occupied: OccupiedSlots = {
       videoOccupied: data.occupied?.videoOccupied ?? false,
       audioOccupied: data.occupied?.audioOccupied ?? false,
@@ -76,6 +81,36 @@ export function filterSourcesByMode(
   return sources.filter((s) => s.source_type === entry.sourceType);
 }
 
+function isPortalSource(source: ShareSource): boolean {
+  return source.id === PORTAL_SOURCE_ID;
+}
+
+function withPortalFallbackSources(enumResult: EnumerationResult | null): ShareSource[] {
+  const sources = enumResult?.sources ?? [];
+  if (enumResult?.fallback_reason !== 'portal') return sources;
+
+  const next = [...sources];
+  if (!next.some((source) => source.source_type === 'screen')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Screen or display',
+      source_type: 'screen',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  if (!next.some((source) => source.source_type === 'window')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Window or app',
+      source_type: 'window',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  return next;
+}
+
 /** Pick the first mode that has sources, or default to screen_audio. */
 function pickDefaultMode(sources: ShareSource[]): ShareMode {
   for (const m of MODES) {
@@ -86,10 +121,15 @@ function pickDefaultMode(sources: ShareSource[]): ShareMode {
 
 /** Pick the first mode that has sources and is not blocked by an occupied slot. */
 export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
-  for (const m of MODES) {
-    const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
-    if (!blocked && sources.some((s) => s.source_type === m.sourceType)) {
-      return m.key;
+  for (const allowPortal of [false, true]) {
+    for (const m of MODES) {
+      const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
+      const hasSource = sources.some((s) =>
+        s.source_type === m.sourceType && (allowPortal || !isPortalSource(s)),
+      );
+      if (!blocked && hasSource) {
+        return m.key;
+      }
     }
   }
   return pickDefaultMode(sources);
@@ -266,10 +306,10 @@ function SourceItem({
 
 export default function SharePicker(props: SharePickerProps) {
   // ── Mode detection: inline modal (props) vs standalone window (hash) ──
-  const isInline = props.enumResult !== undefined;
+  const isInline = props.inline === true || props.enumResult !== undefined;
 
   /* ── State ── */
-  const [parsed] = useState(() => (isInline ? null : parseHashData()));
+  const [parsed, setParsed] = useState(() => (isInline ? null : parseHashData()));
 
   const enumResult = isInline
     ? (props.enumResult ?? null)
@@ -279,18 +319,18 @@ export default function SharePicker(props: SharePickerProps) {
     ? (props.occupied ?? { videoOccupied: false, audioOccupied: false })
     : (parsed?.occupied ?? { videoOccupied: false, audioOccupied: false });
 
-  const initSources = enumResult?.sources ?? [];
+  const initPickerSources = withPortalFallbackSources(enumResult);
   const modeScope = props.modeScope ?? 'all';
   const initialMode = modeScope === 'video_only'
-    ? pickInitialVideoMode(initSources, occupied)
-    : pickInitialMode(initSources, occupied);
+    ? pickInitialVideoMode(initPickerSources, occupied)
+    : pickInitialMode(initPickerSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
-    initSources.length > 0 ? initialMode : 'screen_audio',
+    initPickerSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
   const [withAudio, setWithAudio] = useState<boolean>(() =>
-    props.initialWithAudio ?? defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
+    props.initialWithAudio ?? defaultWithAudioForMode(initPickerSources.length > 0 ? initialMode : 'screen_audio', occupied),
   );
   // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
   const [compatibilityMode, setCompatibilityMode] = useState(false);
@@ -301,13 +341,42 @@ export default function SharePicker(props: SharePickerProps) {
   const listboxRef = useRef<HTMLDivElement>(null);
   const activeIndexRef = useRef<number>(-1);
 
+  /* ── Standalone source loading ── */
+  useEffect(() => {
+    if (isInline || enumResult !== null) return;
+    let cancelled = false;
+
+    invoke<EnumerationResult>('list_share_sources')
+      .then((result) => {
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: result,
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      })
+      .catch((err: unknown) => {
+        if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'source enumeration failed', err);
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: { sources: [], warnings: [String(err)], fallback_reason: null },
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enumResult, isInline]);
+
   /* ── Lazy thumbnail loading ── */
   useEffect(() => {
     if (!enumResult) return;
     let cancelled = false;
 
     const visualSources = enumResult.sources.filter(
-      (s) => s.source_type === 'screen' || s.source_type === 'window',
+      (s) => !isPortalSource(s) && (s.source_type === 'screen' || s.source_type === 'window'),
     );
 
     if (visualSources.length > 0) {
@@ -340,7 +409,7 @@ export default function SharePicker(props: SharePickerProps) {
   const isWindowsPlatform = /Windows NT/i.test(navigator.userAgent || '');
 
   /* ── Derived ── */
-  const sources = enumResult?.sources ?? [];
+  const sources = withPortalFallbackSources(enumResult);
   const warnings = enumResult?.warnings ?? [];
   const filteredSources = filterSourcesByMode(sources, activeMode);
   const isVisualMode = activeMode !== 'audio_only';
@@ -429,7 +498,7 @@ export default function SharePicker(props: SharePickerProps) {
     const selection: ShareSelection = {
       mode: activeMode,
       sourceId: selectedSource.id,
-      sourceName: selectedSource.name,
+      sourceName: isPortalSource(selectedSource) ? 'System picker' : selectedSource.name,
       withAudio: activeMode === 'audio_only' ? false : withAudio,
       sourceKind: selectedSource.source_type === 'window' ? 'window' : 'screen',
       compatibilityMode,
@@ -451,6 +520,16 @@ export default function SharePicker(props: SharePickerProps) {
       props.onCancel?.();
     } else {
       await invoke('share_picker_cancel');
+      await getCurrentWindow().close();
+    }
+  }, [isInline, props]);
+
+  /* ── Portal fallback action ── */
+  const handlePortalFallback = useCallback(async () => {
+    if (isInline) {
+      props.onPortalFallback?.();
+    } else {
+      await invoke('share_picker_use_portal');
       await getCurrentWindow().close();
     }
   }, [isInline, props]);
@@ -524,7 +603,7 @@ export default function SharePicker(props: SharePickerProps) {
               ⚠ Direct access unavailable
             </span>
             <button
-              onClick={handleCancel}
+              onClick={handlePortalFallback}
               className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"
             >
               Use system picker

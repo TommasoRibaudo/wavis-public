@@ -20,6 +20,7 @@ import ParticipantMixer, { type MixerParticipant } from '@shared/ParticipantMixe
 import QuickActionButtons from '@shared/QuickActionButtons';
 import FocusMainButton from '@shared/FocusMainButton';
 import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
 import ShareLoadingOverlay from './ShareLoadingOverlay';
 
@@ -672,7 +673,17 @@ const AudioOnlyTile = memo(function AudioOnlyTile({
 }: AudioOnlyTileProps) {
   return (
     <div className="flex items-center gap-3 px-3 py-2 text-xs font-mono select-none">
-      <span style={{ color }} aria-hidden="true">{"♪"}</span>
+      <button
+        className="shrink-0 hover:opacity-70 transition-opacity"
+        style={{
+          color: muted ? 'var(--wavis-danger)' : 'transparent',
+          WebkitTextStroke: muted ? undefined : '1px var(--wavis-danger)',
+          animation: muted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+        }}
+        onClick={() => onToggleMute(participantId)}
+        aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
+        title={muted ? 'click to unmute' : 'click to mute'}
+      >{"♪"}</button>
       <span className="truncate min-w-0" style={{ color }}>{displayName}</span>
       <div className="flex items-center gap-2 ml-auto shrink-0">
         <span className="text-wavis-text-secondary whitespace-nowrap hidden sm:block">audio vol</span>
@@ -1182,6 +1193,7 @@ export default function WatchAllPage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
           <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}

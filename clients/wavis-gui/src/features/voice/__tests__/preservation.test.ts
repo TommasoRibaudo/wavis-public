@@ -54,6 +54,8 @@ function makeCallbacks(): MediaCallbacks {
     onParticipantMuteChanged: vi.fn(),
     onSystemEvent: vi.fn(),
     onShareQualityInfo: vi.fn(),
+    onAudioOnlySharerAdded: vi.fn(),
+    onAudioOnlySharerRemoved: vi.fn(),
   };
 }
 
@@ -239,6 +241,41 @@ describe('Property 2: Preservation — NativeMediaModule audio IPC baseline', ()
     await mod_.setMicEnabled(false);
 
     expect(invoke).toHaveBeenCalledWith('media_set_mic_enabled', { enabled: false });
+  });
+
+  it('setRemoteShareType(audio_only) marks native audio-only shares and enables share audio', () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    mod_.setRemoteShareType('peer-a', 'audio_only');
+    mod_.setRemoteShareType('peer-a', 'audio_only');
+
+    expect(callbacks.onAudioOnlySharerAdded).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAudioOnlySharerAdded).toHaveBeenCalledWith('peer-a');
+    expect(invoke).toHaveBeenCalledWith('media_attach_screen_share_audio', { id: 'peer-a' });
+  });
+
+  it('setRemoteShareType(non-audio) removes native audio-only shares and disables share audio', () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    mod_.setRemoteShareType('peer-a', 'audio_only');
+    vi.clearAllMocks();
+    mod_.setRemoteShareType('peer-a', 'screen_audio');
+
+    expect(callbacks.onAudioOnlySharerRemoved).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAudioOnlySharerRemoved).toHaveBeenCalledWith('peer-a');
+    expect(invoke).toHaveBeenCalledWith('media_detach_screen_share_audio', { id: 'peer-a' });
+  });
+
+  it('clearRemoteShareType removes native audio-only shares and disables share audio', () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    mod_.setRemoteShareType('peer-a', 'audio_only');
+    vi.clearAllMocks();
+    mod_.clearRemoteShareType('peer-a');
+
+    expect(callbacks.onAudioOnlySharerRemoved).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAudioOnlySharerRemoved).toHaveBeenCalledWith('peer-a');
+    expect(invoke).toHaveBeenCalledWith('media_detach_screen_share_audio', { id: 'peer-a' });
   });
 
   /**

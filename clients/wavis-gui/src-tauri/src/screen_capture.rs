@@ -7,12 +7,12 @@
 #[cfg(target_os = "linux")]
 pub mod codec_detect;
 pub mod frame_processor;
+#[cfg(target_os = "windows")]
+pub mod gdi_capture;
 #[cfg(target_os = "linux")]
 pub mod pipewire_capture;
 #[cfg(target_os = "linux")]
 pub mod source_capture;
-#[cfg(target_os = "windows")]
-pub mod gdi_capture;
 #[cfg(target_os = "windows")]
 pub mod win_capture;
 #[cfg(target_os = "linux")]

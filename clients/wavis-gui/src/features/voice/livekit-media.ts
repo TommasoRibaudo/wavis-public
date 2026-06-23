@@ -366,9 +366,14 @@ function isLinux(): boolean {
   return /Linux/i.test(navigator.userAgent) && !/Android/i.test(navigator.userAgent);
 }
 
-/** Windows and macOS use the native Rust PCM bridge for screen-share audio. */
+/** Windows and macOS use the JS AudioWorklet bridge for native screen-share audio. */
 function usesNativeScreenShareAudio(): boolean {
   return isWindows() || isMac();
+}
+
+/** Linux captures share audio via the Rust PulseAudio/LiveKit pipeline. */
+function usesRustScreenShareAudio(): boolean {
+  return isLinux();
 }
 
 function isInactiveVideoLeakCandidate(transceiver: RTCRtpTransceiver): boolean {
@@ -2252,13 +2257,25 @@ export class LiveKitModule {
    */
   private async applyAudioInputDevice(): Promise<void> {
     if (!this.room) return;
+    const resolvedId = await this.resolveSavedAudioInputDeviceId();
+    if (!resolvedId) return;
+
+    try {
+      await this.room.switchActiveDevice('audioinput', resolvedId);
+    } catch (err) {
+      console.warn(LOG, '[audio-input] switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async resolveSavedAudioInputDeviceId(): Promise<string | null> {
     const savedId = await getAudioInputDevice();
-    if (!savedId) return;
+    if (!savedId) return null;
 
     let resolvedId = savedId;
-    if (_realEnumerateDevices) {
+    const browserEnumerateDevices = getBrowserEnumerateDevices();
+    if (browserEnumerateDevices) {
       try {
-        const realDevices = await _realEnumerateDevices();
+        const realDevices = await browserEnumerateDevices();
         const wasapiLabel = savedId.startsWith('input:') ? savedId.slice('input:'.length) : savedId;
         const match = realDevices.find(
           (d) => d.kind === 'audioinput' && d.label.startsWith(wasapiLabel),
@@ -2271,11 +2288,18 @@ export class LiveKitModule {
       }
     }
 
-    try {
-      await this.room.switchActiveDevice('audioinput', resolvedId);
-    } catch (err) {
-      console.warn(LOG, '[audio-input] switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+    return resolvedId;
+  }
+
+  private async buildMicrophoneCaptureOptions(): Promise<Record<string, unknown>> {
+    const options: Record<string, unknown> = {
+      noiseSuppression: false,
+    };
+    const deviceId = await this.resolveSavedAudioInputDeviceId();
+    if (deviceId) {
+      options.deviceId = deviceId;
     }
+    return options;
   }
 
   /**
@@ -2381,6 +2405,7 @@ export class LiveKitModule {
         listenOnly = true;
         for (const participant of this.room?.remoteParticipants.values() ?? []) {
           this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+          this.syncRemoteParticipantPublications(participant, 'connected');
         }
         // Watch for OS device changes so the routing survives plug/unplug events.
         this.startDeviceChangeWatcher();
@@ -2422,6 +2447,7 @@ export class LiveKitModule {
         this.callbacks.onMediaReconnected?.();
         for (const participant of this.room?.remoteParticipants.values() ?? []) {
           this.callbacks.onRemoteParticipantConnected?.(participant.identity);
+          this.syncRemoteParticipantPublications(participant, 'reconnected');
         }
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
@@ -2463,6 +2489,10 @@ export class LiveKitModule {
         if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
           if (DEBUG_SHARE_TRACK_SUB) {
             console.log(LOG, `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`);
+          }
+          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video published', { identity: participant.identity });
+            this.setRemoteShareType(participant.identity, undefined);
           }
           publication.setSubscribed?.(true);
           publication.setEnabled?.(true);
@@ -2556,6 +2586,16 @@ export class LiveKitModule {
                 settings,
               });
             }
+            // Infer audio-only when share_started WS message omits shareType
+            // (older sender clients). ScreenShareAudio with no ScreenShare video = audio-only.
+            if (publication.source === Track.Source.ScreenShareAudio &&
+                this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
+              const hasVideoShare = !!participant.getTrackPublication(Track.Source.ScreenShare);
+              if (!hasVideoShare) {
+                if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] inferred audio_only: ScreenShareAudio present but no ScreenShare video', { identity: participant.identity });
+                this.setRemoteShareType(participant.identity, 'audio_only');
+              }
+            }
             if (this.shouldPlayScreenShareAudio(participant.identity)) {
               this.attachDesiredScreenShareAudio(participant.identity);
             } else if (typeof publication.setSubscribed === 'function') {
@@ -2567,6 +2607,10 @@ export class LiveKitModule {
         } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
           if (DEBUG_SHARE_TRACK_SUB) {
             console.log(LOG, `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`);
+          }
+          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video subscribed', { identity: participant.identity });
+            this.setRemoteShareType(participant.identity, undefined);
           }
           this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
         }
@@ -2662,25 +2706,7 @@ export class LiveKitModule {
       addListener(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
         if (this.disposed) return;
         this.callbacks.onRemoteParticipantConnected?.(participant.identity);
-        const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
-        if (screenShareAudioPub) {
-          this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
-          screenShareAudioPub.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
-        }
-        const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
-        const screenShareVideoTrack = screenShareVideoPub?.track;
-        if (
-          screenShareVideoPub &&
-          screenShareVideoTrack &&
-          screenShareVideoTrack.kind === Track.Kind.Video
-        ) {
-          this.attachRemoteScreenShareTrack(
-            participant,
-            screenShareVideoPub,
-            screenShareVideoTrack as RemoteTrack,
-            'participant_connected_recovery',
-          );
-        }
+        this.syncRemoteParticipantPublications(participant, 'participant_connected');
         // Only act if we're already waiting for this participant's audio
         // (viewer window opened before TrackSubscribed could fire).
         if (!this.screenShareAudioPending.has(participant.identity)) return;
@@ -3198,9 +3224,10 @@ export class LiveKitModule {
       }
     }
     try {
-      await this.room.localParticipant.setMicrophoneEnabled(enabled, {
-        noiseSuppression: false,
-      });
+      await this.room.localParticipant.setMicrophoneEnabled(
+        enabled,
+        enabled ? await this.buildMicrophoneCaptureOptions() : { noiseSuppression: false },
+      );
     } catch (err) {
       if (enabled) {
         this.callbacks.onSystemEvent(
@@ -3267,6 +3294,7 @@ export class LiveKitModule {
     const pubOpts = await this.prepareScreenSharePublishOptions();
     const profile = this.currentCaptureProfile;
     const nativeShareAudio = usesNativeScreenShareAudio();
+    const rustShareAudio = usesRustScreenShareAudio();
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
       nativeShareAudio, profile.audio, navigator.userAgent.slice(0, 60));
 
@@ -3279,9 +3307,9 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      // Windows and macOS capture system audio via the native Rust bridge, so
-      // getDisplayMedia stays video-only and audio can be toggled independently.
-      audio: nativeShareAudio ? false : profile.audio,
+      // Windows/macOS and Linux capture system audio outside getDisplayMedia,
+      // so browser capture stays video-only and audio can be isolated.
+      audio: nativeShareAudio || rustShareAudio ? false : profile.audio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -3314,6 +3342,9 @@ export class LiveKitModule {
         await this.startWasapiScreenShareAudio();
         this.suppressLocalScreenShareAudio();
       }
+      if (rustShareAudio && profile.audio) {
+        await this.startLinuxScreenShareAudio();
+      }
       // Initialize adaptive quality state
       this.adaptiveState = {
         currentTier: 'full',
@@ -3340,9 +3371,12 @@ export class LiveKitModule {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
+          const fallbackCaptureOpts = nativeShareAudio || rustShareAudio
+            ? { audio: false }
+            : undefined;
           this.stopAllInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
-          await this.room.localParticipant.setScreenShareEnabled(true);
+          await this.room.localParticipant.setScreenShareEnabled(true, fallbackCaptureOpts);
           this.captureShareLeakPublishDiagnostics();
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
@@ -3354,6 +3388,9 @@ export class LiveKitModule {
           if (nativeShareAudio && profile.audio) {
             await this.startWasapiScreenShareAudio();
             this.suppressLocalScreenShareAudio();
+          }
+          if (rustShareAudio && profile.audio) {
+            await this.startLinuxScreenShareAudio();
           }
           // Initialize adaptive quality state for fallback path too
           this.adaptiveState = {
@@ -3461,12 +3498,16 @@ export class LiveKitModule {
     if (leakSession && leakSession.stopRequestedAtMs === null) {
       leakSession.stopRequestedAtMs = Date.now();
       leakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
+      // Guard against concurrent disconnect() nulling this.room while awaiting above.
+      if (this.disposed || !this.room) return;
       leakSession.summary.browserWebRtcBeforeStop = this.captureBrowserWebRtcSnapshot(expectedTrackId);
       this.markNativeCaptureLeakStage('share_stop_requested');
     }
 
     if (options.stopNativeAudio && usesNativeScreenShareAudio()) {
       await this.stopWasapiScreenShareAudio();
+      // Guard against concurrent disconnect() nulling this.room while awaiting above.
+      if (this.disposed || !this.room) return;
     }
 
     let disableFailed = false;
@@ -3519,7 +3560,7 @@ export class LiveKitModule {
     } finally {
       if (leakSession) {
         leakSession.summary.cleanupFlags.publicationCleared =
-          this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare) === undefined;
+          this.room?.localParticipant?.getTrackPublication(Track.Source.ScreenShare) === undefined;
       }
       if (mediaTrack) {
         try {
@@ -3559,6 +3600,11 @@ export class LiveKitModule {
     if (usesNativeScreenShareAudio()) {
       await this.stopWasapiScreenShareAudio();
     }
+    if (usesRustScreenShareAudio()) {
+      await this.stopLinuxScreenShareAudio();
+    }
+    // Guard: disconnect() may have run while awaiting audio teardown above.
+    if (this.disposed || !this.room) return;
     await this.room.localParticipant.setScreenShareEnabled(false);
   }
 
@@ -3778,7 +3824,7 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      audio: usesNativeScreenShareAudio() ? false : withAudio,
+      audio: usesNativeScreenShareAudio() || usesRustScreenShareAudio() ? false : withAudio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -3844,7 +3890,7 @@ export class LiveKitModule {
       contentHint: profile.contentHint,
       surfaceSwitching: profile.surfaceSwitching,
       selfBrowserSurface: profile.selfBrowserSurface,
-      audio: usesNativeScreenShareAudio() ? false : profile.audio,
+      audio: usesNativeScreenShareAudio() || usesRustScreenShareAudio() ? false : profile.audio,
       suppressLocalAudioPlayback: profile.suppressLocalAudioPlayback,
     };
 
@@ -5245,6 +5291,35 @@ export class LiveKitModule {
   }
 
   /**
+   * Start Linux screen-share audio through the Rust PulseAudio pipeline.
+   *
+   * Unlike Windows/macOS, Linux publishes the ScreenShareAudio track from the
+   * Rust LiveKit connection, so the JS AudioWorklet bridge is not involved.
+   */
+  private async startLinuxScreenShareAudio(): Promise<void> {
+    try {
+      const sourceId = await invoke<string>('get_default_audio_monitor_fast');
+      const result = await invoke<AudioShareStartResult>('audio_share_start', { sourceId });
+      emitAudioCaptureSelectionTelemetry(result);
+      console.log(LOG, 'linux screen share audio started');
+    } catch (err) {
+      await this.stopLinuxScreenShareAudio().catch(() => {});
+      console.warn(LOG, '[linux-share-audio] start failed:', err instanceof Error ? err.message : String(err), err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /** Stop Linux screen-share audio capture. Idempotent on the Rust side. */
+  private async stopLinuxScreenShareAudio(): Promise<void> {
+    try {
+      await invoke('audio_share_stop');
+      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[linux-share-audio] audio_share_stop invoked');
+    } catch (e) {
+      if (DEBUG_SHARE_AUDIO) console.warn(LOG, '[linux-share-audio] audio_share_stop failed (best-effort):', e);
+    }
+  }
+
+  /**
    * Stop native share-audio capture for screen share (Windows/macOS).
    * Stops the AudioWorklet bridge and invokes the Rust `audio_share_stop`
    * command.
@@ -5543,6 +5618,52 @@ export class LiveKitModule {
   attachScreenShareAudio(participantIdentity: string): void {
     this.screenShareAudioViewerOwners.add(participantIdentity);
     this.syncScreenShareAudioPolicy(participantIdentity);
+  }
+
+  private syncRemoteParticipantPublications(participant: RemoteParticipant, reason: string): void {
+    const screenShareAudioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    const screenShareVideoPub = participant.getTrackPublication(Track.Source.ScreenShare);
+
+    if (screenShareVideoPub && this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+      if (DEBUG_SHARE_AUDIO) {
+        console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video present during sync', { identity: participant.identity, reason });
+      }
+      this.setRemoteShareType(participant.identity, undefined);
+    }
+
+    if (screenShareAudioPub) {
+      this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
+      if (!screenShareVideoPub && this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
+        if (DEBUG_SHARE_AUDIO) {
+          console.log(LOG, '[audio-only-diag] inferred audio_only during participant sync: no ScreenShare video', { identity: participant.identity, reason });
+        }
+        this.setRemoteShareType(participant.identity, 'audio_only');
+      }
+      screenShareAudioPub.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
+
+      const screenShareAudioTrack = screenShareAudioPub.track;
+      if (screenShareAudioTrack && screenShareAudioTrack.kind === Track.Kind.Audio) {
+        this.screenShareAudioTracks.set(participant.identity, {
+          track: screenShareAudioTrack as RemoteTrack,
+          participant,
+        });
+        this.syncScreenShareAudioPolicy(participant.identity);
+      }
+    }
+
+    const screenShareVideoTrack = screenShareVideoPub?.track;
+    if (
+      screenShareVideoPub &&
+      screenShareVideoTrack &&
+      screenShareVideoTrack.kind === Track.Kind.Video
+    ) {
+      this.attachRemoteScreenShareTrack(
+        participant,
+        screenShareVideoPub,
+        screenShareVideoTrack as RemoteTrack,
+        'participant_connected_recovery',
+      );
+    }
   }
 
   /** Update the server-authoritative remote share type for audio policy decisions. */

@@ -8,12 +8,12 @@
 //! itself be in a broken state at crash time, so stderr is the only safe
 //! output channel.
 
-use std::panic;
-use std::fs;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use crate::bug_report::SharedLogBuffer;
+use std::fs;
+use std::panic;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Guards against the hook firing twice for one crash (WebView2 background-thread
 /// panic causes a second panic on the main event-loop thread ~1s later).
@@ -46,9 +46,10 @@ pub fn install(log_buffer: SharedLogBuffer) {
             "Unknown panic message".to_string()
         };
 
-        let location = panic_info.location().map(|loc| {
-            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
-        }).unwrap_or_else(|| "Unknown location".to_string());
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "Unknown location".to_string());
 
         let backtrace = std::backtrace::Backtrace::force_capture();
         let timestamp = SystemTime::now()
@@ -72,7 +73,9 @@ pub fn install(log_buffer: SharedLogBuffer) {
         if let Ok(buffer) = log_buffer.lock() {
             let lines = buffer.snapshot();
             if lines.is_empty() {
-                report.push_str("(no log records captured — crash occurred before any voice/room activity)\n");
+                report.push_str(
+                    "(no log records captured — crash occurred before any voice/room activity)\n",
+                );
             } else {
                 for line in lines {
                     report.push_str(&line);

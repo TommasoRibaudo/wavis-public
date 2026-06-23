@@ -1,5 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Minus, Square, X } from 'lucide-react';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 const appWindow = getCurrentWindow();
@@ -40,6 +41,7 @@ export default function TitleBar() {
 
       {/* Window controls */}
       <div className="flex">
+        <FixedBugReportButton />
         <WindowButton label="Minimize" onClick={() => appWindow.minimize()}>
           <Minus size={14} />
         </WindowButton>

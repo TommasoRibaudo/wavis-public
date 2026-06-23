@@ -228,6 +228,15 @@ fn enumerate_pipewire_inner() -> Result<Vec<ShareSource>, String> {
 /// Timeout for PulseAudio enumeration to avoid hanging on an unresponsive daemon.
 const PA_ENUM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 
+fn is_wayland_session() -> bool {
+    std::env::var("WAYLAND_DISPLAY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
+}
+
 /// Enumerate PulseAudio monitor sources using the threaded mainloop pattern.
 fn enumerate_pulseaudio_sources() -> Result<Vec<ShareSource>, String> {
     use std::sync::mpsc;
@@ -255,6 +264,34 @@ fn enumerate_pulseaudio_sources() -> Result<Vec<ShareSource>, String> {
             Err("PulseAudio unavailable: enumeration thread panicked".to_string())
         }
     }
+}
+
+/// Fallback source enumeration through pactl. This mirrors the audio capture
+/// start path and avoids PulseAudio threaded-mainloop flakiness on PipeWire.
+fn enumerate_default_pactl_audio_source() -> Result<ShareSource, String> {
+    let output = std::process::Command::new("pactl")
+        .arg("info")
+        .output()
+        .map_err(|e| format!("pactl failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err("pactl returned error".to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(sink_name) = line.strip_prefix("Default Sink: ") {
+            return Ok(ShareSource {
+                id: format!("{}.monitor", sink_name.trim()),
+                name: "System Audio".to_string(),
+                source_type: ShareSourceType::SystemAudio,
+                thumbnail: None,
+                app_name: None,
+            });
+        }
+    }
+
+    Err("no default sink in pactl output".to_string())
 }
 
 /// Inner PulseAudio enumeration logic. Must run on a dedicated thread.
@@ -365,18 +402,19 @@ fn enumerate_pulseaudio_inner() -> Result<Vec<ShareSource>, String> {
 pub(super) async fn list_sources() -> Result<EnumerationResult, String> {
     let mut warnings = Vec::new();
 
-    let video_sources = match enumerate_pipewire_sources() {
-        Ok(sources) => sources,
-        Err(e) => {
-            if e.contains("permission")
-                || e.contains("denied")
-                || e.contains("not allowed")
-                || e.contains("access")
-            {
-                warnings.push("Direct PipeWire access unavailable - use system picker".to_string());
+    let video_sources = if is_wayland_session() {
+        warnings.push(
+            "Direct PipeWire access unavailable on Wayland - use system picker".to_string(),
+        );
+        Vec::new()
+    } else {
+        match enumerate_pipewire_sources() {
+            Ok(sources) => sources,
+            Err(e) => {
+                warnings.push(format!(
+                    "Direct PipeWire access unavailable - use system picker ({e})"
+                ));
                 Vec::new()
-            } else {
-                return Err(e);
             }
         }
     };
@@ -386,10 +424,29 @@ pub(super) async fn list_sources() -> Result<EnumerationResult, String> {
     }
 
     let audio_sources = match enumerate_pulseaudio_sources() {
+        Ok(sources) if sources.is_empty() => match enumerate_default_pactl_audio_source() {
+            Ok(source) => vec![source],
+            Err(e) => {
+                warnings.push(format!("Audio source enumeration unavailable: {e}"));
+                Vec::new()
+            }
+        },
         Ok(sources) => sources,
         Err(e) => {
-            warnings.push(format!("Audio source enumeration unavailable: {e}"));
-            Vec::new()
+            match enumerate_default_pactl_audio_source() {
+                Ok(source) => {
+                    warnings.push(format!(
+                        "Audio source list unavailable, using default monitor: {e}"
+                    ));
+                    vec![source]
+                }
+                Err(fallback_error) => {
+                    warnings.push(format!(
+                        "Audio source enumeration unavailable: {e}; pactl fallback failed: {fallback_error}"
+                    ));
+                    Vec::new()
+                }
+            }
         }
     };
 

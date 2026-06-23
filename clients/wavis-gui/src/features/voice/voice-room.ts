@@ -201,6 +201,10 @@ export interface RoomEvent {
   shouldToast?: boolean;
 }
 
+export type RoomEventDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'event'; event: RoomEvent };
+
 export interface NetworkStats {
   rttMs: number;
   packetLossPercent: number;
@@ -748,6 +752,27 @@ export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[
   return items;
 }
 
+export function buildRoomEventDisplayItems(events: RoomEvent[]): RoomEventDisplayItem[] {
+  const items: RoomEventDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const event of events) {
+    const dateKey = getLocalChatDateKey(event.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${event.id}`,
+        label: formatChatDateLabel(event.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'event', event });
+  }
+
+  return items;
+}
+
 export function shouldPlayChatNotification(
   participantId: string,
   selfParticipantId: string | null,
@@ -1132,6 +1157,7 @@ export function buildStartShareMessage(mode: ShareMode): { type: string; shareTy
 
 let client: SignalingClient | null = null;
 let unsubscribe: (() => void) | null = null;
+let unsubStatusChange: (() => void) | null = null;
 let onChange: ((state: VoiceRoomState) => void) | null = null;
 let channelRole: ChannelRole | null = null;
 let sessionUsername: string | null = null;
@@ -1615,6 +1641,7 @@ async function resumePendingWasapiCapture(): Promise<void> {
 }
 
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
+let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 let suppressMediaDisconnectedReconnect = false;
@@ -1913,6 +1940,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   resetCameraRuntimeState();
 
   bufferedMediaToken = null;
+  bufferedIceConfig = null;
   externalShareHelperActive = false;
   reusePatchGuardCheckedForSession = false;
   reusePatchGuardPassedForSession = false;
@@ -2653,6 +2681,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     }
     // Register global mute hotkey on media connect success (R22.1)
     getMuteHotkey().then((hotkey) => {
+      if (registeredHotkey === hotkey) return;
+      if (registeredHotkey) {
+        unregisterMuteHotkey(registeredHotkey).catch(() => {});
+        registeredHotkey = null;
+      }
       registerMuteHotkey(hotkey, toggleSelfMute)
         .then(() => { registeredHotkey = hotkey; })
         .catch((err) => {
@@ -2911,6 +2944,9 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     onAudioOnlySharerAdded: (identity) => {
       state.audioOnlySharers = new Set(state.audioOnlySharers);
       state.audioOnlySharers.add(identity);
+      // Silence immediately so the gain node is created at 0 before any audio
+      // plays. The viewer un-mutes by clicking the music icon to restore volume.
+      setScreenShareAudioVolume(identity, 0);
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
@@ -2933,7 +2969,10 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
 
   for (const participant of state.participants) {
     if (participant.isSharing) {
-      updateRemoteShareType(participant.id, parseRemoteShareType(participant.shareType));
+      const shareType = parseRemoteShareType(participant.shareType);
+      if (shareType !== undefined || !state.audioOnlySharers.has(participant.id)) {
+        updateRemoteShareType(participant.id, shareType);
+      }
     }
   }
 
@@ -3037,6 +3076,7 @@ function dispatchMessage(raw: unknown): void {
       state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
+      bufferedIceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
@@ -3729,8 +3769,24 @@ function dispatchMessage(raw: unknown): void {
         sp.isSharing = true;
         sp.shareType = remoteShareType;
       }
-      updateRemoteShareType(shareStartId, remoteShareType);
-      if (remoteShareType !== 'audio_only') {
+      // Keep audioOnlySharers in sync directly — updateRemoteShareType is a no-op
+      // when lkModule is not yet initialized, which would leave the UI stuck on ◉.
+      if (remoteShareType === 'audio_only' && !state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.add(shareStartId);
+      } else if (remoteShareType !== undefined && remoteShareType !== 'audio_only' && state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStartId);
+      }
+      // Don't pass undefined to lkModule when the track was already inferred as audio-only —
+      // setRemoteShareType(undefined) would clear the inference and fire onAudioOnlySharerRemoved.
+      if (remoteShareType !== undefined || !state.audioOnlySharers.has(shareStartId)) {
+        updateRemoteShareType(shareStartId, remoteShareType);
+      }
+      const shareStartIsAudioOnly =
+        remoteShareType === 'audio_only' ||
+        (remoteShareType === undefined && state.audioOnlySharers.has(shareStartId));
+      if (!shareStartIsAudioOnly) {
         refreshRemoteScreenShare(shareStartId);
         // Schedule retries for the case where TrackSubscribed is delayed or the SFU
         // treats the republish as a track resume (no TrackPublished/TrackSubscribed).
@@ -3766,6 +3822,10 @@ function dispatchMessage(raw: unknown): void {
       if (ssp) {
         ssp.isSharing = false;
         ssp.shareType = undefined;
+      }
+      if (state.audioOnlySharers.has(shareStopId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStopId);
       }
       clearRemoteShareType(shareStopId);
       refreshRetryGenerations.delete(shareStopId);
@@ -3815,6 +3875,10 @@ function dispatchMessage(raw: unknown): void {
           // Server says they're not sharing — clear stale flag + stream
           p.isSharing = false;
           p.shareType = undefined;
+          if (state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
           clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
@@ -3825,8 +3889,21 @@ function dispatchMessage(raw: unknown): void {
         }
         if (shouldBeSharing) {
           p.shareType = typedShares.get(p.id);
-          updateRemoteShareType(p.id, p.shareType as RemoteShareType | undefined);
-          if (p.shareType !== 'audio_only') {
+          const resolvedType = p.shareType as RemoteShareType | undefined;
+          if (resolvedType === 'audio_only' && !state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.add(p.id);
+          } else if (resolvedType !== undefined && resolvedType !== 'audio_only' && state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
+          if (resolvedType !== undefined || !state.audioOnlySharers.has(p.id)) {
+            updateRemoteShareType(p.id, resolvedType);
+          }
+          const isAudioOnlyShare =
+            resolvedType === 'audio_only' ||
+            (resolvedType === undefined && state.audioOnlySharers.has(p.id));
+          if (!isAudioOnlyShare) {
             refreshRemoteScreenShare(p.id);
             // Schedule retries for late joiners or post-reconnect cases where
             // the stream isn't available yet. share_state doesn't schedule
@@ -3904,12 +3981,14 @@ function dispatchMessage(raw: unknown): void {
     case 'media_token': {
       const token = msg.token as string;
       const sfuUrl = msg.sfuUrl as string;
-      const iceConfig = msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined;
+      // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
+      const iceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? bufferedIceConfig ?? undefined;
 
-      console.log(LOG, 'media_token received:', { 
-        hasToken: !!token, 
-        hasSfuUrl: !!sfuUrl, 
+      console.log(LOG, 'media_token received:', {
+        hasToken: !!token,
+        hasSfuUrl: !!sfuUrl,
         hasIceConfig: !!iceConfig,
+        iceConfigSource: msg.iceConfig ? 'media_token' : bufferedIceConfig ? 'joined' : 'none',
         iceConfig: iceConfig ? {
           stunUrls: iceConfig.stunUrls,
           turnUrls: iceConfig.turnUrls,
@@ -4082,7 +4161,7 @@ export function initSession(
   unsubscribe = client.onMessage(dispatchMessage);
 
   // Detect disconnection during active session for reconnection flow
-  client.onStatusChange((status) => {
+  unsubStatusChange = client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
       if (state.machineState === 'active' || state.machineState === 'joining') {
@@ -4220,6 +4299,13 @@ export function leaveRoom(): void {
   }
   authRefreshRetries = 0;
   wasReconnecting = false;
+
+  // Unregister status-change handler before disconnecting so the intentional
+  // disconnect does not trigger the reconnect/error logic in that handler.
+  if (unsubStatusChange) {
+    unsubStatusChange();
+    unsubStatusChange = null;
+  }
 
   // Disconnect the client
   if (client) {
@@ -4621,6 +4707,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
     // 3. Start video first (if needed)
     if (needsVideo) {
       const sourceKind = selection.sourceKind ?? (selection.mode === 'window' ? 'window' : 'screen');
+      const isPortalVideo = selection.sourceId === 'portal';
       const defaultNativeLeakBackend = sourceKind === 'screen'
         ? 'native-gdi-screen'
         : 'native-gdi-window';
@@ -4761,19 +4848,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
           }
         }
         videoStarted = true;
-      } else if (selection.sourceId === 'portal') {
-        if (lkModule && lkModule instanceof LiveKitModule && !options.isSourceChange) {
-          // Normal start: set up early-frame buffering before Rust capture begins.
-          lkModule.beginNativeCaptureLeakSession({
-            shareSessionId,
-            mode: selection.mode as 'screen_audio' | 'window',
-            sourceId: selection.sourceId,
-            sourceName: selection.sourceName,
-            sourceKind,
-            captureBackend: defaultNativeLeakBackend,
-          });
-          lkModule.prepareNativeCapture();
-        }
+      } else if (isPortalVideo) {
         await syncNativeScreenShareQualityBeforeCapture('linux_portal_source');
         await invoke('screen_share_start');
         videoStarted = true;
@@ -4807,7 +4882,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
       // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
       // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
       // to the HWND corruption caused by child windows (SharePicker).
-      if (!isWindowsPlatform() && lkModule && lkModule instanceof LiveKitModule) {
+      if (!isWindowsPlatform() && !isPortalVideo && lkModule && lkModule instanceof LiveKitModule) {
         if (options.isSourceChange) {
           // Source change: feed new Rust frames into the existing generator so
           // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
@@ -4827,8 +4902,11 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         if (selection.mode === 'audio_only') {
           audioSourceId = selection.sourceId;
         } else {
-          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via get_default_audio_monitor');
-          audioSourceId = await invoke<string>('get_default_audio_monitor');
+          const monitorCommand = isLinuxPlatform()
+            ? 'get_default_audio_monitor_fast'
+            : 'get_default_audio_monitor';
+          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via', monitorCommand);
+          audioSourceId = await invoke<string>(monitorCommand);
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] default audio monitor resolved:', audioSourceId);
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);

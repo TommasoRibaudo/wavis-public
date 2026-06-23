@@ -1,14 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { RouterProvider } from 'react-router';
 import { router } from './routes';
 import TitleBar from '@shared/TitleBar';
-import BugReportButton from '@features/diagnostics/BugReportButton';
 import { DebugProvider } from '@shared/debug-context';
 import { initNotificationBridge } from '@shared/notification-bridge';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getState } from '@features/voice/voice-room';
 import AppUpdatePrompt from '@shared/AppUpdatePrompt';
+import type { AppDimensions } from '@features/diagnostics/diagnostics';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -25,9 +26,38 @@ function isChromelessWindow(): boolean {
   );
 }
 
+async function readAppDimensions(): Promise<AppDimensions> {
+  const nativeWindow = await getCurrentWindow().outerSize();
+  return {
+    nativeWindow: {
+      width: Math.round(nativeWindow.width),
+      height: Math.round(nativeWindow.height),
+    },
+    viewport: {
+      width: Math.round(window.innerWidth),
+      height: Math.round(window.innerHeight),
+    },
+    devicePixelRatio: window.devicePixelRatio,
+    capturedAt: Date.now(),
+  };
+}
+
+async function emitAppDimensions(): Promise<AppDimensions | null> {
+  try {
+    const appDimensions = await readAppDimensions();
+    await emit('diagnostics:app-dimensions', appDimensions);
+    return appDimensions;
+  } catch (err) {
+    console.warn('[wavis:diagnostics] app dimensions unavailable:', err);
+    return null;
+  }
+}
+
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
 export default function App() {
+  const latestAppDimensionsRef = useRef<AppDimensions | null>(null);
+
   // Initialize notification bridge (seeds visibility cache, starts event listener)
   useEffect(() => {
     const cleanup = initNotificationBridge();
@@ -88,10 +118,63 @@ export default function App() {
           isSpeaking: p.isSpeaking,
         })),
         selfParticipantId,
+        appDimensions: latestAppDimensionsRef.current,
       });
     }, 1000);
 
     return () => clearInterval(intervalId);
+  }, []);
+
+  // Diagnostics app-size bridge. Sends the main Wavis native window and webview
+  // viewport dimensions on startup and resize without a polling loop.
+  useEffect(() => {
+    if (import.meta.env.VITE_DIAGNOSTICS !== 'true') return;
+    if (isChromelessWindow()) return;
+
+    let mounted = true;
+    let frameId: number | null = null;
+    let unlistenResize: (() => void) | null = null;
+
+    const publishDimensions = async () => {
+      const appDimensions = await emitAppDimensions();
+      if (mounted && appDimensions) {
+        latestAppDimensionsRef.current = appDimensions;
+      }
+    };
+
+    const scheduleEmit = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        if (mounted) {
+          void publishDimensions();
+        }
+      });
+    };
+
+    void publishDimensions();
+    window.addEventListener('resize', scheduleEmit);
+    getCurrentWindow()
+      .onResized(scheduleEmit)
+      .then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+          return;
+        }
+        unlistenResize = unlisten;
+      })
+      .catch((err) => {
+        console.warn('[wavis:diagnostics] resize listener unavailable:', err);
+      });
+
+    return () => {
+      mounted = false;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener('resize', scheduleEmit);
+      unlistenResize?.();
+    };
   }, []);
 
   if (isChromelessWindow()) {
@@ -102,7 +185,6 @@ export default function App() {
     <DebugProvider>
       <div className="flex flex-col h-full">
         <TitleBar />
-        <BugReportButton />
         <AppUpdatePrompt />
         <div className="flex-1 overflow-hidden">
           <RouterProvider router={router} />

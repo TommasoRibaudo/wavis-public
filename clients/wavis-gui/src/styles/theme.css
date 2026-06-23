@@ -301,6 +301,20 @@
   color: var(--wavis-text);
 }
 
+.wavis-room-intermediate-layout {
+  display: none;
+}
+
+@media (min-width: 768px) and (max-width: 1038px) {
+  .wavis-room-intermediate-layout {
+    display: flex;
+  }
+
+  .wavis-room-intermediate-layout + .hidden.md\:flex {
+    display: none;
+  }
+}
+
 @media (max-width: 600px) {
   .wavis-room-toaster[data-sonner-toaster] {
     width: var(--wavis-room-toast-max-width);

@@ -1041,6 +1041,42 @@ async fn example_banned_member_cannot_leave() {
     ));
 }
 
+#[tokio::test]
+#[ignore] // requires Postgres
+async fn example_list_bans_includes_display_name() {
+    let pool = test_pool().await;
+    truncate_channel_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let member = register_test_user(&pool).await;
+    sqlx::query("UPDATE users SET username = $1 WHERE user_id = $2")
+        .bind("Display Target")
+        .bind(member)
+        .execute(&pool)
+        .await
+        .expect("set username");
+
+    let ch = channel::create_channel(&pool, owner, "banned-display")
+        .await
+        .unwrap();
+    let inv = channel::create_invite(&pool, ch.channel_id, owner, Some(3600), Some(1))
+        .await
+        .unwrap();
+    channel::join_channel_by_invite(&pool, member, &inv.code)
+        .await
+        .unwrap();
+    channel::ban_member(&pool, ch.channel_id, owner, member)
+        .await
+        .unwrap();
+
+    let banned = channel::list_bans(&pool, ch.channel_id, owner)
+        .await
+        .unwrap();
+    assert_eq!(banned.len(), 1);
+    assert_eq!(banned[0].user_id, member);
+    assert_eq!(banned[0].display_name, "Display Target");
+}
+
 // ---------------------------------------------------------------------------
 // Example: expired invite rejected on join
 // ---------------------------------------------------------------------------

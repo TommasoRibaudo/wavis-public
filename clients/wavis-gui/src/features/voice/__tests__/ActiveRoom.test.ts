@@ -25,6 +25,33 @@ import type { RoomParticipant } from '../voice-room';
 
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 
+type VoiceRoomLayoutBand = 'mobile' | 'intermediate' | 'desktop';
+type GroupedPanelTab = 'chat' | 'log' | 'video';
+
+function voiceRoomLayoutBand(widthPx: number): VoiceRoomLayoutBand {
+  if (widthPx < 768) return 'mobile';
+  if (widthPx < 1039) return 'intermediate';
+  return 'desktop';
+}
+
+function groupedPanelTabs(videoPopoutOpen: boolean): GroupedPanelTab[] {
+  return videoPopoutOpen ? ['chat', 'log'] : ['chat', 'log', 'video'];
+}
+
+function nextGroupedPanelTab(
+  current: GroupedPanelTab,
+  previousVideoActivityKey: string,
+  nextVideoActivityKey: string,
+): GroupedPanelTab {
+  if (previousVideoActivityKey === nextVideoActivityKey) return current;
+  if (nextVideoActivityKey !== '') return 'video';
+  return current === 'video' ? 'chat' : current;
+}
+
+function groupedPanelTabAfterPopout(current: GroupedPanelTab, videoPopoutOpen: boolean): GroupedPanelTab {
+  return videoPopoutOpen && current === 'video' ? 'chat' : current;
+}
+
 /* ─── Mock voice-room module ────────────────────────────────────── */
 
 const mockToggleShareAudio = vi.fn();
@@ -52,6 +79,62 @@ vi.mock('../voice-room', () => ({
   toggleShareAudio: mockToggleShareAudio,
   changeShareSource: vi.fn(),
 }));
+
+describe('voice room responsive layout bands', () => {
+  it('keeps the current mobile layout below 768px', () => {
+    expect(voiceRoomLayoutBand(320)).toBe('mobile');
+    expect(voiceRoomLayoutBand(767)).toBe('mobile');
+  });
+
+  it('uses the grouped-panel intermediate layout from 768px through 1038px', () => {
+    expect(voiceRoomLayoutBand(768)).toBe('intermediate');
+    expect(voiceRoomLayoutBand(900)).toBe('intermediate');
+    expect(voiceRoomLayoutBand(1038)).toBe('intermediate');
+  });
+
+  it('keeps the existing desktop three-column layout at 1039px and wider', () => {
+    expect(voiceRoomLayoutBand(1039)).toBe('desktop');
+    expect(voiceRoomLayoutBand(1440)).toBe('desktop');
+  });
+});
+
+describe('intermediate grouped panel tabs', () => {
+  it('defaults the grouped panel to chat', () => {
+    const initialTab: GroupedPanelTab = 'chat';
+    expect(initialTab).toBe('chat');
+  });
+
+  it('shows chat, log, and video unless the video popout is open', () => {
+    expect(groupedPanelTabs(false)).toEqual(['chat', 'log', 'video']);
+    expect(groupedPanelTabs(true)).toEqual(['chat', 'log']);
+  });
+
+  it('auto-switches to video when video activity starts', () => {
+    expect(nextGroupedPanelTab('chat', '', 'alice')).toBe('video');
+    expect(nextGroupedPanelTab('log', '', 'alice')).toBe('video');
+  });
+
+  it('respects a manual chat or log choice while video activity stays unchanged', () => {
+    expect(nextGroupedPanelTab('chat', 'alice', 'alice')).toBe('chat');
+    expect(nextGroupedPanelTab('log', 'alice', 'alice')).toBe('log');
+  });
+
+  it('auto-switches again when the active video set changes', () => {
+    expect(nextGroupedPanelTab('chat', 'alice', 'alice|bob')).toBe('video');
+    expect(nextGroupedPanelTab('log', 'alice|bob', 'bob')).toBe('video');
+  });
+
+  it('returns to chat when video activity ends while the video tab is active', () => {
+    expect(nextGroupedPanelTab('video', 'alice', '')).toBe('chat');
+    expect(nextGroupedPanelTab('log', 'alice', '')).toBe('log');
+  });
+
+  it('moves away from the hidden video tab when the popout opens', () => {
+    expect(groupedPanelTabAfterPopout('video', true)).toBe('chat');
+    expect(groupedPanelTabAfterPopout('log', true)).toBe('log');
+    expect(groupedPanelTabAfterPopout('video', false)).toBe('video');
+  });
+});
 
 /* ─── Quality Indicator Rendering Logic ─────────────────────────── */
 

@@ -225,6 +225,12 @@ struct ScreenShareAvailablePayload {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Serialize)]
+struct ScreenShareAudioPayload {
+    identity: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Serialize)]
 pub struct PolledCameraFrame {
     pub identity: String,
     pub frame: String,
@@ -1677,6 +1683,30 @@ pub fn media_connect(
             );
         }));
 
+        let app_audio_available = app.clone();
+        conn.on_screen_share_audio_available(Box::new(move |identity| {
+            log::info!("{LOG} remote screen share audio available: {identity}");
+            let _ = app_audio_available.emit_to(
+                "main",
+                "screen_share_audio_available",
+                ScreenShareAudioPayload {
+                    identity: identity.to_string(),
+                },
+            );
+        }));
+
+        let app_audio_ended = app.clone();
+        conn.on_screen_share_audio_ended(Box::new(move |identity| {
+            log::info!("{LOG} remote screen share audio ended: {identity}");
+            let _ = app_audio_ended.emit_to(
+                "main",
+                "screen_share_audio_ended",
+                ScreenShareAudioPayload {
+                    identity: identity.to_string(),
+                },
+            );
+        }));
+
         let app_camera = app.clone();
         let latest_remote_camera_frames = Arc::clone(&state.remote_camera_frames);
         let remote_camera_seq = Arc::clone(&state.remote_camera_seq);
@@ -2645,9 +2675,9 @@ pub fn screen_share_start_source(
             WindowsSourceKind::Screen => GdiCaptureTarget::Monitor(
                 windows::Win32::Graphics::Gdi::HMONITOR(handle_val as *mut _),
             ),
-            WindowsSourceKind::Window => GdiCaptureTarget::Window(
-                windows::Win32::Foundation::HWND(handle_val as *mut _),
-            ),
+            WindowsSourceKind::Window => {
+                GdiCaptureTarget::Window(windows::Win32::Foundation::HWND(handle_val as *mut _))
+            }
         };
         Box::new(
             GdiCapture::start(GdiCaptureConfig {
@@ -3776,8 +3806,14 @@ mod windows_capture_routing_tests {
 
     #[test]
     fn source_kind_routes_without_handle_probing() {
-        assert_eq!(parse_windows_source_kind(Some("screen")).unwrap(), WindowsSourceKind::Screen);
-        assert_eq!(parse_windows_source_kind(Some("window")).unwrap(), WindowsSourceKind::Window);
+        assert_eq!(
+            parse_windows_source_kind(Some("screen")).unwrap(),
+            WindowsSourceKind::Screen
+        );
+        assert_eq!(
+            parse_windows_source_kind(Some("window")).unwrap(),
+            WindowsSourceKind::Window
+        );
         assert!(parse_windows_source_kind(None).is_err());
     }
 

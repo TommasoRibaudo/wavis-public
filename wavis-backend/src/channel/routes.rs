@@ -167,6 +167,7 @@ pub struct BanListResponse {
 pub struct BanListItem {
     pub user_id: String,
     pub banned_at: String,
+    pub display_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +802,7 @@ pub async fn list_bans(
             .map(|b| BanListItem {
                 user_id: b.user_id.to_string(),
                 banned_at: b.banned_at.to_rfc3339(),
+                display_name: b.display_name,
             })
             .collect(),
     }))
