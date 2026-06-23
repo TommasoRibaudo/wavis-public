@@ -773,7 +773,7 @@ export default function ActiveRoom() {
   const [shareStarting, setShareStarting] = useState(false);
   // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
   const [winSharePicker, setWinSharePicker] = useState<{
-    enumResult: EnumerationResult;
+    enumResult: EnumerationResult | null;
     occupied: OccupiedSlots;
     isChangingSource?: boolean;
     initialWithAudio?: boolean;
@@ -1129,15 +1129,24 @@ export default function ActiveRoom() {
     cleanups.push(
       listen('screen-share:change-source', async () => {
         if (isWindowsPlatform) {
+          const occupied = {
+            videoOccupied: false,
+            audioOccupied: roomStateRef.current?.activeAudioShare !== null,
+          };
+          const initialWithAudio = roomStateRef.current?.activeVideoShare?.withAudio ?? false;
+          setWinSharePicker({
+            enumResult: null,
+            occupied,
+            isChangingSource: true,
+            initialWithAudio,
+          });
           try {
             const enumResult = await invoke<EnumerationResult>('list_share_sources');
-            setWinSharePicker({
-              enumResult,
-              occupied: { videoOccupied: false, audioOccupied: roomStateRef.current?.activeAudioShare !== null },
-              isChangingSource: true,
-              initialWithAudio: roomStateRef.current?.activeVideoShare?.withAudio ?? false,
-            });
+            setWinSharePicker((current) => (
+              current ? { ...current, enumResult } : current
+            ));
           } catch (err) {
+            setWinSharePicker(null);
             const detail = err instanceof Error ? err.message : String(err);
             toast.error(`Screen sharing failed: ${detail}`);
           }
@@ -2132,14 +2141,19 @@ export default function ActiveRoom() {
         // Windows: use native Rust source picker to avoid getDisplayMedia() and
         // the WebView2 capture indicator bar it triggers.
         if (isWindowsPlatform) {
+          const occupied: OccupiedSlots = {
+            videoOccupied: roomState?.activeVideoShare !== null,
+            audioOccupied: roomState?.activeAudioShare !== null,
+          };
+          setWinSharePicker({ enumResult: null, occupied });
+          setSharePickerLoading(false);
           try {
             const enumResult = await invoke<EnumerationResult>('list_share_sources');
-            const occupied: OccupiedSlots = {
-              videoOccupied: roomState?.activeVideoShare !== null,
-              audioOccupied: roomState?.activeAudioShare !== null,
-            };
-            setWinSharePicker({ enumResult, occupied });
+            setWinSharePicker((current) => (
+              current ? { ...current, enumResult } : current
+            ));
           } catch (err) {
+            setWinSharePicker(null);
             const detail = err instanceof Error ? err.message : String(err);
             showTransientScreenShareError(`Screen sharing failed: ${detail}`);
             toast.error(`Screen sharing failed: ${detail}`);
@@ -2180,35 +2194,27 @@ export default function ActiveRoom() {
       }
 
       // Linux: custom picker path — getDisplayMedia() doesn't work in WebKitGTK.
-      const result = await invoke<EnumerationResult>('list_share_sources');
-
-      if (result.sources.length > 0 || result.fallback_reason === 'portal') {
-        const occupied: OccupiedSlots = {
-          videoOccupied: roomState?.activeVideoShare !== null,
-          audioOccupied: roomState?.activeAudioShare !== null,
-        };
-
-        // Linux: standalone OS window — PostMessage works fine on WebKitGTK.
-        setPendingSharePickerData({ enumResult: result, occupied });
-        const pickerPayload = encodeURIComponent(
-          JSON.stringify({ enumResult: result, occupied }),
-        );
-        new WebviewWindow('share-picker', {
-          url: `/share-picker#${pickerPayload}`,
-          title: 'Wavis — Share Picker',
-          width: 640,
-          height: 480,
-          minWidth: 360,
-          minHeight: 320,
-          resizable: true,
-          decorations: false,
-          center: true,
-        });
-      } else if (result.fallback_reason === 'get_display_media' && roomState?.connectionMode === 'livekit') {
-        await startFallbackShare();
-      } else {
-        toast.error('No shareable sources found');
-      }
+      // Open the picker before source enumeration so slow PipeWire/PulseAudio
+      // discovery does not block the OS window from appearing.
+      const occupied: OccupiedSlots = {
+        videoOccupied: roomState?.activeVideoShare !== null,
+        audioOccupied: roomState?.activeAudioShare !== null,
+      };
+      setPendingSharePickerData({ enumResult: { sources: [], warnings: [], fallback_reason: null }, occupied });
+      const pickerPayload = encodeURIComponent(
+        JSON.stringify({ enumResult: null, occupied }),
+      );
+      new WebviewWindow('share-picker', {
+        url: `/share-picker#${pickerPayload}`,
+        title: 'Wavis — Share Picker',
+        width: 640,
+        height: 480,
+        minWidth: 360,
+        minHeight: 320,
+        resizable: true,
+        decorations: false,
+        center: true,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showTransientScreenShareError(msg);
@@ -3070,15 +3076,24 @@ export default function ActiveRoom() {
                             onClick={() => {
                               if (isWindowsPlatform) {
                                 void (async () => {
+                                  const occupied = {
+                                    videoOccupied: false,
+                                    audioOccupied: roomState.activeAudioShare !== null,
+                                  };
+                                  const initialWithAudio = roomState.activeVideoShare?.withAudio ?? false;
+                                  setWinSharePicker({
+                                    enumResult: null,
+                                    occupied,
+                                    isChangingSource: true,
+                                    initialWithAudio,
+                                  });
                                   try {
                                     const enumResult = await invoke<EnumerationResult>('list_share_sources');
-                                    setWinSharePicker({
-                                      enumResult,
-                                      occupied: { videoOccupied: false, audioOccupied: roomState.activeAudioShare !== null },
-                                      isChangingSource: true,
-                                      initialWithAudio: roomState.activeVideoShare?.withAudio ?? false,
-                                    });
+                                    setWinSharePicker((current) => (
+                                      current ? { ...current, enumResult } : current
+                                    ));
                                   } catch (err) {
+                                    setWinSharePicker(null);
                                     const detail = err instanceof Error ? err.message : String(err);
                                     toast.error(`Screen sharing failed: ${detail}`);
                                   }
@@ -3586,6 +3601,7 @@ export default function ActiveRoom() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-bg/80 px-4">
           <div className="w-[640px] max-w-[90vw] h-[480px] max-h-[80vh] border border-wavis-text-secondary shadow-xl overflow-hidden flex flex-col">
             <SharePicker
+              inline
               enumResult={winSharePicker.enumResult}
               occupied={winSharePicker.occupied}
               modeScope={winSharePicker.isChangingSource ? 'video_only' : 'all'}
