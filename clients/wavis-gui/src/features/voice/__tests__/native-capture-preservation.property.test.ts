@@ -463,11 +463,15 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
       await driveToConnected(mod);
 
       const capturePromise = mod.startNativeCapture();
-      await vi.advanceTimersByTimeAsync(1);
-
-      await expect(capturePromise).rejects.toThrow(
+      // Attach handler before advancing timers — the polling mock throws
+      // immediately (no async delay), so the promise rejects during the
+      // timer-advance microtask pump. Attaching first prevents an
+      // unhandled-rejection warning between creation and assertion.
+      const rejectionCheck = expect(capturePromise).rejects.toThrow(
         'native capture: screen_share_poll_frame failed during startup: IPC bridge unavailable',
       );
+      await vi.advanceTimersByTimeAsync(1);
+      await rejectionCheck;
       expect(mockPublishTrack).not.toHaveBeenCalled();
       expect(mockUnlisten).toHaveBeenCalled();
     } finally {
