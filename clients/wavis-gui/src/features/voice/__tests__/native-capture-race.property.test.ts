@@ -628,7 +628,7 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     await mod.stopNativeCapture();
   });
 
-  it('startNativeCapture maps high quality to the effective 1080p60 native bridge profile', async () => {
+  it('startNativeCapture maps high quality to the DETAIL 1440p30 native bridge profile', async () => {
     publishDelayMs = 0;
     pollFrameCount = 1;
 
@@ -645,13 +645,13 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
 
     const room = (mod as any).room;
     const publishArgs = room.localParticipant.publishTrack.mock.calls[0];
-    expect(publishArgs[1].videoEncoding.maxFramerate).toBe(60);
+    expect(publishArgs[1].videoEncoding.maxFramerate).toBe(30);
 
     const shareStatsCalls = (cbs.onShareStats as ReturnType<typeof vi.fn>).mock.calls;
     expect(shareStatsCalls.at(-1)?.[0].nativeBridge).toEqual(
       expect.objectContaining({
-        rustTargetFps: 60,
-        jsBridgeFps: 60,
+        rustTargetFps: 30,
+        jsBridgeFps: 30,
       }),
     );
 

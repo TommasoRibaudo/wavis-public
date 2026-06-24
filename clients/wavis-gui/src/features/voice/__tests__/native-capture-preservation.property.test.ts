@@ -77,6 +77,8 @@ vi.mock('livekit-client', () => ({
       unpublishTrack: mockUnpublishTrack,
       identity: 'self',
       connectionQuality: 'excellent',
+      trackPublications: new Map(),
+      getTrackPublication: vi.fn(() => undefined),
     };
     this.switchActiveDevice = vi.fn(async () => {});
     return this;
