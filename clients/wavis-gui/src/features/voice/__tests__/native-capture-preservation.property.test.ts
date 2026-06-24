@@ -294,7 +294,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   // ── 3a. Canvas fallback path preservation ──────────────────────
 
   describe('3a. Canvas fallback path preservation', () => {
-    it('creates canvas, appends to DOM, primes with #000001, caps captureStream FPS, and publishes track with ScreenShare source', async () => {
+    it('creates canvas, appends to DOM, primes with #000001, and publishes track with ScreenShare source at preset FPS', async () => {
       /**
        * **Validates: Requirements 3.3**
        *
@@ -323,7 +323,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
           fc.asyncProperty(
             fc.constantFrom('low', 'high', 'max'), // quality preset
             async (quality) => {
-              const expectedFps = Math.min(presetFpsMap[quality], 15);
+              const expectedFps = presetFpsMap[quality];
 
               // Reset mocks for each property run
               pollSeq = 0;
@@ -403,7 +403,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
 
       const mod = new LiveKitModule(createMockCallbacks());
       await driveToConnected(mod);
-      (mod as any).currentQuality = 'high';
+      (mod as any).currentQuality = 'max';
 
       const capturePromise = mod.startNativeCapture();
       for (let i = 0; i < 20; i++) {
