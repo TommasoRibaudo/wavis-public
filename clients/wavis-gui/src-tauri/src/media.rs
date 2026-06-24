@@ -9,7 +9,9 @@ use serde::Serialize;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::thread::JoinHandle as StdJoinHandle;
@@ -3729,9 +3731,7 @@ pub fn media_set_screen_share_quality(
     quality: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
-    state
-        .screen_share_config
-        .apply_windows_native_bridge_preset(&quality)
+    state.screen_share_config.apply_preset(&quality)
 }
 
 /// Non-Linux/non-Windows stub for `media_set_screen_share_quality`.
@@ -3836,10 +3836,10 @@ mod windows_capture_routing_tests {
         cfg.apply_preset("low").unwrap();
         assert_eq!(windows_bridge_transport_fps(&cfg), 60);
 
-        cfg.apply_windows_native_bridge_preset("high").unwrap();
-        assert_eq!(windows_bridge_transport_fps(&cfg), 60);
+        cfg.apply_preset("high").unwrap();
+        assert_eq!(windows_bridge_transport_fps(&cfg), 30);
 
-        cfg.apply_windows_native_bridge_preset("max").unwrap();
+        cfg.apply_preset("max").unwrap();
         assert_eq!(windows_bridge_transport_fps(&cfg), 60);
     }
 

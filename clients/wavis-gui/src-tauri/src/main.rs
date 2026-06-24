@@ -191,7 +191,7 @@ mod media {
     }
 
     #[tauri::command]
-    pub fn media_set_screen_share_quality(_quality: u8) -> Result<(), String> {
+    pub fn media_set_screen_share_quality(_quality: String) -> Result<(), String> {
         Ok(())
     }
 

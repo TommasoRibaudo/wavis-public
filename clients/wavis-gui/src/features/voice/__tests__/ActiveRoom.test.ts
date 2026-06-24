@@ -286,7 +286,7 @@ function shouldShowShareControls(isVideoActive: boolean, isStarting: boolean): b
 
 function windowsNativeShareQualityLabels(): string[] {
   return (['low', 'high', 'max'] as const).map((q) =>
-    q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1080p @ 60fps' : 'Max     1080p @ 60fps',
+    q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps',
   );
 }
 
@@ -434,15 +434,14 @@ describe('Share Loading UX', () => {
     expect(shouldShowShareControls(false, false)).toBe(false);
   });
 
-  it('does not advertise 1440p60 in Windows native share quality labels', () => {
+  it('advertises correct resolution and fps per quality preset', () => {
     const labels = windowsNativeShareQualityLabels();
 
     expect(labels).toEqual([
       'Smooth  1080p @ 60fps',
-      'Sharp   1080p @ 60fps',
-      'Max     1080p @ 60fps',
+      'Sharp   1440p @ 30fps',
+      'Max     1440p @ 60fps',
     ]);
-    expect(labels.join('\n')).not.toContain('1440p @ 60fps');
   });
 });
 

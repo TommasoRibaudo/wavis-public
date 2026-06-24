@@ -719,13 +719,7 @@ const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
 };
 
 function windowsNativeCapturePreset(quality: ShareQuality): QualityPreset {
-  const selected = QUALITY_PRESETS[quality];
-  return {
-    ...selected,
-    resolution: { width: 1920, height: 1080 },
-    maxFramerate: 60,
-    contentHint: quality === 'low' ? 'motion' : 'detail',
-  };
+  return QUALITY_PRESETS[quality];
 }
 
 export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {

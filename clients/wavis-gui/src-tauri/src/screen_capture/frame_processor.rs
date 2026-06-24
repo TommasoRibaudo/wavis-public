@@ -61,6 +61,11 @@ impl ScreenShareConfig {
     }
 
     /// Apply a named quality preset. Returns `Err` if the name is unknown.
+    ///
+    /// Canonical mapping (all platforms):
+    /// - `low`:  1920×1080 @ 60fps, JPEG 85  — motion/smooth
+    /// - `high`: 2560×1440 @ 30fps, JPEG 92  — detail/sharp
+    /// - `max`:  2560×1440 @ 60fps, JPEG 95  — detail + motion
     pub fn apply_preset(&self, preset: &str) -> Result<(), String> {
         match preset {
             "low" => {
@@ -85,32 +90,6 @@ impl ScreenShareConfig {
         }
         log::info!(
             "screen share quality preset applied: {preset} ({}x{} @ {}fps, jpeg={})",
-            self.max_width(),
-            self.max_height(),
-            self.max_fps(),
-            self.jpeg_quality(),
-        );
-        Ok(())
-    }
-
-    /// Apply the effective preset used by the current Windows JS LiveKit native
-    /// capture bridge. That bridge still moves JPEG/base64 frames through the
-    /// webview, so it prioritizes stable 1080p60 over the generic 1440p detail
-    /// presets until a raw-frame or native-publisher transport replaces it.
-    pub fn apply_windows_native_bridge_preset(&self, preset: &str) -> Result<(), String> {
-        let jpeg_quality = match preset {
-            "low" => 80,
-            "high" => 82,
-            "max" => 85,
-            _ => return Err(format!("unknown quality preset: {preset}")),
-        };
-        self.max_width.store(1920, Ordering::Relaxed);
-        self.max_height.store(1080, Ordering::Relaxed);
-        self.max_fps.store(60, Ordering::Relaxed);
-        self.jpeg_quality
-            .store(jpeg_quality, Ordering::Relaxed);
-        log::info!(
-            "windows native screen share effective preset applied: {preset} ({}x{} @ {}fps, jpeg={})",
             self.max_width(),
             self.max_height(),
             self.max_fps(),
@@ -427,26 +406,6 @@ mod tests {
         assert_eq!(cfg.max_height(), 1440);
         assert_eq!(cfg.max_fps(), 60);
         assert_eq!(cfg.jpeg_quality(), 95);
-    }
-
-    #[test]
-    fn config_apply_windows_native_bridge_high_preset() {
-        let cfg = ScreenShareConfig::new();
-        cfg.apply_windows_native_bridge_preset("high").unwrap();
-        assert_eq!(cfg.max_width(), 1920);
-        assert_eq!(cfg.max_height(), 1080);
-        assert_eq!(cfg.max_fps(), 60);
-        assert_eq!(cfg.jpeg_quality(), 82);
-    }
-
-    #[test]
-    fn config_apply_windows_native_bridge_max_preset() {
-        let cfg = ScreenShareConfig::new();
-        cfg.apply_windows_native_bridge_preset("max").unwrap();
-        assert_eq!(cfg.max_width(), 1920);
-        assert_eq!(cfg.max_height(), 1080);
-        assert_eq!(cfg.max_fps(), 60);
-        assert_eq!(cfg.jpeg_quality(), 85);
     }
 
     #[test]

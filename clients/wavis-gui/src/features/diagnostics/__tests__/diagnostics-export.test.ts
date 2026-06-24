@@ -13,6 +13,7 @@ import { exportSnapshot, type DiagnosticsSnapshot } from '../diagnostics';
 function baseSnapshot(): DiagnosticsSnapshot {
   return {
     timestamp: Date.now(),
+    appDimensions: null,
     rss: null,
     jsHeap: null,
     domNodes: 0,
