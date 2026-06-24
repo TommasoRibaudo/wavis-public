@@ -512,7 +512,7 @@ describe('Feature: video-feed, Property 1: Publish-options invariant', () => {
         const constraints = buildCameraTrackConstraints(quality);
         const senderParameters = buildCameraSenderParameters(quality);
 
-        expect(LIVEKIT_ROOM_OPTIONS.dynacast).toBe(true);
+        expect(LIVEKIT_ROOM_OPTIONS.dynacast).toBe(false);
         expect(publishOptions).toMatchObject({
           source: 'camera',
           simulcast: false,

@@ -2452,6 +2452,31 @@ describe('Screen share and device selection', () => {
         logSpy.mockRestore();
       }
     });
+
+    it('re-pins screen-share subscription demand on stream-state changes', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const publication = {
+        source: 'screen_share',
+        kind: 'video',
+        trackSid: 'screen-track-1',
+        isEnabled: false,
+        setSubscribed: vi.fn(),
+        setEnabled: vi.fn(),
+        setVideoQuality: vi.fn(),
+      };
+
+      emitRoomEvent('trackStreamStateChanged', publication, 'paused', { identity: 'alice' });
+
+      expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+      expect(publication.setEnabled).toHaveBeenCalledWith(true);
+      expect(publication.setVideoQuality).toHaveBeenCalledWith(2);
+
+      mod.disconnect();
+    });
   });
 
   describe('Screen share audio attachment lifecycle', () => {
@@ -3790,6 +3815,18 @@ describe('Screen share quality optimization', () => {
         ),
         { numRuns: 100 },
       );
+    });
+
+    it('stores selected quality before a room or screen-share publication exists', async () => {
+      resetAll();
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+
+      await mod.setScreenShareQuality('max');
+
+      expect((mod as unknown as Record<string, unknown>).currentQuality).toBe('max');
+      expect(cbs.calls.filter(c => c.method === 'onSystemEvent')).toHaveLength(0);
     });
 
     it('quality preset failure retains previous quality and does not emit event', async () => {

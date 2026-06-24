@@ -399,7 +399,9 @@ fn capture_loop(
                 );
                 if let Ok(mut diag) = diagnostics.lock() {
                     diag.usable_frames = 1;
-                    diag.first_raw_frame_latency_ms = Some(started_at.elapsed().as_millis() as u64);
+                    let latency = started_at.elapsed().as_millis() as u64;
+                    diag.first_raw_frame_latency_ms = Some(latency);
+                    diag.timing.first_raw_frame_latency_ms = Some(latency);
                     diag.startup_stage = "gdi_first_raw_frame".to_string();
                 }
             } else if frame_count.is_multiple_of(300) {

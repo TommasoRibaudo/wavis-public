@@ -148,6 +148,7 @@ export class NativeMediaModule {
   private activeCameras = new Map<string, ActiveCameraEntry>();
   private localCamera: ActiveCameraEntry | null = null;
   private localCameraTrack: MediaStreamTrack | null = null;
+  private currentScreenShareQuality: 'low' | 'high' | 'max' = 'high';
   private remoteShareTypes = new Map<string, RemoteShareType | undefined>();
   private audioOnlySharers = new Set<string>();
   private inferredAudioOnlySharers = new Set<string>();
@@ -439,6 +440,7 @@ export class NativeMediaModule {
     // Ok(true) → started, Ok(false) → user cancelled, Err(msg) → reject
     console.log(LOG, 'screen_share_start: invoking IPC command');
     try {
+      await invoke('media_set_screen_share_quality', { quality: this.currentScreenShareQuality });
       const result = await invoke<boolean>('screen_share_start');
       console.log(LOG, 'screen_share_start: IPC returned', result);
       return result;
@@ -460,6 +462,7 @@ export class NativeMediaModule {
    * at runtime without restarting the capture.
    */
   async setScreenShareQuality(quality: 'low' | 'high' | 'max'): Promise<void> {
+    this.currentScreenShareQuality = quality;
     try {
       await invoke('media_set_screen_share_quality', { quality });
       console.log(LOG, `screen share quality set: ${quality}`);

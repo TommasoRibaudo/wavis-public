@@ -8,9 +8,10 @@
  *   2. All emitted frames are received by the frame handler (zero dropped)
  *   3. At least one VideoFrame is written to the generator before publishTrack completes
  *
- * The implementation uses invoke('screen_share_poll_frame') polling via setInterval.
- * The first-frame gate ensures publishTrack is only called after at least one frame
- * has been successfully processed.
+ * The implementation prefers a binary I420 stream and keeps non-overlapping
+ * invoke('screen_share_poll_frame') polling as fallback. The first-frame gate
+ * ensures publishTrack is only called after at least one frame has been
+ * successfully processed.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -37,14 +38,61 @@ let pollSeq = 0;
 let pollFrameCount = 0;
 /** Count of frames delivered via invoke polling. */
 let pollFramesDelivered = 0;
+/** Optional delay for each poll invoke to model a slow Tauri IPC response. */
+let pollDelayMs = 0;
+/** Number of poll invokes issued. */
+let pollInvokeCalls = 0;
+/** Whether the raw I420 poll command should return frames. */
+let pollI420Available = false;
+/** Current number of unresolved poll invokes. */
+let activePollInvokes = 0;
+/** Highest number of concurrent unresolved poll invokes observed. */
+let maxConcurrentPollInvokes = 0;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
-    if (cmd === 'screen_share_poll_frame' && pollFramesDelivered < pollFrameCount) {
-      pollSeq++;
-      pollFramesDelivered++;
-      operationLog.push('poll_frame');
-      return { frame: 'AAAA', width: 1920, height: 1080, seq: pollSeq };
+    if (cmd === 'screen_share_poll_i420_frame') {
+      if (!pollI420Available) return null;
+      pollInvokeCalls++;
+      activePollInvokes++;
+      maxConcurrentPollInvokes = Math.max(maxConcurrentPollInvokes, activePollInvokes);
+      try {
+        if (pollFramesDelivered < pollFrameCount) {
+          pollSeq++;
+          pollFramesDelivered++;
+          operationLog.push('poll_i420_frame');
+          return {
+            frame: new Array(1920 * 1080 * 3 / 2).fill(128),
+            width: 1920,
+            height: 1080,
+            timestampUs: pollSeq * 16_667,
+            seq: pollSeq,
+          };
+        }
+      } finally {
+        activePollInvokes--;
+      }
+      return null;
+    }
+    if (cmd === 'screen_share_poll_frame') {
+      pollInvokeCalls++;
+      activePollInvokes++;
+      maxConcurrentPollInvokes = Math.max(maxConcurrentPollInvokes, activePollInvokes);
+      try {
+        if (pollDelayMs > 0) {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, pollDelayMs);
+          });
+        }
+        if (pollFramesDelivered < pollFrameCount) {
+          pollSeq++;
+          pollFramesDelivered++;
+          operationLog.push('poll_frame');
+          return { frame: 'AAAA', width: 1920, height: 1080, seq: pollSeq };
+        }
+      } finally {
+        activePollInvokes--;
+      }
     }
     return null;
   }),
@@ -60,6 +108,7 @@ let generatorWrites: number;
 
 /** Count of generator writes at the moment publishTrack completes. */
 let generatorWritesAtPublishComplete: number;
+let createdBitmaps: Array<{ width: number; height: number; close: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('livekit-client', () => ({
   Room: vi.fn(function (this: Record<string, unknown>) {
@@ -87,6 +136,8 @@ vi.mock('livekit-client', () => ({
       unpublishTrack: vi.fn(async () => {}),
       identity: 'self',
       connectionQuality: 'excellent',
+      trackPublications: new Map(),
+      getTrackPublication: vi.fn(() => undefined),
     };
     this.switchActiveDevice = vi.fn(async () => {});
     return this;
@@ -113,7 +164,7 @@ vi.mock('livekit-client', () => ({
     Source: { Microphone: 'microphone', ScreenShare: 'screen_share' },
     StreamState: { Paused: 'paused', Active: 'active' },
   },
-  VideoPreset: vi.fn((opts: unknown) => opts),
+  VideoPreset: vi.fn(),
   ConnectionQuality: {
     Excellent: 'excellent',
     Good: 'good',
@@ -157,11 +208,15 @@ vi.stubGlobal('VideoFrame', function MockVideoFrame(
   return this;
 });
 
-vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
-  width: 1920,
-  height: 1080,
-  close: vi.fn(),
-})));
+vi.stubGlobal('createImageBitmap', vi.fn(async () => {
+  const bitmap = {
+    width: 1920,
+    height: 1080,
+    close: vi.fn(),
+  };
+  createdBitmaps.push(bitmap);
+  return bitmap;
+}));
 
 vi.stubGlobal('fetch', vi.fn(async () => ({
   arrayBuffer: async () => new ArrayBuffer(100),
@@ -265,6 +320,7 @@ function createMockCallbacks(): MediaCallbacks {
     onLocalScreenShareEnded: vi.fn(),
     onParticipantMuteChanged: vi.fn(),
     onSystemEvent: vi.fn(),
+    onShareStats: vi.fn(),
   };
 }
 
@@ -289,14 +345,25 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     pollSeq = 0;
     pollFrameCount = 0;
     pollFramesDelivered = 0;
+    pollDelayMs = 0;
+    pollInvokeCalls = 0;
+    pollI420Available = false;
+    activePollInvokes = 0;
+    maxConcurrentPollInvokes = 0;
     publishDelayMs = 100;
     generatorWrites = 0;
     generatorWritesAtPublishComplete = 0;
+    createdBitmaps = [];
 
     mockUnlisten.mockClear();
     mockWriter.write.mockClear();
+    mockWriter.write.mockImplementation(async () => {
+      generatorWrites++;
+    });
     mockWriter.close.mockClear();
     mockWritable.getWriter.mockClear();
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>).mockClear();
 
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
@@ -316,6 +383,11 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
           pollSeq = 0;
           pollFrameCount = 0; // No frames from polling — we use early frames
           pollFramesDelivered = 0;
+          pollDelayMs = 0;
+          pollInvokeCalls = 0;
+          pollI420Available = false;
+          activePollInvokes = 0;
+          maxConcurrentPollInvokes = 0;
           generatorWrites = 0;
           generatorWritesAtPublishComplete = 0;
           publishDelayMs = publishDelay;
@@ -365,5 +437,343 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
       ),
       { numRuns: 20 },
     );
+  });
+
+  it('publishes after the first generator write is queued, not after write() resolves', async () => {
+    let resolveWrite: (() => void) | null = null;
+    mockWriter.write.mockImplementation(() => {
+      generatorWrites++;
+      return new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+    });
+    publishDelayMs = 0;
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    mod.beginNativeCaptureLeakSession({
+      shareSessionId: 'coalesce-test',
+      mode: 'window',
+      sourceId: 'window-1',
+      sourceName: 'Window 1',
+      sourceKind: 'window',
+      captureBackend: 'native-gdi-window',
+    });
+    mod.prepareNativeCapture();
+    mod.feedNativeFrame({ frame: 'AAAA', width: 1920, height: 1080 });
+
+    const capturePromise = mod.startNativeCapture();
+
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+
+    expect(generatorWrites).toBe(1);
+    expect(operationLog).toContain('publishTrack:start');
+    expect(resolveWrite).not.toBeNull();
+
+    resolveWrite!();
+    await vi.advanceTimersByTimeAsync(20);
+    await capturePromise;
+    await mod.stopNativeCapture();
+  });
+
+  it('coalesces pending frames while a generator write is in flight', async () => {
+    let resolveWrite: (() => void) | null = null;
+    mockWriter.write.mockImplementation(() => {
+      generatorWrites++;
+      return new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    mod.beginNativeCaptureLeakSession({
+      shareSessionId: 'coalesce-test',
+      mode: 'window',
+      sourceId: 'window-1',
+      sourceName: 'Window 1',
+      sourceKind: 'window',
+      captureBackend: 'native-gdi-window',
+    });
+    mod.prepareNativeCapture();
+    for (let i = 0; i < 5; i++) {
+      mod.feedNativeFrame({ frame: 'AAAA', width: 1920 + i, height: 1080 });
+    }
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+
+    expect(generatorWrites).toBe(1);
+    expect((mod as any).nativeCaptureLeakSession?.summary.counters.coalescedFrames ?? 0).toBeGreaterThanOrEqual(4);
+
+    resolveWrite!();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(generatorWrites).toBe(2);
+
+    resolveWrite!();
+    await vi.advanceTimersByTimeAsync(20);
+    await capturePromise;
+    await mod.stopNativeCapture();
+  });
+
+  it('does not issue overlapping poll invokes when the native poll is slow', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 10;
+    pollDelayMs = 200;
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    mod.prepareNativeCapture();
+    mod.feedNativeFrame({ frame: 'AAAA', width: 1920, height: 1080 });
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(67);
+    }
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(pollInvokeCalls).toBeGreaterThan(0);
+    expect(maxConcurrentPollInvokes).toBeLessThanOrEqual(1);
+
+    await mod.stopNativeCapture();
+  });
+
+  it('pauses steady polling while generator writes are in flight and resumes afterward', async () => {
+    let resolveWrite: (() => void) | null = null;
+    mockWriter.write.mockImplementation(() => {
+      generatorWrites++;
+      return new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+    });
+    publishDelayMs = 0;
+    pollFrameCount = 20;
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+    mod.beginNativeCaptureLeakSession({
+      shareSessionId: 'poll-backpressure-test',
+      mode: 'window',
+      sourceId: 'window-1',
+      sourceName: 'Window 1',
+      sourceKind: 'window',
+      captureBackend: 'native-gdi-window',
+    });
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    const callsAfterStartup = pollInvokeCalls;
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(67);
+    }
+
+    expect(resolveWrite).not.toBeNull();
+    expect(pollInvokeCalls).toBe(callsAfterStartup);
+    expect(
+      (mod as any).nativeCaptureLeakSession?.summary.counters.skippedPollsFrameWorkInFlight ?? 0,
+    ).toBeGreaterThan(0);
+
+    resolveWrite!();
+    await vi.advanceTimersByTimeAsync(67);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(pollInvokeCalls).toBeGreaterThan(callsAfterStartup);
+
+    resolveWrite = null;
+    await mod.stopNativeCapture();
+  });
+
+  it('startNativeCapture uses the selected preset FPS instead of capping at 15', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 1;
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+    await mod.setScreenShareQuality('max');
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    const publishCall = operationLog.indexOf('publishTrack:start');
+    expect(publishCall).toBeGreaterThanOrEqual(0);
+
+    const room = (mod as any).room;
+    const publishArgs = room.localParticipant.publishTrack.mock.calls[0];
+    expect(publishArgs[1].videoEncoding.maxFramerate).toBe(60);
+
+    const shareStatsCalls = (cbs.onShareStats as ReturnType<typeof vi.fn>).mock.calls;
+    expect(shareStatsCalls.at(-1)?.[0].nativeBridge).toEqual(
+      expect.objectContaining({
+        rustTargetFps: 60,
+        jsBridgeFps: 60,
+      }),
+    );
+
+    await mod.stopNativeCapture();
+  });
+
+  it('startNativeCapture maps high quality to the DETAIL 1440p30 native bridge profile', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 1;
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+    await mod.setScreenShareQuality('high');
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    const room = (mod as any).room;
+    const publishArgs = room.localParticipant.publishTrack.mock.calls[0];
+    expect(publishArgs[1].videoEncoding.maxFramerate).toBe(30);
+
+    const shareStatsCalls = (cbs.onShareStats as ReturnType<typeof vi.fn>).mock.calls;
+    expect(shareStatsCalls.at(-1)?.[0].nativeBridge).toEqual(
+      expect.objectContaining({
+        rustTargetFps: 30,
+        jsBridgeFps: 30,
+      }),
+    );
+
+    await mod.stopNativeCapture();
+  });
+
+  it('writes raw I420 VideoFrames without JPEG/base64 decode when raw polling is available', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 1;
+    pollI420Available = true;
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    expect(operationLog).toContain('poll_i420_frame');
+    expect(generatorWrites).toBeGreaterThan(0);
+    expect(globalThis.fetch as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+
+    const stats = (mod as any).nativeBridgeCadenceStats;
+    expect(stats.rawI420Frames).toBeGreaterThan(0);
+    expect(stats.jpegFallbackFrames).toBe(0);
+
+    await mod.stopNativeCapture();
+  });
+
+  it('generated-track keepalive writes cached decoded bitmap without re-decoding, then stops and closes cache', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 1;
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    await driveToConnected(mod);
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(20);
+
+    const statsBeforeStop = (mod as any).nativeBridgeCadenceStats;
+    expect(statsBeforeStop.keepaliveWrites).toBeGreaterThan(0);
+    expect(statsBeforeStop.jsDecodedFrames).toBe(1);
+    expect(globalThis.fetch as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(createdBitmaps).toHaveLength(1);
+    expect(createdBitmaps[0].close).not.toHaveBeenCalled();
+
+    await mod.stopNativeCapture();
+    const writesAtStop = generatorWrites;
+    expect(createdBitmaps[0].close).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(generatorWrites).toBe(writesAtStop);
+  });
+
+  it('new Rust sequence replaces cached decoded bitmap and closes the previous bitmap', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 2;
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    for (let i = 0; i < 20 && createdBitmaps.length < 2; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+
+    expect(createdBitmaps).toHaveLength(2);
+    expect(createdBitmaps[0].close).toHaveBeenCalledTimes(1);
+    expect(createdBitmaps[1].close).not.toHaveBeenCalled();
+    expect((mod as any).nativeBridgeCadenceStats.jsDecodedFrames).toBe(2);
+
+    await mod.stopNativeCapture();
+    expect(createdBitmaps[1].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaceNativeCaptureSource releases the previous decoded cache before accepting the new source', async () => {
+    publishDelayMs = 0;
+    pollFrameCount = 1;
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    const capturePromise = mod.startNativeCapture();
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await capturePromise;
+
+    expect(createdBitmaps).toHaveLength(1);
+    const previousBitmap = createdBitmaps[0];
+    expect(previousBitmap.close).not.toHaveBeenCalled();
+
+    pollFrameCount = 2;
+    const replacePromise = mod.replaceNativeCaptureSource();
+    expect(previousBitmap.close).toHaveBeenCalledTimes(1);
+
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await replacePromise;
+
+    expect(createdBitmaps).toHaveLength(2);
+    expect(createdBitmaps[1].close).not.toHaveBeenCalled();
+
+    await mod.stopNativeCapture();
+    expect(createdBitmaps[1].close).toHaveBeenCalledTimes(1);
   });
 });

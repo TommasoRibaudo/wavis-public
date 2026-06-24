@@ -34,6 +34,7 @@ const WM_TASKBAR_UPDATE: u32 = 0x8001;
 
 // ── State ──────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Clone, Default)]
 struct TaskbarVoiceState {
     in_voice_session: bool,

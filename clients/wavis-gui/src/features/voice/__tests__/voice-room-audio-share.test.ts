@@ -232,6 +232,7 @@ import {
   startCustomShare,
   stopCustomShare,
   startPortalShare,
+  setShareQuality,
   toggleShareAudio,
   resetWindowsWgcSessionBypassForTests,
 } from '../voice-room';
@@ -563,7 +564,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(getState().activeAudioShare).toBeNull();
   });
 
-  it('stops WGC state before one GDI polling retry, then starts audio and signals once', async () => {
+  it('fails the selected Windows backend without retrying another native backend', async () => {
     resetAll();
     vi.unstubAllGlobals();
     vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
@@ -578,7 +579,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
 
     expect(lastLkModule).not.toBeNull();
     (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('native capture: first frame timeout (5s)'),
+      new Error('native capture: first frame timeout (2s)'),
     );
 
     const selection: ShareSelection = {
@@ -589,16 +590,12 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       sourceKind: 'screen',
     };
 
-    await startCustomShare(selection);
+    await expect(startCustomShare(selection)).rejects.toThrow('native capture: first frame timeout (2s)');
 
     expect(invokeCalls.filter((call) => call.command === 'screen_share_start_source')).toEqual([
       {
         command: 'screen_share_start_source',
         args: expect.objectContaining({ sourceId: 'screen-1', sourceKind: 'screen', captureBackend: 'wgc' }),
-      },
-      {
-        command: 'screen_share_start_source',
-        args: expect.objectContaining({ sourceId: 'screen-1', sourceKind: 'screen', captureBackend: 'gdi_poll' }),
       },
     ]);
     expect(invokeCalls).toContainEqual({
@@ -606,21 +603,55 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       args: undefined,
     });
     expect(lastLkModule!.stopNativeCapture).toHaveBeenCalled();
+    expect(lastLkModule!.startNativeCapture).toHaveBeenCalledWith({
+      firstFrameTimeoutMs: 2000,
+      lowJsBridgeFpsRetry: {
+        thresholdFps: 20,
+        durationMs: 2000,
+        reason: 'wgc_sustained_low_js_observed_sequence_fps',
+      },
+    });
     expect(lastLkModule!.attachWindowsNativeCaptureDiagnostics).toHaveBeenCalled();
-    const lastVideoStartIndex = invokeCalls
-      .map((call) => call.command)
-      .lastIndexOf('screen_share_start_source');
-    expect(invokeCalls.findIndex((call) => call.command === 'audio_share_start')).toBeGreaterThan(
-      lastVideoStartIndex,
-    );
-    expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(1);
-    expect(getState().activeVideoShare).toMatchObject({ withAudio: true });
+    expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
+    expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
+    expect(getState().activeVideoShare).toBeNull();
     expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'capture.fallback.activated', from: 'wgc', to: 'gdi_poll' }),
+      expect.objectContaining({ name: 'capture.native.failed', sourceKind: 'screen', backend: 'wgc' }),
     ]));
   });
 
-  it('clears custom state and opens browser fallback after both native attempts fail', async () => {
+  it('syncs selected max quality into Rust before Windows native source capture', async () => {
+    resetAll();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: { getUserMedia: vi.fn(), getDisplayMedia: vi.fn() },
+    });
+    await driveToActive();
+    await setShareQuality('max');
+
+    await startCustomShare({
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      sourceKind: 'screen',
+      withAudio: false,
+    });
+
+    const commandNames = invokeCalls.map((call) => call.command);
+    expect(commandNames.indexOf('media_set_screen_share_quality')).toBeLessThan(
+      commandNames.indexOf('screen_share_start_source'),
+    );
+    expect(invokeCalls).toContainEqual({
+      command: 'media_set_screen_share_quality',
+      args: { quality: 'max' },
+    });
+
+    await setShareQuality('high');
+  });
+
+  it('clears custom state and surfaces native failure after the selected native attempt fails', async () => {
     resetAll();
     vi.unstubAllGlobals();
     vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
@@ -631,29 +662,73 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     await driveToActive();
 
     (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error('WGC timeout'))
-      .mockRejectedValueOnce(new Error('GDI timeout'));
+      .mockRejectedValueOnce(new Error('WGC timeout'));
+
+    await expect(startCustomShare({
+      mode: 'screen_audio',
+      sourceId: 'screen-1',
+      sourceName: 'Display 1',
+      sourceKind: 'screen',
+      withAudio: true,
+    })).rejects.toThrow('WGC timeout');
+
+    expect(lastLkModule!.startScreenShare).not.toHaveBeenCalled();
+    expect(getState().activeVideoShare).toBeNull();
+    expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
+    expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
+    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'capture.native.failed', sourceKind: 'screen', backend: 'wgc' }),
+    ]));
+  });
+
+  it('retries Windows WGC native capture with GDI polling when JS-observed new-sequence cadence is too low', async () => {
+    resetAll();
+    vi.unstubAllGlobals();
+    vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: { getUserMedia: vi.fn(), getDisplayMedia: vi.fn() },
+    });
+    await driveToActive();
+
+    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('native capture: low JS-observed WGC new-sequence FPS (3.0 < 20) after 2000ms; retryReason=wgc_sustained_low_js_observed_sequence_fps'))
+      .mockResolvedValueOnce(undefined);
 
     await startCustomShare({
       mode: 'screen_audio',
       sourceId: 'screen-1',
       sourceName: 'Display 1',
       sourceKind: 'screen',
-      withAudio: true,
+      withAudio: false,
     });
 
-    expect(lastLkModule!.startScreenShare).toHaveBeenCalledTimes(1);
-    expect(getState().activeVideoShare).toBeNull();
-    expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
-    expect(sentMessages.filter((message) => message.type === 'start_share')).toEqual([
-      expect.objectContaining({ shareType: 'browser' }),
-    ]);
+    expect(invokeCalls
+      .filter((call) => call.command === 'screen_share_start_source')
+      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'gdi_poll']);
+    expect(invokeCalls
+      .filter((call) => call.command === 'screen_share_start_source')
+      .at(-1)?.args).toEqual(expect.objectContaining({
+        previousBackend: 'wgc',
+        retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
+      }));
+    expect(lastLkModule!.startNativeCapture).toHaveBeenCalledTimes(2);
+    expect(lastLkModule!.startNativeCapture).toHaveBeenLastCalledWith({
+      firstFrameTimeoutMs: 4500,
+      lowJsBridgeFpsRetry: undefined,
+    });
     expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'capture.fallback.activated', from: 'native', to: 'browser' }),
+      expect.objectContaining({
+        name: 'capture.fallback.activated',
+        os: 'windows',
+        from: 'wgc',
+        to: 'gdi_poll',
+        reason: 'wgc_sustained_low_js_observed_sequence_fps',
+      }),
     ]));
   });
 
-  it('bypasses WGC for later shares of a source kind after one session failure', async () => {
+  it('does not bypass WGC for later shares after one session failure', async () => {
     resetAll();
     vi.unstubAllGlobals();
     vi.stubGlobal('window', { RTCPeerConnection: function MockPeerConnection() {} });
@@ -664,7 +739,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     await driveToActive();
 
     (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('native capture: first frame timeout (5s)'),
+      new Error('native capture: first frame timeout (2s)'),
     );
     const selection: ShareSelection = {
       mode: 'screen_audio',
@@ -674,8 +749,8 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       withAudio: false,
     };
 
-    await startCustomShare(selection);
-    await stopCustomShare('video');
+    await expect(startCustomShare(selection)).rejects.toThrow('native capture: first frame timeout (2s)');
+    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     await startCustomShare(selection);
     await stopCustomShare('video');
     await startCustomShare({
@@ -688,10 +763,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
 
     expect(invokeCalls
       .filter((call) => call.command === 'screen_share_start_source')
-      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'gdi_poll', 'gdi_poll', 'wgc']);
-    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'capture.wgc.session_bypass', sourceKind: 'screen' }),
-    ]));
+      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'wgc', 'wgc']);
   });
 
   it('window compatibility mode skips WGC while screen selections still start with WGC', async () => {

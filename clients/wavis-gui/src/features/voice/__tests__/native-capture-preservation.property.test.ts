@@ -39,9 +39,14 @@ vi.mock('@tauri-apps/api/event', () => ({
 let pollSeq = 0;
 /** Whether invoke should return frames (true) or null (false). */
 let pollReturnsFrames = true;
+/** Whether invoke should reject to simulate a broken Tauri poll bridge. */
+let pollRejects = false;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
+    if (cmd === 'screen_share_poll_frame' && pollRejects) {
+      throw new Error('IPC bridge unavailable');
+    }
     if (cmd === 'screen_share_poll_frame' && pollReturnsFrames) {
       pollSeq++;
       return { frame: 'AAAA', width: 1920, height: 1080, seq: pollSeq };
@@ -72,6 +77,8 @@ vi.mock('livekit-client', () => ({
       unpublishTrack: mockUnpublishTrack,
       identity: 'self',
       connectionQuality: 'excellent',
+      trackPublications: new Map(),
+      getTrackPublication: vi.fn(() => undefined),
     };
     this.switchActiveDevice = vi.fn(async () => {});
     return this;
@@ -98,7 +105,7 @@ vi.mock('livekit-client', () => ({
     Source: { Microphone: 'microphone', ScreenShare: 'screen_share' },
     StreamState: { Paused: 'paused', Active: 'active' },
   },
-  VideoPreset: vi.fn((opts: unknown) => opts),
+  VideoPreset: vi.fn(),
   ConnectionQuality: {
     Excellent: 'excellent',
     Good: 'good',
@@ -267,6 +274,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   beforeEach(() => {
     pollSeq = 0;
     pollReturnsFrames = true;
+    pollRejects = false;
     nativeCaptureFailureHandler = null;
     mockUnlisten.mockClear();
     mockPublishTrack.mockClear();
@@ -286,7 +294,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
   // ── 3a. Canvas fallback path preservation ──────────────────────
 
   describe('3a. Canvas fallback path preservation', () => {
-    it('creates canvas, appends to DOM, primes with #000001, calls captureStream(targetFps), and publishes track with ScreenShare source', async () => {
+    it('creates canvas, appends to DOM, primes with #000001, and publishes track with ScreenShare source at preset FPS', async () => {
       /**
        * **Validates: Requirements 3.3**
        *
@@ -384,6 +392,41 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
 
   // ── 3b. Cleanup preservation (stopNativeCapture) ───────────────
 
+  it('polls native frames at the capped Windows bridge FPS interval', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      pollSeq = 0;
+      pollReturnsFrames = true;
+      mockPublishTrack.mockClear();
+      delete (globalThis as Record<string, unknown>).MediaStreamTrackGenerator;
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await driveToConnected(mod);
+      (mod as any).currentQuality = 'max';
+
+      const capturePromise = mod.startNativeCapture();
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      await capturePromise;
+
+      expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 17)).toBe(true);
+      const publishArgs = mockPublishTrack.mock.calls[0] as unknown[];
+      expect(publishArgs[1]).toMatchObject({
+        source: 'screen_share',
+        simulcast: false,
+        videoEncoding: { maxBitrate: 8_000_000, maxFramerate: 60 },
+        screenShareSimulcastLayers: [],
+      });
+
+      await mod.stopNativeCapture();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back before the timeout when Rust reports repeated WGC readback failures', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -404,6 +447,32 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
       await expect(capturePromise).rejects.toThrow(
         'WGC readback failed repeatedly before first frame',
       );
+      expect(mockUnlisten).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects with the invoke error when startup polling fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      pollRejects = true;
+      mockPublishTrack.mockClear();
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await driveToConnected(mod);
+
+      const capturePromise = mod.startNativeCapture();
+      // Attach handler before advancing timers — the polling mock throws
+      // immediately (no async delay), so the promise rejects during the
+      // timer-advance microtask pump. Attaching first prevents an
+      // unhandled-rejection warning between creation and assertion.
+      const rejectionCheck = expect(capturePromise).rejects.toThrow(
+        'native capture: screen_share_poll_frame failed during startup: IPC bridge unavailable',
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      await rejectionCheck;
+      expect(mockPublishTrack).not.toHaveBeenCalled();
       expect(mockUnlisten).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

@@ -172,7 +172,7 @@ export const LIVEKIT_ROOM_OPTIONS = {
   // aggressively downgrade screen share on transient congestion and not
   // recover quickly. If screen-share quality regressions reappear after
   // this change, this is the first knob to flip back to false.
-  dynacast: true,
+  dynacast: false,
 } as const;
 
 export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishOptions {
@@ -418,6 +418,9 @@ export type ShareQuality = 'low' | 'high' | 'max';
 export interface ShareStats {
   bitrateKbps: number;
   fps: number;
+  browserReportedFps?: number;
+  framesSentFps?: number;
+  framesEncodedFps?: number;
   qualityLimitationReason: string;
   packetLossPercent: number;
   frameWidth: number;
@@ -427,7 +430,60 @@ export interface ShareStats {
   /** Delta NACKs since the last poll — not cumulative. */
   nackCount: number;
   availableBandwidthKbps: number;
+  nativeBridge?: NativeBridgeCadenceStats;
 }
+
+export interface NativeBridgeCadenceStats {
+  rustTargetFps: number;
+  jsBridgeFps: number;
+  pollTicks: number;
+  pollHits: number;
+  pollSkippedForWork: number;
+  streamReads: number;
+  streamBytes: number;
+  streamBytesPerSec: number;
+  streamReadAvgMs: number;
+  writerBackpressureSkips: number;
+  staleFrameDrops: number;
+  writerFps: number;
+  duplicateSeqSkips: number;
+  newSeqCount: number;
+  jsDecodedFrames: number;
+  generatorWrites: number;
+  canvasPaints: number;
+  keepaliveWrites: number;
+  decodeFailures: number;
+  avgDecodeMs: number;
+  avgWriteMs: number;
+  jsObservedRustSeqFps: number;
+  duplicatePollRatio: number;
+  keepaliveFps: number;
+  latestSeqAgeMs: number | null;
+  realDecodeAvgMs: number;
+  realWriteAvgMs: number;
+  keepaliveWriteAvgMs: number;
+  base64FetchAvgMs: number;
+  jpegDecodeAvgMs: number;
+  videoFrameCreateAvgMs: number;
+  writerAvgMs: number;
+  rawI420Frames: number;
+  jpegFallbackFrames: number;
+  pollSkippedForWorkFps: number;
+  trackReadyState: MediaStreamTrackState | 'unknown';
+  trackMuted: boolean | null;
+  windowsNativeCapture?: WindowsNativeCaptureDiagnostics | null;
+}
+
+type NativeJpegBridgeFrame = { frame: string; width: number; height: number };
+type NativeJpegPollFrame = NativeJpegBridgeFrame & { seq: number };
+type NativeI420PollFrame = {
+  frame: number[] | Uint8Array<ArrayBufferLike> | ArrayBuffer;
+  width: number;
+  height: number;
+  timestampUs: number;
+  seq: number;
+};
+type NativeBridgeFrame = NativeI420PollFrame | NativeJpegPollFrame | NativeJpegBridgeFrame;
 
 /**
  * Live receiver stats for an incoming screen share. Polled from the subscriber PC.
@@ -543,6 +599,18 @@ function buildSdkScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): 
   } as unknown as TrackPublishOptions;
 }
 
+function buildNativeScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): TrackPublishOptions {
+  return {
+    ...buildSdkScreenSharePublishOptions(pubOpts),
+    simulcast: false,
+    videoEncoding: {
+      maxBitrate: pubOpts.screenShareEncoding.maxBitrate,
+      maxFramerate: pubOpts.screenShareEncoding.maxFramerate,
+    },
+    screenShareSimulcastLayers: [],
+  } as unknown as TrackPublishOptions;
+}
+
 /* ─── Adaptive Quality ──────────────────────────────────────────── */
 
 export type AdaptiveTier = 'full' | 'reduced-fps' | 'reduced-resolution';
@@ -649,6 +717,10 @@ const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
   high: DETAIL_PROFILE,
   max:  { ...DETAIL_PROFILE, maxFramerate: 60 },
 };
+
+function windowsNativeCapturePreset(quality: ShareQuality): QualityPreset {
+  return QUALITY_PRESETS[quality];
+}
 
 export interface MediaCallbacks extends Partial<CameraMediaCallbacks> {
   /** Called when media transitions to connected (mic published or listen-only). */
@@ -1200,6 +1272,9 @@ export class LiveKitModule {
   private prevSharePliCount = 0;
   /** Cumulative NACK count at last share stats poll — used to compute per-interval delta. */
   private prevShareNackCount = 0;
+  private prevShareFramesSent = 0;
+  private prevShareFramesEncoded = 0;
+  private prevShareFrameTimestamp = 0;
   /** Last known jitter buffer delay ms — carried forward when subscriber report not polled. */
   private lastJitterBufferDelayMs = 0;
   /** Last known concealment events per interval — carried forward between polls. */
@@ -1432,9 +1507,14 @@ export class LiveKitModule {
         stages: {},
         counters: {
           pollTicks: 0,
+          pollErrors: 0,
           newFrames: 0,
           duplicateFrameSkips: 0,
+          coalescedFrames: 0,
+          skippedPollsFrameWorkInFlight: 0,
+          overlappingPollSkips: 0,
           decodeFailures: 0,
+          keepaliveWrites: 0,
           earlyFrameBufferPeak: 0,
           firstFrameLatencyMs: null,
           stopCleanupLatencyMs: null,
@@ -1856,6 +1936,20 @@ export class LiveKitModule {
 
   private async prepareScreenSharePublishOptions(): Promise<ScreenSharePublishOptions> {
     this.syncProfileFromPreset();
+    await this.syncCodecPolicyFromSettings();
+    return this.currentPublishOptions;
+  }
+
+  private async prepareWindowsNativeCapturePublishOptions(): Promise<ScreenSharePublishOptions> {
+    const preset = windowsNativeCapturePreset(this.currentQuality);
+    this.currentPublishOptions = {
+      ...this.currentPublishOptions,
+      screenShareEncoding: {
+        maxBitrate: preset.maxBitrate,
+        maxFramerate: preset.maxFramerate,
+      },
+      degradationPreference: 'maintain-resolution',
+    };
     await this.syncCodecPolicyFromSettings();
     return this.currentPublishOptions;
   }
@@ -2754,11 +2848,16 @@ export class LiveKitModule {
           publication.source === Track.Source.ScreenShare &&
           publication.kind === Track.Kind.Video
         ) {
+          console.log(
+            LOG,
+            `screen share stream state ${streamState} for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`,
+          );
+          publication.setSubscribed?.(true);
+          publication.setEnabled?.(true);
+          publication.setVideoQuality?.(VideoQuality.HIGH);
           if (streamState === Track.StreamState.Paused) {
             console.log(LOG, `screen share paused for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`);
             if (DEBUG_CAPTURE) console.log(LOG, `screen share paused — enabled: ${publication.isEnabled}`);
-            publication.setEnabled(true);
-            publication.setVideoQuality(VideoQuality.HIGH);
             // Don't re-emit the stream here — wait for Active state to confirm
             // the track actually resumed. Re-emitting a paused stream causes
             // the viewer to attach a dead MediaStream.
@@ -2925,9 +3024,15 @@ export class LiveKitModule {
 
     // 4d. Clean up native capture bridge (Windows custom share)
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
+    if (this.nativeCaptureKeepaliveInterval !== null) {
+      clearInterval(this.nativeCaptureKeepaliveInterval);
+      this.nativeCaptureKeepaliveInterval = null;
+    }
+    this.nativeCaptureStreamAbort?.abort();
+    this.nativeCaptureStreamAbort = null;
     if (this.nativeCaptureFailureUnlisten) {
       this.nativeCaptureFailureUnlisten();
       this.nativeCaptureFailureUnlisten = null;
@@ -2938,6 +3043,9 @@ export class LiveKitModule {
     this.nativeCaptureUnlisten = null;
     this.nativeCaptureFrameHandler = null;
     this.nativeCaptureEarlyFrames = [];
+    this.releaseNativeCaptureDecodedCache();
+    this.nativeBridgeCadenceStats = null;
+    this.nativeBridgeReportBaseline = null;
     if (this.nativeCapturePublication) {
       // Delegate to stopNativeCapture so unpublishTrack is called before
       // room.disconnect() runs; it eagerly nulls nativeCapturePublication.
@@ -3068,6 +3176,9 @@ export class LiveKitModule {
     this.prevConcealmentEventsTotal = 0;
     this.prevSharePliCount = 0;
     this.prevShareNackCount = 0;
+    this.prevShareFramesSent = 0;
+    this.prevShareFramesEncoded = 0;
+    this.prevShareFrameTimestamp = 0;
     this.lastJitterBufferDelayMs = 0;
     this.lastConcealmentEventsPerInterval = 0;
     this.lastCandidateType = 'unknown';
@@ -3554,12 +3665,15 @@ export class LiveKitModule {
    * On failure, logs a warning and retains the previous quality setting.
    */
   async setScreenShareQuality(quality: ShareQuality): Promise<void> {
+    const previousQuality = this.currentQuality;
+    this.currentQuality = quality;
     if (!this.room) return;
     const pub = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     if (!pub || !pub.track) return;
 
-    const preset = QUALITY_PRESETS[quality];
-    const previousQuality = this.currentQuality;
+    const preset = this.nativeCapturePublication
+      ? windowsNativeCapturePreset(quality)
+      : QUALITY_PRESETS[quality];
     try {
       const track = pub.track.mediaStreamTrack;
       track.contentHint = preset.contentHint;
@@ -3568,7 +3682,6 @@ export class LiveKitModule {
         height: { ideal: preset.resolution.height },
         frameRate: { max: preset.maxFramerate },
       });
-      this.currentQuality = quality;
       this.callbacks.onSystemEvent(`screen share quality: ${quality}`);
       // Re-report actual quality info so the UI updates
       const settings = getTrackSettingsSafe(track);
@@ -4085,12 +4198,15 @@ export class LiveKitModule {
         const engine = (this.room as any).engine;
         const publisher = engine?.pcManager?.publisher;
         if (publisher && typeof publisher.getStats === 'function') {
-          publisher.getStats().then((report: RTCStatsReport) => {
+          publisher.getStats().then(async (report: RTCStatsReport) => {
             if (this.disposed) return;
             try {
               let bytesSent = 0;
               let timestamp = 0;
               let fps = 0;
+              let browserReportedFps = 0;
+              let framesSentCumulative = 0;
+              let framesEncodedCumulative = 0;
               let qualityLimitation = 'none';
               let packetsSent = 0;
               let packetsLost = 0;
@@ -4103,7 +4219,9 @@ export class LiveKitModule {
                 if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
                   if (typeof stat.bytesSent === 'number') bytesSent = stat.bytesSent as number;
                   if (typeof stat.timestamp === 'number') timestamp = stat.timestamp as number;
-                  if (typeof stat.framesPerSecond === 'number') fps = stat.framesPerSecond as number;
+                  if (typeof stat.framesPerSecond === 'number') browserReportedFps = stat.framesPerSecond as number;
+                  if (typeof stat.framesSent === 'number') framesSentCumulative = stat.framesSent as number;
+                  if (typeof stat.framesEncoded === 'number') framesEncodedCumulative = stat.framesEncoded as number;
                   if (typeof stat.qualityLimitationReason === 'string') qualityLimitation = stat.qualityLimitationReason as string;
                   if (typeof stat.packetsSent === 'number') packetsSent = stat.packetsSent as number;
                   if (typeof stat.frameWidth === 'number') frameWidth = stat.frameWidth as number;
@@ -4131,6 +4249,22 @@ export class LiveKitModule {
               prevBytesSent = bytesSent;
               prevTimestamp = timestamp;
 
+              let framesSentFps = 0;
+              let framesEncodedFps = 0;
+              if (this.prevShareFrameTimestamp > 0 && timestamp > this.prevShareFrameTimestamp) {
+                const deltaSec = (timestamp - this.prevShareFrameTimestamp) / 1000;
+                framesSentFps = Math.max(0, (framesSentCumulative - this.prevShareFramesSent) / deltaSec);
+                framesEncodedFps = Math.max(0, (framesEncodedCumulative - this.prevShareFramesEncoded) / deltaSec);
+              }
+              this.prevShareFramesSent = framesSentCumulative;
+              this.prevShareFramesEncoded = framesEncodedCumulative;
+              this.prevShareFrameTimestamp = timestamp;
+              fps = framesSentFps > 0
+                ? framesSentFps
+                : framesEncodedFps > 0
+                  ? framesEncodedFps
+                  : browserReportedFps;
+
               // Compute outbound packet loss percentage
               const totalPackets = packetsSent + packetsLost;
               const packetLossPercent = totalPackets > 0
@@ -4149,9 +4283,19 @@ export class LiveKitModule {
               this.processAdaptiveQuality(packetLossPercent, qualityLimitation);
 
               // Forward stats to diagnostics window (optional callback, 5s cadence)
+              await this.refreshWindowsNativeCaptureDiagnosticsForStats();
+              const nativeBridge = this.nativeBridgeCadenceStats
+                ? this.snapshotNativeBridgeStatsForReport()
+                : undefined;
+              if (nativeBridge && fps <= 0) {
+                fps = nativeBridge.writerFps;
+              }
               this.callbacks.onShareStats?.({
                 bitrateKbps,
                 fps,
+                browserReportedFps,
+                framesSentFps,
+                framesEncodedFps,
                 qualityLimitationReason: qualityLimitation,
                 packetLossPercent,
                 frameWidth,
@@ -4159,16 +4303,21 @@ export class LiveKitModule {
                 pliCount,
                 nackCount,
                 availableBandwidthKbps,
+                nativeBridge,
               });
             } catch {
               console.warn(LOG, 'screen share stats parsing failed, skipping cycle');
             }
           }).catch(() => {
             console.warn(LOG, 'screen share stats polling failed, skipping cycle');
+            this.emitNativeBridgeShareStatsFallback();
           });
+        } else {
+          this.emitNativeBridgeShareStatsFallback();
         }
       } catch {
         console.warn(LOG, 'screen share stats polling failed, skipping cycle');
+        this.emitNativeBridgeShareStatsFallback();
       }
     }, 5000);
   }
@@ -4187,6 +4336,9 @@ export class LiveKitModule {
    */
   private processAdaptiveQuality(packetLossPercent: number, qualityLimitation: string): void {
     if (!this.adaptiveState || !this.room) return;
+    if (this.nativeCapturePublication) {
+      return;
+    }
 
     const state = this.adaptiveState;
     const oldTier = state.currentTier;
@@ -5233,6 +5385,7 @@ export class LiveKitModule {
     // setVideoQuality call, the server has no demand signal and dynacast may
     // pause or drop the HIGH layer entirely. Pinning HIGH here fixes that
     // without disabling dynacast globally.
+    publication.setSubscribed?.(true);
     publication.setEnabled(true);
     publication.setVideoQuality(VideoQuality.HIGH);
 
@@ -5665,15 +5818,18 @@ export class LiveKitModule {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private nativeCaptureTrackWriter: any = null;
   /** Buffered frames received between prepareNativeCapture and startNativeCapture. */
-  private nativeCaptureEarlyFrames: Array<{ frame: string; width: number; height: number }> = [];
+  private nativeCaptureEarlyFrames: NativeJpegBridgeFrame[] = [];
   /**
    * Mutable frame handler ref. prepareNativeCapture installs a buffering
    * function, startNativeCapture upgrades it to the real processing function.
    * The polling loop calls feedNativeFrame() which delegates here.
    */
-  private nativeCaptureFrameHandler: ((payload: { frame: string; width: number; height: number }) => void) | null = null;
-  /** Polling interval ID for screen_share_poll_frame (Windows JS SDK path). */
-  private nativeCapturePollInterval: ReturnType<typeof setInterval> | null = null;
+  private nativeCaptureFrameHandler: ((payload: NativeJpegBridgeFrame) => void) | null = null;
+  /** Polling timer ID for screen_share_poll_frame (Windows JS SDK path). */
+  private nativeCapturePollInterval: ReturnType<typeof setTimeout> | null = null;
+  private nativeCaptureStreamAbort: AbortController | null = null;
+  /** Low-cadence repaint timer that keeps generated tracks alive while Rust emits sparse static frames. */
+  private nativeCaptureKeepaliveInterval: ReturnType<typeof setInterval> | null = null;
   /** Listener for definitive Rust-side WGC readback failures. */
   private nativeCaptureFailureUnlisten: (() => void) | null = null;
   private nativeCaptureFailureListenerPromise: Promise<void> | null = null;
@@ -5681,6 +5837,19 @@ export class LiveKitModule {
   private nativeCaptureFailureReject: ((error: Error) => void) | null = null;
   /** Last seen sequence number from poll — used to skip duplicate frames. */
   private nativeCapturePollLastSeq = 0;
+  private nativeBridgeCadenceStats: NativeBridgeCadenceStats | null = null;
+  private nativeBridgeReportBaseline: {
+    atMs: number;
+    newSeqCount: number;
+    writes: number;
+    streamBytes: number;
+    pollSkippedForWork: number;
+    keepaliveWrites: number;
+  } | null = null;
+  private nativeCaptureDecodedBitmap: ImageBitmap | null = null;
+  private nativeCaptureDecodedWidth = 0;
+  private nativeCaptureDecodedHeight = 0;
+  private nativeCaptureI420Unavailable = false;
   /**
    * Transceiver used by the most recent screen share session, preserved after
    * unpublish so that the next session's livekit-fix can reuse the same MID.
@@ -5718,14 +5887,14 @@ export class LiveKitModule {
 
   /**
    * Pre-register the frame buffering handler so that frames arriving via
-   * the Tauri Channel are captured immediately.
+   * direct calls to `feedNativeFrame()` can be captured immediately.
    *
    * Must be called BEFORE `invoke('screen_share_start_source')` to
    * eliminate the race where Rust sends frames before the JS handler
    * exists. Buffered frames are drained by `startNativeCapture()`.
    *
    * This is now synchronous — no Tauri event listener needed because
-   * frames arrive via a Tauri Channel (direct IPC pipe), not events.
+   * frames are polled from Rust's latest-frame buffer, not pushed as events.
    *
    * Safe to call multiple times — subsequent calls are no-ops.
    */
@@ -5755,13 +5924,13 @@ export class LiveKitModule {
       }
     };
 
-    // Set a no-op unlisten marker so subsequent calls are no-ops and
+    // Set a no-op marker so subsequent calls are no-ops and
     // startNativeCapture knows preparation has happened.
-    this.nativeCaptureUnlisten = () => { /* no-op — Channel doesn't need unlistening */ };
+    this.nativeCaptureUnlisten = () => { /* no-op: latest-frame polling has no listener */ };
 
     void this.ensureNativeCaptureFailureListener();
 
-    console.log(LOG, 'native capture: prepared frame handler (Channel mode, synchronous)');
+    console.log(LOG, 'native capture: prepared frame handler for latest-frame polling');
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: pre-registration complete, timestamp:', performance.now());
   }
 
@@ -5769,10 +5938,297 @@ export class LiveKitModule {
    * Feed a single frame into the frame handler.
    * Used internally by the polling loop and available for external callers.
    */
-  feedNativeFrame(payload: { frame: string; width: number; height: number }): void {
+  feedNativeFrame(payload: NativeJpegBridgeFrame): void {
     if (this.nativeCaptureFrameHandler) {
       this.nativeCaptureFrameHandler(payload);
     }
+  }
+
+  private async captureWindowsNativeDiagnosticsSnapshot(): Promise<WindowsNativeCaptureDiagnostics | null> {
+    try {
+      return await invoke<WindowsNativeCaptureDiagnostics | null>('screen_share_get_capture_diagnostics');
+    } catch {
+      return null;
+    }
+  }
+
+  private nativeI420Bytes(frame: NativeI420PollFrame): Uint8Array<ArrayBufferLike> {
+    if (frame.frame instanceof Uint8Array) return frame.frame;
+    if (ArrayBuffer.isView(frame.frame)) {
+      return new Uint8Array(frame.frame.buffer, frame.frame.byteOffset, frame.frame.byteLength);
+    }
+    if (frame.frame instanceof ArrayBuffer) return new Uint8Array(frame.frame);
+    return new Uint8Array(frame.frame);
+  }
+
+  private async enableNativeJpegFallback(): Promise<void> {
+    try {
+      await invoke('screen_share_set_jpeg_fallback_enabled', { enabled: true });
+    } catch {
+      // Older builds may not expose the toggle. The JPEG poll path remains the
+      // compatibility fallback and will either work or surface its own error.
+    }
+  }
+
+  private async pollNativeCaptureFrame(preferI420: boolean): Promise<NativeI420PollFrame | NativeJpegPollFrame | null> {
+    if (!preferI420) {
+      await this.enableNativeJpegFallback();
+      return invoke<NativeJpegPollFrame | null>('screen_share_poll_frame');
+    }
+    if (preferI420 && !this.nativeCaptureI420Unavailable) {
+      try {
+        const raw = await invoke<NativeI420PollFrame | null>('screen_share_poll_i420_frame');
+        if (raw) return raw;
+      } catch (error) {
+        this.nativeCaptureI420Unavailable = true;
+        await this.enableNativeJpegFallback();
+        console.warn(LOG, 'native capture: raw I420 polling unavailable, falling back to JPEG:', error);
+      }
+    }
+    if (this.nativeCaptureI420Unavailable) {
+      await this.enableNativeJpegFallback();
+    }
+    return invoke<NativeJpegPollFrame | null>('screen_share_poll_frame');
+  }
+
+  private async getNativeI420StreamUrl(): Promise<string | null> {
+    try {
+      const url = await invoke<string | null>('screen_share_get_i420_stream_url');
+      return typeof url === 'string' && url.length > 0 ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readExactNativeStreamBytes(
+    reader: ReadableStreamDefaultReader<Uint8Array<ArrayBufferLike>>,
+    byteCount: number,
+    carry: Uint8Array<ArrayBufferLike>,
+  ): Promise<{ bytes: Uint8Array<ArrayBufferLike>; carry: Uint8Array<ArrayBufferLike> } | null> {
+    let buffer = carry;
+    while (buffer.byteLength < byteCount) {
+      const chunk = await reader.read();
+      if (chunk.done) return null;
+      if (!chunk.value || chunk.value.byteLength === 0) continue;
+      const merged = new Uint8Array(buffer.byteLength + chunk.value.byteLength);
+      merged.set(buffer, 0);
+      merged.set(chunk.value, buffer.byteLength);
+      buffer = merged;
+    }
+    return {
+      bytes: buffer.slice(0, byteCount),
+      carry: buffer.slice(byteCount),
+    };
+  }
+
+  private createNativeBridgeCadenceStats(
+    rustTargetFps: number,
+    jsBridgeFps: number,
+    track: MediaStreamTrack,
+  ): NativeBridgeCadenceStats {
+    return {
+      rustTargetFps,
+      jsBridgeFps,
+      pollTicks: 0,
+      pollHits: 0,
+      pollSkippedForWork: 0,
+      streamReads: 0,
+      streamBytes: 0,
+      streamBytesPerSec: 0,
+      streamReadAvgMs: 0,
+      writerBackpressureSkips: 0,
+      staleFrameDrops: 0,
+      writerFps: 0,
+      duplicateSeqSkips: 0,
+      newSeqCount: 0,
+      jsDecodedFrames: 0,
+      generatorWrites: 0,
+      canvasPaints: 0,
+      keepaliveWrites: 0,
+      decodeFailures: 0,
+      avgDecodeMs: 0,
+      avgWriteMs: 0,
+      jsObservedRustSeqFps: 0,
+      duplicatePollRatio: 0,
+      keepaliveFps: 0,
+      latestSeqAgeMs: null,
+      realDecodeAvgMs: 0,
+      realWriteAvgMs: 0,
+      keepaliveWriteAvgMs: 0,
+      base64FetchAvgMs: 0,
+      jpegDecodeAvgMs: 0,
+      videoFrameCreateAvgMs: 0,
+      writerAvgMs: 0,
+      rawI420Frames: 0,
+      jpegFallbackFrames: 0,
+      pollSkippedForWorkFps: 0,
+      trackReadyState: track.readyState ?? 'unknown',
+      trackMuted: track.muted ?? null,
+      windowsNativeCapture: null,
+    };
+  }
+
+  private recordNativeBridgeDecode(durationMs: number): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    stats.jsDecodedFrames++;
+    stats.avgDecodeMs =
+      ((stats.avgDecodeMs * (stats.jsDecodedFrames - 1)) + durationMs) / stats.jsDecodedFrames;
+    stats.realDecodeAvgMs = stats.avgDecodeMs;
+  }
+
+  private recordNativeBridgeDecodeParts(parts: {
+    base64FetchMs?: number;
+    jpegDecodeMs?: number;
+    videoFrameCreateMs?: number;
+    rawI420?: boolean;
+  }): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    if (parts.rawI420) {
+      stats.rawI420Frames++;
+    } else {
+      stats.jpegFallbackFrames++;
+    }
+    const update = (field: 'base64FetchAvgMs' | 'jpegDecodeAvgMs' | 'videoFrameCreateAvgMs', value?: number) => {
+      if (value === undefined) return;
+      const n = Math.max(1, stats.jsDecodedFrames);
+      stats[field] = ((stats[field] * (n - 1)) + value) / n;
+    };
+    update('base64FetchAvgMs', parts.base64FetchMs);
+    update('jpegDecodeAvgMs', parts.jpegDecodeMs);
+    update('videoFrameCreateAvgMs', parts.videoFrameCreateMs);
+  }
+
+  private recordNativeBridgeWrite(durationMs: number, kind: 'generator' | 'canvas' | 'keepalive'): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    if (kind === 'generator') stats.generatorWrites++;
+    if (kind === 'canvas') stats.canvasPaints++;
+    if (kind === 'keepalive') {
+      stats.keepaliveWrites++;
+      if (this.nativeCaptureLeakSession) {
+        this.nativeCaptureLeakSession.summary.counters.keepaliveWrites++;
+      }
+      stats.keepaliveWriteAvgMs =
+        ((stats.keepaliveWriteAvgMs * (stats.keepaliveWrites - 1)) + durationMs) / stats.keepaliveWrites;
+    } else {
+      const realWrites = stats.generatorWrites + stats.canvasPaints;
+      stats.realWriteAvgMs =
+        ((stats.realWriteAvgMs * (realWrites - 1)) + durationMs) / realWrites;
+    }
+    const totalWrites = stats.generatorWrites + stats.canvasPaints + stats.keepaliveWrites;
+    stats.avgWriteMs = ((stats.avgWriteMs * (totalWrites - 1)) + durationMs) / totalWrites;
+    stats.writerAvgMs = stats.avgWriteMs;
+  }
+
+  private recordNativeBridgePollSkippedForWork(): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    stats.pollSkippedForWork++;
+  }
+
+  private recordNativeBridgeStreamRead(bytes: number, durationMs: number): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    stats.streamReads++;
+    stats.streamBytes += bytes;
+    stats.streamReadAvgMs =
+      ((stats.streamReadAvgMs * (stats.streamReads - 1)) + durationMs) / stats.streamReads;
+  }
+
+  private refreshNativeBridgeIntervalStats(startedAtMs: number, lastRustSeqAtMs: number): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    const elapsedSeconds = Math.max(0.001, (performance.now() - startedAtMs) / 1000);
+    stats.jsObservedRustSeqFps = stats.newSeqCount / elapsedSeconds;
+    stats.streamBytesPerSec = stats.streamBytes / elapsedSeconds;
+    stats.writerFps = (stats.generatorWrites + stats.canvasPaints) / elapsedSeconds;
+    stats.duplicatePollRatio = stats.pollHits > 0 ? stats.duplicateSeqSkips / stats.pollHits : 0;
+    stats.keepaliveFps = stats.keepaliveWrites / elapsedSeconds;
+    stats.pollSkippedForWorkFps = stats.pollSkippedForWork / elapsedSeconds;
+    stats.latestSeqAgeMs = lastRustSeqAtMs > 0 ? performance.now() - lastRustSeqAtMs : null;
+  }
+
+  private refreshNativeBridgeTrackState(track: MediaStreamTrack): void {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) return;
+    stats.trackReadyState = track.readyState ?? 'unknown';
+    stats.trackMuted = track.muted ?? null;
+  }
+
+  private emitNativeBridgeShareStatsFallback(): void {
+    if (!this.nativeBridgeCadenceStats) return;
+    const nativeBridge = this.snapshotNativeBridgeStatsForReport();
+    this.callbacks.onShareStats?.({
+      bitrateKbps: 0,
+      fps: nativeBridge.writerFps,
+      qualityLimitationReason: 'none',
+      packetLossPercent: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+      pliCount: 0,
+      nackCount: 0,
+      availableBandwidthKbps: 0,
+      nativeBridge,
+    });
+  }
+
+  private snapshotNativeBridgeStatsForReport(): NativeBridgeCadenceStats {
+    const stats = this.nativeBridgeCadenceStats;
+    if (!stats) {
+      throw new Error('native bridge stats unavailable');
+    }
+    const now = performance.now();
+    const writes = stats.generatorWrites + stats.canvasPaints;
+    const baseline = this.nativeBridgeReportBaseline ?? {
+      atMs: now,
+      newSeqCount: stats.newSeqCount,
+      writes,
+      streamBytes: stats.streamBytes,
+      pollSkippedForWork: stats.pollSkippedForWork,
+      keepaliveWrites: stats.keepaliveWrites,
+    };
+    const elapsedSeconds = Math.max(0.001, (now - baseline.atMs) / 1000);
+    const snapshot = { ...stats };
+    snapshot.jsObservedRustSeqFps = Math.max(0, (stats.newSeqCount - baseline.newSeqCount) / elapsedSeconds);
+    snapshot.writerFps = Math.max(0, (writes - baseline.writes) / elapsedSeconds);
+    snapshot.streamBytesPerSec = Math.max(0, (stats.streamBytes - baseline.streamBytes) / elapsedSeconds);
+    snapshot.pollSkippedForWorkFps = Math.max(0, (stats.pollSkippedForWork - baseline.pollSkippedForWork) / elapsedSeconds);
+    snapshot.keepaliveFps = Math.max(0, (stats.keepaliveWrites - baseline.keepaliveWrites) / elapsedSeconds);
+    this.nativeBridgeReportBaseline = {
+      atMs: now,
+      newSeqCount: stats.newSeqCount,
+      writes,
+      streamBytes: stats.streamBytes,
+      pollSkippedForWork: stats.pollSkippedForWork,
+      keepaliveWrites: stats.keepaliveWrites,
+    };
+    return snapshot;
+  }
+
+  private async refreshWindowsNativeCaptureDiagnosticsForStats(): Promise<void> {
+    if (!this.nativeBridgeCadenceStats) return;
+    const diagnostics = await this.captureWindowsNativeDiagnosticsSnapshot();
+    this.nativeBridgeCadenceStats.windowsNativeCapture = diagnostics;
+    if (diagnostics) {
+      this.attachWindowsNativeCaptureDiagnostics(diagnostics);
+    }
+  }
+
+  private replaceNativeCaptureDecodedCache(bitmap: ImageBitmap, width: number, height: number): void {
+    const previous = this.nativeCaptureDecodedBitmap;
+    this.nativeCaptureDecodedBitmap = bitmap;
+    this.nativeCaptureDecodedWidth = width;
+    this.nativeCaptureDecodedHeight = height;
+    previous?.close();
+  }
+
+  private releaseNativeCaptureDecodedCache(): void {
+    this.nativeCaptureDecodedBitmap?.close();
+    this.nativeCaptureDecodedBitmap = null;
+    this.nativeCaptureDecodedWidth = 0;
+    this.nativeCaptureDecodedHeight = 0;
   }
 
   /**
@@ -5789,7 +6245,10 @@ export class LiveKitModule {
    * If `prepareNativeCapture()` was called first, the handler is already
    * active and buffered frames are drained immediately — no frames lost.
    */
-  async startNativeCapture(): Promise<void> {
+  async startNativeCapture(options: {
+    firstFrameTimeoutMs?: number;
+    lowJsBridgeFpsRetry?: { thresholdFps: number; durationMs: number; reason: string };
+  } = {}): Promise<void> {
     if (!this.room) throw new Error('not connected to a room');
     // If already fully active (not just prepared), skip.
     if (this.nativeCapturePublication) return;
@@ -5797,9 +6256,13 @@ export class LiveKitModule {
       this.nativeCaptureUnlisten = () => { /* no-op */ };
     }
     await this.ensureNativeCaptureFailureListener();
+    this.releaseNativeCaptureDecodedCache();
+    this.nativeCaptureI420Unavailable = false;
 
-    const pubOpts = await this.prepareScreenSharePublishOptions();
+    const pubOpts = await this.prepareWindowsNativeCapturePublishOptions();
+    this.markNativeCaptureLeakStage('quality_sync_done');
     const targetFps = pubOpts.screenShareEncoding.maxFramerate || 30;
+    const bridgeTransportFps = targetFps;
 
     // ── Strategy: MediaStreamTrackGenerator (preferred) or canvas fallback ──
     // MediaStreamTrackGenerator (WebCodecs API, Chromium 94+) writes
@@ -5843,11 +6306,16 @@ export class LiveKitModule {
 
       // Use fps-driven captureStream instead of manual requestFrame() —
       // captureStream(0) + requestFrame() has known Chromium bugs in WebView2.
-      canvasStream = canvas.captureStream(targetFps);
+      canvasStream = canvas.captureStream(bridgeTransportFps);
       videoTrack = canvasStream.getVideoTracks()[0];
       if (!videoTrack) throw new Error('canvas captureStream produced no video track');
-      console.log(LOG, `native capture: using canvas.captureStream(${targetFps}) fallback (DOM-attached)`);
+      console.log(LOG, `native capture: using canvas.captureStream(${bridgeTransportFps}) fallback (DOM-attached)`);
     }
+    this.nativeBridgeCadenceStats =
+      this.createNativeBridgeCadenceStats(targetFps, bridgeTransportFps, videoTrack);
+    this.nativeBridgeReportBaseline = null;
+    const nativeBridgeStatsStartedAtMs = performance.now();
+    this.emitNativeBridgeShareStatsFallback();
 
     // Fast base64 → ArrayBuffer via fetch (avoids slow atob + char-by-char copy)
     const decodeBase64 = async (b64: string): Promise<ArrayBuffer> => {
@@ -5857,54 +6325,238 @@ export class LiveKitModule {
 
     // ── Frame handler shared by both early-frame drain and live listener ──
     let frameCount = 0;
+    let firstJsFrameSeen = false;
+    let firstFrameResolved = false;
+    let frameWorkInFlight = false;
+    let pendingFrame: NativeBridgeFrame | null = null;
+    let lastRustSeqAtMs = 0;
     let firstFrameResolve: (() => void) | null = null;
     const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
 
-    const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+    const resolveFirstFrame = () => {
+      if (firstFrameResolve) {
+        firstFrameResolved = true;
+        firstFrameResolve();
+        firstFrameResolve = null;
+      }
+    };
+
+    const processNextPendingFrame = () => {
+      const next = pendingFrame;
+      pendingFrame = null;
+      if (next) {
+        handleFrame(next);
+      }
+    };
+
+    const writeCachedKeepaliveFrame = () => {
+      if (frameWorkInFlight) return;
+      const bitmap = this.nativeCaptureDecodedBitmap;
+      if (!bitmap) return;
+      frameWorkInFlight = true;
+      const writeStartedAt = performance.now();
+      if (trackWriter) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const vf = new (globalThis as any).VideoFrame(bitmap, {
+          timestamp: performance.now() * 1000,
+        });
+        let writePromise: Promise<void>;
+        try {
+          writePromise = Promise.resolve(trackWriter.write(vf));
+        } catch (err) {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+          return;
+        }
+        writePromise.then(() => {
+          vf.close();
+          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'keepalive');
+          this.refreshNativeBridgeTrackState(videoTrack);
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        }).catch(() => {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        });
+        return;
+      }
+      if (canvas && ctx) {
+        const width = this.nativeCaptureDecodedWidth;
+        const height = this.nativeCaptureDecodedHeight;
+        if (width > 0 && height > 0 && (canvas.width !== width || canvas.height !== height)) {
+          canvas.width = width;
+          canvas.height = height;
+          const newCtx = canvas.getContext('2d');
+          if (newCtx) ctx = newCtx;
+        }
+        ctx.drawImage(bitmap, 0, 0);
+        this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'keepalive');
+        this.refreshNativeBridgeTrackState(videoTrack);
+      }
+      frameWorkInFlight = false;
+      processNextPendingFrame();
+    };
+
+    const handleFrame = (payload: NativeBridgeFrame) => {
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.coalescedFrames++;
+        }
+        pendingFrame = payload;
+        return;
+      }
+      frameWorkInFlight = true;
       const { frame, width, height } = payload;
+      const isI420Frame = typeof frame !== 'string';
       if (DEBUG_CAPTURE) console.log(LOG, 'native capture: frame received #' + frameCount, width + 'x' + height);
-      if (frameCount === 0) {
+      if (!firstJsFrameSeen) {
+        firstJsFrameSeen = true;
         this.markNativeCaptureLeakStage('first_js_frame_seen');
-        console.log(LOG, `native capture: first event received (${width}x${height}, payload_len=${frame.length})`);
+        const payloadLength = typeof frame === 'string'
+          ? frame.length
+          : this.nativeI420Bytes(payload as NativeI420PollFrame).byteLength;
+        console.log(LOG, `native capture: first event received (${width}x${height}, payload_len=${payloadLength})`);
       }
 
-      if (trackWriter) {
+      if (trackWriter && isI420Frame) {
+        if (frameCount === 0) {
+          this.markNativeCaptureLeakStage('first_js_decode_start');
+          console.log(LOG, 'native capture: first raw I420 VideoFrame started');
+        }
+        const raw = payload as NativeI420PollFrame;
+        const bytes = this.nativeI420Bytes(raw);
+        const decodeStartedAt = performance.now();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let vf: any;
+        const videoFrameCreateStartedAt = performance.now();
+        try {
+          vf = new (globalThis as any).VideoFrame(bytes, {
+            format: 'I420',
+            codedWidth: width,
+            codedHeight: height,
+            timestamp: raw.timestampUs || performance.now() * 1000,
+          });
+        } catch (err) {
+          this.nativeCaptureI420Unavailable = true;
+          void this.enableNativeJpegFallback();
+          if (this.nativeBridgeCadenceStats) {
+            this.nativeBridgeCadenceStats.decodeFailures++;
+          }
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+          return;
+        }
+        const videoFrameCreateMs = performance.now() - videoFrameCreateStartedAt;
+        this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
+        this.recordNativeBridgeDecodeParts({ videoFrameCreateMs, rawI420: true });
+        let writePromise: Promise<void>;
+        const writeStartedAt = performance.now();
+        try {
+          writePromise = Promise.resolve(trackWriter.write(vf));
+        } catch (err) {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+          return;
+        }
+        frameCount++;
+        if (frameCount === 1) {
+          this.markNativeCaptureLeakStage('first_js_frame_decoded');
+          this.markNativeCaptureLeakStage('first_generator_write_queued');
+          if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first raw I420 VideoFrame queued to generator');
+          resolveFirstFrame();
+        }
+        if (frameCount === 1 || frameCount % 60 === 0) {
+          console.log(LOG, `native capture: queued raw I420 VideoFrame #${frameCount} (${width}x${height})`);
+        }
+        writePromise.then(() => {
+          vf.close();
+          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+          this.refreshNativeBridgeTrackState(videoTrack);
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        }).catch(() => {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        });
+      } else if (trackWriter && typeof frame === 'string') {
+        if (frameCount === 0) {
+          this.markNativeCaptureLeakStage('first_js_decode_start');
+          console.log(LOG, 'native capture: first decode started');
+        }
         // ── MediaStreamTrackGenerator path: decode → VideoFrame → write ──
+        const decodeStartedAt = performance.now();
+        let base64FetchMs = 0;
+        let jpegDecodeMs = 0;
         decodeBase64(frame).then((buf) => {
+          base64FetchMs = performance.now() - decodeStartedAt;
           const blob = new Blob([buf], { type: 'image/jpeg' });
           return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
         }).then((bitmap) => {
+          jpegDecodeMs = performance.now() - decodeStartedAt - base64FetchMs;
+          this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
+          this.replaceNativeCaptureDecodedCache(bitmap, width, height);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const videoFrameCreateStartedAt = performance.now();
           const vf = new (globalThis as any).VideoFrame(bitmap, {
             timestamp: performance.now() * 1000, // microseconds
           });
-          bitmap.close();
-          // Write then close the VideoFrame to prevent backpressure stall
-          trackWriter.write(vf).then(() => {
+          this.recordNativeBridgeDecodeParts({
+            base64FetchMs,
+            jpegDecodeMs,
+            videoFrameCreateMs: performance.now() - videoFrameCreateStartedAt,
+            rawI420: false,
+          });
+          let writePromise: Promise<void>;
+          const writeStartedAt = performance.now();
+          try {
+            writePromise = Promise.resolve(trackWriter.write(vf));
+          } catch (err) {
             vf.close();
-            frameCount++;
-            if (frameCount === 1) {
-              if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first VideoFrame written to generator');
-              if (firstFrameResolve) {
-                firstFrameResolve();
-                firstFrameResolve = null;
-              }
-            }
-            if (frameCount === 1 || frameCount % 60 === 0) {
-              console.log(LOG, `native capture: wrote VideoFrame #${frameCount} (${width}x${height})`);
-            }
+            throw err;
+          }
+          frameCount++;
+          if (frameCount === 1) {
+            this.markNativeCaptureLeakStage('first_js_frame_decoded');
+            this.markNativeCaptureLeakStage('first_generator_write_queued');
+            if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first VideoFrame queued to generator');
+            resolveFirstFrame();
+          }
+          if (frameCount === 1 || frameCount % 60 === 0) {
+            console.log(LOG, `native capture: queued VideoFrame #${frameCount} (${width}x${height})`);
+          }
+          writePromise.then(() => {
+            vf.close();
+            this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+            this.refreshNativeBridgeTrackState(videoTrack);
+            frameWorkInFlight = false;
+            processNextPendingFrame();
           }).catch(() => {
             vf.close();
+            frameWorkInFlight = false;
+            processNextPendingFrame();
           });
         }).catch((err) => {
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.summary.counters.decodeFailures++;
           }
+          if (this.nativeBridgeCadenceStats) {
+            this.nativeBridgeCadenceStats.decodeFailures++;
+          }
           if (frameCount === 0) {
             console.warn(LOG, 'native capture: first frame decode failed:', err);
           }
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         });
-      } else if (canvas && ctx) {
+      } else if (canvas && ctx && typeof frame === 'string') {
+        if (frameCount === 0) {
+          this.markNativeCaptureLeakStage('first_js_decode_start');
+          console.log(LOG, 'native capture: first decode started');
+        }
         // ── Canvas fallback path ──
         if (canvas.width !== width || canvas.height !== height) {
           canvas.width = width;
@@ -5914,27 +6566,47 @@ export class LiveKitModule {
         }
 
         const img = new Image();
+        const decodeStartedAt = performance.now();
         img.onload = () => {
+          const jpegDecodeMs = performance.now() - decodeStartedAt;
+          this.recordNativeBridgeDecode(jpegDecodeMs);
+          this.recordNativeBridgeDecodeParts({ jpegDecodeMs, rawI420: false });
+          createImageBitmap(img, { resizeWidth: width, resizeHeight: height })
+            .then((bitmap) => {
+              this.replaceNativeCaptureDecodedCache(bitmap, width, height);
+            })
+            .catch(() => {
+              // The canvas path can still paint from the decoded HTMLImageElement.
+              // Keepalive simply waits for the next cacheable frame.
+            });
+          this.markNativeCaptureLeakStage('first_js_frame_decoded');
+          const writeStartedAt = performance.now();
           ctx!.drawImage(img, 0, 0);
+          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'canvas');
+          this.refreshNativeBridgeTrackState(videoTrack);
           frameCount++;
           if (DEBUG_CAPTURE && frameCount === 1) {
             console.log(LOG, 'native capture: first canvas frame painted, timestamp:', performance.now());
           }
           if (frameCount === 1) {
-            if (firstFrameResolve) {
-              firstFrameResolve();
-              firstFrameResolve = null;
-            }
+            resolveFirstFrame();
           }
           if (frameCount === 1 || frameCount % 60 === 0) {
             console.log(LOG, `native capture: painted frame #${frameCount} (${width}x${height})`);
           }
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         };
         img.onerror = () => {
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.summary.counters.decodeFailures++;
           }
+          if (this.nativeBridgeCadenceStats) {
+            this.nativeBridgeCadenceStats.decodeFailures++;
+          }
           console.warn(LOG, 'native capture: failed to decode JPEG frame');
+          frameWorkInFlight = false;
+          processNextPendingFrame();
         };
         img.src = `data:image/jpeg;base64,${frame}`;
       }
@@ -5962,59 +6634,340 @@ export class LiveKitModule {
       this.nativeCaptureUnlisten = () => { /* no-op */ };
     }
 
-    // Poll at ~60Hz via setInterval. Each poll calls invoke('screen_share_poll_frame')
-    // which returns the latest frame from the Rust shared buffer, or null.
-    const POLL_INTERVAL_MS = 16; // ~60fps
-    this.nativeCapturePollInterval = setInterval(async () => {
-      if (this.nativeCaptureLeakSession) {
-        this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+    // Poll the Windows native bridge at a capped transport FPS. If decode/write
+    // falls behind, pause polling and let Rust keep only the latest frame.
+    const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
+    const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+    const preferI420Polling = Boolean(trackWriter);
+    const noteNewRustFrame = (result: NativeI420PollFrame | NativeJpegPollFrame) => {
+      lastRustSeqAtMs = performance.now();
+      if (this.nativeBridgeCadenceStats) {
+        this.nativeBridgeCadenceStats.pollHits++;
+        this.nativeBridgeCadenceStats.newSeqCount++;
       }
+      this.nativeCapturePollLastSeq = result.seq;
+      if (this.nativeCaptureLeakSession) {
+        this.nativeCaptureLeakSession.summary.counters.newFrames++;
+      }
+      this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+      handleFrame(result);
+    };
+    const noteDuplicateRustFrame = () => {
+      if (this.nativeBridgeCadenceStats) {
+        this.nativeBridgeCadenceStats.pollHits++;
+        this.nativeBridgeCadenceStats.duplicateSeqSkips++;
+      }
+      if (this.nativeCaptureLeakSession) {
+        this.nativeCaptureLeakSession.summary.counters.duplicateFrameSkips++;
+      }
+      this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+    };
+    const startNativeKeepalive = () => {
+      if (this.nativeCaptureKeepaliveInterval !== null) {
+        clearInterval(this.nativeCaptureKeepaliveInterval);
+      }
+      this.nativeCaptureKeepaliveInterval = setInterval(() => {
+        if (!this.nativeCaptureUnlisten || !this.nativeCaptureDecodedBitmap) return;
+        if (performance.now() - lastRustSeqAtMs < 500) return;
+        writeCachedKeepaliveFrame();
+      }, 200);
+    };
+    let latestStreamFrame: NativeI420PollFrame | null = null;
+    let lastStreamWriterSeq = 0;
+    const startNativeI420StreamReader = async (url: string): Promise<void> => {
+      this.nativeCaptureStreamAbort?.abort();
+      const abort = new AbortController();
+      this.nativeCaptureStreamAbort = abort;
+      console.log(LOG, `native capture: I420 stream reader connecting to ${url}`);
+      const response = await fetch(url, { signal: abort.signal });
+      if (!response.ok || !response.body) {
+        throw new Error(`native capture: I420 stream failed (${response.status})`);
+      }
+      const reader = response.body.getReader();
+      let carry: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
       try {
-        const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
-          'screen_share_poll_frame',
-        );
-        if (result && result.seq > this.nativeCapturePollLastSeq) {
-          if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
-            this.markNativeCaptureLeakStage('first_rust_frame');
+        while (this.nativeCaptureUnlisten && !abort.signal.aborted) {
+          const readStartedAt = performance.now();
+          const headerRead = await this.readExactNativeStreamBytes(reader, 28, carry);
+          if (!headerRead) break;
+          carry = headerRead.carry;
+          const header = new DataView(
+            headerRead.bytes.buffer,
+            headerRead.bytes.byteOffset,
+            headerRead.bytes.byteLength,
+          );
+          const width = header.getUint32(0, true);
+          const height = header.getUint32(4, true);
+          const seq = Number(header.getBigUint64(8, true));
+          const timestampUs = Number(header.getBigUint64(16, true));
+          const byteLen = header.getUint32(24, true);
+          const payloadRead = await this.readExactNativeStreamBytes(reader, byteLen, carry);
+          if (!payloadRead) break;
+          carry = payloadRead.carry;
+          this.recordNativeBridgeStreamRead(28 + byteLen, performance.now() - readStartedAt);
+          if (seq <= this.nativeCapturePollLastSeq) {
+            noteDuplicateRustFrame();
+            continue;
           }
-          this.nativeCapturePollLastSeq = result.seq;
+          lastRustSeqAtMs = performance.now();
+          this.nativeCapturePollLastSeq = seq;
+          latestStreamFrame = {
+            frame: payloadRead.bytes,
+            width,
+            height,
+            timestampUs,
+            seq,
+          };
+          if (this.nativeBridgeCadenceStats) {
+            this.nativeBridgeCadenceStats.pollHits++;
+            this.nativeBridgeCadenceStats.newSeqCount++;
+          }
           if (this.nativeCaptureLeakSession) {
             this.nativeCaptureLeakSession.summary.counters.newFrames++;
+            if (!this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+              this.markNativeCaptureLeakStage('first_rust_frame');
+            }
+            if (!this.nativeCaptureLeakSession.summary.stages.first_poll_frame) {
+              this.markNativeCaptureLeakStage('first_poll_frame');
+            }
           }
-          handleFrame({ frame: result.frame, width: result.width, height: result.height });
-        } else if (result && this.nativeCaptureLeakSession) {
-          this.nativeCaptureLeakSession.summary.counters.duplicateFrameSkips++;
+          this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
         }
-      } catch {
-        // invoke failed — capture may have stopped, ignore
+      } finally {
+        reader.releaseLock();
       }
-    }, POLL_INTERVAL_MS);
+    };
+    const startNativeI420StreamWriter = () => {
+      const scheduleNextWrite = () => {
+        if (!this.nativeCaptureUnlisten || this.nativeCapturePollInterval !== null) return;
+        this.nativeCapturePollInterval = setTimeout(() => {
+          this.nativeCapturePollInterval = null;
+          const frame = latestStreamFrame;
+          if (!frame || frame.seq <= lastStreamWriterSeq) {
+            scheduleNextWrite();
+            return;
+          }
+          if (frameWorkInFlight) {
+            if (this.nativeBridgeCadenceStats) {
+              this.nativeBridgeCadenceStats.writerBackpressureSkips++;
+            }
+            this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+            scheduleNextWrite();
+            return;
+          }
+          if (lastStreamWriterSeq > 0 && frame.seq > lastStreamWriterSeq + 1 && this.nativeBridgeCadenceStats) {
+            this.nativeBridgeCadenceStats.staleFrameDrops += frame.seq - lastStreamWriterSeq - 1;
+          }
+          lastStreamWriterSeq = frame.seq;
+          handleFrame(frame);
+          scheduleNextWrite();
+        }, POLL_INTERVAL_MS);
+      };
+      scheduleNextWrite();
+    };
+    const pollNativeFrameForStartup = async (): Promise<void> => {
+      this.markNativeCaptureLeakStage('poll_started');
+      console.log(LOG, 'native capture: startup poll started');
+      while (!firstFrameResolved && this.nativeCaptureUnlisten) {
+        if (frameWorkInFlight) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
+          }
+          this.recordNativeBridgePollSkippedForWork();
+          this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+        }
+        if (this.nativeBridgeCadenceStats) {
+          this.nativeBridgeCadenceStats.pollTicks++;
+        }
+        try {
+          const result = await this.pollNativeCaptureFrame(preferI420Polling);
+          if (result && result.seq > this.nativeCapturePollLastSeq) {
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_poll_frame) {
+              this.markNativeCaptureLeakStage('first_poll_frame');
+              console.log(LOG, `native capture: first poll hit seq=${result.seq}`);
+            }
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+              this.markNativeCaptureLeakStage('first_rust_frame');
+            }
+            noteNewRustFrame(result);
+          } else if (result) {
+            noteDuplicateRustFrame();
+          }
+        } catch (error) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.pollErrors++;
+            if (!this.nativeCaptureLeakSession.summary.stages.poll_error) {
+              this.markNativeCaptureLeakStage('poll_error');
+            }
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`native capture: screen_share_poll_frame failed during startup: ${message}`);
+        }
+        if (!firstFrameResolved) {
+          await sleep(POLL_INTERVAL_MS);
+        }
+      }
+    };
+    const startSteadyNativePoll = () => {
+      let pollInFlight = false;
+      const scheduleNextPoll = () => {
+        if (!this.nativeCaptureUnlisten || this.nativeCapturePollInterval !== null) return;
+        this.nativeCapturePollInterval = setTimeout(() => {
+          this.nativeCapturePollInterval = null;
+          void pollOnce();
+        }, POLL_INTERVAL_MS);
+      };
+      const pollOnce = async () => {
+        if (!this.nativeCaptureUnlisten) return;
+        if (pollInFlight) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.overlappingPollSkips++;
+          }
+          scheduleNextPoll();
+          return;
+        }
+        if (frameWorkInFlight) {
+          if (this.nativeCaptureLeakSession) {
+            this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
+          }
+          this.recordNativeBridgePollSkippedForWork();
+          this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+          scheduleNextPoll();
+          return;
+        }
+        pollInFlight = true;
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+        }
+        if (this.nativeBridgeCadenceStats) {
+          this.nativeBridgeCadenceStats.pollTicks++;
+        }
+        try {
+          const result = await this.pollNativeCaptureFrame(preferI420Polling);
+          if (result && result.seq > this.nativeCapturePollLastSeq) {
+            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+              this.markNativeCaptureLeakStage('first_rust_frame');
+            }
+            noteNewRustFrame(result);
+          } else if (result) {
+            noteDuplicateRustFrame();
+          }
+        } catch {
+          // invoke failed - capture may have stopped, ignore
+        } finally {
+          pollInFlight = false;
+          scheduleNextPoll();
+        }
+      };
+      scheduleNextPoll();
+    };
+    const measureStartupJsObservedCadenceForRetry = async (): Promise<void> => {
+      const retry = options.lowJsBridgeFpsRetry;
+      if (!retry || !this.nativeCaptureUnlisten) return;
+      const startedAt = performance.now();
+      const startingNewSeq = this.nativeBridgeCadenceStats?.newSeqCount ?? 0;
+      const isNativeCaptureActive = () => this.nativeCaptureUnlisten !== null;
+      while (isNativeCaptureActive() && performance.now() - startedAt < retry.durationMs) {
+        if (nativeI420StreamUrl) {
+          this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
+        if (frameWorkInFlight) {
+          this.recordNativeBridgePollSkippedForWork();
+          this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.pollTicks++;
+        }
+        if (this.nativeBridgeCadenceStats) {
+          this.nativeBridgeCadenceStats.pollTicks++;
+        }
+        try {
+          const result = await this.pollNativeCaptureFrame(preferI420Polling);
+          if (result && result.seq > this.nativeCapturePollLastSeq) {
+            noteNewRustFrame(result);
+          } else if (result) {
+            noteDuplicateRustFrame();
+          }
+        } catch {
+          break;
+        }
+        await sleep(POLL_INTERVAL_MS);
+      }
+      const elapsedSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+      const newSeqDelta = (this.nativeBridgeCadenceStats?.newSeqCount ?? 0) - startingNewSeq;
+      const rustFps = newSeqDelta / elapsedSeconds;
+      this.refreshNativeBridgeIntervalStats(nativeBridgeStatsStartedAtMs, lastRustSeqAtMs);
+      if (rustFps < retry.thresholdFps) {
+        throw new Error(
+          `native capture: low JS-observed WGC new-sequence FPS (${rustFps.toFixed(1)} < ${retry.thresholdFps}) after ${Math.round(elapsedSeconds * 1000)}ms; retryReason=${retry.reason}`,
+        );
+      }
+    };
 
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: polling loop started, timestamp:', performance.now());
+    const nativeI420StreamUrl = preferI420Polling ? await this.getNativeI420StreamUrl() : null;
+    let nativeStreamReaderPromise: Promise<void> | null = null;
+    if (nativeI420StreamUrl) {
+      nativeStreamReaderPromise = startNativeI420StreamReader(nativeI420StreamUrl);
+      nativeStreamReaderPromise.catch((err) => {
+        if (this.nativeCaptureUnlisten) {
+          console.warn(LOG, 'native capture: I420 stream reader stopped:', err);
+        }
+      });
+      startNativeI420StreamWriter();
+      console.log(LOG, 'native capture: binary I420 stream reader/writer started');
+    }
+
+    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: startup transport started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS, 'stream:', Boolean(nativeI420StreamUrl));
 
     // ── Wait for first frame with timeout ──
     // If early frames already resolved the gate, this resolves immediately.
-    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    const FIRST_FRAME_TIMEOUT_MS = options.firstFrameTimeoutMs ?? 2000;
     const nativeFailurePromise = new Promise<void>((_, reject) => {
       this.nativeCaptureFailureReject = reject;
       if (this.nativeCaptureFailureReason) {
         reject(new Error(this.nativeCaptureFailureReason));
       }
     });
+    const nativeStartupDiagnostics = () => {
+      const summary = this.nativeCaptureLeakSession?.summary;
+      return JSON.stringify({
+        counters: summary?.counters ?? null,
+        stages: summary?.stages ?? null,
+        rust: summary?.windowsNativeCaptureDiagnostics ?? null,
+      });
+    };
     await Promise.race([
       firstFramePromise,
       nativeFailurePromise,
+      nativeI420StreamUrl ? nativeStreamReaderPromise ?? firstFramePromise : pollNativeFrameForStartup(),
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('native capture: first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(() => reject(new Error(`native capture: first frame timeout (${FIRST_FRAME_TIMEOUT_MS}ms); diagnostics=${nativeStartupDiagnostics()}`)), FIRST_FRAME_TIMEOUT_MS),
       ),
     ]).catch(async (err) => {
-      this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      const diagnostics = await this.captureWindowsNativeDiagnosticsSnapshot();
+      if (diagnostics) {
+        this.attachWindowsNativeCaptureDiagnostics(diagnostics);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      const enrichedError = message.includes('diagnostics=')
+        ? new Error(`${message}; rust=${JSON.stringify(diagnostics ?? null)}`)
+        : err;
+      this.markNativeCaptureFailure(enrichedError instanceof Error ? enrichedError.message : String(enrichedError));
       // Clean up the polling interval, canvas, and any state we set up before the
       // first-frame gate. Without this, a first-frame timeout (or a concurrent
       // stopNativeCapture() that races with this startup) leaves the poll
       // setInterval running and the canvas attached to document.body.
       await this.stopNativeCapture();
-      throw err;
+      throw enrichedError;
     });
 
     // Check if stopNativeCapture() was called during the first-frame await
@@ -6026,6 +6979,23 @@ export class LiveKitModule {
     // ── Publish track AFTER first frame confirms pipeline is live ──
     // Wrap in try/catch: if publishTrack throws, the polling interval is already
     // running and must be stopped to avoid an orphaned 60Hz IPC loop.
+    try {
+      await measureStartupJsObservedCadenceForRetry();
+    } catch (err) {
+      const diagnostics = await this.captureWindowsNativeDiagnosticsSnapshot();
+      if (diagnostics) {
+        this.attachWindowsNativeCaptureDiagnostics(diagnostics);
+      }
+      this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
+      await this.stopNativeCapture();
+      throw err;
+    }
+
+    if (!nativeI420StreamUrl) {
+      startSteadyNativePoll();
+    }
+    startNativeKeepalive();
+    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: steady transport loop started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS, 'stream:', Boolean(nativeI420StreamUrl));
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
@@ -6033,17 +7003,13 @@ export class LiveKitModule {
       // Release the preserved transceiver reference so livekit-fix can find
       // and reuse it via getTransceivers() inside publishTrack below.
       this.screenShareTransceiverForReuse = null;
+      this.markNativeCaptureLeakStage('publish_track_start');
+      this.noteShareLeakPublishStart();
       publication = await this.room.localParticipant.publishTrack(videoTrack, {
+        ...buildNativeScreenSharePublishOptions(pubOpts),
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
         stream: Track.Source.ScreenShare,
-        videoCodec: pubOpts.videoCodec,
-        backupCodec: pubOpts.backupCodec,
-        simulcast: pubOpts.simulcast,
-        videoEncoding: {
-          maxBitrate: pubOpts.screenShareEncoding.maxBitrate,
-          maxFramerate: targetFps,
-        },
       } as unknown as TrackPublishOptions);
     } catch (err) {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
@@ -6052,9 +7018,26 @@ export class LiveKitModule {
     }
     if (DEBUG_CAPTURE) console.log(LOG, 'native capture: publishTrack completed, timestamp:', performance.now());
     this.nativeCapturePublication = publication;
+    this.captureShareLeakPublishDiagnostics();
+    if (this.nativeCaptureLeakSession) {
+      this.nativeCaptureLeakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
+    }
     this.markNativeCaptureLeakStage('publish_track_done');
+    this.adaptiveState = {
+      currentTier: 'full',
+      consecutiveLossPolls: 0,
+      consecutiveRecoveryPolls: 0,
+      consecutiveBandwidthPolls: 0,
+      basePreset: this.currentQuality,
+    };
+    this.postPublishRetryTimeout = setTimeout(() => {
+      this.postPublishRetryTimeout = null;
+      this.applyPostPublishTuning();
+    }, 100);
+    this.startScreenShareStatsPolling();
+    this.markNativeCaptureLeakStage('stats_polling_start');
 
-    console.log(LOG, `native capture bridge started (fps=${targetFps})`);
+    console.log(LOG, `native capture bridge started (publish_fps=${targetFps}, bridge_fps=${bridgeTransportFps})`);
   }
 
   /**
@@ -6080,15 +7063,18 @@ export class LiveKitModule {
 
     // Stop old polling loop (keeps publication + generator alive).
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
     }
     this.nativeCaptureEarlyFrames = [];
     this.nativeCapturePollLastSeq = 0;
     this.nativeCaptureUnlisten = () => { /* no-op */ };
+    this.releaseNativeCaptureDecodedCache();
 
     // Build a new frame handler that writes into the SAME writer.
     let frameCount = 0;
+    let frameWorkInFlight = false;
+    let pendingFrame: { frame: string; width: number; height: number } | null = null;
     let firstFrameResolve: (() => void) | null = null;
     const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
 
@@ -6097,36 +7083,105 @@ export class LiveKitModule {
       return resp.arrayBuffer();
     };
 
+    const resolveFirstFrame = () => {
+      if (firstFrameResolve) {
+        firstFrameResolve();
+        firstFrameResolve = null;
+      }
+    };
+
+    const processNextPendingFrame = () => {
+      const next = pendingFrame;
+      pendingFrame = null;
+      if (next) {
+        handleFrame(next);
+      }
+    };
+
     const handleFrame = (payload: { frame: string; width: number; height: number }) => {
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.coalescedFrames++;
+        }
+        pendingFrame = payload;
+        return;
+      }
+      frameWorkInFlight = true;
       const { frame, width, height } = payload;
+      const decodeStartedAt = performance.now();
       decodeBase64(frame).then((buf) => {
         const blob = new Blob([buf], { type: 'image/jpeg' });
         return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
       }).then((bitmap) => {
+        this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
+        this.replaceNativeCaptureDecodedCache(bitmap, width, height);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const vf = new (globalThis as any).VideoFrame(bitmap, { timestamp: performance.now() * 1000 });
-        bitmap.close();
-        tw.write(vf).then(() => {
+        let writePromise: Promise<void>;
+        const writeStartedAt = performance.now();
+        try {
+          writePromise = Promise.resolve(tw.write(vf));
+        } catch (err) {
           vf.close();
-          frameCount++;
-          if (frameCount === 1) {
-            console.log(LOG, `[replace-source] first frame into existing generator (${width}x${height})`);
-            if (firstFrameResolve) { firstFrameResolve(); firstFrameResolve = null; }
-          }
-          if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
-            console.log(LOG, `[replace-source] wrote VideoFrame #${frameCount} (${width}x${height})`);
-          }
-        }).catch(() => { vf.close(); });
+          throw err;
+        }
+        frameCount++;
+        if (frameCount === 1) {
+          console.log(LOG, `[replace-source] first frame queued to existing generator (${width}x${height})`);
+          resolveFirstFrame();
+        }
+        if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
+          console.log(LOG, `[replace-source] queued VideoFrame #${frameCount} (${width}x${height})`);
+        }
+        writePromise.then(() => {
+          vf.close();
+          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        }).catch(() => {
+          vf.close();
+          frameWorkInFlight = false;
+          processNextPendingFrame();
+        });
       }).catch((err) => {
         if (frameCount === 0) console.warn(LOG, '[replace-source] first frame decode failed:', err);
+        frameWorkInFlight = false;
+        processNextPendingFrame();
       });
     };
 
     this.nativeCaptureFrameHandler = handleFrame;
 
     // ── Start new polling loop for the new Rust source ──
-    const POLL_INTERVAL_MS = 16;
-    this.nativeCapturePollInterval = setInterval(async () => {
+    await this.prepareWindowsNativeCapturePublishOptions();
+    const targetFps = this.currentPublishOptions.screenShareEncoding.maxFramerate || windowsNativeCapturePreset(this.currentQuality).maxFramerate || 30;
+    const bridgeTransportFps = targetFps;
+    const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
+    let pollInFlight = false;
+    const scheduleNextPoll = () => {
+      if (!this.nativeCaptureUnlisten || this.nativeCapturePollInterval !== null) return;
+      this.nativeCapturePollInterval = setTimeout(() => {
+        this.nativeCapturePollInterval = null;
+        void pollOnce();
+      }, POLL_INTERVAL_MS);
+    };
+    const pollOnce = async () => {
+      if (!this.nativeCaptureUnlisten) return;
+      if (pollInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.overlappingPollSkips++;
+        }
+        scheduleNextPoll();
+        return;
+      }
+      if (frameWorkInFlight) {
+        if (this.nativeCaptureLeakSession) {
+          this.nativeCaptureLeakSession.summary.counters.skippedPollsFrameWorkInFlight++;
+        }
+        scheduleNextPoll();
+        return;
+      }
+      pollInFlight = true;
       try {
         const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
           'screen_share_poll_frame',
@@ -6136,20 +7191,26 @@ export class LiveKitModule {
           handleFrame({ frame: result.frame, width: result.width, height: result.height });
         }
       } catch { /* capture may have stopped */ }
-    }, POLL_INTERVAL_MS);
+      finally {
+        pollInFlight = false;
+        scheduleNextPoll();
+      }
+    };
+    scheduleNextPoll();
 
     // ── Wait for first frame (5s timeout) ──
-    const FIRST_FRAME_TIMEOUT_MS = 5000;
+    const FIRST_FRAME_TIMEOUT_MS = 2000;
     await Promise.race([
       firstFramePromise,
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('[replace-source] first frame timeout (5s)')), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(() => reject(new Error('[replace-source] first frame timeout (2s)')), FIRST_FRAME_TIMEOUT_MS),
       ),
     ]).catch((err) => {
       if (this.nativeCapturePollInterval !== null) {
-        clearInterval(this.nativeCapturePollInterval);
+        clearTimeout(this.nativeCapturePollInterval);
         this.nativeCapturePollInterval = null;
       }
+      this.releaseNativeCaptureDecodedCache();
       this.nativeCaptureFrameHandler = null;
       this.nativeCaptureUnlisten = null;
       console.warn(LOG, '[replace-source] aborting:', err instanceof Error ? err.message : String(err));
@@ -6173,8 +7234,12 @@ export class LiveKitModule {
 
     // Stop the polling loop
     if (this.nativeCapturePollInterval !== null) {
-      clearInterval(this.nativeCapturePollInterval);
+      clearTimeout(this.nativeCapturePollInterval);
       this.nativeCapturePollInterval = null;
+    }
+    if (this.nativeCaptureKeepaliveInterval !== null) {
+      clearInterval(this.nativeCaptureKeepaliveInterval);
+      this.nativeCaptureKeepaliveInterval = null;
     }
     if (this.nativeCaptureFailureUnlisten) {
       this.nativeCaptureFailureUnlisten();
@@ -6195,6 +7260,10 @@ export class LiveKitModule {
     this.nativeCaptureEarlyFrames = [];
     this.nativeCapturePollLastSeq = 0;
     this.nativeCaptureTrackWriter = null;
+    this.nativeCaptureI420Unavailable = false;
+    this.releaseNativeCaptureDecodedCache();
+    this.nativeBridgeCadenceStats = null;
+    this.nativeBridgeReportBaseline = null;
     if (leakSession) {
       leakSession.summary.cleanupFlags.frameHandlerCleared = this.nativeCaptureFrameHandler === null;
       leakSession.summary.cleanupFlags.earlyFramesCleared = this.nativeCaptureEarlyFrames.length === 0;

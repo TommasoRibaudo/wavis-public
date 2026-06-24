@@ -150,6 +150,21 @@ mod media {
     }
 
     #[tauri::command]
+    pub fn screen_share_poll_i420_frame() -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    #[tauri::command]
+    pub fn screen_share_get_i420_stream_url() -> Result<String, String> {
+        Err("Windows I420 stream is only available on Windows".to_string())
+    }
+
+    #[tauri::command]
+    pub fn screen_share_set_jpeg_fallback_enabled(_enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
     pub fn media_poll_screen_share_frame(
         _identity: String,
         _last_seq: Option<u64>,
@@ -176,7 +191,7 @@ mod media {
     }
 
     #[tauri::command]
-    pub fn media_set_screen_share_quality(_quality: u8) -> Result<(), String> {
+    pub fn media_set_screen_share_quality(_quality: String) -> Result<(), String> {
         Ok(())
     }
 
@@ -570,6 +585,9 @@ fn main() {
             media::screen_share_stop,
             media::screen_share_get_capture_diagnostics,
             media::screen_share_poll_frame,
+            media::screen_share_poll_i420_frame,
+            media::screen_share_get_i420_stream_url,
+            media::screen_share_set_jpeg_fallback_enabled,
             media::media_poll_screen_share_frame,
             media::media_poll_camera_frame,
             media::media_poll_local_camera_frame,

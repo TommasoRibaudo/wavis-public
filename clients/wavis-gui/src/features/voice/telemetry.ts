@@ -24,7 +24,7 @@ export type TelemetryEvent =
   | { name: 'network.event'; kind: 'loss' | 'rtt' | 'bwe_drop'; detail: Record<string, number>; ts: number }
   | { name: 'capture.path.selected'; os: 'windows' | 'macos' | 'linux'; path: string; sourceKind?: 'screen' | 'window'; backend?: string; ts: number }
   | { name: 'capture.fallback.activated'; os: 'windows' | 'macos' | 'linux'; from: string; to: string; reason: string; ts: number }
-  | { name: 'capture.wgc.session_bypass'; sourceKind: 'screen' | 'window'; ts: number }
+  | { name: 'capture.native.failed'; os: 'windows'; sourceKind: 'screen' | 'window'; backend: string; reason: string; ts: number }
   | { name: 'codec.session.start'; primary: 'vp9' | 'vp8' | 'av1'; ts: number }
   | { name: 'codec.session.fallback'; from: 'vp9' | 'vp8' | 'av1'; to: 'vp9' | 'vp8'; reason: string; ts: number }
   | { name: 'codec.session.end'; smoothnessFreezeMs: number; publisherCpuPctMedian: number; ts: number };

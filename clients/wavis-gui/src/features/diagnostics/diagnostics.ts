@@ -23,7 +23,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { RingBuffer } from '@shared/ring-buffer';
 import type { NetworkStats } from '@features/voice/voice-room';
-import type { ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
+import type { NativeBridgeCadenceStats, ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
 
 const LOG = '[wavis:diagnostics]';
 
@@ -90,6 +90,9 @@ export interface DiagnosticsSnapshot {
   share: {
     bitrateKbps: number;
     fps: number;
+    browserReportedFps?: number;
+    framesSentFps?: number;
+    framesEncodedFps?: number;
     qualityLimitationReason: string;
     packetLossPercent: number;
     frameWidth: number;
@@ -99,7 +102,14 @@ export interface DiagnosticsSnapshot {
     /** Delta NACKs since last poll. */
     nackCount: number;
     availableBandwidthKbps: number;
+    nativeBridge?: NativeBridgeCadenceStats;
   } | null;
+  /** True when a local screen share is active even if sender stats have not arrived. */
+  shareActive: boolean;
+  /** Local share mode reported by the voice room, when active. */
+  shareMode: string | null;
+  /** Local share source name reported by the voice room, when active. */
+  shareSourceName: string | null;
   /** Wall-clock HH:MM:SS when share last started. */
   shareStartedAt: string | null;
   /** Wall-clock HH:MM:SS when share last stopped. */
@@ -155,6 +165,9 @@ interface DiagnosticsVoiceStatsPayload {
   networkStats: NetworkStats;
   shareStats: ShareStats | null;
   videoReceiveStats: VideoReceiveStats | null;
+  isSharing: boolean;
+  shareMode: string | null;
+  shareSourceName: string | null;
   participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
   selfParticipantId: string | null;
   appDimensions?: AppDimensions;
@@ -420,9 +433,19 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
 
   // Screen Share
   lines.push('[SCREEN SHARE]');
-  if (snap.share) {
+  if (snap.shareActive && !snap.share) {
+    lines.push(pad('Status:', 'Sharing, waiting for stats'));
+    if (snap.shareMode) lines.push(pad('Mode:', snap.shareMode));
+    if (snap.shareSourceName) lines.push(pad('Source:', snap.shareSourceName));
+  } else if (snap.share) {
     lines.push(pad('Sender Bitrate:', `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`));
     lines.push(pad('FPS:', snap.share.fps.toFixed(1)));
+    if (snap.share.framesSentFps !== undefined || snap.share.framesEncodedFps !== undefined || snap.share.browserReportedFps !== undefined) {
+      lines.push(pad(
+        'FPS Layers:',
+        `sent ${snap.share.framesSentFps?.toFixed(1) ?? 'N/A'}, encoded ${snap.share.framesEncodedFps?.toFixed(1) ?? 'N/A'}, browser ${snap.share.browserReportedFps?.toFixed(1) ?? 'N/A'}`,
+      ));
+    }
     lines.push(pad('Resolution:', snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A'));
     lines.push(pad('Quality Limit:', snap.share.qualityLimitationReason || 'none'));
     lines.push(pad('Outbound Loss:', `${snap.share.packetLossPercent.toFixed(1)}%`));
@@ -437,6 +460,30 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
     }
   } else {
     lines.push(pad('Status:', 'Not sharing'));
+  }
+  if (snap.share?.nativeBridge) {
+    const b = snap.share.nativeBridge;
+    lines.push(pad('Bridge Target:', `${b.jsBridgeFps} writer target / ${b.rustTargetFps} backend target`));
+    lines.push(pad('Bridge Polls:', `${b.pollTicks} ticks, ${b.pollHits} hits`));
+    lines.push(pad('Bridge Frames:', `${b.newSeqCount} new, ${b.duplicateSeqSkips} dup skips`));
+    lines.push(pad('JS Bridge Input:', `${b.jsObservedRustSeqFps.toFixed(1)} fps, ${(b.duplicatePollRatio * 100).toFixed(1)}% duplicate polls`));
+    lines.push(pad('Stream Reads:', `${b.streamReads} reads, ${(b.streamBytesPerSec / 1024 / 1024).toFixed(1)} MiB/s, avg ${b.streamReadAvgMs.toFixed(1)} ms`));
+    lines.push(pad('JS Writer FPS:', `${b.writerFps.toFixed(1)} fps`));
+    lines.push(pad('Bridge Writes:', `${b.generatorWrites + b.canvasPaints} real, ${b.keepaliveWrites} keepalive`));
+    lines.push(pad('Bridge Keepalive:', `${b.keepaliveFps.toFixed(1)} fps, avg ${b.keepaliveWriteAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Decode:', `${b.jsDecodedFrames} ok, ${b.decodeFailures} failed, avg ${b.avgDecodeMs.toFixed(1)} ms (${b.rawI420Frames} raw I420, ${b.jpegFallbackFrames} JPEG fallback)`));
+    lines.push(pad('Bridge Decode Parts:', `base64 ${b.base64FetchAvgMs.toFixed(1)} ms, jpeg ${b.jpegDecodeAvgMs.toFixed(1)} ms, vf ${b.videoFrameCreateAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Write:', `avg ${b.writerAvgMs.toFixed(1)} ms, real ${b.realWriteAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Backpressure:', `${b.pollSkippedForWork} poll skips, ${b.writerBackpressureSkips} writer skips, ${b.staleFrameDrops} stale drops`));
+    lines.push(pad('Latest Rust Seq Age:', b.latestSeqAgeMs === null ? 'N/A' : `${b.latestSeqAgeMs.toFixed(0)} ms`));
+    lines.push(pad('Track State:', `${b.trackReadyState}, muted=${b.trackMuted ?? 'n/a'}`));
+    if (b.windowsNativeCapture) {
+      const rust = b.windowsNativeCapture;
+      lines.push(pad('Backend Cadence:', `${rust.rawBackendCallbackFps.toFixed(1)} callbacks/s, ${rust.emittedPollableFrameFps.toFixed(1)} pollable/s, ${rust.throttleDropFps.toFixed(1)} throttled/s`));
+      lines.push(pad('Backend Counts:', `${rust.frameArrivedCallbacks} callbacks, ${rust.emittedPollableFrames} pollable, ${rust.throttleDropCount} throttled`));
+      lines.push(pad('Rust Convert:', `cap ${rust.capDownscaleAvgMs.toFixed(1)} ms, i420 ${rust.i420ConvertAvgMs.toFixed(1)} ms, rgba ${rust.rgbaToRgbAvgMs.toFixed(1)} ms`));
+      lines.push(pad('Rust JPEG Fallback:', `jpeg ${rust.jpegEncodeAvgMs.toFixed(1)} ms, base64 ${rust.base64EncodeAvgMs.toFixed(1)} ms, write ${rust.latestFrameWriteAvgMs.toFixed(1)} ms`));
+    }
   }
   lines.push('');
 
@@ -529,6 +576,9 @@ async function poll(): Promise<void> {
     availableBandwidthKbps: 0,
   };
   const shareStats = voiceStats?.shareStats ?? null;
+  const shareActive = voiceStats?.isSharing ?? false;
+  const shareMode = voiceStats?.shareMode ?? null;
+  const shareSourceName = voiceStats?.shareSourceName ?? null;
   const videoReceiveStats = voiceStats?.videoReceiveStats ?? null;
   const participants = voiceStats?.participants ?? [];
   const selfParticipantId = voiceStats?.selfParticipantId ?? null;
@@ -555,6 +605,9 @@ async function poll(): Promise<void> {
     ? {
         bitrateKbps: shareStats.bitrateKbps,
         fps: shareStats.fps,
+        browserReportedFps: shareStats.browserReportedFps,
+        framesSentFps: shareStats.framesSentFps,
+        framesEncodedFps: shareStats.framesEncodedFps,
         qualityLimitationReason: shareStats.qualityLimitationReason,
         packetLossPercent: shareStats.packetLossPercent,
         frameWidth: shareStats.frameWidth,
@@ -562,6 +615,7 @@ async function poll(): Promise<void> {
         pliCount: shareStats.pliCount,
         nackCount: shareStats.nackCount,
         availableBandwidthKbps: shareStats.availableBandwidthKbps,
+        nativeBridge: shareStats.nativeBridge,
       }
     : null;
 
@@ -581,14 +635,13 @@ async function poll(): Promise<void> {
   }
 
   // 6. Track share lifecycle events for correlation with RSS deltas
-  const isSharing = shareStats !== null;
-  if (isSharing && !prevWasSharing) {
+  if (shareActive && !prevWasSharing) {
     shareStartedAt = formatTimestamp(new Date());
     shareStoppedAt = null;
-  } else if (!isSharing && prevWasSharing) {
+  } else if (!shareActive && prevWasSharing) {
     shareStoppedAt = formatTimestamp(new Date());
   }
-  prevWasSharing = isSharing;
+  prevWasSharing = shareActive;
 
   const videoReceive = videoReceiveStats
     ? {
@@ -616,6 +669,9 @@ async function poll(): Promise<void> {
     network,
     audio,
     share,
+    shareActive,
+    shareMode,
+    shareSourceName,
     shareStartedAt,
     shareStoppedAt,
     videoReceive,

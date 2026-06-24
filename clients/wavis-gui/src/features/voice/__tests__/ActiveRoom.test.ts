@@ -284,6 +284,12 @@ function shouldShowShareControls(isVideoActive: boolean, isStarting: boolean): b
   return isVideoActive && !isStarting;
 }
 
+function windowsNativeShareQualityLabels(): string[] {
+  return (['low', 'high', 'max'] as const).map((q) =>
+    q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps',
+  );
+}
+
 /* ═══ Tests ═════════════════════════════════════════════════════════ */
 
 describe('Quality Indicator Rendering', () => {
@@ -426,6 +432,16 @@ describe('Share Loading UX', () => {
     expect(shouldShowShareControls(true, true)).toBe(false);
     expect(shouldShowShareControls(true, false)).toBe(true);
     expect(shouldShowShareControls(false, false)).toBe(false);
+  });
+
+  it('advertises correct resolution and fps per quality preset', () => {
+    const labels = windowsNativeShareQualityLabels();
+
+    expect(labels).toEqual([
+      'Smooth  1080p @ 60fps',
+      'Sharp   1440p @ 30fps',
+      'Max     1440p @ 60fps',
+    ]);
   });
 });
 

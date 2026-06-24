@@ -103,11 +103,14 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
    */
   it('startScreenShare() should invoke screen_share_start IPC and return true', async () => {
     // Simulate the IPC command returning Ok(true) — capture started
-    vi.mocked(invoke).mockResolvedValueOnce(true);
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(true);
 
     const result = await mod_.startScreenShare();
 
     // After fix: should have called the Tauri IPC command
+    expect(invoke).toHaveBeenCalledWith('media_set_screen_share_quality', { quality: 'high' });
     expect(invoke).toHaveBeenCalledWith('screen_share_start');
     // After fix: should return true (capture started)
     expect(result).toBe(true);
@@ -179,7 +182,9 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
    * this platform" via onSystemEvent callback.
    */
   it('startScreenShare() should not emit "not available" system event', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(true);
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(true);
 
     await mod_.startScreenShare();
 

@@ -750,6 +750,12 @@ export default function DiagnosticsPage() {
               value={snap.share.availableBandwidthKbps > 0 ? `${(snap.share.availableBandwidthKbps / 1000).toFixed(1)} Mbps` : '—'}
             />
           </>
+        ) : snap.shareActive ? (
+          <>
+            <MetricRow label="Status" value="Sharing, waiting for stats" />
+            {snap.shareMode && <MetricRow label="Mode" value={snap.shareMode} dim />}
+            {snap.shareSourceName && <MetricRow label="Source" value={snap.shareSourceName} dim />}
+          </>
         ) : (
           <MetricRow label="Status" value="Not sharing" dim />
         )}

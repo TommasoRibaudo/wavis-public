@@ -1087,9 +1087,7 @@ export async function startFallbackShare(): Promise<{ started: boolean; withAudi
       const track = lkModule.getLocalScreenShareTrack();
       if (track) selectMotionSampleSource(track);
     }
-    await applyProfileSwitch('detail', 'init');
-    _stopAutoSwitchPoll?.();
-    _stopAutoSwitchPoll = startAutoSwitchPoll();
+    await initializeProfileSwitchAfterShareStart();
   }
   // Native share-audio platforms report an audio track only after the
   // separate audio bridge is started. Browser-managed paths report it here.
@@ -1292,6 +1290,7 @@ function stopMotionDetection(): void {
 
 let _currentShareProfile: ShareProfileId = 'detail';
 let _stopAutoSwitchPoll: (() => void) | null = null;
+let selectedShareQuality: ShareQuality = 'high';
 
 /** Maps a ShareProfileId to the legacy ShareQuality for the existing setScreenShareQuality path. */
 function profileToQuality(profile: ShareProfileId): ShareQuality {
@@ -1306,6 +1305,10 @@ async function applyProfileSwitch(
   to: ShareProfileId,
   reason: 'init' | 'auto_in' | 'auto_out',
 ): Promise<void> {
+  if (selectedShareQuality === 'max') {
+    _currentShareProfile = 'detail';
+    return;
+  }
   const from = _currentShareProfile;
   _currentShareProfile = to;
   const quality = profileToQuality(to);
@@ -1335,6 +1338,39 @@ function startAutoSwitchPoll(): () => void {
     stopped = true;
     clearInterval(id);
   };
+}
+
+async function initializeProfileSwitchAfterShareStart(): Promise<void> {
+  if (selectedShareQuality === 'max') {
+    const from = _currentShareProfile;
+    _currentShareProfile = 'detail';
+    _stopAutoSwitchPoll?.();
+    _stopAutoSwitchPoll = null;
+    emitTelemetryEvent({
+      name: 'share.profile.switched',
+      from,
+      to: 'detail',
+      reason: 'init',
+      ts: Date.now(),
+    });
+    return;
+  }
+  await applyProfileSwitch('detail', 'init');
+  _stopAutoSwitchPoll?.();
+  _stopAutoSwitchPoll = startAutoSwitchPoll();
+}
+
+async function syncNativeScreenShareQualityBeforeCapture(path: string): Promise<void> {
+  try {
+    await invoke('media_set_screen_share_quality', { quality: selectedShareQuality });
+  } catch (error) {
+    console.warn(LOG, 'native screen share quality sync failed', {
+      quality: selectedShareQuality,
+      path,
+      error,
+    });
+    throw error;
+  }
 }
 
 /**
@@ -4575,6 +4611,7 @@ export async function startPortalShare(): Promise<boolean> {
   ensureInSubRoomForShare();
   await guardLinuxNativeShareStart();
   emitSharePathSelected('linux_native', 'linux_portal_share');
+  await syncNativeScreenShareQualityBeforeCapture('linux_portal_share');
   const result = await invoke<boolean>('screen_share_start');
   if (result) {
     // Mark self as sharing and notify peers (same as other share paths).
@@ -4676,6 +4713,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         : 'native-gdi-window';
       const startWindowsNativeAttempt = async (
         captureBackend: 'wgc' | 'gdi_poll',
+        retryMetadata?: { previousBackend: 'wgc'; retryReason: 'wgc_sustained_low_js_observed_sequence_fps' },
       ): Promise<void> => {
         const liveKitModule = lkModule;
         if (!(liveKitModule instanceof LiveKitModule)) return;
@@ -4716,18 +4754,30 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         });
         let rustCaptureStarted = false;
         try {
+          await syncNativeScreenShareQualityBeforeCapture(`windows_${captureBackend}`);
           await invoke('screen_share_start_source', {
             sourceId: selection.sourceId,
             shareSessionId,
             sourceKind,
             captureBackend,
             compatibilityMode: selection.compatibilityMode ?? false,
+            previousBackend: retryMetadata?.previousBackend ?? null,
+            retryReason: retryMetadata?.retryReason ?? null,
           });
           rustCaptureStarted = true;
           if (options.isSourceChange) {
             await liveKitModule.replaceNativeCaptureSource();
           } else {
-            await liveKitModule.startNativeCapture();
+            await liveKitModule.startNativeCapture({
+              firstFrameTimeoutMs: captureBackend === 'gdi_poll' ? 4500 : 2000,
+              lowJsBridgeFpsRetry: captureBackend === 'wgc'
+                ? {
+                    thresholdFps: 20,
+                    durationMs: 2000,
+                    reason: 'wgc_sustained_low_js_observed_sequence_fps',
+                  }
+                : undefined,
+            });
           }
           await attachRustDiagnostics();
         } catch (error) {
@@ -4757,67 +4807,49 @@ export async function startCustomShare(selection: ShareSelection, options: Start
       // handler BEFORE starting the Rust capture. prepareNativeCapture()
       // is synchronous — no async, no event listener, no HWND dependency.
       // This branch is only for the custom picker/native-source pipeline.
-      // The normal Windows `/share` button goes through startFallbackShare()
-      // -> lkModule.startScreenShare() instead.
+      // The normal Windows `/share` button opens the native custom picker in
+      // ActiveRoom; browser getDisplayMedia is not a Windows retry path.
       if (isWindowsPlatform() && lkModule instanceof LiveKitModule) {
-        const bypassWgc = windowsWgcFailedSourceKinds.has(sourceKind);
         const firstBackend =
-          (selection.compatibilityMode === true && sourceKind === 'window') || bypassWgc
+          (selection.compatibilityMode === true && sourceKind === 'window')
             ? 'gdi_poll'
             : 'wgc';
-        if (bypassWgc && !(selection.compatibilityMode === true && sourceKind === 'window')) {
-          emitTelemetryEvent({
-            name: 'capture.wgc.session_bypass',
-            sourceKind,
-            ts: Date.now(),
-          });
-        }
         try {
           await startWindowsNativeAttempt(firstBackend);
-        } catch (firstError) {
-          if (firstBackend === 'wgc') {
-            windowsWgcFailedSourceKinds.add(sourceKind);
+        } catch (error) {
+          emitTelemetryEvent({
+            name: 'capture.native.failed',
+            os: 'windows',
+            sourceKind,
+            backend: firstBackend,
+            reason: error instanceof Error ? error.message : String(error),
+            ts: Date.now(),
+          });
+          const message = error instanceof Error ? error.message : String(error);
+          const shouldRetryGdi =
+            firstBackend === 'wgc' &&
+            !options.isSourceChange &&
+            message.includes('retryReason=wgc_sustained_low_js_observed_sequence_fps');
+          if (shouldRetryGdi) {
             emitTelemetryEvent({
               name: 'capture.fallback.activated',
               os: 'windows',
               from: 'wgc',
               to: 'gdi_poll',
-              reason: firstError instanceof Error ? firstError.message : String(firstError),
+              reason: 'wgc_sustained_low_js_observed_sequence_fps',
               ts: Date.now(),
             });
-            try {
-              await startWindowsNativeAttempt('gdi_poll');
-            } catch (pollError) {
-              emitTelemetryEvent({
-                name: 'capture.fallback.activated',
-                os: 'windows',
-                from: 'native',
-                to: 'browser',
-                reason: pollError instanceof Error ? pollError.message : String(pollError),
-                ts: Date.now(),
-              });
-              state.activeVideoShare = null;
-              notify();
-              await startFallbackShare();
-              return;
-            }
+            await startWindowsNativeAttempt('gdi_poll', {
+              previousBackend: 'wgc',
+              retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
+            });
           } else {
-            emitTelemetryEvent({
-              name: 'capture.fallback.activated',
-              os: 'windows',
-              from: 'native',
-              to: 'browser',
-              reason: firstError instanceof Error ? firstError.message : String(firstError),
-              ts: Date.now(),
-            });
-            state.activeVideoShare = null;
-            notify();
-            await startFallbackShare();
-            return;
+            throw error;
           }
         }
         videoStarted = true;
       } else if (isPortalVideo) {
+        await syncNativeScreenShareQualityBeforeCapture('linux_portal_source');
         await invoke('screen_share_start');
         videoStarted = true;
       } else {
@@ -4833,6 +4865,9 @@ export async function startCustomShare(selection: ShareSelection, options: Start
           });
           lkModule.prepareNativeCapture();
         }
+        await syncNativeScreenShareQualityBeforeCapture(
+          isWindowsPlatform() ? 'windows_native_source' : 'linux_native_source',
+        );
         await invoke('screen_share_start_source', {
           sourceId: selection.sourceId,
           shareSessionId,
@@ -4953,9 +4988,7 @@ export async function startCustomShare(selection: ShareSelection, options: Start
         const track = lkModule.getLocalScreenShareTrack();
         if (track) selectMotionSampleSource(track);
       }
-      await applyProfileSwitch('detail', 'init');
-      _stopAutoSwitchPoll?.();
-      _stopAutoSwitchPoll = startAutoSwitchPoll();
+      await initializeProfileSwitchAfterShareStart();
     }
 
     // 6. Open or update ShareIndicator window
@@ -5159,6 +5192,7 @@ export type ShareQuality = 'low' | 'high' | 'max';
 export type { ShareQualityInfo } from './livekit-media';
 
 export async function setShareQuality(quality: ShareQuality): Promise<void> {
+  selectedShareQuality = quality;
   if (lkModule && 'setScreenShareQuality' in lkModule) {
     await (lkModule as { setScreenShareQuality(q: ShareQuality): Promise<void> }).setScreenShareQuality(quality);
   }
