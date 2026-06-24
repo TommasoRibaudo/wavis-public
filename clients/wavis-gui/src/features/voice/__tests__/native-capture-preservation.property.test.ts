@@ -103,7 +103,7 @@ vi.mock('livekit-client', () => ({
     Source: { Microphone: 'microphone', ScreenShare: 'screen_share' },
     StreamState: { Paused: 'paused', Active: 'active' },
   },
-  VideoPreset: vi.fn((opts: unknown) => opts),
+  VideoPreset: vi.fn(),
   ConnectionQuality: {
     Excellent: 'excellent',
     Good: 'good',

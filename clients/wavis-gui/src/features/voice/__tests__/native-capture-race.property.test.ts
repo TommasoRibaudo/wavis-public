@@ -136,6 +136,8 @@ vi.mock('livekit-client', () => ({
       unpublishTrack: vi.fn(async () => {}),
       identity: 'self',
       connectionQuality: 'excellent',
+      trackPublications: new Map(),
+      getTrackPublication: vi.fn(() => undefined),
     };
     this.switchActiveDevice = vi.fn(async () => {});
     return this;
@@ -162,7 +164,7 @@ vi.mock('livekit-client', () => ({
     Source: { Microphone: 'microphone', ScreenShare: 'screen_share' },
     StreamState: { Paused: 'paused', Active: 'active' },
   },
-  VideoPreset: vi.fn((opts: unknown) => opts),
+  VideoPreset: vi.fn(),
   ConnectionQuality: {
     Excellent: 'excellent',
     Good: 'good',
