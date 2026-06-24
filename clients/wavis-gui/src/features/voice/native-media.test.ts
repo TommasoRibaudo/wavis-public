@@ -24,6 +24,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const mockSettings = vi.hoisted(() => ({
+  inputDeviceId: null as string | null,
+  outputDeviceId: null as string | null,
+}));
+
 /* ─── Mock Tauri IPC layer ──────────────────────────────────────── */
 
 // Mock @tauri-apps/api/core — invoke must exist for NativeMediaModule to load
@@ -36,9 +41,22 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+vi.mock('@features/settings/settings-store', () => ({
+  getAudioInputDevice: vi.fn(async () => mockSettings.inputDeviceId),
+  getAudioOutputDevice: vi.fn(async () => mockSettings.outputDeviceId),
+  getDenoiseEnabled: vi.fn(async () => false),
+  inputVolumeToGain: vi.fn((volume: number) => volume / 100),
+  setStoreValue: vi.fn(async () => {}),
+  STORE_KEYS: {
+    audioInputDevice: 'wavis_audio_input_device',
+    audioOutputDevice: 'wavis_audio_output_device',
+  },
+}));
+
 import { invoke } from '@tauri-apps/api/core';
 import { NativeMediaModule } from './native-media';
 import type { MediaCallbacks } from './livekit-media';
+import { setStoreValue, STORE_KEYS } from '@features/settings/settings-store';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -68,6 +86,8 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSettings.inputDeviceId = null;
+    mockSettings.outputDeviceId = null;
     callbacks = makeCallbacks();
     mod_ = new NativeMediaModule(callbacks);
   });
@@ -182,6 +202,31 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
     vi.mocked(invoke).mockRejectedValueOnce(new Error(errorMsg));
 
     await expect(mod_.startScreenShare()).rejects.toThrow(errorMsg);
+  });
+
+  it('connect() ignores a stale saved output sink and continues with system default', async () => {
+    mockSettings.outputDeviceId = 'output:wavis_capture';
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_audio_device') {
+        throw new Error('pactl set-default-sink failed with status exit status: 1: Failure: No such entity');
+      }
+      return undefined;
+    });
+
+    await mod_.connect('wss://sfu.test', 'token');
+
+    expect(invoke).toHaveBeenCalledWith('set_audio_device', {
+      deviceId: 'output:wavis_capture',
+      kind: 'output',
+    });
+    expect(invoke).toHaveBeenCalledWith('media_connect', {
+      url: 'wss://sfu.test',
+      token: 'token',
+      denoiseEnabled: false,
+    });
+    expect(setStoreValue).toHaveBeenCalledWith(STORE_KEYS.audioOutputDevice, '');
+    expect(callbacks.onSystemEvent).toHaveBeenCalledWith('output device unavailable, using system default');
+    expect(callbacks.onMediaFailed).not.toHaveBeenCalled();
   });
 });
 

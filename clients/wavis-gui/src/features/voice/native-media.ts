@@ -16,10 +16,13 @@ import {
   getAudioOutputDevice,
   getDenoiseEnabled,
   inputVolumeToGain,
+  setStoreValue,
+  STORE_KEYS,
 } from '@features/settings/settings-store';
 
 const LOG = '[wavis:native-media]';
 type RemoteShareType = 'screen_audio' | 'window' | 'audio_only' | 'browser';
+type AudioDeviceKind = 'input' | 'output';
 
 /* ─── Tauri Event Payload Types ─────────────────────────────────── */
 
@@ -154,6 +157,24 @@ export class NativeMediaModule {
     console.log(LOG, 'created (native Rust path)');
   }
 
+  private async applySavedAudioDevice(deviceId: string | null, kind: AudioDeviceKind): Promise<void> {
+    if (!deviceId) return;
+
+    try {
+      await invoke('set_audio_device', { deviceId, kind });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(LOG, `saved ${kind} device unavailable; falling back to system default:`, reason);
+      this.callbacks.onSystemEvent?.(
+        `${kind} device unavailable, using system default`,
+      );
+      await setStoreValue(
+        kind === 'input' ? STORE_KEYS.audioInputDevice : STORE_KEYS.audioOutputDevice,
+        '',
+      ).catch(() => {});
+    }
+  }
+
   /** Connect to LiveKit SFU via the Rust-side RealLiveKitConnection. */
   async connect(sfuUrl: string, token: string): Promise<void> {
     // 1. Subscribe to Rust-side media events before connecting
@@ -275,12 +296,8 @@ export class NativeMediaModule {
         getAudioInputDevice().catch(() => null),
         getAudioOutputDevice().catch(() => null),
       ]);
-      if (inputDeviceId) {
-        await invoke('set_audio_device', { deviceId: inputDeviceId, kind: 'input' });
-      }
-      if (outputDeviceId) {
-        await invoke('set_audio_device', { deviceId: outputDeviceId, kind: 'output' });
-      }
+      await this.applySavedAudioDevice(inputDeviceId, 'input');
+      await this.applySavedAudioDevice(outputDeviceId, 'output');
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
     } catch (err) {
       this.callbacks.onMediaFailed(
