@@ -7,9 +7,10 @@ import { initNotificationBridge } from '@shared/notification-bridge';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { getState } from '@features/voice/voice-room';
 import AppUpdatePrompt from '@shared/AppUpdatePrompt';
 import type { AppDimensions } from '@features/diagnostics/diagnostics';
+
+type VoiceRoomGetState = typeof import('@features/voice/voice-room').getState;
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -92,7 +93,22 @@ export default function App() {
     if (import.meta.env.VITE_DIAGNOSTICS !== 'true') return;
     if (isChromelessWindow()) return;
 
+    let cancelled = false;
+    let getVoiceRoomState: VoiceRoomGetState | null = null;
+
+    void import('@features/voice/voice-room')
+      .then((mod) => {
+        if (!cancelled) {
+          getVoiceRoomState = mod.getState;
+        }
+      })
+      .catch((err) => {
+        console.warn('[wavis:diagnostics] voice stats unavailable:', err);
+      });
+
     const intervalId = setInterval(() => {
+      if (!getVoiceRoomState) return;
+
       const {
         networkStats,
         shareStats,
@@ -100,7 +116,7 @@ export default function App() {
         participants,
         selfParticipantId,
         activeVideoShare,
-      } = getState();
+      } = getVoiceRoomState();
       const self = participants.find((p) => p.id === selfParticipantId);
       const fallbackShareActive = self?.isSharing === true && self.shareType !== 'audio_only';
       const isSharing = activeVideoShare !== null || fallbackShareActive;
@@ -122,7 +138,10 @@ export default function App() {
       });
     }, 1000);
 
-    return () => clearInterval(intervalId);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
   }, []);
 
   // Diagnostics app-size bridge. Sends the main Wavis native window and webview

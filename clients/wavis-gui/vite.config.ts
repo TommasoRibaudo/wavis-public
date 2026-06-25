@@ -2,9 +2,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 
 const host = process.env.TAURI_DEV_HOST;
 const WINDOWS_SHARE_PATH_OVERRIDE_KEY = 'VITE_WAVIS_WINDOWS_SHARE_PATH';
+const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig(({ command, mode }) => {
   if (
@@ -19,11 +21,23 @@ export default defineConfig(({ command, mode }) => {
     plugins: [react(), tailwindcss()],
     build: {
       target: ['safari15'],
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (
+              id.includes('/node_modules/livekit-client/') ||
+              id.includes('\\node_modules\\livekit-client\\')
+            ) {
+              return 'livekit-client';
+            }
+          },
+        },
+      },
     },
     resolve: {
       alias: {
-        '@shared': path.resolve(__dirname, './src/shared'),
-        '@features': path.resolve(__dirname, './src/features'),
+        '@shared': path.resolve(rootDir, './src/shared'),
+        '@features': path.resolve(rootDir, './src/features'),
       },
     },
     clearScreen: false,
