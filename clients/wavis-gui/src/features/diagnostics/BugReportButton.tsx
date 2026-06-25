@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { getStoreValue, setStoreValue, STORE_KEYS } from '@features/settings/settings-store';
-import BugReportFlow from './BugReportFlow';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -12,6 +11,11 @@ const BUTTON_HEIGHT = 40;
 const EXPANDED_WIDTH = 140;
 const DRAG_THRESHOLD = 4;
 export const TITLE_BAR_HEIGHT = 32; // h-8, keeps button out of the OS drag region
+
+type BugReportFlowComponent = ComponentType<{
+  onClose: () => void;
+  preScreenshot?: Uint8Array | null;
+}>;
 
 /* ─── Snap Logic (exported for testing) ─────────────────────────── */
 
@@ -89,6 +93,7 @@ function useBugReportLauncher({ captureScreenshot = true }: { captureScreenshot?
   const [showFlow, setShowFlow] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [preScreenshot, setPreScreenshot] = useState<Uint8Array | null>(null);
+  const [FlowComponent, setFlowComponent] = useState<BugReportFlowComponent | null>(null);
 
   const handleClick = useCallback(async () => {
     if (isCapturing) return;
@@ -98,6 +103,7 @@ function useBugReportLauncher({ captureScreenshot = true }: { captureScreenshot?
     if (showFlow) {
       setShowFlow(false);
       setPreScreenshot(null);
+      setFlowComponent(null);
       return;
     }
 
@@ -114,15 +120,26 @@ function useBugReportLauncher({ captureScreenshot = true }: { captureScreenshot?
         console.warn('[bug-report] capture_window_screenshot failed:', err);
       }
     }
-    setPreScreenshot(screenshot);
-    setIsCapturing(false);
-    setShowFlow(true);
+    try {
+      const { default: BugReportFlow } = await import('./BugReportFlow');
+      setPreScreenshot(screenshot);
+      setFlowComponent(() => BugReportFlow);
+      setShowFlow(true);
+    } catch (err) {
+      console.warn('[bug-report] failed to load bug report flow:', err);
+    } finally {
+      setIsCapturing(false);
+    }
   }, [captureScreenshot, isCapturing, showFlow]);
 
-  const flow = showFlow ? (
-    <BugReportFlow
+  const flow = showFlow && FlowComponent ? (
+    <FlowComponent
       preScreenshot={preScreenshot}
-      onClose={() => { setShowFlow(false); setPreScreenshot(null); }}
+      onClose={() => {
+        setShowFlow(false);
+        setPreScreenshot(null);
+        setFlowComponent(null);
+      }}
     />
   ) : null;
 
