@@ -23,16 +23,6 @@ Wavis is a cross-platform desktop app (Windows, macOS, Linux) built wust signali
 
 ## Architecture
 
-┌──────────────────────┐      WebSocket      ┌──────────────────────┐
-│  Desktop App         │◄───────────────────►│   Wavis Backend      │
-│  (Tauri 2.0 + React) │                     │   (Control Plane)    │
-└──────────┬───────────┘                     └──────────┬───────────┘                                    │               │LiveKit API
-           │  WebRTC                                    ▼ (SFU mode)
-           │  P2P ──────────────────────────────►┌─────────────
-         │                                      │  LiveKit SFU │
-           └──────────────────────────────────────►│  (media)     │
-                                                  └──────────────┘
-
 The backend is the **control plane only**: room lifecycle, channel membership, invite validation, capacity enforcement, JWT issuance, signaling relay, TURN credentials. It never touches media. In P2P mode,flows directly, media flowsthrough LiveKit.
 
 The CLI test client (`clients/cli-test/`) speaks the same WebSocket API and is used for dev and integration testing.
