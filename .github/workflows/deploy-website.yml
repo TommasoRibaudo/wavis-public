@@ -1,0 +1,99 @@
+name: Deploy Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/deploy-website.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-website
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-2
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+  WEBSITE_BUCKET: ${{ vars.WEBSITE_BUCKET }}
+  WEBSITE_CLOUDFRONT_ID: ${{ vars.WEBSITE_CLOUDFRONT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Skip on forks / before infra variables are configured.
+    if: ${{ vars.AWS_ROLE_ARN != '' && vars.WEBSITE_BUCKET != '' && vars.WEBSITE_CLOUDFRONT_ID != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mask deployment values
+        run: |
+          set -euo pipefail
+          for name in AWS_ROLE_ARN WEBSITE_BUCKET WEBSITE_CLOUDFRONT_ID; do
+            if [ -n "${!name-}" ]; then echo "::add-mask::${!name}"; fi
+          done
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build static export
+        working-directory: website
+        env:
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_SUBSCRIBE_FORM_ACTION: ${{ vars.NEXT_PUBLIC_SUBSCRIBE_FORM_ACTION }}
+          NEXT_PUBLIC_SUBSCRIBE_ENTRY_ID: ${{ vars.NEXT_PUBLIC_SUBSCRIBE_ENTRY_ID }}
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Sync static assets (long cache)
+        run: |
+          set -euo pipefail
+          # Hashed Next.js assets are immutable — cache them aggressively.
+          aws s3 sync website/out "s3://$WEBSITE_BUCKET" \
+            --delete \
+            --exclude "*.html" \
+            --exclude "*.txt" \
+            --exclude "*.xml" \
+            --cache-control "public, max-age=31536000, immutable"
+
+      - name: Sync HTML and metadata (no cache)
+        run: |
+          set -euo pipefail
+          # HTML and generated metadata must always revalidate so new releases
+          # and copy changes show up immediately.
+          aws s3 sync website/out "s3://$WEBSITE_BUCKET" \
+            --delete \
+            --exclude "*" \
+            --include "*.html" \
+            --include "*.txt" \
+            --include "*.xml" \
+            --cache-control "public, max-age=0, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "$WEBSITE_CLOUDFRONT_ID" \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text
