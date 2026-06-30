@@ -1145,6 +1145,8 @@ pub struct MediaState {
     #[cfg(target_os = "linux")]
     local_camera_capture: Mutex<Option<LocalCameraCapture>>,
     #[cfg(target_os = "linux")]
+    linux_mic_handle: Mutex<Option<crate::linux_mic::LinuxMicHandle>>,
+    #[cfg(target_os = "linux")]
     remote_screen_share_stream_port: u16,
     #[cfg(target_os = "linux")]
     native_screen_share_viewers: Arc<Mutex<std::collections::HashMap<String, std::process::Child>>>,
@@ -1250,6 +1252,8 @@ impl MediaState {
             #[cfg(target_os = "linux")]
             local_camera_capture: Mutex::new(None),
             #[cfg(target_os = "linux")]
+            linux_mic_handle: Mutex::new(None),
+            #[cfg(target_os = "linux")]
             remote_screen_share_stream_port,
             #[cfg(target_os = "linux")]
             native_screen_share_viewers: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1302,13 +1306,39 @@ impl MediaState {
     }
 
     pub fn ensure_audio_streams(&self) -> Result<(), String> {
+        // Stop any existing Linux mic thread before clearing CPAL streams.
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(mut guard) = self.linux_mic_handle.lock() {
+                if let Some(handle) = guard.take() {
+                    handle.stop();
+                }
+            }
+        }
+
         self.audio
             .stop()
             .map_err(|err| format!("failed to stop audio backend: {err}"))?;
 
+        // On Linux, use pa_simple mic capture to bypass the bundled libasound.so.2
+        // in AppImage builds (which lacks the PipeWire ALSA plugin).
+        #[cfg(not(target_os = "linux"))]
         self.audio
             .capture_mic()
             .map_err(|err| format!("failed to start input device: {err}"))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let handle = crate::linux_mic::start_linux_mic_capture(
+                self.audio.capture_buffer.clone(),
+                self.audio.input_gain_arc(),
+            )
+            .map_err(|err| format!("failed to start input device: {err}"))?;
+            if let Ok(mut guard) = self.linux_mic_handle.lock() {
+                *guard = Some(handle);
+            }
+        }
+
         self.audio
             .play_remote(AudioTrack {
                 id: "native-playback".to_string(),
@@ -1870,6 +1900,14 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
     if let Ok(mut task_guard) = state.local_meter_task.lock() {
         if let Some(task) = task_guard.take() {
             task.abort();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(mut guard) = state.linux_mic_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.stop();
+            }
         }
     }
     let _ = state.audio.stop();
