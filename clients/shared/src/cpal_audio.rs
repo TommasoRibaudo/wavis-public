@@ -112,6 +112,10 @@ impl CpalAudioBackend {
     pub fn set_input_gain(&self, gain: f32) {
         *recover_lock(&self.input_gain) = gain.clamp(0.0, 1.0);
     }
+
+    pub fn input_gain_arc(&self) -> Arc<Mutex<f32>> {
+        Arc::clone(&self.input_gain)
+    }
 }
 
 impl AudioBackend for CpalAudioBackend {
