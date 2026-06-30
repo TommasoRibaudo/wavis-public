@@ -19,7 +19,7 @@ export function Hero() {
         </a>
       </nav>
 
-      <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_1fr]">
+      <div className="grid items-center gap-12 lg:grid-cols-[0.95fr_1.15fr]">
         <div>
           <p className="mb-4 text-xs uppercase tracking-[0.2em] text-muted">
             native voice · invite-only · open source

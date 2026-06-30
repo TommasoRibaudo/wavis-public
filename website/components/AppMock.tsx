@@ -5,133 +5,176 @@ import { Waveform } from "./Waveform";
 // Built as one component with a fixed aspect-ratio frame, so a real screenshot
 // <img> can replace it later without shifting the layout.
 
-const PARTICIPANTS = [
-  { initial: "T", name: "tom", color: "#a6e3a1", speaking: true },
-  { initial: "M", name: "mara", color: "#89b4fa", speaking: false },
-  { initial: "K", name: "kai", color: "#cba6f7", speaking: false },
+const CHAT = [
+  { time: "09:41:08", user: "alex", color: "text-blue", text: "joining from desktop" },
+  { time: "09:41:22", user: "mira", color: "text-purple", text: "audio is clear" },
+  { time: "09:42:05", user: "sam", color: "text-warn", text: "starting screen share" },
+  { divider: "planning room" },
+  { time: "09:42:18", user: "alex", color: "text-blue", text: "watch-all is open" },
+  { time: "09:43:10", user: "mira", color: "text-purple", text: "let's split into breakout rooms" },
+  {
+    time: "09:44:03",
+    user: "sam",
+    color: "text-purple",
+    text: "sharing app window + system audio",
+  },
+  {
+    time: "09:45:31",
+    user: "nora",
+    color: "text-accent",
+    text: "moved to Room 2",
+  },
 ];
 
-const ROOMS = [
-  { name: "general", active: true },
-  { name: "design", active: false },
-  { name: "standup", active: false },
+const LOGS = [
+  { time: "09:41:08", text: "alex joined Room 1", tone: "text-accent" },
+  { time: "09:42:05", text: "sam started sharing", tone: "text-purple" },
+  { time: "09:43:10", text: "Room 2 created", tone: "text-warn" },
+  { time: "09:45:31", text: "nora joined Room 2", tone: "text-accent" },
 ];
-
-const COMMANDS = ["/create", "/join", "/mute", "/share", "/settings"];
 
 export function AppMock() {
   return (
     <div
       className="w-full overflow-hidden rounded-lg border border-border bg-panel shadow-2xl shadow-black/40"
       role="img"
-      aria-label="The Wavis app window: a general voice channel with three people connected and a command bar."
+      aria-label="The Wavis app window: a private room with chat, logs, breakout room controls, and screen sharing controls."
     >
       {/* Title bar */}
-      <div className="flex items-center justify-between border-b border-border bg-crust px-3 py-2">
+      <div className="flex items-center justify-between border-b border-border bg-panel px-3 py-2">
         <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5" aria-hidden="true">
-            <span className="h-2.5 w-2.5 rounded-full bg-danger" />
-            <span className="h-2.5 w-2.5 rounded-full bg-warn" />
-            <span className="h-2.5 w-2.5 rounded-full bg-accent" />
-          </span>
           <span className="text-sm text-muted">
             <span className="text-accent">▸</span> wavis
           </span>
         </div>
-        <div className="flex items-center gap-2" aria-hidden="true">
-          <Waveform bars={5} height={14} />
-          <span className="text-xs uppercase tracking-widest text-muted">live</span>
+        <div className="flex items-center gap-5 text-xs text-muted" aria-hidden="true">
+          <span>[!]</span>
+          <span>−</span>
+          <span>□</span>
+          <span>×</span>
         </div>
       </div>
 
-      <div className="grid grid-cols-[110px_1fr] sm:grid-cols-[130px_1fr]">
+      <div className="grid aspect-[1.65/1] min-h-[280px] grid-cols-[40%_1fr] text-[9px] leading-snug sm:grid-cols-[34%_42%_24%] sm:text-[9px] lg:text-[10px]">
         {/* Sidebar */}
-        <aside className="border-r border-border bg-panel p-3 text-sm">
-          <p className="mb-2 text-[10px] uppercase tracking-widest text-muted">
-            rooms
-          </p>
-          <ul className="space-y-1">
-            {ROOMS.map((room) => (
-              <li
-                key={room.name}
-                className={
-                  room.active
-                    ? "flex items-center gap-1.5 rounded bg-surface px-1.5 py-1 text-text"
-                    : "flex items-center gap-1.5 px-1.5 py-1 text-muted"
-                }
-              >
-                <span className={room.active ? "text-accent" : "text-muted"}>
-                  #
-                </span>
-                <span className="truncate">{room.name}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mb-2 mt-4 text-[10px] uppercase tracking-widest text-muted">
-            invite
-          </p>
-          <div className="rounded border border-dashed border-border px-1.5 py-1 text-xs text-muted">
-            WV-7F2K
+        <aside className="grid min-w-0 grid-rows-[auto_auto_1fr_auto] border-r border-border bg-panel">
+          <div className="border-b border-border p-2">
+            <div className="mb-1 flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_8px_#a6e3a1]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_8px_#a6e3a1]" />
+              <span className="text-accent">LIVE</span>
+              <span className="text-muted">2/6</span>
+              <span className="hidden text-accent sm:inline">77ms</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-bold text-text">Design sync</span>
+              <span className="border border-border px-1.5 py-0.5 text-muted">&gt;</span>
+            </div>
+          </div>
+
+          <div className="border-b border-border p-2">
+            <div className="mb-1.5 flex items-center justify-between text-muted">
+              <span>[-] ROOM 1 (2)</span>
+              <span className="border border-border px-1.5 py-0.5">””</span>
+            </div>
+            <div className="mb-1 flex items-center justify-between text-purple">
+              <span>[+] alex ○</span>
+              <span className="text-danger">◉</span>
+            </div>
+            <div className="mb-2 flex items-center justify-between text-blue">
+              <span><span className="text-accent">&gt;</span> sam ○</span>
+              <span className="text-danger">◉</span>
+            </div>
+            <div>
+              <span className="block border border-muted px-1.5 py-0.5 text-center text-text">/watch-all</span>
+            </div>
+          </div>
+
+          <div className="border-b border-border p-2">
+            <span className="border border-accent px-1.5 py-0.5 text-accent">/create room</span>
+          </div>
+
+          <div className="space-y-1 p-2">
+            <div className="text-blue">[-] sam</div>
+            <div className="grid grid-cols-2 gap-1">
+              <span className="border border-danger bg-danger/10 px-1 py-0.5 text-center text-danger">/unmute</span>
+              <span className="border border-muted px-1 py-0.5 text-center text-text">/deafen</span>
+            </div>
+            <span className="block border border-muted px-1 py-0.5 text-center text-text">/camera-on</span>
+            <span className="block border border-purple px-1 py-0.5 text-center text-purple">/share</span>
+            <span className="block border border-muted px-1 py-0.5 text-center text-text">/settings</span>
           </div>
         </aside>
 
-        {/* Main */}
-        <section className="flex flex-col p-3">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm">
-              <span className="text-accent">#</span> general
-            </span>
-            <span className="text-xs text-muted">3 / 6</span>
+        {/* Chat */}
+        <section className="grid min-w-0 grid-rows-[auto_1fr_auto] bg-bg">
+          <div className="border-b border-border px-3 py-3 font-bold text-muted">
+            CHAT
           </div>
 
-          <ul className="grid grid-cols-3 gap-2">
-            {PARTICIPANTS.map((p) => (
-              <li
-                key={p.name}
-                className="flex flex-col items-center gap-1.5 rounded border border-border bg-crust/60 px-2 py-3"
-              >
-                <span
-                  className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold"
-                  style={{ background: p.color, color: "#1e1e2e" }}
-                  aria-hidden="true"
-                >
-                  {p.initial}
-                </span>
-                <span className="flex items-center gap-1 text-xs text-muted">
-                  <span
-                    className="h-1.5 w-1.5 rounded-full"
-                    style={{
-                      background: p.speaking
-                        ? "var(--color-accent)"
-                        : "var(--color-muted)",
-                      animation: p.speaking
-                        ? "wavis-dot 1.2s ease-in-out infinite"
-                        : undefined,
-                    }}
-                    aria-hidden="true"
-                  />
-                  {p.name}
-                </span>
-              </li>
-            ))}
-          </ul>
-
-          <div className="mt-auto pt-3">
-            <div className="mb-2 flex flex-wrap gap-1.5" aria-hidden="true">
-              {COMMANDS.map((c) => (
-                <span
-                  key={c}
-                  className="rounded border border-border px-2 py-0.5 text-xs text-muted"
-                >
-                  {c}
-                </span>
-              ))}
-            </div>
-            <div className="rounded border border-border bg-crust px-2 py-1.5">
+          <div className="space-y-1.5 overflow-hidden p-3">
+            {CHAT.map((item, index) =>
+              "divider" in item ? (
+                <div key={`${item.divider}-${index}`} className="flex items-center gap-2 text-muted">
+                  <span className="h-px flex-1 bg-muted" />
+                  <span>{item.divider}</span>
+                  <span className="h-px flex-1 bg-muted" />
+                </div>
+              ) : (
+                <p key={`${item.time}-${item.user}`} className="truncate text-text">
+                  <span className="text-muted">[{item.time}] </span>
+                  <span className={item.color}>{item.user}</span>
+                  <span>: </span>
+                  <span>{item.text}</span>
+                </p>
+              ),
+            )}
+            <div className="mt-1 hidden rounded border border-border bg-crust px-2 py-1 sm:block">
               <HeroCommand />
             </div>
           </div>
+
+          <div className="border-t border-border px-3 py-1.5">
+            <span className="mr-3 text-accent">&gt;</span>
+            <span className="text-muted">type message...</span>
+          </div>
         </section>
+
+        {/* Activity */}
+        <aside className="hidden min-w-0 grid-rows-[auto_1fr_auto] border-l border-border bg-panel sm:grid">
+          <div className="grid grid-cols-2 border-b border-border text-center font-bold">
+            <span className="border-r border-border bg-teal/10 px-2 py-3 text-accent">
+              LOGS
+            </span>
+            <span className="px-2 py-3 text-muted">VIDEOS</span>
+          </div>
+
+          <div className="space-y-1.5 overflow-hidden p-3">
+            <div className="flex items-center gap-2 text-muted">
+              <span className="h-px flex-1 bg-muted" />
+              <span>today</span>
+              <span className="h-px flex-1 bg-muted" />
+            </div>
+            {LOGS.map((log) => (
+              <p key={`${log.time}-${log.text}`} className="text-text">
+                <span className="text-muted">[{log.time}] </span>
+                <span className={log.tone}>{log.text}</span>
+              </p>
+            ))}
+            <div className="mt-2 border border-border bg-crust p-2">
+              <div className="mb-1 flex items-center gap-2 text-accent">
+                <Waveform bars={4} height={12} />
+                screen share
+              </div>
+              <div className="h-8 border border-border bg-surface/60" />
+            </div>
+          </div>
+
+          <div className="border-t border-border px-3 py-1.5">
+            <span className="mr-3 text-accent">&gt;</span>
+            <span className="text-muted">type command...</span>
+          </div>
+        </aside>
       </div>
     </div>
   );
