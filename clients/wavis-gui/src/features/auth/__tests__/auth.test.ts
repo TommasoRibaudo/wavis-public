@@ -302,6 +302,70 @@ describe('clearSessionFull', () => {
   });
 });
 
+/* ═══ logout Tests ═══════════════════════════════════════════════════
+ *
+ * Regression: fix/device-name-persistence-105
+ * logout() must clear identity fields (username, display_name) so a
+ * subsequent account login on the same device does not inherit them.
+ */
+describe('logout', () => {
+  beforeEach(() => {
+    mockStore = {};
+    mockKeychain = {};
+    deleteTokenCalls = [];
+    vi.resetModules();
+  });
+
+  it('deletes access_token, access_token_exp, device_id, username, display_name', async () => {
+    mockStore = {
+      device_id: 'device-123',
+      server_url: 'https://wavis.example.com',
+      username: 'AccountA',
+      display_name: 'AccountA',
+      access_token: 'tok',
+      access_token_exp: Date.now() + 600_000,
+      insecure_tls: false,
+    };
+    mockKeychain = { wavis_refresh_token: 'rt' };
+    const auth = await import('../auth');
+
+    await auth.logout();
+
+    expect(mockStore['access_token']).toBeUndefined();
+    expect(mockStore['access_token_exp']).toBeUndefined();
+    expect(mockStore['device_id']).toBeUndefined();
+    expect(mockStore['username']).toBeUndefined();
+    expect(mockStore['display_name']).toBeUndefined();
+  });
+
+  it('preserves server_url and insecure_tls', async () => {
+    mockStore = {
+      device_id: 'device-123',
+      server_url: 'https://wavis.example.com',
+      username: 'AccountA',
+      access_token: 'tok',
+      insecure_tls: true,
+    };
+    mockKeychain = { wavis_refresh_token: 'rt' };
+    const auth = await import('../auth');
+
+    await auth.logout();
+
+    expect(mockStore['server_url']).toBe('https://wavis.example.com');
+    expect(mockStore['insecure_tls']).toBe(true);
+  });
+
+  it('deletes refresh token from keychain', async () => {
+    setupFullStore();
+    const auth = await import('../auth');
+
+    await auth.logout();
+
+    expect(deleteTokenCalls).toContainEqual({ key: 'wavis_refresh_token' });
+    expect(mockKeychain['wavis_refresh_token']).toBeUndefined();
+  });
+});
+
 /* ═══ refreshTokens RefreshResult Mapping Tests ═════════════════════
  *
  * Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5

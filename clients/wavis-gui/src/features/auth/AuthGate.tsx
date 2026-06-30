@@ -7,7 +7,9 @@ import {
   clearAccessTokens,
   getTokenExpiryMs,
   getServerUrl,
-  getDisplayName,
+  getUsername,
+  fetchMyUsername,
+  setUsername,
 } from './auth';
 import type { RefreshResult } from './auth';
 import { parseHostname } from '@shared/helpers';
@@ -38,7 +40,7 @@ export default function AuthGate() {
   const location = useLocation();
   const [ready, setReady] = useState(false);
   const [hostname, setHostname] = useState('wavis');
-  const [displayName, setDisplayNameVal] = useState<string | null>(null);
+  const [username, setUsernameState] = useState<string | null>(null);
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshRetriesRef = useRef(0);
@@ -114,6 +116,21 @@ export default function AuthGate() {
     }, delay);
   }, [navigate, cancelScheduledRefresh]);
 
+  // Listen for auth-expired signals from apiFetch. This fires when an API call
+  // gets a server-side 401 and the token refresh also fails — the session is
+  // definitively dead. Navigate to /login immediately rather than waiting for
+  // the scheduled refresh timer (which may be many minutes away).
+  useEffect(() => {
+    async function handleAuthExpired() {
+      console.warn(LOG_PREFIX, 'Auth-expired signal from API call — navigating to /login');
+      cancelScheduledRefresh();
+      await clearAccessTokens();
+      navigate('/login', { replace: true });
+    }
+    window.addEventListener('wavis:auth-expired', handleAuthExpired);
+    return () => window.removeEventListener('wavis:auth-expired', handleAuthExpired);
+  }, [navigate, cancelScheduledRefresh]);
+
   // Re-evaluate token state when app regains focus. Covers two cases:
   // 1. Token expired while backgrounded (setTimeout didn't fire) → refresh now
   // 2. Token still valid but timer was killed → re-schedule so we don't miss the window
@@ -159,10 +176,9 @@ export default function AuthGate() {
         setHostname(parseHostname(url));
       }
 
-      // Load display name for status bar
-      const name = await getDisplayName();
-      if (!cancelled && name) {
-        setDisplayNameVal(name);
+      const localName = await getUsername();
+      if (!cancelled && localName) {
+        setUsernameState(localName);
       }
 
       // 2. Check token expiry
@@ -214,7 +230,22 @@ export default function AuthGate() {
         }
       }
 
-      // 3. Token is valid (or just refreshed) — schedule background refresh
+      // 3. If no username in local store, sync from server now that token is valid.
+      // This recovers accounts where username was never persisted locally (e.g.
+      // after device pairing when the best-effort sync failed, or after a store reset).
+      if (!localName) {
+        try {
+          const serverName = await fetchMyUsername();
+          if (!cancelled && serverName) {
+            await setUsername(serverName);
+            setUsernameState(serverName);
+          }
+        } catch {
+          // Best-effort — missing username is cosmetic, proceed without blocking
+        }
+      }
+
+      // 4. Token is valid (or just refreshed) — schedule background refresh
       if (!cancelled) {
         setReady(true);
         scheduleRefresh();
@@ -246,8 +277,8 @@ export default function AuthGate() {
         <div className="shrink-0 flex items-center justify-between px-3 sm:px-4 py-1.5 border-b bg-wavis-panel border-wavis-text-secondary text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-1.5 h-1.5 rounded-full bg-wavis-accent shrink-0" />
-            <span className="text-wavis-text truncate">{displayName ?? hostname}</span>
-            {displayName && <span className="text-wavis-text-secondary truncate">@ {hostname}</span>}
+            <span className="text-wavis-text truncate">{username ?? hostname}</span>
+            {username && <span className="text-wavis-text-secondary truncate">@ {hostname}</span>}
           </div>
           <button
             onClick={() => navigate('/settings')}

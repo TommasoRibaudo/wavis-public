@@ -4,6 +4,7 @@ interface CmdButtonProps {
   active?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  className?: string;
 }
 
 export function CmdButton({
@@ -12,12 +13,13 @@ export function CmdButton({
   active,
   danger,
   disabled,
+  className,
 }: CmdButtonProps) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`text-xs disabled:opacity-40 disabled:cursor-not-allowed border py-0.5 px-1 text-center transition-colors ${
+      className={`disabled:opacity-40 disabled:cursor-not-allowed border text-center transition-colors ${className ?? 'text-xs px-1 py-0.5'} ${
         danger
           ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
           : active

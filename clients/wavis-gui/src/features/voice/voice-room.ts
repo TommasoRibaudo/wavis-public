@@ -9,33 +9,60 @@
 
 import { SignalingClient } from '@shared/websocket';
 import type { ChannelRole } from '@features/channels/channels';
-import { getServerUrl, getDisplayName, refreshTokens, onTokensRefreshed } from '@features/auth/auth';
+import { getServerUrl, getUsername, refreshTokens, onTokensRefreshed } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { toWsUrl } from '@shared/helpers';
 import { LiveKitModule, type MediaState, type MediaCallbacks, type ShareQualityInfo, type ShareStats, type VideoReceiveStats, type ShareProfileId } from './livekit-media';
+import {
+  CAMERA_QUALITY_HIGH,
+  CAMERA_QUALITY_LOW,
+  type CameraQuality,
+  type CameraStartError,
+  type CameraStartWarning,
+  type PanelTabInput,
+  type VideoTileViewModel,
+} from './camera-types';
 import { MotionDetector, DEFAULT_MOTION_DETECTOR_CONFIG } from './motion-detector';
 import { startOffscreenCanvasSampling, isLeakDiagnosticsThumbnailingActive } from './motion-sample-source';
 import { NativeMediaModule } from './native-media';
 import { setActiveLiveKitModule } from './audio-devices';
-import { getDefaultVolume, getReconnectConfig, getMuteHotkey, getProfileColor, getChannelVolumes, getWindowsSharePath, setChannelVolumes } from '@features/settings/settings-store';
+import {
+  getDefaultVolume,
+  getNotificationVolume,
+  getSoundVolumes,
+  getReconnectConfig,
+  getMuteHotkey,
+  getProfileColor,
+  getChannelVolumes,
+  getWindowsSharePath,
+  setChannelVolumes,
+  getVideoInputDevice,
+  setVideoInputDevice,
+  DEFAULT_PASSTHROUGH_VOLUME,
+} from '@features/settings/settings-store';
 import type { ChannelVolumePrefs } from '@features/settings/settings-store';
 import type { ShareMode, ShareSelection, EnumerationResult, FallbackReason, AudioShareStartResult } from '@features/screen-share/share-types';
-import type { ShareSessionLeakSummary } from './share-leak-diagnostics';
+import type { ShareSessionLeakSummary, WindowsNativeCaptureDiagnostics } from './share-leak-diagnostics';
 import { emitTelemetryEvent, type WindowsSharePath } from './telemetry';
 import {
   lookupLinuxCapability,
   type LinuxCapabilityRow,
 } from './linux-capability-matrix';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
-import { playNotificationSound } from './notification-sounds';
+import { playNotificationSound, prewarmAudioContext, updateCachedNotificationVolume, updateCachedSoundVolumes } from './notification-sounds';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const LOG = '[wavis:voice-room]';
 const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
+const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
+const windowsWgcFailedSourceKinds = new Set<'screen' | 'window'>();
+
+export function resetWindowsWgcSessionBypassForTests(): void {
+  windowsWgcFailedSourceKinds.clear();
+}
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
@@ -62,8 +89,58 @@ export interface RoomParticipant {
   isDeafened: boolean;
   isSharing: boolean;
   shareType?: string;
+  mediaConnected: boolean;
   rmsLevel: number;
   volume: number;
+}
+
+type RemoteShareType = 'screen_audio' | 'window' | 'audio_only' | 'browser';
+
+function parseRemoteShareType(value: unknown): RemoteShareType | undefined {
+  return value === 'screen_audio' || value === 'window' || value === 'audio_only' || value === 'browser'
+    ? value
+    : undefined;
+}
+
+function updateRemoteShareType(participantId: string, shareType?: RemoteShareType): void {
+  if (lkModule && 'setRemoteShareType' in lkModule) {
+    (lkModule as LiveKitModule).setRemoteShareType(participantId, shareType);
+  }
+}
+
+function refreshRemoteScreenShare(participantId: string): void {
+  if (lkModule && 'refreshRemoteScreenShare' in lkModule) {
+    (lkModule as LiveKitModule & { refreshRemoteScreenShare(participantId: string): void })
+      .refreshRemoteScreenShare(participantId);
+  }
+}
+
+/**
+ * Schedule up to three retry attempts (at 1s, 3s, 6s) to call
+ * refreshRemoteScreenShare for a participant whose share just started.
+ * Handles the race where TrackSubscribed fires after share_started arrives,
+ * or where the SFU treats a republish as a track resume and never fires
+ * TrackPublished/TrackSubscribed at all.
+ */
+function scheduleRefreshRetries(participantId: string): void {
+  const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
+  refreshRetryGenerations.set(participantId, generation);
+  const delays = [1000, 3000, 6000];
+  for (const delay of delays) {
+    setTimeout(() => {
+      if (refreshRetryGenerations.get(participantId) !== generation) return;
+      if (state.screenShareStreams.has(participantId)) return;
+      const p = state.participants.find((pp) => pp.id === participantId);
+      if (!p?.isSharing) return;
+      refreshRemoteScreenShare(participantId);
+    }, delay);
+  }
+}
+
+function clearRemoteShareType(participantId: string): void {
+  if (lkModule && 'clearRemoteShareType' in lkModule) {
+    (lkModule as LiveKitModule).clearRemoteShareType(participantId);
+  }
 }
 
 export type SubRoomMembershipSource = 'explicit' | 'legacy_room_one';
@@ -95,6 +172,7 @@ export type RoomEventType =
   | 'share-start'
   | 'share-stop'
   | 'share-permission'
+  | 'passthrough'
   | 'system';
 export interface ChatMessage {
   id: string;
@@ -120,7 +198,12 @@ export interface RoomEvent {
   type: RoomEventType;
   message: string;
   participantId?: string;
+  shouldToast?: boolean;
 }
+
+export type RoomEventDisplayItem =
+  | { type: 'date-divider'; id: string; label: string }
+  | { type: 'event'; event: RoomEvent };
 
 export interface NetworkStats {
   rttMs: number;
@@ -166,6 +249,14 @@ export interface VoiceRoomState {
   sharePermission: 'anyone' | 'host_only';
   /** Default volume loaded from store, used for new participants. */
   defaultVolume: number;
+  /** Passthrough volume (0–100): attenuates audio from paired sub-room. */
+  passthroughVolume: number;
+  /** Whether channel members may create new passthrough links. */
+  passthroughEnabled: boolean;
+  /** Whether paired sub-room participants are spectrally muffled. */
+  passthroughFiltersEnabled: boolean;
+  /** Passthrough muffle strength (0–100). */
+  passthroughFilterStrength: number;
   /** Consecutive media reconnect failure count. */
   mediaReconnectFailures: number;
   /** Active video share slot (screen or window). Null when no video share. */
@@ -202,6 +293,14 @@ export interface VoiceRoomState {
   participantSubRoomById: Record<string, string>;
   /** Authoritative active passthrough pair, if any. */
   passthrough: VoicePassthroughState | null;
+  cameraIntent: boolean;
+  cameraPublication: 'idle' | 'opening' | 'publishing' | 'published' | 'failing';
+  cameraSelectedDeviceId: string | null;
+  videoTilesById: Record<string, VideoTileViewModel>;
+  roomPanelManualOverride: 'logs' | 'video' | null;
+  roomPanelTab: 'logs' | 'video';
+  /** Identities of remote participants currently in audio-only share mode. */
+  audioOnlySharers: Set<string>;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -214,6 +313,12 @@ export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 export const MAX_CHAT_MESSAGES = 200;
 const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
+
+interface RemoteCameraTileRuntimeState {
+  track: MediaStreamTrack | null;
+  isMuted: boolean;
+  hasError: boolean;
+}
 const RATE_LIMIT_RECONNECT_MESSAGE = "Connection closed — you're sending messages too fast. Reconnecting";
 
 /**
@@ -414,6 +519,7 @@ export function computeEffectiveParticipantVolume(
   joinedSubRoomId: string | null,
   participantSubRoomById: Record<string, string>,
   passthrough: VoicePassthroughState | null,
+  passthroughVolumeFraction = 0.2,
 ): number {
   if (participantId === selfParticipantId) return manualVolume;
   if (!joinedSubRoomId) return 0;
@@ -427,7 +533,28 @@ export function computeEffectiveParticipantVolume(
       ? passthrough.sourceSubRoomId
       : null;
   if (participantSubRoomId !== pairedSubRoomId) return 0;
-  return Math.round(manualVolume * 0.2);
+  return Math.round(manualVolume * passthroughVolumeFraction);
+}
+
+function isPassthroughParticipant(participantId: string): boolean {
+  if (participantId === state.selfParticipantId || !state.joinedSubRoomId || !state.passthrough) {
+    return false;
+  }
+  const participantSubRoomId = state.participantSubRoomById[participantId] ?? null;
+  if (!participantSubRoomId || participantSubRoomId === state.joinedSubRoomId) return false;
+  const pairedSubRoomId = state.passthrough.sourceSubRoomId === state.joinedSubRoomId
+    ? state.passthrough.targetSubRoomId
+    : state.passthrough.targetSubRoomId === state.joinedSubRoomId
+      ? state.passthrough.sourceSubRoomId
+      : null;
+  return participantSubRoomId === pairedSubRoomId;
+}
+
+function applyPassthroughFilterSettings(): void {
+  lkModule?.setPassthroughFilterSettings({
+    enabled: state.passthroughFiltersEnabled,
+    strength: state.passthroughFilterStrength,
+  });
 }
 
 /**
@@ -439,10 +566,14 @@ export function mergeParticipantsWithVolume(
   oldList: RoomParticipant[],
   newList: RoomParticipant[],
 ): RoomParticipant[] {
-  const volumeMap = new Map(oldList.map((p) => [p.id, p.volume]));
+  const preserved = new Map(oldList.map((p) => [p.id, {
+    volume: p.volume,
+    mediaConnected: p.mediaConnected,
+  }]));
   return newList.map((p) => ({
     ...p,
-    volume: volumeMap.get(p.id) ?? p.volume,
+    volume: preserved.get(p.id)?.volume ?? p.volume,
+    mediaConnected: preserved.get(p.id)?.mediaConnected ?? p.mediaConnected,
   }));
 }
 
@@ -457,8 +588,10 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.joinedSubRoomId,
       state.participantSubRoomById,
       state.passthrough,
+      state.passthroughVolume / 100,
     ),
   );
+  lkModule.setParticipantPassthrough(participant.id, isPassthroughParticipant(participant.id));
 }
 
 function applyEffectiveParticipantVolumes(): void {
@@ -472,8 +605,52 @@ function selfParticipant(): RoomParticipant | undefined {
   return state.participants.find((p) => p.id === state.selfParticipantId);
 }
 
-function silenceSelfParticipant(self: RoomParticipant): void {
-  self.isMuted = true;
+function markParticipantMediaConnected(
+  participantId: string,
+  mediaConnected: boolean,
+  options: { playJoinSound: boolean } = { playJoinSound: true },
+): void {
+  const participant = state.participants.find((p) => p.id === participantId);
+  if (mediaConnected) {
+    mediaConnectedParticipantIds.add(participantId);
+  } else {
+    mediaConnectedParticipantIds.delete(participantId);
+  }
+  if (!participant || participant.mediaConnected === mediaConnected) return;
+
+  participant.mediaConnected = mediaConnected;
+  if (!mediaConnected) {
+    participant.isSpeaking = false;
+    participant.rmsLevel = 0;
+  }
+
+  if (
+    mediaConnected
+    && options.playJoinSound
+    && state.joinedSubRoomId !== null
+    && state.participantSubRoomById[participantId] === state.joinedSubRoomId
+  ) {
+    void playNotificationSound('join');
+  }
+}
+
+function markAllRemoteParticipantsMediaConnected(
+  mediaConnected: boolean,
+  options: { playJoinSound: boolean } = { playJoinSound: true },
+): void {
+  for (const participant of state.participants) {
+    if (participant.id === state.selfParticipantId) continue;
+    markParticipantMediaConnected(participant.id, mediaConnected, options);
+  }
+}
+
+function markAllParticipantsMediaConnecting(): void {
+  for (const participant of state.participants) {
+    markParticipantMediaConnected(participant.id, false, { playJoinSound: false });
+  }
+}
+
+function clearSelfAudioActivity(self: RoomParticipant): void {
   self.isSpeaking = false;
   self.rmsLevel = 0;
 }
@@ -498,22 +675,19 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
 
   if (currentJoinedSubRoomId === null) {
     if (self) {
-      silenceSelfParticipant(self);
+      clearSelfAudioActivity(self);
     }
     setLocalMicPublishing(false);
     return;
   }
 
   if (previousJoinedSubRoomId !== null) return;
-  if (!self || self.isHostMuted || state.isDeafened) {
+  if (!self) {
     setLocalMicPublishing(false);
     return;
   }
-
-  self.isMuted = false;
-  self.isSpeaking = false;
-  self.rmsLevel = 0;
-  setLocalMicPublishing(true);
+  clearSelfAudioActivity(self);
+  setLocalMicPublishing(shouldPublishLocalMic(self));
 }
 
 /**
@@ -573,6 +747,27 @@ export function buildChatDisplayItems(messages: ChatMessage[]): ChatDisplayItem[
     }
 
     items.push({ type: 'message', message });
+  }
+
+  return items;
+}
+
+export function buildRoomEventDisplayItems(events: RoomEvent[]): RoomEventDisplayItem[] {
+  const items: RoomEventDisplayItem[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const event of events) {
+    const dateKey = getLocalChatDateKey(event.timestamp);
+    if (dateKey !== previousDateKey) {
+      items.push({
+        type: 'date-divider',
+        id: `date-${dateKey}-${event.id}`,
+        label: formatChatDateLabel(event.timestamp),
+      });
+      previousDateKey = dateKey;
+    }
+
+    items.push({ type: 'event', event });
   }
 
   return items;
@@ -675,7 +870,25 @@ export function canStartShare(
   }
   // screen_audio or window
   if (videoShare) return { allowed: false, reason: 'video share already active' };
+  // Cannot add companion audio while an audio-only share is already using the audio device.
+  if (audioShare && selection.withAudio) {
+    return { allowed: false, reason: 'audio-only share active — start video without audio, or stop audio first' };
+  }
   return { allowed: true };
+}
+
+export function preserveVideoShareSelectionForSourceChange(
+  selection: ShareSelection,
+  videoShare: VoiceRoomState['activeVideoShare'],
+): ShareSelection {
+  if (!videoShare) return selection;
+  if (selection.mode === 'audio_only') {
+    throw new Error('changing a video share source cannot switch to audio-only');
+  }
+  return {
+    ...selection,
+    withAudio: videoShare.withAudio,
+  };
 }
 
 /**
@@ -737,13 +950,15 @@ export function computeStopRoute(
 
 /**
  * Pure logic for whether the share button should be disabled.
- * Disabled when any share is active — either custom or fallback.
+ * Disabled when video share is active (can't stack two video shares), or when
+ * the fallback (getDisplayMedia) share is running. Audio-only share does NOT
+ * disable the button — the user can layer a video share on top.
  */
 export function isShareButtonDisabled(
-  activeShareType: ShareMode | null,
+  activeVideoShare: VoiceRoomState['activeVideoShare'],
   selfSharing: boolean,
 ): boolean {
-  return activeShareType !== null || selfSharing;
+  return activeVideoShare !== null || selfSharing;
 }
 
 /**
@@ -756,6 +971,67 @@ export function isFallbackBadgeVisible(
   selfSharing: boolean,
 ): boolean {
   return activeShareType === null && selfSharing;
+}
+
+export function screenShareActiveInRoom(currentState: VoiceRoomState): boolean {
+  const joinedSubRoomId = currentState.joinedSubRoomId;
+  if (!joinedSubRoomId) {
+    return false;
+  }
+
+  return currentState.participants.some((participant) => (
+    participant.isSharing === true
+    && currentState.participantSubRoomById[participant.id] === joinedSubRoomId
+  ));
+}
+
+export function computeRoomPanelTab(input: PanelTabInput): 'logs' | 'video' {
+  if (!input.anyVideoActive) {
+    return 'logs';
+  }
+  if (input.manualOverride !== null) {
+    return input.manualOverride;
+  }
+  return 'video';
+}
+
+export function buildVideoTilesById(input: {
+  participants: Array<Pick<RoomParticipant, 'id' | 'displayName' | 'color'>>;
+  selfParticipantId: string | null;
+  cameraPublication: VoiceRoomState['cameraPublication'];
+  localTrack: MediaStreamTrack | null;
+  remoteTilesById: Record<string, RemoteCameraTileRuntimeState>;
+}): Record<string, VideoTileViewModel> {
+  const tilesById: Record<string, VideoTileViewModel> = {};
+  const participantsById = new Map(input.participants.map((participant) => [participant.id, participant]));
+
+  for (const [participantId, remoteTile] of Object.entries(input.remoteTilesById)) {
+    const participant = participantsById.get(participantId);
+    tilesById[participantId] = {
+      participantId,
+      displayName: participant?.displayName || participantId,
+      color: participant?.color || colorFor({ id: participantId }),
+      track: remoteTile.track,
+      isSelf: false,
+      isMuted: remoteTile.isMuted,
+      hasError: remoteTile.hasError,
+    };
+  }
+
+  if (input.cameraPublication === 'published' && input.selfParticipantId) {
+    const participant = participantsById.get(input.selfParticipantId);
+    tilesById[input.selfParticipantId] = {
+      participantId: input.selfParticipantId,
+      displayName: participant?.displayName || input.selfParticipantId,
+      color: participant?.color || colorFor({ id: input.selfParticipantId }),
+      track: input.localTrack,
+      isSelf: true,
+      isMuted: false,
+      hasError: false,
+    };
+  }
+
+  return tilesById;
 }
 
 /**
@@ -811,9 +1087,7 @@ export async function startFallbackShare(): Promise<{ started: boolean; withAudi
       const track = lkModule.getLocalScreenShareTrack();
       if (track) selectMotionSampleSource(track);
     }
-    await applyProfileSwitch('detail', 'init');
-    _stopAutoSwitchPoll?.();
-    _stopAutoSwitchPoll = startAutoSwitchPoll();
+    await initializeProfileSwitchAfterShareStart();
   }
   // Native share-audio platforms report an audio track only after the
   // separate audio bridge is started. Browser-managed paths report it here.
@@ -883,12 +1157,15 @@ export function buildStartShareMessage(mode: ShareMode): { type: string; shareTy
 
 let client: SignalingClient | null = null;
 let unsubscribe: (() => void) | null = null;
+let unsubStatusChange: (() => void) | null = null;
 let onChange: ((state: VoiceRoomState) => void) | null = null;
 let channelRole: ChannelRole | null = null;
-let sessionDisplayName: string | null = null;
+let sessionUsername: string | null = null;
 let sessionProfileColor: string | null = null;
 let channelVolumePrefs: ChannelVolumePrefs | null = null;
 let volumeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let passthroughVolumeSendTimer: ReturnType<typeof setTimeout> | null = null;
+let passthroughFilterSendTimer: ReturnType<typeof setTimeout> | null = null;
 
 const DEFAULT_STATE: VoiceRoomState = {
   machineState: 'idle',
@@ -922,6 +1199,10 @@ const DEFAULT_STATE: VoiceRoomState = {
   connectionMode: undefined,
   sharePermission: 'anyone',
   defaultVolume: 70,
+  passthroughVolume: DEFAULT_PASSTHROUGH_VOLUME,
+  passthroughEnabled: false,
+  passthroughFiltersEnabled: true,
+  passthroughFilterStrength: 50,
   mediaReconnectFailures: 0,
   activeVideoShare: null,
   activeAudioShare: null,
@@ -938,9 +1219,23 @@ const DEFAULT_STATE: VoiceRoomState = {
   desiredSubRoomId: null,
   participantSubRoomById: {},
   passthrough: null,
+  cameraIntent: false,
+  cameraPublication: 'idle',
+  cameraSelectedDeviceId: null,
+  videoTilesById: {},
+  roomPanelManualOverride: null,
+  roomPanelTab: 'logs',
+  audioOnlySharers: new Set(),
 };
 
 let state: VoiceRoomState = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+let remoteCameraTilesById: Record<string, RemoteCameraTileRuntimeState> = {};
+let roomPanelHadAnyVideoActive = false;
+let cameraQualityRequestVersion = 0;
+let cameraQualityRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRequestedCameraQualityTier: CameraQuality['tier'] | null = null;
+/** Serialises concurrent toggleCameraIntent calls — prevents intent/publication desync on rapid clicks. */
+let cameraToggleChain: Promise<void> = Promise.resolve();
 
 /** Common shape for both LiveKitModule (JS SDK) and NativeMediaModule (Rust IPC). */
 type MediaModule = LiveKitModule | NativeMediaModule;
@@ -995,6 +1290,7 @@ function stopMotionDetection(): void {
 
 let _currentShareProfile: ShareProfileId = 'detail';
 let _stopAutoSwitchPoll: (() => void) | null = null;
+let selectedShareQuality: ShareQuality = 'high';
 
 /** Maps a ShareProfileId to the legacy ShareQuality for the existing setScreenShareQuality path. */
 function profileToQuality(profile: ShareProfileId): ShareQuality {
@@ -1009,6 +1305,10 @@ async function applyProfileSwitch(
   to: ShareProfileId,
   reason: 'init' | 'auto_in' | 'auto_out',
 ): Promise<void> {
+  if (selectedShareQuality === 'max') {
+    _currentShareProfile = 'detail';
+    return;
+  }
   const from = _currentShareProfile;
   _currentShareProfile = to;
   const quality = profileToQuality(to);
@@ -1040,11 +1340,45 @@ function startAutoSwitchPoll(): () => void {
   };
 }
 
+async function initializeProfileSwitchAfterShareStart(): Promise<void> {
+  if (selectedShareQuality === 'max') {
+    const from = _currentShareProfile;
+    _currentShareProfile = 'detail';
+    _stopAutoSwitchPoll?.();
+    _stopAutoSwitchPoll = null;
+    emitTelemetryEvent({
+      name: 'share.profile.switched',
+      from,
+      to: 'detail',
+      reason: 'init',
+      ts: Date.now(),
+    });
+    return;
+  }
+  await applyProfileSwitch('detail', 'init');
+  _stopAutoSwitchPoll?.();
+  _stopAutoSwitchPoll = startAutoSwitchPoll();
+}
+
+async function syncNativeScreenShareQualityBeforeCapture(path: string): Promise<void> {
+  try {
+    await invoke('media_set_screen_share_quality', { quality: selectedShareQuality });
+  } catch (error) {
+    console.warn(LOG, 'native screen share quality sync failed', {
+      quality: selectedShareQuality,
+      path,
+      error,
+    });
+    throw error;
+  }
+}
+
 /**
  * Platform detection: use the native Rust media path when the webview
  * lacks usable WebRTC support. Do not force Linux into the native path:
- * some Linux/Tauri environments expose working WebRTC + getDisplayMedia,
- * and that path is more stable than the Rust PipeWire backend on Hyprland.
+ * some Linux/Tauri environments expose working WebRTC + getUserMedia even
+ * when getDisplayMedia is absent. Camera publish/receive only needs those
+ * browser media APIs; Linux screen sharing still has the native portal path.
  */
 function shouldUseNativeMedia(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return true;
@@ -1060,12 +1394,8 @@ function shouldUseNativeMedia(): boolean {
     'mediaDevices' in navigator &&
     navigator.mediaDevices !== undefined &&
     typeof navigator.mediaDevices.getUserMedia === 'function';
-  const hasGetDisplayMedia =
-    'mediaDevices' in navigator &&
-    navigator.mediaDevices !== undefined &&
-    typeof navigator.mediaDevices.getDisplayMedia === 'function';
 
-  return !(hasRtc && hasGetUserMedia && hasGetDisplayMedia);
+  return !(hasRtc && hasGetUserMedia);
 }
 
 function isWindowsPlatform(): boolean {
@@ -1311,21 +1641,29 @@ async function resumePendingWasapiCapture(): Promise<void> {
 }
 
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
+let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
+let suppressMediaDisconnectedReconnect = false;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
 /** Volume before deafen, restored on undeafen. */
 let preDeafenVolume: number | null = null;
+/** Self mute intent before deafen forced the mic silent. */
+let preDeafenSelfMuted: boolean | null = null;
 let localStopShareSent = false;
 let localSourceChanging = false;
 let externalShareHelperActive = false;
+/** Generation counters per participant — incremented on each share_started to cancel stale retries. */
+const refreshRetryGenerations = new Map<string, number>();
+export const BACKGROUND_LEAVE_DISCONNECT_MS = 15 * 60_000;
 const RECONNECT_MEDIA_COOLDOWN_MS = 3000;
 /** Slow periodic media retry interval (ms) after fast retries are exhausted. */
 const PERIODIC_MEDIA_RETRY_MS = 30_000;
 let periodicMediaRetryTimer: ReturnType<typeof setInterval> | null = null;
 const COLD_START_RETRY_MS = 30_000;
 let coldStartRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let backgroundLeaveTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_AUTH_REFRESH_RETRIES = 2;
 let authRefreshRetries = 0;
 let wasReconnecting = false;
@@ -1340,6 +1678,8 @@ let localDisconnectSoundPlayed = false;
  * late-arriving events (share_stopped, etc.) can still resolve display names.
  */
 const displayNameCache = new Map<string, string>();
+const mediaConnectedParticipantIds = new Set<string>();
+let suppressReconnectJoinForParticipantIds = new Set<string>();
 
 function playLocalDisconnectSoundOnce(): void {
   const wasInLocalSession =
@@ -1451,7 +1791,7 @@ function setupExternalShareHelperListeners(): void {
       self.isSharing = false;
     }
     if (!localStopShareSent && client) {
-      client.send({ type: 'stop_share' });
+      client.send({ type: 'stop-share' });
     }
     localStopShareSent = false;
     notify();
@@ -1509,8 +1849,266 @@ function notify(): void {
         participantIds: [...room.participantIds],
       })),
       participantSubRoomById: { ...state.participantSubRoomById },
+      videoTilesById: { ...state.videoTilesById },
     });
   }
+}
+
+function getCameraMediaModule(): MediaModule | null {
+  return lkModule;
+}
+
+function resetCameraQualityController(): void {
+  cameraQualityRequestVersion = 0;
+  lastRequestedCameraQualityTier = null;
+  if (cameraQualityRetryTimer) {
+    clearTimeout(cameraQualityRetryTimer);
+    cameraQualityRetryTimer = null;
+  }
+}
+
+function resetCameraRuntimeState(): void {
+  remoteCameraTilesById = {};
+  roomPanelHadAnyVideoActive = false;
+  resetCameraQualityController();
+  state.cameraIntent = false;
+  state.cameraPublication = 'idle';
+  state.cameraSelectedDeviceId = null;
+  state.videoTilesById = {};
+  state.roomPanelManualOverride = null;
+  state.roomPanelTab = 'logs';
+}
+
+function cleanupPublishedMediaForSessionEnd(): void {
+  let sentStopShare = false;
+
+  if (state.activeVideoShare || state.activeAudioShare) {
+    if (lkModule && lkModule instanceof LiveKitModule) {
+      lkModule.stopWasapiAudioBridge().catch(() => { });
+    }
+    if (state.activeVideoShare) {
+      if (lkModule && lkModule instanceof LiveKitModule) {
+        lkModule.stopNativeCapture().catch(() => { });
+      }
+      invoke('screen_share_stop').catch(() => { });
+      if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
+    }
+    if (state.activeAudioShare) invoke('audio_share_stop').catch(() => { });
+    if (client && client.status === 'connected') {
+      client.send({ type: 'stop-share' });
+      sentStopShare = true;
+    }
+    state.activeVideoShare = null;
+    state.activeAudioShare = null;
+    state.shareQualityInfo = null;
+    state.shareStats = null;
+    stopMotionDetection();
+  }
+
+  const selfP = state.participants.find((p) => p.id === state.selfParticipantId);
+  if (selfP?.isSharing) {
+    invoke('external_share_stop').catch(() => { });
+    invoke('screen_share_stop').catch(() => { });
+    invoke('audio_share_stop').catch(() => { });
+    externalShareHelperActive = false;
+    if (!sentStopShare && client && client.status === 'connected') {
+      client.send({ type: 'stop-share' });
+      sentStopShare = true;
+    }
+  }
+
+  for (const participant of state.participants) {
+    participant.isSharing = false;
+  }
+  state.screenShareStreams = new Map();
+  state.shareQualityInfo = null;
+  state.shareStats = null;
+
+  if (lkModule) {
+    if (state.cameraPublication === 'published' || state.cameraIntent) {
+      void getCameraMediaModule()?.unpublishCamera().catch(() => {});
+    }
+    void lkModule.stopScreenShare().catch(() => {});
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
+    lkModule = null;
+  }
+  resetCameraRuntimeState();
+
+  bufferedMediaToken = null;
+  bufferedIceConfig = null;
+  externalShareHelperActive = false;
+  reusePatchGuardCheckedForSession = false;
+  reusePatchGuardPassedForSession = false;
+  pendingWasapiResume = null;
+  stopColdStartRetry();
+  stopPeriodicMediaRetry();
+  setActiveLiveKitModule(null);
+}
+
+function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {
+  const joinedSubRoomId = state.joinedSubRoomId;
+  if (!joinedSubRoomId) return { ids: new Set(), tiles: {} };
+  const visibleSubRoomIds = new Set([joinedSubRoomId]);
+  if (state.passthrough) {
+    const { sourceSubRoomId, targetSubRoomId } = state.passthrough;
+    if (sourceSubRoomId === joinedSubRoomId) visibleSubRoomIds.add(targetSubRoomId);
+    else if (targetSubRoomId === joinedSubRoomId) visibleSubRoomIds.add(sourceSubRoomId);
+  }
+  const ids = new Set<string>();
+  const tiles: Record<string, RemoteCameraTileRuntimeState> = {};
+  for (const [id, entry] of Object.entries(remoteCameraTilesById)) {
+    const participantSubRoomId = state.participantSubRoomById[id] ?? null;
+    if (participantSubRoomId && visibleSubRoomIds.has(participantSubRoomId)) {
+      ids.add(id);
+      tiles[id] = entry;
+    }
+  }
+  // Also include in-scope participants without an existing tile entry yet, so a camera
+  // that publishes after we've already filtered (e.g. someone turns on camera in our
+  // sub-room) is allowed to subscribe through applyRemoteCameraVisibility.
+  for (const participant of state.participants) {
+    const participantSubRoomId = state.participantSubRoomById[participant.id] ?? null;
+    if (participantSubRoomId && visibleSubRoomIds.has(participantSubRoomId)) {
+      ids.add(participant.id);
+    }
+  }
+  return { ids, tiles };
+}
+
+function rebuildVideoTiles(): void {
+  const module = getCameraMediaModule();
+  const localTrack = module?.getLocalCameraTrack() ?? null;
+  const { ids: visibleIds, tiles: visibleTiles } = visibleRemoteCameraSet();
+  state.videoTilesById = buildVideoTilesById({
+    participants: state.participants,
+    selfParticipantId: state.selfParticipantId,
+    cameraPublication: state.cameraPublication,
+    localTrack,
+    remoteTilesById: visibleTiles,
+  });
+  // Keep server-side subscriptions in sync with the visibility filter so cameras outside
+  // the joined sub-room don't keep streaming bytes (TrackSubscribed force-enables every
+  // camera publication; without this, hidden cameras would burn bandwidth indefinitely).
+  module?.applyRemoteCameraVisibility(visibleIds);
+  syncRoomPanelTab();
+}
+
+function syncRoomPanelTab(): void {
+  const anyVideoActive = Object.values(state.videoTilesById).some((tile) => !tile.isMuted);
+  if (anyVideoActive) {
+    roomPanelHadAnyVideoActive = true;
+  } else if (roomPanelHadAnyVideoActive) {
+    state.roomPanelManualOverride = null;
+    roomPanelHadAnyVideoActive = false;
+  }
+
+  state.roomPanelTab = computeRoomPanelTab({
+    anyVideoActive,
+    manualOverride: state.roomPanelManualOverride,
+    hadAnyVideoActive: roomPanelHadAnyVideoActive,
+  });
+}
+
+function appendCameraSystemEvent(message: string): void {
+  appendSystemEvent(message);
+}
+
+function cameraErrorMessage(error: CameraStartError): string {
+  switch (error.kind) {
+    case 'permission_denied':
+      return 'camera permission denied';
+    case 'device_unavailable':
+      return 'camera device unavailable';
+    case 'device_in_use':
+      return 'camera device is already in use';
+    case 'timeout':
+      return 'camera start timed out';
+    case 'no_camera_configured':
+      return 'no camera available';
+    case 'publish_failed':
+      return 'camera publish failed';
+  }
+}
+
+function cameraWarningMessage(warning: CameraStartWarning): string {
+  switch (warning.kind) {
+    case 'device_not_found':
+      return `camera warning (device_not_found): selected camera not found, using browser default (${warning.missingDeviceId})`;
+    case 'permission_denied':
+      return 'camera warning (permission_denied): camera change blocked by permission denial';
+    case 'device_in_use':
+      return 'camera warning (device_in_use): camera change failed because the device is in use';
+    case 'hardware_error':
+      return 'camera warning (hardware_error): camera change failed due to a hardware error';
+  }
+}
+
+function surfaceCameraError(error: CameraStartError): void {
+  const message = cameraErrorMessage(error);
+  appendCameraSystemEvent(message);
+  toast.error(message);
+}
+
+function surfaceCameraWarning(warning: CameraStartWarning): void {
+  const message = cameraWarningMessage(warning);
+  appendCameraSystemEvent(message);
+  toast.error(message);
+}
+
+function classifyCameraReplaceWarning(error: unknown, requestedDeviceId: string | null): CameraStartWarning {
+  const cameraError = error as CameraStartError | null;
+  if (requestedDeviceId !== null && cameraError?.kind === 'device_unavailable') {
+    return { kind: 'device_not_found', missingDeviceId: requestedDeviceId };
+  }
+  if (cameraError?.kind === 'permission_denied') {
+    return { kind: 'permission_denied' };
+  }
+  if (cameraError?.kind === 'device_in_use') {
+    return { kind: 'device_in_use' };
+  }
+  return { kind: 'hardware_error' };
+}
+
+async function enumerateVideoInputs(): Promise<MediaDeviceInfo[]> {
+  if (
+    typeof navigator === 'undefined'
+    || !('mediaDevices' in navigator)
+    || navigator.mediaDevices === undefined
+    || typeof navigator.mediaDevices.enumerateDevices !== 'function'
+  ) {
+    return [];
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((device) => device.kind === 'videoinput');
+}
+
+async function resolveCameraDeviceSelection(deviceId: string | null): Promise<{
+  effectiveDeviceId: string | null;
+  warning: CameraStartWarning | null;
+}> {
+  const videoInputs = await enumerateVideoInputs();
+  if (videoInputs.length === 0) {
+    throw { kind: 'no_camera_configured' } satisfies CameraStartError;
+  }
+
+  if (deviceId === null) {
+    return { effectiveDeviceId: null, warning: null };
+  }
+
+  if (videoInputs.some((device) => device.deviceId === deviceId)) {
+    return { effectiveDeviceId: deviceId, warning: null };
+  }
+
+  return {
+    effectiveDeviceId: null,
+    warning: { kind: 'device_not_found', missingDeviceId: deviceId },
+  };
 }
 
 function appendEvent(event: RoomEvent): void {
@@ -1543,6 +2141,37 @@ function syncDerivedSubRoomState(): void {
   state.joinedSubRoomId = state.participantSubRoomById[state.selfParticipantId] ?? null;
 }
 
+/**
+ * If a media token is buffered and the local user is now in a sub-room,
+ * consume the token and connect media. Called from every handler that can
+ * advance joinedSubRoomId: joined, sub_room_joined, sub_room_state.
+ */
+function flushBufferedMediaTokenIfReady(): void {
+  if (bufferedMediaToken && state.joinedSubRoomId !== null) {
+    const { sfuUrl, token, iceConfig } = bufferedMediaToken;
+    bufferedMediaToken = null;
+    connectMedia(sfuUrl, token, iceConfig);
+  }
+}
+
+function promoteReconnectedSessionIfReady(): void {
+  if (
+    state.machineState !== 'reconnecting'
+    || state.mediaState !== 'connected'
+    || state.selfParticipantId === null
+    || state.roomId === null
+    || state.joinedSubRoomId === null
+  ) {
+    return;
+  }
+
+  state.machineState = 'active';
+  if (wasReconnecting) {
+    wasReconnecting = false;
+    appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'reconnected - back online' });
+  }
+}
+
 function ensureInSubRoomForShare(): void {
   if (state.joinedSubRoomId !== null) return;
   throw new Error('Join a room before sharing.');
@@ -1563,6 +2192,13 @@ function stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId: string | nul
   } else if (hasFallbackShare) {
     void stopShare();
   }
+}
+
+function stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId: string | null): void {
+  if (!previousJoinedSubRoomId || state.joinedSubRoomId !== null) return;
+  if (!state.cameraIntent) return;
+  state.cameraIntent = false;
+  void unpublishLocalCamera();
 }
 
 function syncDesiredSubRoomPreference(): void {
@@ -1594,7 +2230,7 @@ function playSubRoomMembershipSounds(
       if (previousRoomId) {
         void playNotificationSound('leave');
       }
-      if (currentRoomId) {
+      if (currentRoomId && state.participants.find((p) => p.id === participantId)?.mediaConnected) {
         void playNotificationSound('join');
       }
       continue;
@@ -1603,10 +2239,37 @@ function playSubRoomMembershipSounds(
     if (previousJoinedSubRoomId && previousRoomId === previousJoinedSubRoomId) {
       void playNotificationSound('leave');
     }
-    if (currentJoinedSubRoomId && currentRoomId === currentJoinedSubRoomId) {
+    if (
+      currentJoinedSubRoomId
+      && currentRoomId === currentJoinedSubRoomId
+      && state.participants.find((p) => p.id === participantId)?.mediaConnected
+    ) {
       void playNotificationSound('join');
     }
   }
+}
+
+function shouldToastJoinForLocalRoom(
+  participantId: string,
+  targetSubRoomId: string,
+): boolean {
+  return (
+    participantId !== state.selfParticipantId
+    && state.joinedSubRoomId !== null
+    && targetSubRoomId === state.joinedSubRoomId
+  );
+}
+
+function shouldToastLeaveFromLocalRoom(
+  participantId: string,
+  previousParticipantSubRoomById: Record<string, string>,
+  previousJoinedSubRoomId: string | null,
+): boolean {
+  return (
+    participantId !== state.selfParticipantId
+    && previousJoinedSubRoomId !== null
+    && previousParticipantSubRoomById[participantId] === previousJoinedSubRoomId
+  );
 }
 
 function reconcileDesiredSubRoomMembership(): void {
@@ -1631,7 +2294,7 @@ function buildSyntheticSelfParticipant(): RoomParticipant | null {
   if (!state.selfParticipantId) return null;
   return {
     id: state.selfParticipantId,
-    displayName: sessionDisplayName ?? displayNameCache.get(state.selfParticipantId) ?? 'You',
+    displayName: sessionUsername ?? displayNameCache.get(state.selfParticipantId) ?? 'You',
     color: sessionProfileColor ?? colorFor({ id: state.selfParticipantId }),
     role: state.selfIsHost ? 'host' : 'guest',
     isSpeaking: false,
@@ -1639,6 +2302,7 @@ function buildSyntheticSelfParticipant(): RoomParticipant | null {
     isHostMuted: false,
     isDeafened: state.isDeafened,
     isSharing: false,
+    mediaConnected: false,
     rmsLevel: 0,
     volume: state.defaultVolume,
   };
@@ -1679,7 +2343,12 @@ function saveVolumesDebounced(): void {
         participantVols[p.userId] = p.volume;
       }
     }
-    const prefs: ChannelVolumePrefs = { master: state.masterVolume, participants: participantVols };
+    const prefs: ChannelVolumePrefs = {
+      master: state.masterVolume,
+      participants: participantVols,
+      streams: { ...(channelVolumePrefs?.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs?.streamMutes ?? {}) },
+    };
     channelVolumePrefs = prefs;
     setChannelVolumes(state.channelId, prefs).catch((err) => {
       console.warn(LOG, 'failed to persist channel volumes:', err);
@@ -1697,6 +2366,236 @@ export function appendSystemEvent(message: string): void {
   notify();
 }
 
+function desiredCameraQualityForState(currentState: VoiceRoomState): CameraQuality {
+  return screenShareActiveInRoom(currentState) ? CAMERA_QUALITY_LOW : CAMERA_QUALITY_HIGH;
+}
+
+const CAMERA_QUALITY_RETRY_INTERVAL_MS = 1_000;
+const CAMERA_QUALITY_MAX_ATTEMPTS = 3;
+
+// Exported for tests so retry-timing assertions stay in sync with the source
+// of truth — never duplicate these literals.
+export const __CAMERA_TEST_HOOKS__ = {
+  CAMERA_QUALITY_RETRY_INTERVAL_MS,
+  CAMERA_QUALITY_MAX_ATTEMPTS,
+} as const;
+
+async function attemptCameraQualityUpdate(
+  version: number,
+  quality: CameraQuality,
+  attempt: number,
+): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    return;
+  }
+
+  try {
+    await cameraModule.setCameraQuality(quality);
+    if (version !== cameraQualityRequestVersion) {
+      return;
+    }
+    // Only record the tier after a successful apply so the dedupe check in
+    // applyCameraQualityForShareState doesn't skip a retry after exhaustion.
+    lastRequestedCameraQualityTier = quality.tier;
+  } catch (error) {
+    if (version !== cameraQualityRequestVersion) {
+      return;
+    }
+    if (attempt < CAMERA_QUALITY_MAX_ATTEMPTS) {
+      cameraQualityRetryTimer = setTimeout(() => {
+        cameraQualityRetryTimer = null;
+        void attemptCameraQualityUpdate(version, quality, attempt + 1);
+      }, CAMERA_QUALITY_RETRY_INTERVAL_MS);
+      return;
+    }
+    const message = `camera quality update failed after ${CAMERA_QUALITY_MAX_ATTEMPTS} attempts (${quality.tier})`;
+    appendCameraSystemEvent(message);
+    toast.error(message);
+    // Always log retry exhaustion — it's a warning-level event regardless of the debug flag.
+    console.warn(LOG, message, error);
+  }
+}
+
+export async function applyCameraQualityForShareState(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    resetCameraQualityController();
+    return;
+  }
+
+  const quality = desiredCameraQualityForState(state);
+  if (lastRequestedCameraQualityTier === quality.tier && cameraQualityRetryTimer === null) {
+    return;
+  }
+
+  if (cameraQualityRetryTimer) {
+    clearTimeout(cameraQualityRetryTimer);
+    cameraQualityRetryTimer = null;
+  }
+
+  cameraQualityRequestVersion += 1;
+  if (DEBUG_VIDEO_FEED) {
+    console.log(LOG, '[video-feed] applying camera quality', quality.tier);
+  }
+  await attemptCameraQualityUpdate(cameraQualityRequestVersion, quality, 1);
+}
+
+async function publishLocalCamera(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule) {
+    state.cameraIntent = false;
+    state.cameraPublication = 'idle';
+    rebuildVideoTiles();
+    notify();
+    return;
+  }
+
+  const selectedDeviceId = isLinuxPlatform() && cameraModule instanceof NativeMediaModule
+    ? null
+    : await getVideoInputDevice();
+  state.cameraSelectedDeviceId = selectedDeviceId;
+
+  try {
+    const { effectiveDeviceId, warning } = isLinuxPlatform() && cameraModule instanceof NativeMediaModule
+      ? { effectiveDeviceId: null, warning: null }
+      : await resolveCameraDeviceSelection(selectedDeviceId);
+    if (warning) {
+      surfaceCameraWarning(warning);
+    }
+
+    const quality = desiredCameraQualityForState(state);
+    state.cameraPublication = 'publishing';
+    notify();
+
+    await cameraModule.publishCamera({
+      deviceId: effectiveDeviceId,
+      quality,
+    });
+
+    state.cameraPublication = 'published';
+    lastRequestedCameraQualityTier = quality.tier;
+    rebuildVideoTiles();
+    notify();
+  } catch (error) {
+    const cameraError = (
+      error && typeof error === 'object' && 'kind' in error
+        ? error
+        : { kind: 'publish_failed' }
+    ) as CameraStartError;
+
+    state.cameraIntent = false;
+    state.cameraPublication = 'failing';
+    surfaceCameraError(cameraError);
+    await cameraModule.unpublishCamera().catch(() => {});
+    state.cameraPublication = 'idle';
+    resetCameraQualityController();
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
+async function unpublishLocalCamera(): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  try {
+    await cameraModule?.unpublishCamera();
+  } catch (error) {
+    console.warn(LOG, 'unpublishCamera failed, classifying as publish_failed', error);
+    surfaceCameraError({ kind: 'publish_failed' });
+  } finally {
+    state.cameraPublication = 'idle';
+    resetCameraQualityController();
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
+async function restorePublishedCameraAfterReconnect(): Promise<void> {
+  if (!state.cameraIntent || state.cameraPublication !== 'published') {
+    return;
+  }
+  await publishLocalCamera();
+}
+
+export async function toggleCameraIntent(): Promise<void> {
+  if (
+    !getCameraMediaModule()
+    || state.mediaState === 'disconnected'
+    || state.mediaState === 'failed'
+  ) {
+    return;
+  }
+
+  // Serialise concurrent invocations so rapid double-clicks can't interleave
+  // a publish and an unpublish, leaving intent and publication out of sync.
+  cameraToggleChain = cameraToggleChain.then(async () => {
+    // Re-check lkModule and mediaState inside the chain — state may have
+    // changed while we were waiting for the previous toggle to finish.
+    if (
+      !getCameraMediaModule()
+      || state.mediaState === 'disconnected'
+      || state.mediaState === 'failed'
+    ) {
+      return;
+    }
+
+    if (state.cameraIntent) {
+      state.cameraIntent = false;
+      notify();
+      await unpublishLocalCamera();
+      return;
+    }
+
+    state.cameraIntent = true;
+    state.cameraPublication = 'opening';
+    notify();
+    await publishLocalCamera();
+  }).catch((err) => {
+    // publishLocalCamera/unpublishLocalCamera surface their own errors via
+    // toast + system event. Anything reaching this catch is unexpected
+    // (programming error, lkModule torn down mid-flight, etc.) — log it so
+    // it doesn't disappear silently, but keep the chain alive so the next
+    // toggle can still run.
+    console.warn(LOG, 'unexpected error in camera toggle chain', err);
+  });
+
+  return cameraToggleChain;
+}
+
+export function selectRoomPanelTab(tab: 'logs' | 'video'): void {
+  state.roomPanelManualOverride = tab;
+  syncRoomPanelTab();
+  notify();
+}
+
+export async function changeSelectedCamera(deviceId: string | null): Promise<void> {
+  const cameraModule = getCameraMediaModule();
+  if (!cameraModule || state.cameraPublication !== 'published') {
+    await setVideoInputDevice(deviceId);
+    state.cameraSelectedDeviceId = deviceId;
+    notify();
+    return;
+  }
+
+  const previousDeviceId = state.cameraSelectedDeviceId;
+  try {
+    const { effectiveDeviceId, warning } = await resolveCameraDeviceSelection(deviceId);
+    if (warning) {
+      surfaceCameraWarning(warning);
+    }
+    await cameraModule.replaceCameraDevice(effectiveDeviceId);
+    await setVideoInputDevice(deviceId);
+    state.cameraSelectedDeviceId = deviceId;
+    rebuildVideoTiles();
+    notify();
+  } catch (error) {
+    state.cameraSelectedDeviceId = previousDeviceId;
+    surfaceCameraWarning(classifyCameraReplaceWarning(error, deviceId));
+    rebuildVideoTiles();
+    notify();
+  }
+}
+
 /* ─── Media Lifecycle ────────────────────────────────────────────── */
 
 function sendJoinVoiceRequest(): void {
@@ -1706,7 +2605,7 @@ function sendJoinVoiceRequest(): void {
     channelId: state.channelId,
     supportsSubRooms: true,
   };
-  if (sessionDisplayName) joinMsg.displayName = sessionDisplayName;
+  if (sessionUsername) joinMsg.displayName = sessionUsername;
   if (sessionProfileColor) joinMsg.profileColor = sessionProfileColor;
   client.send(joinMsg);
 }
@@ -1715,6 +2614,13 @@ function stopColdStartRetry(): void {
   if (coldStartRetryTimer) {
     clearTimeout(coldStartRetryTimer);
     coldStartRetryTimer = null;
+  }
+}
+
+function clearBackgroundLeaveTimer(): void {
+  if (backgroundLeaveTimer) {
+    clearTimeout(backgroundLeaveTimer);
+    backgroundLeaveTimer = null;
   }
 }
 
@@ -1731,7 +2637,12 @@ function scheduleColdStartRetry(): void {
 function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): void {
   // Tear down previous instance if any
   if (lkModule) {
-    lkModule.disconnect();
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
     lkModule = null;
   }
 
@@ -1739,14 +2650,28 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
   state.mediaError = null;
   state.nativeMicBridgeActive = false;
   state.noiseSuppressionActive = false;
+  markAllParticipantsMediaConnecting();
+  suppressReconnectJoinForParticipantIds.clear();
+  // Pre-warm the notification-sounds AudioContext before the join sound fires.
+  // Without this, the AudioContext is created lazily inside an async callback
+  // where the browser may refuse to resume it (no active user gesture).
+  prewarmAudioContext();
   notify();
 
-  const restoreConnectedMediaState = (): void => {
+  const restoreConnectedMediaState = (
+    options: { playJoinSound: boolean } = { playJoinSound: true },
+  ): void => {
     state.mediaState = 'connected';
     state.mediaError = null;
     state.mediaReconnectFailures = 0;
     stopPeriodicMediaRetry();
     const self = selfParticipant();
+    if (self) {
+      markParticipantMediaConnected(self.id, true, { playJoinSound: options.playJoinSound });
+    }
+    if (lkModule instanceof NativeMediaModule) {
+      markAllRemoteParticipantsMediaConnected(true, { playJoinSound: options.playJoinSound });
+    }
     setLocalMicPublishing(shouldPublishLocalMic(self));
     // Apply persisted master volume to the media layer
     if (lkModule) {
@@ -1756,6 +2681,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     }
     // Register global mute hotkey on media connect success (R22.1)
     getMuteHotkey().then((hotkey) => {
+      if (registeredHotkey === hotkey) return;
+      if (registeredHotkey) {
+        unregisterMuteHotkey(registeredHotkey).catch(() => {});
+        registeredHotkey = null;
+      }
       registerMuteHotkey(hotkey, toggleSelfMute)
         .then(() => { registeredHotkey = hotkey; })
         .catch((err) => {
@@ -1763,12 +2693,13 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         });
     }).catch(() => { });
     void resumePendingWasapiCapture();
+    promoteReconnectedSessionIfReady();
     notify();
   };
 
   const callbacks: MediaCallbacks = {
     onMediaConnected: () => {
-      restoreConnectedMediaState();
+      restoreConnectedMediaState({ playJoinSound: true });
       // Re-apply mute state after media reconnection — if the user was muted,
       // ensure the mic stays muted (LiveKit enables mic by default on connect).
     },
@@ -1776,22 +2707,41 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (state.mediaState === 'failed' || state.mediaState === 'disconnected') return;
       state.mediaState = 'reconnecting';
       state.mediaError = null;
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds = new Set(
+        state.participants
+          .filter((p) => p.id !== state.selfParticipantId)
+          .map((p) => p.id),
+      );
       notify();
     },
     onMediaReconnected: () => {
-      restoreConnectedMediaState();
+      restoreConnectedMediaState({ playJoinSound: false });
+      void restorePublishedCameraAfterReconnect();
     },
     onMediaFailed: (reason) => {
       state.mediaReconnectFailures += 1;
       state.mediaState = 'failed';
       state.mediaError = reason;
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds.clear();
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: `media failed: ${reason}` });
       notify();
     },
     onMediaDisconnected: () => {
+      const shouldReconnect =
+        !suppressMediaDisconnectedReconnect
+        && state.machineState !== 'idle'
+        && state.mediaState !== 'disconnected'
+        && state.mediaState !== 'failed';
       state.mediaState = 'disconnected';
+      markAllParticipantsMediaConnecting();
+      suppressReconnectJoinForParticipantIds.clear();
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'media disconnected — attempting reconnect' });
       notify();
+      if (shouldReconnect) {
+        void reconnectMedia();
+      }
     },
     onAudioLevels: (levels) => {
       for (const [identity, data] of levels) {
@@ -1833,6 +2783,15 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       state.networkStats = stats;
       notify();
     },
+    onRemoteParticipantConnected: (identity) => {
+      const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(identity);
+      markParticipantMediaConnected(identity, true, { playJoinSound: !suppressJoinSound });
+      notify();
+    },
+    onRemoteParticipantDisconnected: (identity) => {
+      markParticipantMediaConnected(identity, false, { playJoinSound: false });
+      notify();
+    },
     onScreenShareSubscribed: (identity, stream) => {
       state.screenShareStreams = new Map(state.screenShareStreams);
       state.screenShareStreams.set(identity, stream);
@@ -1851,6 +2810,14 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (state.screenShareStreams.size === 0) {
         state.videoReceiveStats = null;
       }
+      // If the participant is still marked as sharing, schedule retries so that
+      // a temporary track unsubscription (e.g. LiveKit media reconnect) doesn't
+      // leave the icon stuck in "waiting for stream" forever when TrackSubscribed
+      // doesn't re-fire (SFU treat-as-resume edge case).
+      const unsub = state.participants.find((pp) => pp.id === identity);
+      if (unsub?.isSharing && identity !== state.selfParticipantId) {
+        scheduleRefreshRetries(identity);
+      }
       notify();
     },
     onLocalScreenShareEnded: () => {
@@ -1861,7 +2828,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       // Only send stop_share if we didn't already send it from stopShare()
       // and we're not in the middle of changing the share source
       if (!localStopShareSent && !localSourceChanging && client) {
-        client.send({ type: 'stop_share' });
+        client.send({ type: 'stop-share' });
       }
       localStopShareSent = false;
     },
@@ -1870,9 +2837,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       if (!p) return;
 
       if (identity === state.selfParticipantId) {
-        if (!isMuted && state.joinedSubRoomId === null) {
-          silenceSelfParticipant(p);
-          lkModule?.setMicEnabled(false);
+        if (state.joinedSubRoomId === null) {
+          clearSelfAudioActivity(p);
+          if (!isMuted) {
+            lkModule?.setMicEnabled(false);
+          }
           notify();
           return;
         }
@@ -1902,6 +2871,48 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         notify();
       }
     },
+    onRemoteCameraPublished: (participantId) => {
+      if (DEBUG_VIDEO_FEED) {
+        console.log(LOG, '[video-feed] remote camera published', participantId);
+      }
+    },
+    onRemoteCameraReady: (participantId, track) => {
+      remoteCameraTilesById = {
+        ...remoteCameraTilesById,
+        [participantId]: {
+          track,
+          isMuted: false,
+          hasError: false,
+        },
+      };
+      rebuildVideoTiles();
+      notify();
+    },
+    onRemoteCameraMutedChanged: (participantId, muted) => {
+      const current = remoteCameraTilesById[participantId];
+      if (!current) {
+        return;
+      }
+      remoteCameraTilesById = {
+        ...remoteCameraTilesById,
+        [participantId]: {
+          ...current,
+          isMuted: muted,
+        },
+      };
+      rebuildVideoTiles();
+      notify();
+    },
+    onRemoteCameraUnpublished: (participantId) => {
+      if (!(participantId in remoteCameraTilesById)) {
+        return;
+      }
+      const nextTiles = { ...remoteCameraTilesById };
+      delete nextTiles[participantId];
+      remoteCameraTilesById = nextTiles;
+      rebuildVideoTiles();
+      notify();
+    },
     onSystemEvent: (message) => {
       appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message });
       notify();
@@ -1930,6 +2941,19 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       state.noiseSuppressionActive = active;
       notify();
     },
+    onAudioOnlySharerAdded: (identity) => {
+      state.audioOnlySharers = new Set(state.audioOnlySharers);
+      state.audioOnlySharers.add(identity);
+      // Silence immediately so the gain node is created at 0 before any audio
+      // plays. The viewer un-mutes by clicking the music icon to restore volume.
+      setScreenShareAudioVolume(identity, 0);
+      notify();
+    },
+    onAudioOnlySharerRemoved: (identity) => {
+      state.audioOnlySharers = new Set(state.audioOnlySharers);
+      state.audioOnlySharers.delete(identity);
+      notify();
+    },
   };
 
   // Platform detection: native Rust path on Linux (WebKitGTK lacks WebRTC),
@@ -1943,6 +2967,17 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     lkModule = new LiveKitModule(callbacks);
   }
 
+  for (const participant of state.participants) {
+    if (participant.isSharing) {
+      const shareType = parseRemoteShareType(participant.shareType);
+      if (shareType !== undefined || !state.audioOnlySharers.has(participant.id)) {
+        updateRemoteShareType(participant.id, shareType);
+      }
+    }
+  }
+
+  applyPassthroughFilterSettings();
+  applyEffectiveParticipantVolumes();
   lkModule.connect(sfuUrl, token, iceConfig).catch((err) => {
     state.mediaState = 'failed';
     state.mediaError = err instanceof Error ? err.message : 'Connection failed';
@@ -2003,6 +3038,7 @@ function dispatchMessage(raw: unknown): void {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
             state.error = (msg.reason as string) || 'Authentication failed';
             playLocalDisconnectSoundOnce();
+            cleanupPublishedMediaForSessionEnd();
             state.machineState = 'idle';
             notify();
             return;
@@ -2013,6 +3049,7 @@ function dispatchMessage(raw: unknown): void {
               console.error(LOG, 'reconnect after refresh failed:', err);
               state.error = 'Authentication failed';
               playLocalDisconnectSoundOnce();
+              cleanupPublishedMediaForSessionEnd();
               state.machineState = 'idle';
               notify();
             });
@@ -2026,6 +3063,7 @@ function dispatchMessage(raw: unknown): void {
         client.disconnect();
       }
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       notify();
       break;
@@ -2038,6 +3076,7 @@ function dispatchMessage(raw: unknown): void {
       state.lastRateLimitError = null;
       state.selfParticipantId = msg.peerId as string;
       state.roomId = msg.roomId as string;
+      bufferedIceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
@@ -2046,7 +3085,7 @@ function dispatchMessage(raw: unknown): void {
       syncDesiredSubRoomPreference();
       state.sharePermission = (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
       const participants = (msg.participants as Array<Record<string, unknown>>) || [];
-      state.participants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
+      const incomingParticipants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
         displayNameCache.set(p.participantId as string, p.displayName as string);
         const isSelf = p.participantId === state.selfParticipantId;
         const pUserId = p.userId as string | undefined;
@@ -2057,14 +3096,16 @@ function dispatchMessage(raw: unknown): void {
           color: isSelf && sessionProfileColor ? sessionProfileColor : (p.profileColor as string | undefined) ?? colorFor({ userId: pUserId, id: p.participantId as string }),
           role: (isSelf && state.selfIsHost) ? 'host' as ParticipantRole : 'guest' as ParticipantRole,
           isSpeaking: false,
-          isMuted: false,
-          isHostMuted: false,
-          isDeafened: false,
+          isMuted: Boolean(p.isMuted),
+          isHostMuted: Boolean(p.isHostMuted),
+          isDeafened: Boolean(p.isDeafened),
           isSharing: false,
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
         };
       });
+      state.participants = mergeParticipantsWithVolume(state.participants, incomingParticipants);
       ensureSelfParticipant('joined');
       state.machineState = 'active';
 
@@ -2083,12 +3124,9 @@ function dispatchMessage(raw: unknown): void {
         appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'system', message: 'reconnected — back online' });
       }
 
-      // Flush buffered media token if present
-      if (bufferedMediaToken) {
-        const { sfuUrl, token, iceConfig } = bufferedMediaToken;
-        bufferedMediaToken = null;
-        connectMedia(sfuUrl, token, iceConfig);
-      }
+      // Belt-and-suspenders: flush if the backend ever sends joined with the
+      // user already in a sub-room. Normally fires on sub_room_joined/sub_room_state.
+      flushBufferedMediaTokenIfReady();
 
       // Request chat history after successful join
       if (client) {
@@ -2123,6 +3161,7 @@ function dispatchMessage(raw: unknown): void {
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
         state.rejectionReason = (msg.reason as string) || 'Server failed to start';
@@ -2144,6 +3183,7 @@ function dispatchMessage(raw: unknown): void {
       }
       client = null;
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       notify();
       break;
@@ -2166,20 +3206,19 @@ function dispatchMessage(raw: unknown): void {
         isHostMuted: false,
         isDeafened: false,
         isSharing: false,
+        mediaConnected: pjId !== state.selfParticipantId && mediaConnectedParticipantIds.has(pjId),
         rmsLevel: 0,
         volume: resolvePersistedVolume(pjUserId, state.defaultVolume),
       };
-      state.participants = [...state.participants, newParticipant];
+      const withoutExisting = state.participants.filter((p) => p.id !== pjId);
+      state.participants = mergeParticipantsWithVolume(
+        state.participants,
+        [...withoutExisting, newParticipant],
+      ).slice(0, MAX_PARTICIPANTS);
       if (lkModule && state.mediaState === 'connected' && pjId !== state.selfParticipantId) {
         applyEffectiveParticipantVolume(newParticipant);
       }
-      appendEvent({
-        id: makeEventId(),
-        timestamp: timestamp(),
-        type: 'join',
-        message: `${msg.displayName} joined`,
-        participantId: msg.participantId as string,
-      });
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2189,9 +3228,13 @@ function dispatchMessage(raw: unknown): void {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const leftId = msg.participantId as string;
       const leftP = state.participants.find((p) => p.id === leftId);
+      mediaConnectedParticipantIds.delete(leftId);
+      suppressReconnectJoinForParticipantIds.delete(leftId);
       state.participants = state.participants.filter((p) => p.id !== leftId);
       if (state.participantSubRoomById[leftId]) {
         const leftRoomId = state.participantSubRoomById[leftId];
+        const plRoom = state.subRooms.find((r) => r.id === leftRoomId);
+        const plRoomLabel = plRoom ? `Room ${plRoom.roomNumber}` : 'a room';
         state.subRooms = state.subRooms.map((room) => (
           room.id === leftRoomId
             ? { ...room, participantIds: room.participantIds.filter((id) => id !== leftId) }
@@ -2201,16 +3244,24 @@ function dispatchMessage(raw: unknown): void {
         reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
         playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
         applyEffectiveParticipantVolumes();
+        const plName = leftP?.displayName ?? displayNameCache.get(leftId) ?? leftId;
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'leave',
+          message: `${plName} left ${plRoomLabel}`,
+          participantId: leftId,
+          shouldToast: shouldToastLeaveFromLocalRoom(leftId, previousParticipantSubRoomById, previousJoinedSubRoomId),
+        });
       }
       speakingTracker.delete(leftId);
-      const leftName = leftP?.displayName ?? displayNameCache.get(leftId) ?? leftId;
-      appendEvent({
-        id: makeEventId(),
-        timestamp: timestamp(),
-        type: 'leave',
-        message: `${leftName} left`,
-        participantId: leftId,
-      });
+      if (leftId in remoteCameraTilesById) {
+        const nextTiles = { ...remoteCameraTilesById };
+        delete nextTiles[leftId];
+        remoteCameraTilesById = nextTiles;
+      }
+      rebuildVideoTiles();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2218,6 +3269,7 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_state': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
+      const previousPassthrough = state.passthrough;
       const rooms = ((msg.rooms as Array<Record<string, unknown>>) || []).map((room) => ({
         id: room.subRoomId as string,
         roomNumber: room.roomNumber as number,
@@ -2239,12 +3291,48 @@ function dispatchMessage(raw: unknown): void {
             label: passthrough.label,
           }
         : null;
+      state.passthroughEnabled = typeof msg.passthroughEnabled === 'boolean'
+        ? msg.passthroughEnabled
+        : false;
+      if (typeof msg.passthroughVolumePercent === 'number') {
+        state.passthroughVolume = Math.max(0, Math.min(100, Math.round(msg.passthroughVolumePercent)));
+      }
+      if (typeof msg.passthroughFiltersEnabled === 'boolean') {
+        state.passthroughFiltersEnabled = msg.passthroughFiltersEnabled;
+      }
+      if (typeof msg.passthroughFilterStrength === 'number') {
+        state.passthroughFilterStrength = Math.max(0, Math.min(100, Math.round(msg.passthroughFilterStrength)));
+      }
+      // Detect passthrough changes and emit a log event + notification
+      {
+        const newPassthrough = state.passthrough;
+        const wasActive = !!previousPassthrough;
+        const isActive = !!newPassthrough;
+        const pairChanged = wasActive && isActive
+          && (previousPassthrough!.sourceSubRoomId !== newPassthrough.sourceSubRoomId
+              || previousPassthrough!.targetSubRoomId !== newPassthrough.targetSubRoomId);
+        if (!wasActive && isActive) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `set ${newPassthrough.label}` });
+        } else if (wasActive && !isActive) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `cleared` });
+        } else if (pairChanged) {
+          appendEvent({ id: makeEventId(), timestamp: timestamp(), type: 'passthrough', message: `set ${newPassthrough!.label}` });
+        }
+      }
       syncDerivedSubRoomState();
+      applyPassthroughFilterSettings();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
+      // Legacy-client fallback: sub_room_joined fires before sub_room_state (room doesn't exist
+      // yet in state when sub_room_joined arrives), so flush here once state catches up.
+      flushBufferedMediaTokenIfReady();
+      promoteReconnectedSessionIfReady();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2266,6 +3354,7 @@ function dispatchMessage(raw: unknown): void {
       syncDerivedSubRoomState();
       applyEffectiveParticipantVolumes();
       reconcileDesiredSubRoomMembership();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2288,11 +3377,36 @@ function dispatchMessage(raw: unknown): void {
       });
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       void source;
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
+      {
+        const srjName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
+        const srjRoom = state.subRooms.find((r) => r.id === subRoomId);
+        const srjRoomLabel = srjRoom ? `Room ${srjRoom.roomNumber}` : 'a room';
+        const srjWasInRoom = !!previousParticipantSubRoomById[participantId];
+        const srjIsSelf = participantId === state.selfParticipantId;
+        const srjMessage = srjIsSelf
+          ? (srjWasInRoom ? `moved to ${srjRoomLabel}` : `joined ${srjRoomLabel}`)
+          : (srjWasInRoom ? `${srjName} moved to ${srjRoomLabel}` : `${srjName} joined ${srjRoomLabel}`);
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'join',
+          message: srjMessage,
+          participantId,
+          shouldToast: shouldToastJoinForLocalRoom(participantId, subRoomId),
+        });
+      }
+      if (participantId === state.selfParticipantId) {
+        flushBufferedMediaTokenIfReady();
+        promoteReconnectedSessionIfReady();
+      }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2302,6 +3416,8 @@ function dispatchMessage(raw: unknown): void {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const participantId = msg.participantId as string;
       const subRoomId = msg.subRoomId as string;
+      const srlRoom = state.subRooms.find((r) => r.id === subRoomId);
+      const srlRoomLabel = srlRoom ? `Room ${srlRoom.roomNumber}` : 'a room';
       state.subRooms = state.subRooms.map((room) => (
         room.id === subRoomId
           ? { ...room, participantIds: room.participantIds.filter((id) => id !== participantId) }
@@ -2309,10 +3425,26 @@ function dispatchMessage(raw: unknown): void {
       ));
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       playSubRoomMembershipSounds(previousParticipantSubRoomById, previousJoinedSubRoomId);
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
+      {
+        const srlName = displayNameCache.get(participantId) ?? state.participants.find((p) => p.id === participantId)?.displayName ?? participantId;
+        const srlIsSelf = participantId === state.selfParticipantId;
+        const srlMessage = srlIsSelf ? `left ${srlRoomLabel}` : `${srlName} left ${srlRoomLabel}`;
+        appendEvent({
+          id: makeEventId(),
+          timestamp: timestamp(),
+          type: 'leave',
+          message: srlMessage,
+          participantId,
+          shouldToast: shouldToastLeaveFromLocalRoom(participantId, previousParticipantSubRoomById, previousJoinedSubRoomId),
+        });
+      }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2323,12 +3455,15 @@ function dispatchMessage(raw: unknown): void {
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
+      stopLocalCameraAfterLeavingSubRoom(previousJoinedSubRoomId);
       reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId);
       if (desiredSubRoomIntent === subRoomId) {
         desiredSubRoomIntent = undefined;
       }
       applyEffectiveParticipantVolumes();
+      rebuildVideoTiles();
       reconcileDesiredSubRoomMembership();
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2349,10 +3484,11 @@ function dispatchMessage(raw: unknown): void {
           color: isSelf && sessionProfileColor ? sessionProfileColor : (p.profileColor as string | undefined) ?? colorFor({ userId: rsUserId, id: p.participantId as string }),
           role: (isSelf && state.selfIsHost) ? 'host' as ParticipantRole : 'guest' as ParticipantRole,
           isSpeaking: false,
-          isMuted: false,
-          isHostMuted: false,
-          isDeafened: false,
+          isMuted: Boolean(p.isMuted),
+          isHostMuted: Boolean(p.isHostMuted),
+          isDeafened: Boolean(p.isDeafened),
           isSharing: false,
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
         };
@@ -2383,6 +3519,7 @@ function dispatchMessage(raw: unknown): void {
         client.send(historyReq);
       }
 
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2390,6 +3527,8 @@ function dispatchMessage(raw: unknown): void {
     case 'participant_kicked': {
       const kickedId = msg.participantId as string;
       const kickedP = state.participants.find((p) => p.id === kickedId);
+      mediaConnectedParticipantIds.delete(kickedId);
+      suppressReconnectJoinForParticipantIds.delete(kickedId);
       state.participants = state.participants.filter((p) => p.id !== kickedId);
       const kickedName = kickedP?.displayName ?? displayNameCache.get(kickedId) ?? kickedId;
       appendEvent({
@@ -2411,6 +3550,7 @@ function dispatchMessage(raw: unknown): void {
         }
         client = null;
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
       }
       notify();
@@ -2439,6 +3579,7 @@ function dispatchMessage(raw: unknown): void {
       }
       client = null;
       playLocalDisconnectSoundOnce();
+      cleanupPublishedMediaForSessionEnd();
       state.machineState = 'idle';
       stopColdStartRetry();
       stopPeriodicMediaRetry();
@@ -2601,6 +3742,20 @@ function dispatchMessage(raw: unknown): void {
       if (cp) {
         cp.color = msg.profileColor as string;
       }
+      rebuildVideoTiles();
+      notify();
+      break;
+    }
+
+    case 'participant_username_updated': {
+      const participantId = msg.participantId as string;
+      const username = msg.username as string;
+      const participant = state.participants.find((pp) => pp.id === participantId);
+      if (participant) {
+        participant.displayName = username;
+      }
+      displayNameCache.set(participantId, username);
+      rebuildVideoTiles();
       notify();
       break;
     }
@@ -2608,10 +3763,36 @@ function dispatchMessage(raw: unknown): void {
     case 'share_started': {
       const shareStartId = msg.participantId as string;
       const shareStartName = msg.displayName as string | undefined;
+      const remoteShareType = parseRemoteShareType(msg.shareType);
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
         sp.isSharing = true;
-        sp.shareType = (msg.shareType as string) || undefined;
+        sp.shareType = remoteShareType;
+      }
+      // Keep audioOnlySharers in sync directly — updateRemoteShareType is a no-op
+      // when lkModule is not yet initialized, which would leave the UI stuck on ◉.
+      if (remoteShareType === 'audio_only' && !state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.add(shareStartId);
+      } else if (remoteShareType !== undefined && remoteShareType !== 'audio_only' && state.audioOnlySharers.has(shareStartId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStartId);
+      }
+      // Don't pass undefined to lkModule when the track was already inferred as audio-only —
+      // setRemoteShareType(undefined) would clear the inference and fire onAudioOnlySharerRemoved.
+      if (remoteShareType !== undefined || !state.audioOnlySharers.has(shareStartId)) {
+        updateRemoteShareType(shareStartId, remoteShareType);
+      }
+      const shareStartIsAudioOnly =
+        remoteShareType === 'audio_only' ||
+        (remoteShareType === undefined && state.audioOnlySharers.has(shareStartId));
+      if (!shareStartIsAudioOnly) {
+        refreshRemoteScreenShare(shareStartId);
+        // Schedule retries for the case where TrackSubscribed is delayed or the SFU
+        // treats the republish as a track resume (no TrackPublished/TrackSubscribed).
+        if (shareStartId !== state.selfParticipantId) {
+          scheduleRefreshRetries(shareStartId);
+        }
       }
       // Cache the display name from the server payload
       if (shareStartName) {
@@ -2629,6 +3810,7 @@ function dispatchMessage(raw: unknown): void {
         });
       }
       void playNotificationSound('share-start');
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2640,6 +3822,20 @@ function dispatchMessage(raw: unknown): void {
       if (ssp) {
         ssp.isSharing = false;
         ssp.shareType = undefined;
+      }
+      if (state.audioOnlySharers.has(shareStopId)) {
+        state.audioOnlySharers = new Set(state.audioOnlySharers);
+        state.audioOnlySharers.delete(shareStopId);
+      }
+      clearRemoteShareType(shareStopId);
+      refreshRetryGenerations.delete(shareStopId);
+      // Clear the stream reference immediately on signaling. The LiveKit
+      // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
+      // the sharer closes the app abruptly; without this the viewer's UI shows
+      // a stale frozen frame until the SFU eventually fires the event.
+      if (state.screenShareStreams.has(shareStopId)) {
+        state.screenShareStreams = new Map(state.screenShareStreams);
+        state.screenShareStreams.delete(shareStopId);
       }
       // Cache the display name from the server payload
       if (shareStopName) {
@@ -2658,6 +3854,7 @@ function dispatchMessage(raw: unknown): void {
       } else {
         void playNotificationSound('share-stop');
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2665,12 +3862,24 @@ function dispatchMessage(raw: unknown): void {
     case 'share_state': {
       // share_state is an authoritative snapshot — reconcile all participants
       const shareIds = new Set((msg.participantIds as string[]) || []);
+      const typedShares = new Map<string, RemoteShareType | undefined>(
+        ((msg.activeShares as Array<{ participantId: string; shareType?: unknown }>) || [])
+          .map((share) => [
+            share.participantId,
+            parseRemoteShareType(share.shareType),
+          ] as [string, RemoteShareType | undefined]),
+      );
       for (const p of state.participants) {
         const shouldBeSharing = shareIds.has(p.id);
         if (p.isSharing && !shouldBeSharing) {
           // Server says they're not sharing — clear stale flag + stream
           p.isSharing = false;
           p.shareType = undefined;
+          if (state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
+          clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
             state.screenShareStreams.delete(p.id);
@@ -2678,7 +3887,35 @@ function dispatchMessage(raw: unknown): void {
         } else if (!p.isSharing && shouldBeSharing) {
           p.isSharing = true;
         }
+        if (shouldBeSharing) {
+          p.shareType = typedShares.get(p.id);
+          const resolvedType = p.shareType as RemoteShareType | undefined;
+          if (resolvedType === 'audio_only' && !state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.add(p.id);
+          } else if (resolvedType !== undefined && resolvedType !== 'audio_only' && state.audioOnlySharers.has(p.id)) {
+            state.audioOnlySharers = new Set(state.audioOnlySharers);
+            state.audioOnlySharers.delete(p.id);
+          }
+          if (resolvedType !== undefined || !state.audioOnlySharers.has(p.id)) {
+            updateRemoteShareType(p.id, resolvedType);
+          }
+          const isAudioOnlyShare =
+            resolvedType === 'audio_only' ||
+            (resolvedType === undefined && state.audioOnlySharers.has(p.id));
+          if (!isAudioOnlyShare) {
+            refreshRemoteScreenShare(p.id);
+            // Schedule retries for late joiners or post-reconnect cases where
+            // the stream isn't available yet. share_state doesn't schedule
+            // retries (only share_started does), so viewers who join mid-share
+            // and whose TrackSubscribed is delayed get stuck without this.
+            if (!state.screenShareStreams.has(p.id) && p.id !== state.selfParticipantId) {
+              scheduleRefreshRetries(p.id);
+            }
+          }
+        }
       }
+      void applyCameraQualityForShareState();
       notify();
       break;
     }
@@ -2744,12 +3981,14 @@ function dispatchMessage(raw: unknown): void {
     case 'media_token': {
       const token = msg.token as string;
       const sfuUrl = msg.sfuUrl as string;
-      const iceConfig = msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined;
+      // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
+      const iceConfig = (msg.iceConfig as { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | undefined) ?? bufferedIceConfig ?? undefined;
 
-      console.log(LOG, 'media_token received:', { 
-        hasToken: !!token, 
-        hasSfuUrl: !!sfuUrl, 
+      console.log(LOG, 'media_token received:', {
+        hasToken: !!token,
+        hasSfuUrl: !!sfuUrl,
         hasIceConfig: !!iceConfig,
+        iceConfigSource: msg.iceConfig ? 'media_token' : bufferedIceConfig ? 'joined' : 'none',
         iceConfig: iceConfig ? {
           stunUrls: iceConfig.stunUrls,
           turnUrls: iceConfig.turnUrls,
@@ -2766,7 +4005,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      if (state.machineState !== 'active') {
+      if (state.machineState !== 'active' || state.joinedSubRoomId === null) {
         bufferedMediaToken = { sfuUrl, token, iceConfig };
         break;
       }
@@ -2890,6 +4129,9 @@ export function initSession(
     machineState: 'connecting',
     screenShareStreams: new Map(),
   };
+  resetCameraRuntimeState();
+  mediaConnectedParticipantIds.clear();
+  suppressReconnectJoinForParticipantIds.clear();
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
@@ -2919,7 +4161,7 @@ export function initSession(
   unsubscribe = client.onMessage(dispatchMessage);
 
   // Detect disconnection during active session for reconnection flow
-  client.onStatusChange((status) => {
+  unsubStatusChange = client.onStatusChange((status) => {
     if (status === 'disconnected') {
       stopColdStartRetry();
       if (state.machineState === 'active' || state.machineState === 'joining') {
@@ -2950,6 +4192,7 @@ export function initSession(
           state.error = 'Connection lost';
           state.lastRateLimitError = null;
           playLocalDisconnectSoundOnce();
+          cleanupPublishedMediaForSessionEnd();
           state.machineState = 'idle';
           notify();
         }
@@ -2973,26 +4216,33 @@ export function initSession(
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
     // Load display name, default volume, profile color, persisted channel volumes,
-    // and the Windows share-path preference before connecting.
+    // notification volumes, and the Windows share-path preference before connecting.
+    // Notification volumes are pre-cached here so playNotificationSound() on the
+    // first join does not make IPC calls that break the user-activation chain.
     Promise.all([
-      getDisplayName(),
+      getUsername(),
       getDefaultVolume(),
       getProfileColor(),
       getChannelVolumes(channelId),
       getWindowsSharePath(),
-    ]).then(([name, vol, profileColor, savedVols, windowsSharePath]) => {
+      getNotificationVolume(),
+      getSoundVolumes(),
+    ]).then(([name, vol, profileColor, savedVols, windowsSharePath, notifVol, soundVols]) => {
       if (client !== thisClient) return;
-      sessionDisplayName = name;
+      sessionUsername = name;
       sessionProfileColor = profileColor;
       channelVolumePrefs = savedVols;
       state.defaultVolume = vol;
       state.masterVolume = savedVols?.master ?? vol;
       state.windowsSharePath = resolveWindowsSharePathPreference(windowsSharePath);
+      updateCachedNotificationVolume(notifVol);
+      updateCachedSoundVolumes(soundVols);
       client.connectWithAuth(wsUrl).catch((err) => {
         console.error(LOG, 'connect failed:', err);
         if (client !== thisClient) return;
         state.error = 'Connection failed';
         playLocalDisconnectSoundOnce();
+        cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         notify();
       });
@@ -3000,52 +4250,26 @@ export function initSession(
   });
 }
 
-export function leaveRoom(): void {
+export function scheduleLeaveRoom(delayMs = BACKGROUND_LEAVE_DISCONNECT_MS): void {
+  if (!client || state.machineState === 'idle') {
+    leaveRoom();
+    return;
+  }
+
   playLocalDisconnectSoundOnce();
+  clearBackgroundLeaveTimer();
+  // The room screen is about to unmount, so stop pushing state into a stale React callback.
+  onChange = null;
+  backgroundLeaveTimer = setTimeout(() => {
+    backgroundLeaveTimer = null;
+    leaveRoom();
+  }, Math.max(0, delayMs));
+}
 
-  // Clean up custom share captures (best-effort, fire-and-forget)
-  if (state.activeVideoShare || state.activeAudioShare) {
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      lkModule.stopWasapiAudioBridge().catch(() => { });
-    }
-    if (state.activeVideoShare) {
-      // Stop native capture bridge (Windows LiveKit path)
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.stopNativeCapture().catch(() => { });
-      }
-      invoke('screen_share_stop').catch(() => { });
-      if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
-    }
-    if (state.activeAudioShare) invoke('audio_share_stop').catch(() => { });
-    // Close ShareIndicator window
-    WebviewWindow.getByLabel('share-indicator')
-      .then((win) => {
-        if (win) win.close().catch(() => { });
-      })
-      .catch(() => { });
-    // Send stop_share before leave for custom shares
-    if (client && client.status === 'connected') {
-      client.send({ type: 'stop_share' });
-    }
-    // Clear state synchronously
-    state.activeVideoShare = null;
-    state.activeAudioShare = null;
-    stopMotionDetection();
-  }
-
-  // Clean up fallback (getDisplayMedia) share if active
-  const selfP = state.participants.find((p) => p.id === state.selfParticipantId);
-  if (selfP?.isSharing && !state.activeVideoShare && !state.activeAudioShare) {
-    invoke('external_share_stop').catch(() => { });
-    externalShareHelperActive = false;
-    // Fallback share is active — send stop_share signaling before leave
-    if (client && client.status === 'connected') {
-      client.send({ type: 'stop_share' });
-    }
-    selfP.isSharing = false;
-    state.shareQualityInfo = null;
-    state.shareStats = null;
-  }
+export function leaveRoom(): void {
+  clearBackgroundLeaveTimer();
+  playLocalDisconnectSoundOnce();
+  cleanupPublishedMediaForSessionEnd();
 
   // Notify all child windows (screen share pop-outs) that the session is ending.
   // This must fire before we tear down media/WS so child windows can self-close
@@ -3057,20 +4281,6 @@ export function leaveRoom(): void {
     unregisterMuteHotkey(registeredHotkey).catch(() => { });
     registeredHotkey = null;
   }
-
-  // Tear down LiveKit media
-  if (lkModule) {
-    lkModule.disconnect();
-    lkModule = null;
-  }
-  bufferedMediaToken = null;
-  externalShareHelperActive = false;
-  reusePatchGuardCheckedForSession = false;
-  reusePatchGuardPassedForSession = false;
-  pendingWasapiResume = null;
-  stopColdStartRetry();
-  stopPeriodicMediaRetry();
-  setActiveLiveKitModule(null);
 
   // Send Leave if still connected
   if (client && client.status === 'connected') {
@@ -3090,6 +4300,13 @@ export function leaveRoom(): void {
   authRefreshRetries = 0;
   wasReconnecting = false;
 
+  // Unregister status-change handler before disconnecting so the intentional
+  // disconnect does not trigger the reconnect/error logic in that handler.
+  if (unsubStatusChange) {
+    unsubStatusChange();
+    unsubStatusChange = null;
+  }
+
   // Disconnect the client
   if (client) {
     client.disconnect();
@@ -3099,17 +4316,47 @@ export function leaveRoom(): void {
   client = null;
   unsubscribe = null;
 
+  // Flush any pending volume save before state is reset — changes made within
+  // the 300ms debounce window (e.g. a slider moved right before leaving) would
+  // otherwise be silently dropped, causing the wrong volume on the next session.
+  if (volumeSaveTimer && channelVolumePrefs && state.channelId) {
+    clearTimeout(volumeSaveTimer);
+    volumeSaveTimer = null;
+    const flushParticipantVols: Record<string, number> = { ...(channelVolumePrefs.participants ?? {}) };
+    for (const p of state.participants) {
+      if (p.userId && p.id !== state.selfParticipantId) {
+        flushParticipantVols[p.userId] = p.volume;
+      }
+    }
+    setChannelVolumes(state.channelId, {
+      master: state.masterVolume,
+      participants: flushParticipantVols,
+      streams: { ...(channelVolumePrefs.streams ?? {}) },
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}) },
+    }).catch(() => {});
+  }
+
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
+  mediaConnectedParticipantIds.clear();
+  suppressReconnectJoinForParticipantIds.clear();
+  remoteCameraTilesById = {};
+  roomPanelHadAnyVideoActive = false;
+  resetCameraQualityController();
+  // Reset the toggle chain so stale in-flight toggles from the previous session
+  // don't bleed into the next one.
+  cameraToggleChain = Promise.resolve();
   desiredSubRoomIntent = undefined;
 
   // Reset reconnect cooldown timer
   lastReconnectMediaTime = 0;
 
-  // Clear display name cache and speaking tracker
+  // Clear display name cache, speaking tracker, and pending refresh retries
   displayNameCache.clear();
   speakingTracker.clear();
+  refreshRetryGenerations.clear();
   preDeafenVolume = null;
+  preDeafenSelfMuted = null;
 
   // Tear down share picker event listener
   teardownSharePickerListener();
@@ -3126,11 +4373,19 @@ export function leaveRoom(): void {
   // Clear session-scoped references
   onChange = null;
   channelRole = null;
-  sessionDisplayName = null;
+  sessionUsername = null;
   channelVolumePrefs = null;
   if (volumeSaveTimer) {
     clearTimeout(volumeSaveTimer);
     volumeSaveTimer = null;
+  }
+  if (passthroughVolumeSendTimer) {
+    clearTimeout(passthroughVolumeSendTimer);
+    passthroughVolumeSendTimer = null;
+  }
+  if (passthroughFilterSendTimer) {
+    clearTimeout(passthroughFilterSendTimer);
+    passthroughFilterSendTimer = null;
   }
 }
 
@@ -3194,7 +4449,12 @@ export async function reconnectMedia(): Promise<void> {
 
   // Tear down current media
   if (lkModule) {
-    lkModule.disconnect();
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
     lkModule = null;
   }
   state.mediaState = 'disconnected';
@@ -3235,20 +4495,6 @@ export function toggleSelfMute(): void {
     notify();
     return;
   }
-  if (state.joinedSubRoomId === null) {
-    silenceSelfParticipant(self);
-    lkModule?.setMicEnabled(false);
-    appendEvent({
-      id: makeEventId(),
-      timestamp: timestamp(),
-      type: 'system',
-      message: 'mute toggle ignored: join a room before using the microphone',
-      participantId: self.id,
-    });
-    notify();
-    return;
-  }
-
   // If deafened and trying to unmute, cancel deafen entirely
   if (state.isDeafened && self.isMuted) {
     toggleSelfDeafen();
@@ -3260,7 +4506,13 @@ export function toggleSelfMute(): void {
     self.rmsLevel = 0;
     self.isSpeaking = false;
   }
-  lkModule?.setMicEnabled(!self.isMuted);
+  if (state.joinedSubRoomId === null) {
+    clearSelfAudioActivity(self);
+    lkModule?.setMicEnabled(false);
+    notify();
+    return;
+  }
+  lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
   client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
@@ -3279,20 +4531,25 @@ export function toggleSelfDeafen(): void {
   if (!self) return;
 
   if (state.isDeafened) {
-    // Undeafen: restore volume, unmute (unless host-muted)
+    // Undeafen: restore volume and the mute intent that existed before deafen.
     state.isDeafened = false;
     self.isDeafened = false;
     const restored = preDeafenVolume ?? 70;
     preDeafenVolume = null;
+    const restoredSelfMuted = preDeafenSelfMuted ?? self.isMuted;
+    preDeafenSelfMuted = null;
     state.masterVolume = restored;
     lkModule?.setMasterVolume(restored);
-    if (!self.isHostMuted && state.joinedSubRoomId !== null) {
-      self.isMuted = false;
-      lkModule?.setMicEnabled(true);
-    } else {
-      silenceSelfParticipant(self);
-      lkModule?.setMicEnabled(false);
+    if (!self.isHostMuted) {
+      self.isMuted = restoredSelfMuted;
     }
+    clearSelfAudioActivity(self);
+    if (state.joinedSubRoomId === null) {
+      lkModule?.setMicEnabled(false);
+      notify();
+      return;
+    }
+    lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
       id: makeEventId(),
@@ -3307,13 +4564,17 @@ export function toggleSelfDeafen(): void {
     state.isDeafened = true;
     self.isDeafened = true;
     preDeafenVolume = state.masterVolume;
+    preDeafenSelfMuted = self.isMuted;
     state.masterVolume = 0;
     lkModule?.setMasterVolume(0);
     if (!self.isMuted) {
       self.isMuted = true;
-      self.rmsLevel = 0;
-      self.isSpeaking = false;
-      lkModule?.setMicEnabled(false);
+    }
+    clearSelfAudioActivity(self);
+    lkModule?.setMicEnabled(false);
+    if (state.joinedSubRoomId === null) {
+      notify();
+      return;
     }
     client?.send({ type: 'self_deafen' });
     appendEvent({
@@ -3350,6 +4611,7 @@ export async function startPortalShare(): Promise<boolean> {
   ensureInSubRoomForShare();
   await guardLinuxNativeShareStart();
   emitSharePathSelected('linux_native', 'linux_portal_share');
+  await syncNativeScreenShareQualityBeforeCapture('linux_portal_share');
   const result = await invoke<boolean>('screen_share_start');
   if (result) {
     // Mark self as sharing and notify peers (same as other share paths).
@@ -3383,7 +4645,19 @@ export async function startPortalShare(): Promise<boolean> {
  * Routes to the correct capture commands based on mode, handles atomic
  * rollback on partial failure, sends signaling, and opens the indicator.
  */
-export async function startCustomShare(selection: ShareSelection): Promise<void> {
+interface StartCustomShareOptions {
+  /**
+   * When true, the caller already has an active publication and wants to
+   * replace only the underlying MediaStreamTrack in-place (source change).
+   * Skips prepareNativeCapture() and routes to replaceNativeCaptureSource()
+   * instead of startNativeCapture() so the LiveKit publication is never torn
+   * down, keeping viewers subscribed without a TrackPublished/TrackSubscribed
+   * cycle.
+   */
+  isSourceChange?: boolean;
+}
+
+export async function startCustomShare(selection: ShareSelection, options: StartCustomShareOptions = {}): Promise<void> {
   ensureInSubRoomForShare();
   ensureReusePatchReadyForPublish();
   // 1. Check if the requested slot is available
@@ -3419,6 +4693,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   notify();
 
   let videoStarted = false;
+  let nativeAudioStarted = false;
   const shareSessionId = isVideoShare ? makeShareSessionId() : null;
 
   try {
@@ -3426,62 +4701,217 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     const needsAudio =
       selection.mode === 'audio_only' ||
       (isVideoShare && selection.withAudio);
-    console.log('[AUDIO-DEBUG] startCustomShare called:', selection.mode, 'withAudio:', selection.withAudio);
-    console.log(LOG, '[wasapi-diag] startCustomShare: mode=%s withAudio=%s needsVideo=%s needsAudio=%s',
+    if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startCustomShare: mode=%s withAudio=%s needsVideo=%s needsAudio=%s',
       selection.mode, selection.withAudio, needsVideo, needsAudio);
 
     // 3. Start video first (if needed)
     if (needsVideo) {
+      const sourceKind = selection.sourceKind ?? (selection.mode === 'window' ? 'window' : 'screen');
+      const isPortalVideo = selection.sourceId === 'portal';
+      const defaultNativeLeakBackend = sourceKind === 'screen'
+        ? 'native-gdi-screen'
+        : 'native-gdi-window';
+      const startWindowsNativeAttempt = async (
+        captureBackend: 'wgc' | 'gdi_poll',
+        retryMetadata?: { previousBackend: 'wgc'; retryReason: 'wgc_sustained_low_js_observed_sequence_fps' },
+      ): Promise<void> => {
+        const liveKitModule = lkModule;
+        if (!(liveKitModule instanceof LiveKitModule)) return;
+        const attachRustDiagnostics = async (): Promise<void> => {
+          try {
+            const diagnostics = await invoke<WindowsNativeCaptureDiagnostics | null>(
+              'screen_share_get_capture_diagnostics',
+            );
+            liveKitModule.attachWindowsNativeCaptureDiagnostics(diagnostics);
+          } catch (error) {
+            console.warn(LOG, 'best-effort native capture diagnostics fetch failed:', error);
+          }
+        };
+        const leakBackend = captureBackend === 'wgc'
+          ? 'native-wgc'
+          : sourceKind === 'screen'
+            ? 'native-gdi-screen'
+            : 'native-gdi-window';
+        if (!options.isSourceChange) {
+          liveKitModule.beginNativeCaptureLeakSession({
+            shareSessionId,
+            mode: selection.mode as 'screen_audio' | 'window',
+            sourceId: selection.sourceId,
+            sourceName: selection.sourceName,
+            sourceKind,
+            captureBackend: leakBackend,
+          });
+          liveKitModule.prepareNativeCapture();
+          await liveKitModule.prepareNativeCaptureFailureListener();
+        }
+        emitTelemetryEvent({
+          name: 'capture.path.selected',
+          os: 'windows',
+          path: leakBackend,
+          sourceKind,
+          backend: captureBackend,
+          ts: Date.now(),
+        });
+        let rustCaptureStarted = false;
+        try {
+          await syncNativeScreenShareQualityBeforeCapture(`windows_${captureBackend}`);
+          await invoke('screen_share_start_source', {
+            sourceId: selection.sourceId,
+            shareSessionId,
+            sourceKind,
+            captureBackend,
+            compatibilityMode: selection.compatibilityMode ?? false,
+            previousBackend: retryMetadata?.previousBackend ?? null,
+            retryReason: retryMetadata?.retryReason ?? null,
+          });
+          rustCaptureStarted = true;
+          if (options.isSourceChange) {
+            await liveKitModule.replaceNativeCaptureSource();
+          } else {
+            await liveKitModule.startNativeCapture({
+              firstFrameTimeoutMs: captureBackend === 'gdi_poll' ? 4500 : 2000,
+              lowJsBridgeFpsRetry: captureBackend === 'wgc'
+                ? {
+                    thresholdFps: 20,
+                    durationMs: 2000,
+                    reason: 'wgc_sustained_low_js_observed_sequence_fps',
+                  }
+                : undefined,
+            });
+          }
+          await attachRustDiagnostics();
+        } catch (error) {
+          if (!options.isSourceChange) {
+            liveKitModule.markNativeCaptureFailure(error instanceof Error ? error.message : String(error));
+          }
+          await attachRustDiagnostics();
+          if (!options.isSourceChange) {
+            try {
+              await liveKitModule.stopNativeCapture();
+            } catch (stopError) {
+              console.warn(LOG, 'best-effort stopNativeCapture between native attempts failed:', stopError);
+            }
+          }
+          if (rustCaptureStarted) {
+            try {
+              await invoke('screen_share_stop');
+            } catch (stopError) {
+              console.warn(LOG, 'best-effort screen_share_stop between native attempts failed:', stopError);
+            }
+          }
+          throw error;
+        }
+      };
+
       // On Windows (LiveKit JS SDK path), install the frame buffering
       // handler BEFORE starting the Rust capture. prepareNativeCapture()
       // is synchronous — no async, no event listener, no HWND dependency.
       // This branch is only for the custom picker/native-source pipeline.
-      // The normal Windows `/share` button goes through startFallbackShare()
-      // -> lkModule.startScreenShare() instead.
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.beginNativeCaptureLeakSession({
-          shareSessionId,
-          mode: selection.mode as 'screen_audio' | 'window',
-          sourceId: selection.sourceId,
-          sourceName: selection.sourceName,
-        });
-        lkModule.prepareNativeCapture();
-      }
-
-      if (selection.sourceId === 'portal') {
+      // The normal Windows `/share` button opens the native custom picker in
+      // ActiveRoom; browser getDisplayMedia is not a Windows retry path.
+      if (isWindowsPlatform() && lkModule instanceof LiveKitModule) {
+        const firstBackend =
+          (selection.compatibilityMode === true && sourceKind === 'window')
+            ? 'gdi_poll'
+            : 'wgc';
+        try {
+          await startWindowsNativeAttempt(firstBackend);
+        } catch (error) {
+          emitTelemetryEvent({
+            name: 'capture.native.failed',
+            os: 'windows',
+            sourceKind,
+            backend: firstBackend,
+            reason: error instanceof Error ? error.message : String(error),
+            ts: Date.now(),
+          });
+          const message = error instanceof Error ? error.message : String(error);
+          const shouldRetryGdi =
+            firstBackend === 'wgc' &&
+            !options.isSourceChange &&
+            message.includes('retryReason=wgc_sustained_low_js_observed_sequence_fps');
+          if (shouldRetryGdi) {
+            emitTelemetryEvent({
+              name: 'capture.fallback.activated',
+              os: 'windows',
+              from: 'wgc',
+              to: 'gdi_poll',
+              reason: 'wgc_sustained_low_js_observed_sequence_fps',
+              ts: Date.now(),
+            });
+            await startWindowsNativeAttempt('gdi_poll', {
+              previousBackend: 'wgc',
+              retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
+            });
+          } else {
+            throw error;
+          }
+        }
+        videoStarted = true;
+      } else if (isPortalVideo) {
+        await syncNativeScreenShareQualityBeforeCapture('linux_portal_source');
         await invoke('screen_share_start');
+        videoStarted = true;
       } else {
+        if (lkModule && lkModule instanceof LiveKitModule && !options.isSourceChange) {
+          // Normal start: set up early-frame buffering before Rust capture begins.
+          lkModule.beginNativeCaptureLeakSession({
+            shareSessionId,
+            mode: selection.mode as 'screen_audio' | 'window',
+            sourceId: selection.sourceId,
+            sourceName: selection.sourceName,
+            sourceKind,
+            captureBackend: defaultNativeLeakBackend,
+          });
+          lkModule.prepareNativeCapture();
+        }
+        await syncNativeScreenShareQualityBeforeCapture(
+          isWindowsPlatform() ? 'windows_native_source' : 'linux_native_source',
+        );
         await invoke('screen_share_start_source', {
           sourceId: selection.sourceId,
           shareSessionId,
+          sourceKind,
+          compatibilityMode: selection.compatibilityMode ?? false,
         });
+        videoStarted = true;
       }
-      videoStarted = true;
 
       // On Windows (LiveKit JS SDK path), the Rust capture writes frames
       // to a shared buffer. startNativeCapture() starts a polling loop
       // via invoke('screen_share_poll_frame') that uses the ipc:// protocol
       // (HTTP-like), completely bypassing PostMessage/HWND. This is immune
       // to the HWND corruption caused by child windows (SharePicker).
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        await lkModule.startNativeCapture();
+      if (!isWindowsPlatform() && !isPortalVideo && lkModule && lkModule instanceof LiveKitModule) {
+        if (options.isSourceChange) {
+          // Source change: feed new Rust frames into the existing generator so
+          // viewers stay subscribed without a TrackUnpublished/TrackPublished cycle.
+          await lkModule.replaceNativeCaptureSource();
+        } else {
+          // Normal start: publish a new track via the LiveKit SDK.
+          await lkModule.startNativeCapture();
+        }
       }
     }
 
     // 4. Start audio (if needed)
     if (needsAudio) {
-      console.log('[AUDIO-DEBUG] needsAudio=true, resolving audio source...');
+      if (DEBUG_WASAPI) console.log(LOG, '[wasapi] needsAudio=true, resolving audio source...');
       try {
         let audioSourceId: string;
         if (selection.mode === 'audio_only') {
           audioSourceId = selection.sourceId;
         } else {
-          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via get_default_audio_monitor');
-          audioSourceId = await invoke<string>('get_default_audio_monitor');
+          const monitorCommand = isLinuxPlatform()
+            ? 'get_default_audio_monitor_fast'
+            : 'get_default_audio_monitor';
+          if (DEBUG_WASAPI) console.log(LOG, '[wasapi] resolving default audio monitor via', monitorCommand);
+          audioSourceId = await invoke<string>(monitorCommand);
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] default audio monitor resolved:', audioSourceId);
         }
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] invoking audio_share_start, sourceId:', audioSourceId);
         const audioStartResult = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: audioSourceId });
+        nativeAudioStarted = true;
         emitAudioCaptureSelection(audioStartResult);
         maybeNoticeMacCaptureFallback(audioStartResult);
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio_share_start result:', audioStartResult);
@@ -3502,11 +4932,27 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
             if (DEBUG_WASAPI) console.log(LOG, '[wasapi] bridge fully active');
           } catch (bridgeErr) {
             console.warn(LOG, '[wasapi] WASAPI audio bridge failed:', bridgeErr);
+            throw bridgeErr;
           }
         } else {
           if (DEBUG_WASAPI) console.log(LOG, '[wasapi] skipping bridge — not a LiveKitModule or lkModule null');
         }
       } catch (audioErr) {
+        if (nativeAudioStarted) {
+          if (lkModule && lkModule instanceof LiveKitModule) {
+            try {
+              await lkModule.stopWasapiAudioBridge();
+            } catch (bridgeStopErr) {
+              console.warn(LOG, 'best-effort stopWasapiAudioBridge after audio start failure failed:', bridgeStopErr);
+            }
+          }
+          try {
+            await invoke('audio_share_stop');
+          } catch (audioStopErr) {
+            console.warn(LOG, 'best-effort audio_share_stop after audio start failure failed:', audioStopErr);
+          }
+          nativeAudioStarted = false;
+        }
         if (videoStarted) {
           // Audio failed but video is already running. On Windows (JS SDK path),
           // system audio sharing may not be available yet — downgrade to video-only
@@ -3530,7 +4976,8 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
       }
     }
 
-    // 5. Send signaling on success
+    // 5. Send signaling on success. Re-sending for a layered share updates the
+    // authoritative type used by remote audio gating.
     if (client) {
       client.send({ type: 'start_share', shareType: selection.mode });
     }
@@ -3541,9 +4988,7 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
         const track = lkModule.getLocalScreenShareTrack();
         if (track) selectMotionSampleSource(track);
       }
-      await applyProfileSwitch('detail', 'init');
-      _stopAutoSwitchPoll?.();
-      _stopAutoSwitchPoll = startAutoSwitchPoll();
+      await initializeProfileSwitchAfterShareStart();
     }
 
     // 6. Open or update ShareIndicator window
@@ -3559,13 +5004,40 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
     notify();
   } catch (err) {
     // Guarantee the affected slot returns to idle on failure
-    console.error(LOG, 'startCustomShare failed:', err);
-    // Clean up pre-registered listener if startNativeCapture never ran
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      if (isVideoShare) {
+    console.error(LOG, 'startCustomShare failed:', err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : err);
+    if (nativeAudioStarted) {
+      if (lkModule && lkModule instanceof LiveKitModule) {
+        try {
+          await lkModule.stopWasapiAudioBridge();
+        } catch (bridgeStopErr) {
+          console.warn(LOG, 'best-effort stopWasapiAudioBridge during startCustomShare rollback failed:', bridgeStopErr);
+        }
+      }
+      try {
+        await invoke('audio_share_stop');
+      } catch (audioStopErr) {
+        console.warn(LOG, 'best-effort audio_share_stop during startCustomShare rollback failed:', audioStopErr);
+      }
+    }
+    // Clean up native capture on failure.
+    // For source-change: replaceNativeCaptureSource stopped the new polling loop
+    // but the old publication is still alive — stopNativeCapture unpublishes it.
+    // For normal start: stopNativeCapture clears the listener if startNativeCapture
+    // never reached publishTrack.
+    if (lkModule && lkModule instanceof LiveKitModule && isVideoShare) {
+      if (!options.isSourceChange) {
         lkModule.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       }
       await lkModule.stopNativeCapture();
+    }
+    if (isVideoShare && videoStarted) {
+      try {
+        await invoke('screen_share_stop');
+      } catch (screenStopErr) {
+        console.error(LOG, 'best-effort screen_share_stop during startCustomShare rollback failed:', screenStopErr);
+      }
     }
     if (isVideoShare) {
       state.activeVideoShare = null;
@@ -3577,18 +5049,44 @@ export async function startCustomShare(selection: ShareSelection): Promise<void>
   }
 }
 
+interface StopCustomShareOptions {
+  suppressSignaling?: boolean;
+  /**
+   * When true, skip unpublishTrack on the LiveKit publication so it stays
+   * alive for an in-place track replacement via replaceNativeCaptureSource().
+   * Only meaningful on the Windows/LiveKit native capture path.
+   */
+  keepPublication?: boolean;
+}
+
 /** Stop a specific share slot or all shares. */
-export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all'): Promise<void> {
+export async function stopCustomShare(
+  target: 'video' | 'audio' | 'all' = 'all',
+  options: StopCustomShareOptions = {},
+): Promise<void> {
   const plan = planStopCommands(target, state.activeVideoShare, state.activeAudioShare);
 
   // 1. Stop video capture (best-effort)
   if (plan.stopVideo) {
-    // Stop the native capture bridge on Windows (LiveKit JS SDK path)
+    // Stop the native capture bridge on Windows (LiveKit JS SDK path).
+    // When keepPublication=true (source-change path), skip unpublishTrack so
+    // the LiveKit publication stays alive for replaceNativeCaptureSource().
     if (lkModule && lkModule instanceof LiveKitModule) {
-      try {
-        await lkModule.stopNativeCapture();
-      } catch (err) {
-        console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+      if (options.keepPublication) {
+        // Source change: publication stays alive for replaceNativeCaptureSource().
+      } else {
+        // Signal before stopNativeCapture: LocalTrackUnpublished fires during the
+        // unpublishTrack await inside stopNativeCapture and triggers
+        // onLocalScreenShareEnded, which would send a duplicate stop-share.
+        localStopShareSent = true;
+        try {
+          await lkModule.stopNativeCapture();
+        } catch (err) {
+          console.error(LOG, 'best-effort stopNativeCapture failed:', err);
+        }
+        // Reset defensively: onLocalScreenShareEnded resets it when it fires;
+        // if it didn't fire (no active track), ensure flag is clear for future stops.
+        localStopShareSent = false;
       }
     }
     try {
@@ -3623,9 +5121,19 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
     }
   }
 
-  // 4. Send stop_share signaling
-  if (client) {
-    client.send({ type: 'stop_share' });
+  // 4. Send stop_share signaling — only when the entire share session ends.
+  // If the other slot is still active the participant remains "sharing" on the backend.
+  const willStillBeSharing =
+    (target === 'video' && state.activeAudioShare !== null) ||
+    (target === 'audio' && state.activeVideoShare !== null);
+  if (client && !options.suppressSignaling) {
+    if (!willStillBeSharing) {
+      client.send({ type: 'stop-share' });
+    } else if (target === 'video' && state.activeAudioShare !== null) {
+      client.send({ type: 'start_share', shareType: 'audio_only' });
+    } else if (target === 'audio' && state.activeVideoShare !== null) {
+      client.send({ type: 'start_share', shareType: state.activeVideoShare.mode });
+    }
   }
 
   // 5. Clear affected slot(s)
@@ -3639,15 +5147,7 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
     state.activeAudioShare = null;
   }
 
-  // 6. Update or close ShareIndicator
-  if (state.activeVideoShare || state.activeAudioShare) {
-    await updateShareIndicator();
-  } else {
-    try {
-      const indicatorWin = await WebviewWindow.getByLabel('share-indicator');
-      if (indicatorWin) await indicatorWin.close();
-    } catch { /* best-effort */ }
-  }
+  await updateShareIndicator();
 
   notify();
 
@@ -3660,40 +5160,9 @@ export async function stopCustomShare(target: 'video' | 'audio' | 'all' = 'all')
   });
 }
 
-/** Open or update the ShareIndicator window to reflect current share state. */
-async function updateShareIndicator(): Promise<void> {
-  const shares: Array<{ mode: ShareMode; sourceName: string }> = [];
-  if (state.activeVideoShare) {
-    shares.push({ mode: state.activeVideoShare.mode, sourceName: state.activeVideoShare.sourceName });
-  }
-  if (state.activeAudioShare) {
-    shares.push({ mode: 'audio_only', sourceName: state.activeAudioShare.sourceName });
-  }
-  if (shares.length === 0) return;
-
-  const indicatorParams = { shares };
-  const hash = encodeURIComponent(JSON.stringify(indicatorParams));
-
-  // Close existing indicator first (it may have stale data)
-  try {
-    const existing = await WebviewWindow.getByLabel('share-indicator');
-    if (existing) await existing.close();
-  } catch { /* best-effort */ }
-
-  // Small delay to let the old window fully close before creating a new one
-  await new Promise((r) => setTimeout(r, 50));
-
-  new WebviewWindow('share-indicator', {
-    url: `/share-indicator#${hash}`,
-    title: 'Wavis — Sharing',
-    width: 280,
-    height: shares.length > 1 ? 72 : 48,
-    resizable: false,
-    decorations: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-  });
-}
+/** No-op: share indicator window removed. Stop is accessible from the main room UI. */
+// eslint-disable-next-line @typescript-eslint/no-empty-function
+async function updateShareIndicator(): Promise<void> {}
 
 export async function stopShare(): Promise<void> {
   // Clear local sharing flag immediately for responsive UI
@@ -3714,7 +5183,7 @@ export async function stopShare(): Promise<void> {
   await invoke('audio_share_stop').catch(() => { });
   await lkModule?.stopScreenShare();
   if (client) {
-    client.send({ type: 'stop_share' });
+    client.send({ type: 'stop-share' });
   }
 }
 
@@ -3723,6 +5192,7 @@ export type ShareQuality = 'low' | 'high' | 'max';
 export type { ShareQualityInfo } from './livekit-media';
 
 export async function setShareQuality(quality: ShareQuality): Promise<void> {
+  selectedShareQuality = quality;
   if (lkModule && 'setScreenShareQuality' in lkModule) {
     await (lkModule as { setScreenShareQuality(q: ShareQuality): Promise<void> }).setScreenShareQuality(quality);
   }
@@ -3739,10 +5209,20 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
   }
   if (lkModule && 'restartScreenShareWithAudio' in lkModule) {
     localSourceChanging = true;
-    const result = await (lkModule as LiveKitModule).restartScreenShareWithAudio(withAudio);
-    localSourceChanging = false;
-    if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] toggleShareAudio result:', result);
-    return result;
+    try {
+      const result = await (lkModule as LiveKitModule).restartScreenShareWithAudio(withAudio);
+      if (result && state.activeVideoShare) {
+        state.activeVideoShare.withAudio = withAudio;
+        if (!withAudio) {
+          state.activeVideoShare.audioSourceId = null;
+        }
+        notify();
+      }
+      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] toggleShareAudio result:', result);
+      return result;
+    } finally {
+      localSourceChanging = false;
+    }
   }
   return false;
 }
@@ -3760,7 +5240,7 @@ export async function changeShareSource(): Promise<boolean> {
       // local media is already dead (e.g. replaceTrack threw after teardown).
       const stillActive = (lkModule as LiveKitModule).hasActiveScreenShareTrack();
       if (!stillActive) {
-        client.send({ type: 'stop_share' });
+        client.send({ type: 'stop-share' });
         localStopShareSent = true;
       }
     }
@@ -3781,6 +5261,19 @@ export function updateSessionProfileColor(color: string): void {
     notify();
   }
   client?.send({ type: 'update_profile_color', profileColor: color });
+}
+
+export function updateSessionUsername(username: string): void {
+  sessionUsername = username;
+  if (state.selfParticipantId) {
+    displayNameCache.set(state.selfParticipantId, username);
+    state.participants = state.participants.map((p) =>
+      p.id === state.selfParticipantId ? { ...p, displayName: username } : p,
+    );
+    rebuildVideoTiles();
+    notify();
+  }
+  client?.send({ type: 'update_username', username });
 }
 
 export function setParticipantVolume(participantId: string, volume: number): void {
@@ -3810,6 +5303,7 @@ export function setParticipantVolume(participantId: string, volume: number): voi
         state.joinedSubRoomId,
         state.participantSubRoomById,
         state.passthrough,
+        state.passthroughVolume / 100,
       ),
     );
   }
@@ -3825,6 +5319,7 @@ export function setMasterVolume(volume: number): void {
     const self = state.participants.find((p) => p.id === state.selfParticipantId);
     if (self) self.isDeafened = false;
     preDeafenVolume = null;
+    preDeafenSelfMuted = null;
     client?.send({ type: 'self_undeafen' });
   }
   state.masterVolume = clamped;
@@ -3840,6 +5335,51 @@ export function setScreenShareAudioVolume(participantId: string, volume: number)
   if (lkModule && 'setScreenShareAudioVolume' in lkModule) {
     (lkModule as LiveKitModule).setScreenShareAudioVolume(participantId, clamped);
   }
+}
+
+export function persistStreamVolume(participantId: string, volume: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (p?.userId) {
+    if (!channelVolumePrefs) {
+      channelVolumePrefs = { master: state.masterVolume, participants: {} };
+    }
+    channelVolumePrefs = {
+      ...channelVolumePrefs,
+      streams: { ...(channelVolumePrefs.streams ?? {}), [p.userId]: clamped },
+    };
+  }
+  saveVolumesDebounced();
+}
+
+export function getPersistedStreamVolume(participantId: string): number | null {
+  if (!channelVolumePrefs?.streams) return null;
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.userId) return null;
+  return channelVolumePrefs.streams[p.userId] ?? null;
+}
+
+export function persistStreamMuted(participantId: string, muted: boolean): void {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (p?.userId) {
+    if (!channelVolumePrefs) {
+      channelVolumePrefs = { master: state.masterVolume, participants: {} };
+    }
+    channelVolumePrefs = {
+      ...channelVolumePrefs,
+      streamMutes: { ...(channelVolumePrefs.streamMutes ?? {}), [p.userId]: muted },
+    };
+  }
+  saveVolumesDebounced();
+}
+
+export function getPersistedStreamMuted(participantId: string): boolean | null {
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.userId) return null;
+  const savedMute = channelVolumePrefs?.streamMutes?.[p.userId];
+  if (savedMute !== undefined) return savedMute;
+  // Backward compatibility: older preferences represented mute as volume 0.
+  return channelVolumePrefs?.streams?.[p.userId] === 0 ? true : null;
 }
 
 export function kickParticipant(participantId: string): void {
@@ -3863,7 +5403,7 @@ export function unmuteParticipant(participantId: string): void {
 export function stopParticipantShare(participantId: string): void {
   if (!state.selfIsHost) return;
   if (!client) return;
-  client.send({ type: 'stop_share', targetParticipantId: participantId });
+  client.send({ type: 'stop-share', targetParticipantId: participantId });
 }
 
 export function stopAllShares(): void {
@@ -3909,6 +5449,36 @@ export function setPassthrough(targetSubRoomId: string): void {
 export function clearPassthrough(): void {
   if (!client || client.status !== 'connected') return;
   client.send({ type: 'clear_passthrough' });
+}
+
+export function setPassthroughEnabled(enabled: boolean): void {
+  if (!state.selfIsHost) return;
+  if (!client || client.status !== 'connected') return;
+  client.send({ type: 'set_passthrough_enabled', enabled });
+}
+
+export function setPassthroughVolume(volume: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+  // Debounce WS sends to avoid spamming the server (and its DB role-check) on every
+  // slider pixel. The slider's local useState updates immediately for responsive UI;
+  // the actual signal (and the server-echo that updates state.passthroughVolume) follows
+  // up to 150ms later — an intentional optimistic divergence for a host-only control.
+  if (passthroughVolumeSendTimer) clearTimeout(passthroughVolumeSendTimer);
+  passthroughVolumeSendTimer = setTimeout(() => {
+    passthroughVolumeSendTimer = null;
+    if (!client || client.status !== 'connected') return;
+    client.send({ type: 'set_passthrough_volume', volume: clamped });
+  }, 150);
+}
+
+export function setPassthroughFilter(enabled: boolean, strength: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(strength)));
+  if (passthroughFilterSendTimer) clearTimeout(passthroughFilterSendTimer);
+  passthroughFilterSendTimer = setTimeout(() => {
+    passthroughFilterSendTimer = null;
+    if (!client || client.status !== 'connected') return;
+    client.send({ type: 'set_passthrough_filter', enabled, strength: clamped });
+  }, 150);
 }
 
 /* ─── Chat ──────────────────────────────────────────────────────── */
@@ -3963,6 +5533,7 @@ export function getState(): VoiceRoomState {
       participantIds: [...room.participantIds],
     })),
     participantSubRoomById: { ...state.participantSubRoomById },
+    videoTilesById: { ...state.videoTilesById },
     passthrough: state.passthrough ? { ...state.passthrough } : null,
   };
 }

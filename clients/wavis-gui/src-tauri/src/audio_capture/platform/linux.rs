@@ -860,14 +860,42 @@ fn setup_loopback_exclusion_pactl_inner(
     // -- Step 1.5: Clean up any leftover wavis_capture modules ---------
     cleanup_stale_wavis_modules();
 
+    // Derive hardware sink name from monitor source.
+    // capture_source_id is e.g. "alsa_output.XXX.analog-stereo.monitor"
+    let hardware_sink = capture_source_id
+        .strip_suffix(".monitor")
+        .unwrap_or(capture_source_id);
+
     // -- Step 2: Create capture sink ----------------------------------
+    // The capture sink's format MUST match the hardware sink so that the
+    // pw-link wavis_capture:monitor → hardware:playback connection can
+    // negotiate buffers. PipeWire's direct port-to-port links don't
+    // auto-convert formats: a mismatch produces EINVAL ("use input
+    // buffers: -22"), which cascades to remove the null-sink module
+    // ~100ms after creation. Query the hardware sink first and forward
+    // its format/rate/channels.
+    let mut load_args: Vec<String> = vec![
+        "load-module".to_string(),
+        "module-null-sink".to_string(),
+        "sink_name=wavis_capture".to_string(),
+        "sink_properties=device.description=wavis_capture".to_string(),
+    ];
+    if let Some((format, channels, rate)) = query_sink_format(hardware_sink) {
+        log::info!(
+            "[audio_capture] pactl: matching wavis_capture to hardware sink format={format} channels={channels} rate={rate}"
+        );
+        load_args.push(format!("format={format}"));
+        load_args.push(format!("channels={channels}"));
+        load_args.push(format!("rate={rate}"));
+    } else {
+        log::warn!(
+            "[audio_capture] pactl: could not query hardware sink format for {hardware_sink}; \
+             null sink will use default float32le 2ch 48000Hz (may cause pw-link buffer mismatch)"
+        );
+    }
+
     let load_output = std::process::Command::new("pactl")
-        .args([
-            "load-module",
-            "module-null-sink",
-            "sink_name=wavis_capture",
-            "sink_properties=device.description=wavis_capture",
-        ])
+        .args(&load_args)
         .output()
         .map_err(|e| format!("failed to create capture sink: {e}"))?;
 
@@ -881,12 +909,6 @@ fn setup_loopback_exclusion_pactl_inner(
     let null_sink_module = module_idx_str.parse::<u32>().ok();
 
     log::info!("[audio_capture] pactl: capture sink created, module index: {module_idx_str}");
-
-    // Derive hardware sink name from monitor source.
-    // capture_source_id is e.g. "alsa_output.XXX.analog-stereo.monitor"
-    let hardware_sink = capture_source_id
-        .strip_suffix(".monitor")
-        .unwrap_or(capture_source_id);
 
     // -- Step 3: Set wavis_capture as the default sink ----------------
     // This ensures any NEW audio streams (YouTube opened after sharing,
@@ -1025,31 +1047,37 @@ fn setup_loopback_exclusion_pactl_inner(
         .args(["set-sink-mute", "wavis_capture", "0"])
         .output();
 
-    // -- Step 5.5: Create loopback via pw-link -------------------------
-    // PipeWire's module-loopback (PulseAudio compat) creates nodes and
-    // links but doesn't reliably pass audio. Direct pw-link connections
-    // between wavis_capture's monitor ports and the hardware sink's
-    // playback ports are PipeWire-native and work reliably.
-    let loopback_module = None;
-    let pw_link_fl = std::process::Command::new("pw-link")
+    // -- Step 5.5: Create loopback via module-loopback ----------------
+    // We need wavis_capture.monitor to feed back to the hardware sink so the
+    // user still hears system audio. Direct pw-link port connections trigger
+    // EINVAL ("error use input buffers: -22") on PipeWire 1.5+ when the
+    // monitor source has multiple consumers (the link itself + the pa_simple
+    // capture stream). That cascades to remove the null-sink module ~100ms
+    // after creation and silently re-homes the capture onto the hardware
+    // monitor — which mixes peer voices back in and causes the echo bug.
+    //
+    // module-loopback inserts a session-manager-handled loopback via its own
+    // source-output/sink-input pair, sidestepping the port-level buffer
+    // negotiation. Verified out-of-band: same setup with loopback module
+    // produces no PipeWire errors and the null sink persists.
+    let loopback_load_output = std::process::Command::new("pactl")
         .args([
-            "wavis_capture:monitor_FL",
-            &format!("{hardware_sink}:playback_FL"),
-        ])
-        .output();
-    let pw_link_fr = std::process::Command::new("pw-link")
-        .args([
-            "wavis_capture:monitor_FR",
-            &format!("{hardware_sink}:playback_FR"),
+            "load-module",
+            "module-loopback",
+            "source=wavis_capture.monitor",
+            &format!("sink={hardware_sink}"),
+            "latency_msec=20",
         ])
         .output();
 
-    let warning = match (&pw_link_fl, &pw_link_fr) {
-        (Ok(l), Ok(r)) if l.status.success() && r.status.success() => {
+    let (loopback_module, warning) = match loopback_load_output {
+        Ok(output) if output.status.success() => {
+            let idx_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let idx = idx_str.parse::<u32>().ok();
             log::info!(
-                "[audio_capture] pw-link: connected wavis_capture:monitor → {hardware_sink}:playback"
+                "[audio_capture] pactl: module-loopback loaded (idx={idx_str}) wavis_capture.monitor → {hardware_sink}"
             );
-            None
+            (idx, None)
         }
         _ => {
             restore_partial_loopback_setup(original_default_sink.as_deref(), null_sink_module);
@@ -1139,6 +1167,20 @@ fn setup_loopback_exclusion_pactl_inner(
         wavis_inputs.len()
     );
 
+    // Wait until wavis_capture.monitor is enumerated as a PA source. PipeWire's
+    // pulse-compat layer can take a few hundred ms to surface a freshly-created
+    // null sink's monitor; opening pa_simple against it during that window
+    // returns "Connection terminated" and would drop us to an unsafe fallback.
+    if !wait_for_pa_source(
+        "wavis_capture.monitor",
+        std::time::Duration::from_millis(500),
+    ) {
+        log::warn!(
+            "[audio_capture] pactl: wavis_capture.monitor did not appear within 500ms — \
+             proceeding anyway; capture loop will retry pa_simple_new"
+        );
+    }
+
     Ok(LoopbackExclusion {
         null_sink_module,
         loopback_module,
@@ -1206,6 +1248,73 @@ fn cleanup_stale_wavis_modules() {
     }
 }
 
+/// Query the format, channel count, and sample rate of a sink by name via
+/// `pactl list sinks short`. Returns `(format, channels, rate)` where format
+/// is a string like "s16le" / "float32le" / "s32le", or `None` if the sink is
+/// missing or the output is unparseable.
+///
+/// The short-form output is tab-separated:
+///   `<id>\t<name>\t<driver>\t<format> <channels>ch <rate>Hz\t<state>`
+/// e.g. `58\talsa_output.foo\tPipeWire\ts16le 2ch 48000Hz\tRUNNING`
+#[cfg(target_os = "linux")]
+fn query_sink_format(sink_name: &str) -> Option<(String, u32, u32)> {
+    let output = std::process::Command::new("pactl")
+        .args(["list", "sinks", "short"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let mut cols = line.split('\t');
+        let _id = cols.next()?;
+        let name = cols.next()?;
+        if name != sink_name {
+            continue;
+        }
+        let _driver = cols.next()?;
+        let spec = cols.next()?;
+        // spec is e.g. "s16le 2ch 48000Hz"
+        let mut parts = spec.split_whitespace();
+        let format = parts.next()?.to_string();
+        let channels: u32 = parts.next()?.trim_end_matches("ch").parse().ok()?;
+        let rate: u32 = parts.next()?.trim_end_matches("Hz").parse().ok()?;
+        return Some((format, channels, rate));
+    }
+    None
+}
+
+/// Poll `pactl list short sources` until `source_id` appears or `timeout` elapses.
+/// Used after creating wavis_capture's null sink to absorb the brief window
+/// during which PipeWire's pulse-compat layer hasn't yet surfaced the new
+/// monitor source, which would cause pa_simple_new to fail with "Connection
+/// terminated".
+#[cfg(target_os = "linux")]
+fn wait_for_pa_source(source_id: &str, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(output) = std::process::Command::new("pactl")
+            .args(["list", "short", "sources"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout
+                    .lines()
+                    .any(|l| l.split('\t').nth(1) == Some(source_id))
+                {
+                    return true;
+                }
+            }
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Preflight: confirm the `pactl` CLI is on PATH. The capture pipeline shells
 /// out to it for sink-input enumeration, null-sink creation, and routing —
 /// without it `audio_share_start` would fail mid-setup with an opaque error.
@@ -1213,13 +1322,14 @@ fn cleanup_stale_wavis_modules() {
 /// pulled in automatically by `pipewire-pulse`.
 #[cfg(target_os = "linux")]
 fn ensure_pactl_available() -> Result<(), String> {
-    match std::process::Command::new("pactl").arg("--version").output() {
+    match std::process::Command::new("pactl")
+        .arg("--version")
+        .output()
+    {
         Ok(o) if o.status.success() => Ok(()),
-        _ => Err(
-            "system audio sharing requires `pactl` — install it with: \
+        _ => Err("system audio sharing requires `pactl` — install it with: \
              sudo apt install pulseaudio-utils"
-                .to_string(),
-        ),
+            .to_string()),
     }
 }
 
@@ -1408,26 +1518,57 @@ fn audio_capture_loop(
         fragsize: FRAME_BYTES,
     };
 
-    let simple = match Simple::new(
-        None,                // Default server
-        "wavis-audio-share", // Application name
-        Direction::Record,
-        Some(source_id), // Source device
-        "screen-audio",  // Stream description
-        &spec,
-        None, // Default channel map
-        Some(&buffer_attr),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("[audio_capture] pa_simple open failed: {e}");
-            let _ = conn.unpublish_screen_audio();
-            emit_linux_capture_fallback(app, format!("Audio capture failed: {e}"));
-            let _ = app.emit(
-                "share_error",
-                serde_json::json!({ "message": format!("Audio capture failed: {e}") }),
-            );
-            return;
+    // PipeWire's pulse-compat layer occasionally returns "Connection terminated"
+    // on the first pa_simple_new() against a freshly-created null sink monitor.
+    // Retry a few times with backoff before declaring failure; if exclusion is
+    // in use, falling through to an unprotected source would leak peer audio.
+    const PA_OPEN_ATTEMPTS: u32 = 3;
+    const PA_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(150);
+    let simple = {
+        let mut last_err: Option<String> = None;
+        let mut opened: Option<Simple> = None;
+        for attempt in 1..=PA_OPEN_ATTEMPTS {
+            match Simple::new(
+                None,                // Default server
+                "wavis-audio-share", // Application name
+                Direction::Record,
+                Some(source_id), // Source device
+                "screen-audio",  // Stream description
+                &spec,
+                None, // Default channel map
+                Some(&buffer_attr),
+            ) {
+                Ok(s) => {
+                    if attempt > 1 {
+                        log::info!("[audio_capture] pa_simple open succeeded on attempt {attempt}");
+                    }
+                    opened = Some(s);
+                    break;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[audio_capture] pa_simple open attempt {attempt}/{PA_OPEN_ATTEMPTS} failed: {e}"
+                    );
+                    last_err = Some(format!("{e}"));
+                    if attempt < PA_OPEN_ATTEMPTS {
+                        std::thread::sleep(PA_OPEN_BACKOFF);
+                    }
+                }
+            }
+        }
+        match opened {
+            Some(s) => s,
+            None => {
+                let err = last_err.unwrap_or_else(|| "unknown".to_string());
+                log::error!("[audio_capture] pa_simple open failed after retries: {err}");
+                let _ = conn.unpublish_screen_audio();
+                emit_linux_capture_fallback(app, format!("Audio capture failed: {err}"));
+                let _ = app.emit(
+                    "share_error",
+                    serde_json::json!({ "message": format!("Audio capture failed: {err}") }),
+                );
+                return;
+            }
         }
     };
 
@@ -1625,26 +1766,6 @@ fn teardown_loopback_exclusion_pactl(handle: &AudioCaptureHandle) {
     }
 
     // Step 3: Disconnect pw-link loopback and unload loopback module (if any).
-    let hardware_sink_name = handle
-        .source_id
-        .strip_suffix(".monitor")
-        .unwrap_or(&handle.source_id);
-    let _ = std::process::Command::new("pw-link")
-        .args([
-            "-d",
-            "wavis_capture:monitor_FL",
-            &format!("{hardware_sink_name}:playback_FL"),
-        ])
-        .output();
-    let _ = std::process::Command::new("pw-link")
-        .args([
-            "-d",
-            "wavis_capture:monitor_FR",
-            &format!("{hardware_sink_name}:playback_FR"),
-        ])
-        .output();
-    log::info!("[audio_capture] pactl teardown: pw-link loopback disconnected");
-
     if let Some(idx) = handle.loopback_module {
         let _ = std::process::Command::new("pactl")
             .args(["unload-module", &idx.to_string()])

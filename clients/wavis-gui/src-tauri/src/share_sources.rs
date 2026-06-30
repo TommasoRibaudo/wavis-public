@@ -107,6 +107,7 @@ fn encode_thumbnail_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Option<
     let img: RgbaImage = ImageBuffer::from_raw(width, height, rgba.to_vec())
         .ok_or_else(|| "failed to create image from frame data".to_string())?;
 
+    // Resize before converting to save work on large screens.
     let img = if width > THUMBNAIL_MAX_DIM || height > THUMBNAIL_MAX_DIM {
         image::imageops::resize(
             &img,
@@ -118,15 +119,21 @@ fn encode_thumbnail_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Option<
         img
     };
 
+    // JPEG has no alpha channel — convert RGBA → RGB before encoding.
+    // Passing Rgba8 to JpegEncoder returns UnsupportedError in image 0.25.
+    let img_rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+
     let mut jpeg_buf = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut jpeg_buf);
 
     let encoder =
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, THUMBNAIL_JPEG_QUALITY);
-    img.write_with_encoder(encoder)
+    img_rgb
+        .write_with_encoder(encoder)
         .map_err(|e| format!("JPEG encoding failed: {e}"))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_buf);
+    crate::debug_eprintln!("[share-picker] thumbnail encoded: {}x{} → {} bytes base64", width, height, b64.len());
     Ok(Some(b64))
 }
 
@@ -169,6 +176,15 @@ pub fn share_picker_cancel(app: tauri::AppHandle) -> Result<(), String> {
 
     app.emit_to("main", "share-picker:cancelled", ())
         .map_err(|e| format!("failed to emit share-picker:cancelled: {e}"))
+}
+
+/// Relay a request to use the native portal/system picker to the main window.
+#[tauri::command]
+pub fn share_picker_use_portal(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+
+    app.emit_to("main", "share-picker:use-portal", ())
+        .map_err(|e| format!("failed to emit share-picker:use-portal: {e}"))
 }
 
 #[cfg(test)]

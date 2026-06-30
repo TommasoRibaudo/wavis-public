@@ -2,6 +2,35 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn start_share_accepts_legacy_and_typed_payloads() {
+    assert_eq!(
+        parse(r#"{"type":"start_share"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload::default()),
+    );
+    assert_eq!(
+        parse(r#"{"type":"start_share","shareType":"audio_only"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload {
+            share_type: Some(WireShareType::AudioOnly),
+        }),
+    );
+    assert!(parse(r#"{"type":"start_share","shareType":"unexpected"}"#).is_err());
+}
+
+#[test]
+fn share_state_serializes_typed_metadata_and_legacy_ids() {
+    let json = to_json(&SignalingMessage::ShareState(ShareStatePayload {
+        participant_ids: vec!["peer-1".to_string()],
+        active_shares: vec![ActiveSharePayload {
+            participant_id: "peer-1".to_string(),
+            share_type: Some(WireShareType::Window),
+        }],
+    }))
+    .unwrap();
+    assert!(json.contains(r#""participantIds":["peer-1"]"#));
+    assert!(json.contains(r#""activeShares":[{"participantId":"peer-1","shareType":"window"}]"#));
+}
+
+#[test]
 fn chat_payloads_serialize_optional_user_id_as_user_id() {
     let chat = SignalingMessage::ChatMessage(ChatMessagePayload {
         participant_id: "peer-1".to_string(),
@@ -139,6 +168,80 @@ fn test_sfu_cold_starting_serialization() {
 }
 
 #[test]
+fn test_set_passthrough_volume_round_trip() {
+    let msg = SignalingMessage::SetPassthroughVolume(SetPassthroughVolumePayload { volume: 35 });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(json, r#"{"type":"set_passthrough_volume","volume":35}"#);
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_set_passthrough_enabled_round_trip() {
+    let msg =
+        SignalingMessage::SetPassthroughEnabled(SetPassthroughEnabledPayload { enabled: true });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(json, r#"{"type":"set_passthrough_enabled","enabled":true}"#);
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_set_passthrough_filter_round_trip() {
+    let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
+        enabled: true,
+        strength: 65,
+    });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"set_passthrough_filter","enabled":true,"strength":65}"#
+    );
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_sub_room_state_passthrough_volume_round_trip() {
+    // Verify the camelCase wire field name and that the value survives a round-trip.
+    let msg = SignalingMessage::SubRoomState(SubRoomStatePayload {
+        rooms: vec![],
+        passthrough: None,
+        passthrough_enabled: true,
+        passthrough_volume_percent: 42,
+        passthrough_filters_enabled: true,
+        passthrough_filter_strength: 50,
+    });
+    let json = to_json(&msg).unwrap();
+    assert!(
+        json.contains(r#""passthroughVolumePercent":42"#),
+        "got: {json}"
+    );
+    assert!(
+        json.contains(r#""passthroughFiltersEnabled":true"#),
+        "got: {json}"
+    );
+    assert!(
+        json.contains(r#""passthroughFilterStrength":50"#),
+        "got: {json}"
+    );
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
+fn test_sub_room_state_passthrough_volume_default_on_absent_field() {
+    // Old servers omit the field; clients should default to 20.
+    let json = r#"{"type":"sub_room_state","rooms":[]}"#;
+    let parsed = parse(json).unwrap();
+    match parsed {
+        SignalingMessage::SubRoomState(p) => {
+            assert_eq!(p.passthrough_volume_percent, 20);
+            assert!(!p.passthrough_enabled);
+            assert!(p.passthrough_filters_enabled);
+            assert_eq!(p.passthrough_filter_strength, 50);
+        }
+        _ => panic!("expected SubRoomState"),
+    }
+}
+
+#[test]
 fn test_join_voice_supports_sub_rooms_serialization() {
     let msg = SignalingMessage::JoinVoice(JoinVoicePayload {
         channel_id: "00000000-0000-0000-0000-000000000001".to_string(),
@@ -176,6 +279,10 @@ fn test_sub_room_state_round_trip() {
             target_sub_room_id: "sub-room-2".to_string(),
             label: "1 - 2".to_string(),
         }),
+        passthrough_enabled: true,
+        passthrough_volume_percent: 20,
+        passthrough_filters_enabled: true,
+        passthrough_filter_strength: 50,
     });
     let json = to_json(&msg).unwrap();
     assert!(json.contains(r#""type":"sub_room_state""#));
@@ -361,11 +468,12 @@ proptest! {
                            "room_state", "media_token", "kick_participant", "mute_participant",
                            "unmute_participant",
                            "participant_kicked", "participant_muted", "participant_unmuted",
-                           "start_share", "share_started", "stop_share", "share_stopped",
+                           "start_share", "share_started", "stop-share", "share_stopped",
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
-                           "set_passthrough", "clear_passthrough",
+                           "set_passthrough", "clear_passthrough", "set_passthrough_enabled", "set_passthrough_volume",
+                           "set_passthrough_filter",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",
                            "sfu_cold_starting",

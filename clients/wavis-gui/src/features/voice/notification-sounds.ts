@@ -15,6 +15,7 @@ let cachedSoundVolumes: Record<string, number> | null = null;
 // AudioBufferSourceNode. fetch() works with tauri:// in both dev and
 // production. This is the same API the voice chat system uses.
 let audioCtx: AudioContext | null = null;
+let gestureListenerActive = false;
 
 // Cache decoded audio buffers so we only fetch + decode each sound once.
 const bufferCache: Map<string, AudioBuffer> = new Map();
@@ -32,6 +33,40 @@ function getAudioContext(): AudioContext {
     audioCtx = new AudioContext();
   }
   return audioCtx;
+}
+
+// Register a one-shot click/keydown listener so the AudioContext is resumed
+// on the next user gesture if the immediate resume() call fails or is pending.
+function registerGestureListenerIfNeeded(ctx: AudioContext): void {
+  if (gestureListenerActive || ctx.state !== 'suspended') return;
+  gestureListenerActive = true;
+  const resume = () => {
+    ctx.resume().catch(() => {});
+    document.removeEventListener('click', resume);
+    document.removeEventListener('keydown', resume);
+    gestureListenerActive = false;
+  };
+  document.addEventListener('click', resume);
+  document.addEventListener('keydown', resume);
+}
+
+/**
+ * Pre-warm the AudioContext so it is ready before the first notification
+ * sound is triggered. Call this when media starts connecting to avoid the
+ * AudioContext being created lazily inside an async callback where the
+ * browser may refuse to resume it without a prior user gesture.
+ *
+ * Mirrors the pattern in livekit-media.ts ensureAudioContext().
+ */
+export function prewarmAudioContext(): void {
+  if (typeof AudioContext === 'undefined') return;
+  const ctx = getAudioContext();
+  if (ctx.state !== 'suspended') return;
+  // In Tauri (WebView2/WebKit) the autoplay policy is often more relaxed
+  // than in a browser tab, so resume() may succeed without a user gesture.
+  ctx.resume().catch(() => {});
+  // Register a gesture listener as fallback in case resume() is blocked.
+  registerGestureListenerIfNeeded(ctx);
 }
 
 async function getAudioBuffer(name: string): Promise<AudioBuffer> {
@@ -68,6 +103,7 @@ export async function playNotificationSound(name: string): Promise<void> {
 
     // Resume AudioContext if suspended (browser autoplay policy).
     if (ctx.state === 'suspended') {
+      registerGestureListenerIfNeeded(ctx);
       await ctx.resume();
     }
 

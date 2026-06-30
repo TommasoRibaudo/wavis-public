@@ -13,6 +13,34 @@ use super::super::{
 /// picker stays responsive even if one Win32 call stalls.
 const WIN_ENUM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
+fn measure_window_area(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+
+    unsafe {
+        let mut client_rect = RECT::default();
+        if GetClientRect(hwnd, &mut client_rect).is_ok() {
+            let width = (client_rect.right - client_rect.left).max(0) as u32;
+            let height = (client_rect.bottom - client_rect.top).max(0) as u32;
+            let client_area = width.saturating_mul(height);
+            if client_area > 0 {
+                return client_area;
+            }
+        }
+
+        // Some Chromium-family windows intermittently report a zero client rect
+        // during enumeration even though the top-level window is visible.
+        let mut window_rect = RECT::default();
+        if GetWindowRect(hwnd, &mut window_rect).is_ok() {
+            let width = (window_rect.right - window_rect.left).max(0) as u32;
+            let height = (window_rect.bottom - window_rect.top).max(0) as u32;
+            return width.saturating_mul(height);
+        }
+    }
+
+    0
+}
+
 /// Check whether the Windows Graphics Capture API is available.
 fn check_graphics_capture_available() -> bool {
     use windows::Graphics::Capture::GraphicsCaptureSession;
@@ -109,7 +137,7 @@ fn enumerate_windows(deadline: std::time::Instant) -> Result<Vec<ShareSource>, S
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+        EnumWindows, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
@@ -153,18 +181,13 @@ fn enumerate_windows(deadline: std::time::Instant) -> Result<Vec<ShareSource>, S
             return BOOL(1);
         }
 
-        let mut rect = std::mem::zeroed();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left) as u32;
-        let height = (rect.bottom - rect.top) as u32;
-
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
         let descriptor = WindowDescriptor {
             is_visible,
             is_minimized,
-            client_area: width.saturating_mul(height),
+            client_area: measure_window_area(hwnd),
             process_id: pid,
         };
         if !should_include_window(&descriptor, state.self_pid) {
@@ -261,7 +284,7 @@ fn enumerate_window_audio_sources(
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClientRect, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+        EnumWindows, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
 
@@ -305,11 +328,6 @@ fn enumerate_window_audio_sources(
             return BOOL(1);
         }
 
-        let mut rect = std::mem::zeroed();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left) as u32;
-        let height = (rect.bottom - rect.top) as u32;
-
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
@@ -319,7 +337,7 @@ fn enumerate_window_audio_sources(
         let descriptor = WindowDescriptor {
             is_visible,
             is_minimized,
-            client_area: width.saturating_mul(height),
+            client_area: measure_window_area(hwnd),
             process_id: pid,
         };
         if !should_include_window(&descriptor, state.self_pid) {
@@ -422,14 +440,21 @@ fn enumerate_window_audio_sources(
 fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC, DeleteObject,
-        GetMonitorInfoW, GetWindowDC, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetMonitorInfoW, ReleaseDC, SelectObject, HMONITOR, MONITORINFO, SRCCOPY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PW_RENDERFULLCONTENT};
 
     let handle_val: isize = match source_id.parse() {
         Ok(value) => value,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            crate::debug_eprintln!(
+                "[share-thumb] source_id '{}' is not an isize handle",
+                source_id
+            );
+            return Ok(None);
+        }
     };
 
     unsafe {
@@ -438,41 +463,62 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
         let got_rect = GetClientRect(hwnd, &mut client_rect);
 
         if got_rect.is_ok() {
-            let mut win_rect = std::mem::zeroed();
-            if GetWindowRect(hwnd, &mut win_rect).is_err() {
-                return Ok(None);
-            }
-            let w = (win_rect.right - win_rect.left) as u32;
-            let h = (win_rect.bottom - win_rect.top) as u32;
+            crate::debug_eprintln!("[share-thumb] capturing window handle {}", handle_val);
+            // Use client-area dimensions — PW_CLIENTONLY captures only the client area,
+            // which excludes title bars and borders (cleaner thumbnails, consistent with
+            // the live capture path in gdi_capture.rs).
+            let w = (client_rect.right - client_rect.left) as u32;
+            let h = (client_rect.bottom - client_rect.top) as u32;
             if w == 0 || h == 0 {
+                crate::debug_eprintln!(
+                    "[share-thumb] window {}x{} has zero client dimension",
+                    w,
+                    h
+                );
                 return Ok(None);
             }
 
-            let wnd_dc = GetWindowDC(hwnd);
-            if wnd_dc.is_invalid() {
+            // PrintWindow(PW_RENDERFULLCONTENT) renders hardware-accelerated content
+            // (GPU-rendered UI, embedded video players, DirectX surfaces) that
+            // GetWindowDC+BitBlt cannot read, causing those regions to show black.
+            let screen_dc = GetDC(HWND::default());
+            if screen_dc.is_invalid() {
+                crate::debug_eprintln!("[share-thumb] GetDC(NULL) failed (window)");
                 return Ok(None);
             }
 
-            let mem_dc = CreateCompatibleDC(wnd_dc);
+            let mem_dc = CreateCompatibleDC(screen_dc);
             if mem_dc.is_invalid() {
-                ReleaseDC(hwnd, wnd_dc);
+                ReleaseDC(HWND::default(), screen_dc);
+                crate::debug_eprintln!("[share-thumb] CreateCompatibleDC failed (window)");
                 return Ok(None);
             }
-            let bitmap = CreateCompatibleBitmap(wnd_dc, w as i32, h as i32);
+            let bitmap = CreateCompatibleBitmap(screen_dc, w as i32, h as i32);
             if bitmap.is_invalid() {
                 let _ = DeleteDC(mem_dc);
-                let _ = ReleaseDC(hwnd, wnd_dc);
+                ReleaseDC(HWND::default(), screen_dc);
+                crate::debug_eprintln!("[share-thumb] CreateCompatibleBitmap failed (window)");
                 return Ok(None);
             }
             let old_bmp = SelectObject(mem_dc, bitmap);
-
-            let _ = BitBlt(mem_dc, 0, 0, w as i32, h as i32, wnd_dc, 0, 0, SRCCOPY);
-
-            let rgba = read_bitmap_rgba(mem_dc, bitmap, wnd_dc, w, h);
+            let _ = PrintWindow(
+                hwnd,
+                mem_dc,
+                PRINT_WINDOW_FLAGS(PW_CLIENTONLY.0 | PW_RENDERFULLCONTENT),
+            );
+            // Deselect before GetDIBits — GDI requires the bitmap not be selected
+            // into any DC when GetDIBits reads its pixel data.
             SelectObject(mem_dc, old_bmp);
+            let rgba = read_bitmap_rgba(bitmap, screen_dc, w, h);
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(hwnd, wnd_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            crate::debug_eprintln!(
+                "[share-thumb] window capture {}x{}: rgba={}",
+                w,
+                h,
+                rgba.is_some()
+            );
 
             return match rgba {
                 Some(data) => Ok(Some((data, w, h))),
@@ -480,38 +526,56 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             };
         }
 
+        // Not a window — try as monitor.
+        crate::debug_eprintln!("[share-thumb] capturing monitor handle {}", handle_val);
         let monitor = HMONITOR(handle_val as *mut _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..std::mem::zeroed()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+            crate::debug_eprintln!(
+                "[share-thumb] GetMonitorInfoW failed for handle {}",
+                handle_val
+            );
             return Ok(None);
         }
 
         let w = (mi.rcMonitor.right - mi.rcMonitor.left) as u32;
         let h = (mi.rcMonitor.bottom - mi.rcMonitor.top) as u32;
+        crate::debug_eprintln!(
+            "[share-thumb] monitor rect ({},{}) {}x{}",
+            mi.rcMonitor.left,
+            mi.rcMonitor.top,
+            w,
+            h
+        );
         if w == 0 || h == 0 {
+            crate::debug_eprintln!("[share-thumb] monitor has zero dimension");
             return Ok(None);
         }
 
-        let screen_dc = CreateDCW(&windows::core::HSTRING::from("DISPLAY"), None, None, None);
+        // GetDC(NULL) returns a DC for the entire virtual screen (all monitors),
+        // which is required to BitBlt from secondary monitors at non-zero offsets.
+        let screen_dc = GetDC(HWND::default());
         if screen_dc.is_invalid() {
+            crate::debug_eprintln!("[share-thumb] GetDC(NULL) failed");
             return Ok(None);
         }
         let mem_dc = CreateCompatibleDC(screen_dc);
         if mem_dc.is_invalid() {
-            let _ = DeleteDC(screen_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            crate::debug_eprintln!("[share-thumb] CreateCompatibleDC failed (monitor)");
             return Ok(None);
         }
         let bitmap = CreateCompatibleBitmap(screen_dc, w as i32, h as i32);
         if bitmap.is_invalid() {
             let _ = DeleteDC(mem_dc);
-            let _ = DeleteDC(screen_dc);
+            ReleaseDC(HWND::default(), screen_dc);
+            crate::debug_eprintln!("[share-thumb] CreateCompatibleBitmap failed (monitor)");
             return Ok(None);
         }
         let old_bmp = SelectObject(mem_dc, bitmap);
-
         let _ = BitBlt(
             mem_dc,
             0,
@@ -523,12 +587,19 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
             mi.rcMonitor.top,
             SRCCOPY,
         );
-
-        let rgba = read_bitmap_rgba(mem_dc, bitmap, screen_dc, w, h);
+        // Deselect before GetDIBits — GDI requires the bitmap not be selected
+        // into any DC when GetDIBits reads its pixel data.
         SelectObject(mem_dc, old_bmp);
+        let rgba = read_bitmap_rgba(bitmap, screen_dc, w, h);
         let _ = DeleteObject(bitmap);
         let _ = DeleteDC(mem_dc);
-        let _ = DeleteDC(screen_dc);
+        ReleaseDC(HWND::default(), screen_dc);
+        crate::debug_eprintln!(
+            "[share-thumb] monitor capture {}x{}: rgba={}",
+            w,
+            h,
+            rgba.is_some()
+        );
 
         match rgba {
             Some(data) => Ok(Some((data, w, h))),
@@ -538,13 +609,14 @@ fn capture_single_frame_windows(source_id: &str) -> Result<Option<(Vec<u8>, u32,
 }
 
 /// Read BGRA pixel data from a GDI bitmap and convert it to RGBA.
+/// The bitmap must NOT be selected into any DC before this is called.
 unsafe fn read_bitmap_rgba(
-    _mem_dc: windows::Win32::Graphics::Gdi::HDC,
     bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-    screen_dc: windows::Win32::Graphics::Gdi::HDC,
+    dc: windows::Win32::Graphics::Gdi::HDC,
     w: u32,
     h: u32,
 ) -> Option<Vec<u8>> {
+    let screen_dc = dc;
     use windows::Win32::Graphics::Gdi::{
         GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
     };
@@ -563,6 +635,12 @@ unsafe fn read_bitmap_rgba(
     };
 
     let mut bgra = vec![0u8; (w * h * 4) as usize];
+    crate::debug_eprintln!(
+        "[share-thumb] GetDIBits: {}x{} ({} bytes)",
+        w,
+        h,
+        bgra.len()
+    );
     let rows = GetDIBits(
         screen_dc,
         bitmap,
@@ -574,12 +652,27 @@ unsafe fn read_bitmap_rgba(
     );
 
     if rows == 0 {
+        crate::debug_eprintln!("[share-thumb] GetDIBits returned 0 rows for {}x{}", w, h);
         return None;
     }
+    crate::debug_eprintln!("[share-thumb] GetDIBits read {} rows for {}x{}", rows, w, h);
 
     for pixel in bgra.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
+    }
+
+    // GDI BitBlt returns a valid (non-zero row count) but all-black bitmap for
+    // GPU/DirectX-rendered windows it cannot read. Treat a fully-black frame as
+    // a capture failure so callers show the name fallback instead.
+    let is_all_black = bgra
+        .chunks_exact(4)
+        .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
+    if is_all_black {
+        crate::debug_eprintln!(
+            "[share-thumb] all-black frame detected, treating as capture failure"
+        );
+        return None;
     }
 
     Some(bgra)
@@ -609,11 +702,11 @@ pub(super) fn fetch_thumbnail(source_id: &str) -> Result<Option<String>, String>
         Ok(Ok(Some((rgba, w, h)))) => encode_thumbnail_jpeg(&rgba, w, h),
         Ok(Ok(None)) => Ok(None),
         Ok(Err(e)) => {
-            log::debug!("thumbnail capture failed: {e}");
+            crate::debug_eprintln!("thumbnail capture failed: {e}");
             Ok(None)
         }
         Err(_) => {
-            log::debug!("thumbnail fetch timed out");
+            crate::debug_eprintln!("thumbnail fetch timed out");
             Ok(None)
         }
     }

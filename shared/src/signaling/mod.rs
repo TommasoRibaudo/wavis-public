@@ -74,6 +74,16 @@ pub enum WireSharePermission {
     HostOnly,
 }
 
+/// Wire-format screen share type.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WireShareType {
+    ScreenAudio,
+    Window,
+    AudioOnly,
+    Browser,
+}
+
 impl WireSharePermission {
     /// Parse from a raw string (e.g. from legacy code paths).
     /// Returns `None` for unrecognized values.
@@ -170,10 +180,11 @@ pub enum SignalingMessage {
     ParticipantUndeafened(ParticipantUndeafenedPayload),
     // Phase 3: Screen share lifecycle
     /// Client -> server request to begin screen sharing.
-    StartShare,
+    StartShare(StartSharePayload),
     /// Server -> all participants broadcast that a share started.
     ShareStarted(ShareStartedPayload),
     /// Client -> server request to stop a share.
+    #[serde(rename = "stop-share")]
     StopShare(StopSharePayload),
     /// Server -> all participants broadcast that a share stopped.
     ShareStopped(ShareStoppedPayload),
@@ -216,6 +227,12 @@ pub enum SignalingMessage {
     SetPassthrough(SetPassthroughPayload),
     /// Client -> server request to clear the active passthrough pair.
     ClearPassthrough(ClearPassthroughPayload),
+    /// Client -> server (admin/owner) request to enable or disable passthrough linking.
+    SetPassthroughEnabled(SetPassthroughEnabledPayload),
+    /// Client -> server (admin/owner) request to set the passthrough volume for all participants.
+    SetPassthroughVolume(SetPassthroughVolumePayload),
+    /// Client -> server (admin/owner) request to set passthrough muffle filter settings.
+    SetPassthroughFilter(SetPassthroughFilterPayload),
     /// Server -> client snapshot of the synchronized sub-room layout.
     SubRoomState(SubRoomStatePayload),
     /// Server -> client broadcast that a new sub-room was created.
@@ -250,6 +267,10 @@ pub enum SignalingMessage {
     UpdateProfileColor(UpdateProfileColorPayload),
     /// Server -> all participants broadcast that a participant changed their profile color.
     ParticipantColorUpdated(ParticipantColorUpdatedPayload),
+    /// Client -> server notification that the sender changed their username.
+    UpdateUsername(UpdateUsernamePayload),
+    /// Server -> all participants broadcast that a participant changed their username.
+    ParticipantUsernameUpdated(ParticipantUsernameUpdatedPayload),
 }
 
 /// Client requests room creation. No invite code needed — creator becomes Host.
@@ -467,6 +488,19 @@ pub struct ParticipantInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub profile_color: Option<String>,
+    /// Whether this participant's microphone is currently muted.
+    #[serde(rename = "isMuted", default, skip_serializing_if = "is_false")]
+    pub is_muted: bool,
+    /// Whether the current mute was imposed by a host.
+    #[serde(rename = "isHostMuted", default, skip_serializing_if = "is_false")]
+    pub is_host_muted: bool,
+    /// Whether this participant is currently deafened.
+    #[serde(rename = "isDeafened", default, skip_serializing_if = "is_false")]
+    pub is_deafened: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Broadcast to existing participants when a new participant joins.
@@ -604,6 +638,14 @@ pub struct ParticipantUndeafenedPayload {
 
 // --- Phase 3: Screen share payload structs ---
 
+/// Client requests to begin a screen share.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct StartSharePayload {
+    /// Optional for compatibility with legacy clients.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
+}
+
 /// Broadcast to all participants when a screen share starts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShareStartedPayload {
@@ -613,6 +655,9 @@ pub struct ShareStartedPayload {
     /// Display name for the sharer who started presenting.
     #[serde(rename = "displayName")]
     pub display_name: String,
+    /// Optional for compatibility with legacy clients.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Client requests to stop a screen share (optionally targeting another participant's share).
@@ -643,6 +688,20 @@ pub struct ShareStatePayload {
     /// Participant identifiers for every currently active sharer.
     #[serde(rename = "participantIds")]
     pub participant_ids: Vec<String>,
+    /// Typed metadata for clients that support share-type-aware behavior.
+    #[serde(rename = "activeShares", default, skip_serializing_if = "Vec::is_empty")]
+    pub active_shares: Vec<ActiveSharePayload>,
+}
+
+/// Typed metadata for one active share in a late-join snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveSharePayload {
+    /// Participant identifier for the active sharer.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+    /// Optional when the share was started by a legacy client.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Client (host) requests a share permission change.
@@ -732,9 +791,10 @@ pub struct JoinVoicePayload {
 }
 
 /// Source of a participant's sub-room membership.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum WireSubRoomMembershipSource {
     #[serde(rename = "explicit")]
+    #[default]
     Explicit,
     #[serde(rename = "legacy_room_one")]
     LegacyRoomOne,
@@ -793,6 +853,28 @@ pub struct SetPassthroughPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClearPassthroughPayload {}
 
+/// Client (admin/owner) enables or disables new passthrough links for the channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughEnabledPayload {
+    pub enabled: bool,
+}
+
+/// Client (admin/owner) sets the passthrough volume for all participants (0–100).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughVolumePayload {
+    /// Passthrough volume as a percentage (0–100). Clamped server-side.
+    pub volume: u8,
+}
+
+/// Client (admin/owner) sets the passthrough muffle filter for all participants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetPassthroughFilterPayload {
+    /// Whether passthrough participants should be spectrally muffled.
+    pub enabled: bool,
+    /// Filter strength as a percentage (0–100).
+    pub strength: u8,
+}
+
 /// Authoritative passthrough pair included in synchronized sub-room snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PassthroughStatePayload {
@@ -815,6 +897,39 @@ pub struct SubRoomStatePayload {
     /// Optional active passthrough pair for the voice session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<PassthroughStatePayload>,
+    /// Whether channel members may create new passthrough links. Defaults off for backward compat.
+    #[serde(rename = "passthroughEnabled", default)]
+    pub passthrough_enabled: bool,
+    /// Passthrough volume as a percentage (0–100). Defaults to 20 if absent (backward compat).
+    #[serde(
+        rename = "passthroughVolumePercent",
+        default = "default_passthrough_volume"
+    )]
+    pub passthrough_volume_percent: u8,
+    /// Whether passthrough muffle filtering is enabled. Defaults on for backward compat.
+    #[serde(
+        rename = "passthroughFiltersEnabled",
+        default = "default_passthrough_filters_enabled"
+    )]
+    pub passthrough_filters_enabled: bool,
+    /// Passthrough muffle strength as a percentage (0–100). Defaults to 50 if absent.
+    #[serde(
+        rename = "passthroughFilterStrength",
+        default = "default_passthrough_filter_strength"
+    )]
+    pub passthrough_filter_strength: u8,
+}
+
+fn default_passthrough_volume() -> u8 {
+    20
+}
+
+fn default_passthrough_filters_enabled() -> bool {
+    true
+}
+
+fn default_passthrough_filter_strength() -> u8 {
+    50
 }
 
 /// Server announces a newly created sub-room.
@@ -834,6 +949,7 @@ pub struct SubRoomJoinedPayload {
     #[serde(rename = "subRoomId")]
     pub sub_room_id: String,
     /// How the server assigned this membership.
+    #[serde(default)]
     pub source: WireSubRoomMembershipSource,
 }
 
@@ -949,6 +1065,23 @@ pub struct ParticipantColorUpdatedPayload {
     /// New colour (hex string, e.g. "#E06C75").
     #[serde(rename = "profileColor")]
     pub profile_color: String,
+}
+
+/// Client sends updated username to the backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateUsernamePayload {
+    /// New username chosen by the user.
+    pub username: String,
+}
+
+/// Server broadcasts new username to all room participants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParticipantUsernameUpdatedPayload {
+    /// Identifier of the participant who changed their username.
+    #[serde(rename = "participantId")]
+    pub participant_id: String,
+    /// New username chosen by the user.
+    pub username: String,
 }
 
 // --- Error types ---

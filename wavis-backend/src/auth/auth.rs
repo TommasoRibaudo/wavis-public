@@ -143,7 +143,7 @@ pub fn generate_recovery_id() -> String {
 pub async fn register_user(
     pool: &sqlx::PgPool,
     phrase: &str,
-    device_name: &str,
+    username: &str,
     auth_secret: &[u8],
     access_ttl_secs: u64,
     refresh_ttl_days: u32,
@@ -199,8 +199,16 @@ pub async fn register_user(
         }
     }
 
-    // 5. Create device under this user
-    let device_id = device::create_device(pool, user_id, device_name)
+    sqlx::query("UPDATE users SET username = $1 WHERE user_id = $2")
+        .bind(username)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    // 5. Create device under this user. The account username is intentionally
+    // separate from the per-device label stored in devices.device_name.
+    let device_id = device::create_device(pool, user_id, "primary")
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
@@ -296,7 +304,7 @@ pub async fn recover_account(
     pool: &sqlx::PgPool,
     recovery_id: &str,
     phrase: &str,
-    device_name: &str,
+    _username: &str,
     auth_secret: &[u8],
     access_ttl_secs: u64,
     refresh_ttl_days: u32,
@@ -343,8 +351,11 @@ pub async fn recover_account(
         return Err(AuthError::PhraseVerificationFailed);
     }
 
-    // 4. Create new device under this user
-    let device_id = device::create_device(pool, user_id, device_name)
+    // 4. Create new device under this user. The account username is intentionally
+    // separate from the per-device label stored in devices.device_name.
+    // Recovery never renames the account; username changes flow through
+    // POST /auth/username only.
+    let device_id = device::create_device(pool, user_id, "primary")
         .await
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
@@ -448,6 +459,30 @@ pub async fn rotate_phrase(
     .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
     Ok(())
+}
+
+pub async fn update_username(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    username: &str,
+) -> Result<(), AuthError> {
+    sqlx::query("UPDATE users SET username = $1 WHERE user_id = $2")
+        .bind(username)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+    Ok(())
+}
+
+pub async fn get_username(pool: &sqlx::PgPool, user_id: Uuid) -> Result<String, AuthError> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT username FROM users WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+    Ok(row.map(|(u,)| u).unwrap_or_default())
 }
 
 /// Rotate a refresh token: consume old, issue new pair.

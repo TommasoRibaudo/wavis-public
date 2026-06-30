@@ -415,7 +415,7 @@ mod tests {
                         SignalingMessage::SelfUndeafen |
                         SignalingMessage::ParticipantDeafened(_) |
                         SignalingMessage::ParticipantUndeafened(_) |
-                        SignalingMessage::StartShare |
+                        SignalingMessage::StartShare(_) |
                         SignalingMessage::ShareStarted(_) |
                         SignalingMessage::StopShare(_) |
                         SignalingMessage::ShareStopped(_) |
@@ -429,6 +429,9 @@ mod tests {
                         SignalingMessage::LeaveSubRoom(_) |
                         SignalingMessage::SetPassthrough(_) |
                         SignalingMessage::ClearPassthrough(_) |
+                        SignalingMessage::SetPassthroughEnabled(_) |
+                        SignalingMessage::SetPassthroughVolume(_) |
+                        SignalingMessage::SetPassthroughFilter(_) |
                         SignalingMessage::SubRoomState(_) |
                         SignalingMessage::SubRoomCreated(_) |
                         SignalingMessage::SubRoomJoined(_) |
@@ -443,7 +446,11 @@ mod tests {
                         SignalingMessage::SessionDisplaced(_) |
                         SignalingMessage::ViewerSubscribed(_) |
                         SignalingMessage::ViewerJoined(_) |
-                        SignalingMessage::SfuColdStarting(_)
+                        SignalingMessage::SfuColdStarting(_) |
+                        SignalingMessage::UpdateProfileColor(_) |
+                        SignalingMessage::ParticipantColorUpdated(_) |
+                        SignalingMessage::UpdateUsername(_) |
+                        SignalingMessage::ParticipantUsernameUpdated(_)
                     ),
                     "Message should be a non-Join/non-Auth variant that requires authentication"
                 );

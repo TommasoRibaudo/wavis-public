@@ -197,6 +197,9 @@ mod tests {
             display_name,
             user_id: None,
             profile_color: None,
+            is_muted: false,
+            is_host_muted: false,
+            is_deafened: false,
         })
     }
 
@@ -421,12 +424,18 @@ mod tests {
                     display_name: "Alice".to_string(),
                     user_id: None,
                     profile_color: None,
+                    is_muted: false,
+                    is_host_muted: false,
+                    is_deafened: false,
                 },
                 ParticipantInfo {
                     participant_id: "bob".to_string(),
                     display_name: "Bob".to_string(),
                     user_id: None,
                     profile_color: None,
+                    is_muted: false,
+                    is_host_muted: false,
+                    is_deafened: false,
                 },
             ],
             ice_config: None,
@@ -538,12 +547,18 @@ mod tests {
                 display_name: "A".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
+                is_deafened: false,
             },
             ParticipantInfo {
                 participant_id: "b".to_string(),
                 display_name: "B".to_string(),
                 user_id: None,
                 profile_color: None,
+                is_muted: false,
+                is_host_muted: false,
+                is_deafened: false,
             },
         ];
         let out = format_status("room-x", "peer-y", &participants, &SfuConnectionMode::Proxy);

@@ -46,6 +46,8 @@ import {
   setMuteHotkey,
   getDenoiseEnabled,
   setDenoiseEnabled,
+  getVideoInputDevice,
+  setVideoInputDevice,
   STORE_KEYS,
   DEFAULT_VOLUME,
   DEFAULT_MUTE_HOTKEY,
@@ -87,6 +89,7 @@ const notificationEventArb = fc.constantFrom<(keyof NotificationToggles)[]>(
   'participantKicked',
   'participantMutedByHost',
   'inviteReceived',
+  'passthroughChanged',
 );
 
 /* ═══ Property Tests ════════════════════════════════════════════════ */
@@ -195,6 +198,7 @@ describe('Notification toggle round-trip', () => {
       participantKicked: true,
       participantMutedByHost: true,
       inviteReceived: true,
+      passthroughChanged: true,
     });
   });
 });
@@ -268,6 +272,33 @@ describe('Denoise setting round-trip', () => {
 });
 
 /* ═══ Watch All Hotkey Tests ════════════════════════════════════════ */
+
+describe('Video input device helpers', () => {
+  it('defaults to null when unset', async () => {
+    const result = await getVideoInputDevice();
+    expect(result).toBeNull();
+  });
+
+    // Feature: video-feed, Property 9: Settings persistence and fallback (round-trip clause)
+  it('persists and retrieves any video input device id or null', async () => {
+    const deviceIdArb = fc.option(fc.string(), { nil: null });
+    await fc.assert(
+      fc.asyncProperty(deviceIdArb, async (deviceId) => {
+        mockStorage.clear();
+        await setVideoInputDevice(deviceId);
+        const result = await getVideoInputDevice();
+        expect(result).toBe(deviceId);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('stores the value under the video input device key', async () => {
+    expect(STORE_KEYS.videoInputDevice).toBe('wavis_video_input_device');
+    await setVideoInputDevice('camera-1');
+    expect(mockStorage.get(STORE_KEYS.videoInputDevice)).toBe('camera-1');
+  });
+});
 
 import {
   getWatchAllHotkey,

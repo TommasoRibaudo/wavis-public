@@ -19,10 +19,6 @@ pub fn diagnostics_window_enabled() -> bool {
     env_flag("WAVIS_DIAGNOSTICS_WINDOW")
 }
 
-pub fn diagnostics_notifications_enabled() -> bool {
-    env_flag("WAVIS_DIAGNOSTICS_NOTIFICATIONS")
-}
-
 pub fn debug_share_audio_enabled() -> bool {
     env_flag("WAVIS_DEBUG_SHARE_AUDIO")
 }

@@ -430,7 +430,12 @@ fn build_issue_body_prompt(
     format!(
         "You are a bug report formatter for Wavis, a desktop voice chat application.\n\n\
          Generate a structured GitHub issue body. Respond with valid JSON only (no markdown fences):\n\
-         {{\n  \"title\": \"<concise bug title>\",\n  \"body\": \"<full markdown issue body>\"\n}}\n\n\
+         {{\n  \"title\": \"<bug title>\",\n  \"body\": \"<full markdown issue body>\"\n}}\n\n\
+         Title rules:\n\
+         - Maximum 72 characters\n\
+         - Write a direct, descriptive bug summary — do NOT start with \"Bug Report:\"\n\
+         - Use only letters, numbers, spaces, and hyphens (must be git branch-name-friendly)\n\
+         - Example: \"Audio drops when second participant joins room\"\n\n\
          The issue body must contain these sections:\n\
          1. ## Bug Report header\n\
          2. ### Category — \"{category}\"\n\

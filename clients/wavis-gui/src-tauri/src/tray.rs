@@ -5,8 +5,8 @@ use std::sync::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     App, Emitter, Listener, Manager,
 };
 
@@ -30,9 +30,24 @@ struct MinimizeToTrayPayload {
     enabled: bool,
 }
 
+#[derive(Deserialize)]
+struct TrayStatePayload {
+    #[serde(rename = "inVoiceSession")]
+    in_voice_session: bool,
+    #[serde(rename = "isMuted")]
+    is_muted: bool,
+    #[serde(rename = "isDeafened")]
+    is_deafened: bool,
+}
+
 #[derive(Clone, Serialize)]
-struct WindowVisibilityPayload {
-    visible: bool,
+struct TrayEventPayload {
+    action: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+pub struct WindowVisibilityPayload {
+    pub visible: bool,
 }
 
 pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
@@ -58,14 +73,36 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Tray menu ──
     let show = MenuItem::with_id(app, "show", "Show Wavis", true, None::<&str>)?;
-    let mute = MenuItem::with_id(app, "mute", "Toggle Mute", true, None::<&str>)?;
+    let mute = MenuItem::with_id(app, "mute", "Mute", false, None::<&str>)?;
+    let deafen = MenuItem::with_id(app, "deafen", "Deafen", false, None::<&str>)?;
+    let leave = MenuItem::with_id(app, "leave", "Leave Room", false, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&show, &mute, &quit])?;
+    let menu_items: [&dyn IsMenuItem<_>; 6] = [&show, &separator, &mute, &deafen, &leave, &quit];
+    let menu = Menu::with_items(app, &menu_items)?;
 
-    let _tray = TrayIconBuilder::new()
+    let mute_state_item = mute.clone();
+    let deafen_state_item = deafen.clone();
+    let leave_state_item = leave.clone();
+    app.listen("tray-state-update", move |event| {
+        if let Ok(payload) = serde_json::from_str::<TrayStatePayload>(event.payload()) {
+            let _ = mute_state_item.set_text(if payload.is_muted { "Unmute" } else { "Mute" });
+            let _ = deafen_state_item.set_text(if payload.is_deafened {
+                "Undeafen"
+            } else {
+                "Deafen"
+            });
+            let _ = mute_state_item.set_enabled(payload.in_voice_session);
+            let _ = deafen_state_item.set_enabled(payload.in_voice_session);
+            let _ = leave_state_item.set_enabled(payload.in_voice_session);
+        }
+    });
+
+    let mut builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
+        .icon_as_template(true)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -83,10 +120,79 @@ pub fn setup_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => {
                 app.exit(0);
             }
+            "mute" => {
+                let _ = app.emit(
+                    "tray-event",
+                    TrayEventPayload {
+                        action: "toggle-mute",
+                    },
+                );
+            }
+            "deafen" => {
+                let _ = app.emit(
+                    "tray-event",
+                    TrayEventPayload {
+                        action: "toggle-deafen",
+                    },
+                );
+            }
+            "leave" => {
+                let _ = app.emit("tray-event", TrayEventPayload { action: "leave" });
+            }
             _ => {}
-        })
-        .build(app)?;
+        });
 
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    let _tray = builder.build(app)?;
+
+    // Global handler — fires for every tray icon event with no per-icon ID
+    // matching, making it reliable across all Tauri runtime versions.
+    app.on_tray_icon_event(|app, event| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            if let Some(vis) = app.try_state::<WindowVisibility>() {
+                vis.hidden.store(false, Ordering::SeqCst);
+            }
+            let _ = app.emit(
+                "window-visibility-changed",
+                WindowVisibilityPayload { visible: true },
+            );
+        }
+    });
+
+    Ok(())
+}
+
+/// Show and focus the main window from any state (tray-hidden, minimized, or normal).
+/// Clears the hidden flag and emits `window-visibility-changed` so the frontend
+/// tracks tray state correctly regardless of how the window was restored.
+#[tauri::command]
+pub fn show_main_window(
+    app: tauri::AppHandle,
+    visibility: tauri::State<'_, WindowVisibility>,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    visibility.hidden.store(false, Ordering::SeqCst);
+    let _ = app.emit(
+        "window-visibility-changed",
+        WindowVisibilityPayload { visible: true },
+    );
     Ok(())
 }
 

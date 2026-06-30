@@ -1,15 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startReceiving, stopReceiving } from './screen-share-viewer';
 import type { ShareQuality } from '@features/voice/voice-room';
-import { useShareTransitionOverlay } from './share-transition';
+import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
+import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
+import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
+import ShareLoadingOverlay from './ShareLoadingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -26,6 +31,15 @@ interface ShareWindowParams {
   isOwner: boolean;
   canvasFallback?: boolean;
   initialVolume?: number;
+  initialMuted?: boolean;
+}
+
+interface PolledScreenShareFrame {
+  identity: string;
+  frame: string;
+  width: number;
+  height: number;
+  seq: number;
 }
 
 interface ShareUserState {
@@ -55,9 +69,10 @@ export default function ScreenSharePage() {
   const initialVolume = shareParams?.initialVolume ?? 70;
 
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [volume, setVolume] = useState(initialVolume);
-  const [muted, setMuted] = useState(initialVolume === 0);
+  const [muted, setMuted] = useState(shareParams?.initialMuted ?? (initialVolume === 0));
   const [quality, setQuality] = useState<ShareQuality>('high');
   const [sharingAudio, setSharingAudio] = useState(false);
   const [userState, setUserState] = useState<ShareUserState>({
@@ -67,7 +82,7 @@ export default function ScreenSharePage() {
   const [voiceParticipants, setVoiceParticipants] = useState<MixerParticipant[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [debugInfo, setDebugInfo] = useState('init');
-  const { isSwitching, markFrameRendered } = useShareTransitionOverlay({
+  const { isSwitching, hasRenderedFrame, markFrameRendered } = useShareTransitionOverlay({
     hasSurface: Boolean(stream) || Boolean(shareParams?.canvasFallback),
     hasError: Boolean(error),
   });
@@ -82,6 +97,7 @@ export default function ScreenSharePage() {
 
   // Auto-hide controls on mouse idle
   const { isVisible: controlsVisible } = useAutoHide({ delayMs: 2000, listenToMouseMove: true });
+  const { isFullscreen, toggleFullscreen } = useFullscreen();
 
   const p = params.current;
 
@@ -100,6 +116,7 @@ export default function ScreenSharePage() {
     let cancelled = false;
 
     if (p.canvasFallback) {
+      setMjpegUrl(null);
       // Canvas fallback: listen for screen-share-frame Tauri events directly
       // and paint onto a visible canvas element.
       //
@@ -109,10 +126,10 @@ export default function ScreenSharePage() {
       // Subscribe to both so the fallback works cross-platform.
       let frameCount = 0;
       setDebugInfo('canvas-fallback: listening');
-      const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }) => {
-        if (cancelled) return;
+      const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
+        if (cancelled) return Promise.resolve(false);
         // If identity is present (Linux path), filter by participant
-        if (payload.identity && payload.identity !== p.participantId) return;
+        if (payload.identity && payload.identity !== p.participantId) return Promise.resolve(false);
 
         frameCount++;
         if (frameCount <= 3 || frameCount % 30 === 0) {
@@ -120,30 +137,77 @@ export default function ScreenSharePage() {
         }
 
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!canvas) return Promise.resolve(false);
         const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+        if (!ctx) return Promise.resolve(false);
 
-        const img = new Image();
-        img.onload = () => {
-          if (canvas.width !== img.width || canvas.height !== img.height) {
-            canvas.width = img.width;
-            canvas.height = img.height;
-          }
-          ctx.drawImage(img, 0, 0);
-          markFrameRendered();
-        };
-        img.src = `data:image/jpeg;base64,${payload.frame}`;
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            if (cancelled) {
+              resolve(false);
+              return;
+            }
+            if (canvas.width !== img.width || canvas.height !== img.height) {
+              canvas.width = img.width;
+              canvas.height = img.height;
+            }
+            ctx.drawImage(img, 0, 0);
+            markFrameRendered();
+            resolve(true);
+          };
+          img.onerror = () => resolve(false);
+          img.src = `data:image/jpeg;base64,${payload.frame}`;
+        });
       };
+
+      let pollFrameId: number | null = null;
+      let lastSeq: number | null = null;
+      let mjpegActive = false;
+      const pollLatestFrame = async () => {
+        if (cancelled || mjpegActive) return;
+        try {
+          const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
+            identity: p.participantId,
+            lastSeq,
+          });
+          if (frame && !cancelled) {
+            lastSeq = frame.seq;
+            await handleFrame(frame);
+          }
+        } catch {
+          // Non-Linux builds and older builds may not expose the polling command.
+        } finally {
+          if (!cancelled && !mjpegActive) {
+            pollFrameId = requestAnimationFrame(pollLatestFrame);
+          }
+        }
+      };
+      pollFrameId = requestAnimationFrame(pollLatestFrame);
+
+      invoke<string>('media_get_screen_share_stream_url', { identity: p.participantId })
+        .then((url) => {
+          if (cancelled) return;
+          mjpegActive = true;
+          if (pollFrameId !== null) {
+            cancelAnimationFrame(pollFrameId);
+            pollFrameId = null;
+          }
+          setDebugInfo('canvas-fallback: mjpeg stream');
+          setMjpegUrl(`${url}&t=${Date.now()}`);
+        })
+        .catch(() => {
+          // Older/non-Linux builds use the polling fallback above.
+        });
 
       // Subscribe to both event name variants
       const unlistenLinux = listen<{ identity: string; frame: string }>(
         'screen_share_frame',
-        (event) => handleFrame(event.payload),
+        (event) => { void handleFrame(event.payload); },
       );
       const unlistenWindows = listen<{ frame: string; width: number; height: number }>(
         'screen-share-frame',
-        (event) => handleFrame(event.payload),
+        (event) => { void handleFrame(event.payload); },
       );
 
       // Mark as "connected" immediately — frames will arrive as they come
@@ -155,6 +219,7 @@ export default function ScreenSharePage() {
 
       return () => {
         cancelled = true;
+        if (pollFrameId !== null) cancelAnimationFrame(pollFrameId);
         unlistenLinux.then((fn) => fn());
         unlistenWindows.then((fn) => fn());
       };
@@ -263,10 +328,10 @@ export default function ScreenSharePage() {
 
   useEffect(() => {
     if (!p) return;
-    const unlisten = listen<{ participantId: string; volume: number }>('screen-share:restore-volume', (event) => {
+    const unlisten = listen<{ participantId: string; volume: number; muted: boolean }>('screen-share:restore-volume', (event) => {
       if (event.payload.participantId !== p.participantId) return;
       setVolume(event.payload.volume);
-      setMuted(event.payload.volume === 0);
+      setMuted(event.payload.muted);
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [p]);
@@ -402,9 +467,13 @@ export default function ScreenSharePage() {
   }, [p]);
 
   const handleToggleMute = useCallback(() => {
-    const nextVolume = muted ? (volume > 0 ? volume : 50) : 0;
-    handleVolumeChange(nextVolume);
-  }, [handleVolumeChange, muted, volume]);
+    if (!p) return;
+    setMuted((prev) => {
+      const nextMuted = !prev;
+      emit('screen-share:mute-change', { participantId: p.participantId, muted: nextMuted });
+      return nextMuted;
+    });
+  }, [p, volume]);
 
   const handleVoiceVolumeChange = useCallback((participantId: string, nextVolume: number) => {
     setVoiceParticipants((prev) =>
@@ -527,11 +596,20 @@ export default function ScreenSharePage() {
 
   return (
     <div className="h-screen flex flex-col bg-wavis-overlay-base font-mono text-wavis-text overflow-hidden select-none">
-      {/* Header — draggable title bar */}
+      {/* Header — draggable title bar; overlays video and auto-hides in fullscreen */}
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0"
-        style={{ height: 32 }}
+        className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
+        style={isFullscreen ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          height: 32,
+          opacity: controlsVisible ? 1 : 0,
+          pointerEvents: controlsVisible ? 'auto' : 'none',
+        } : { height: 32 }}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
@@ -540,13 +618,17 @@ export default function ScreenSharePage() {
             {p.isOwner ? '(you)' : 'screen share'}
           </span>
         </div>
-        <button
-          onClick={handleClose}
-          className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
-          aria-label="Close screen share window"
-        >
-          [x]
-        </button>
+        <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
+          <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
+          <button
+            onClick={handleClose}
+            className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
+            aria-label="Close screen share window"
+          >
+            [x]
+          </button>
+        </div>
       </div>
 
       {/* Video area — double-click to pop back into Watch All grid */}
@@ -561,6 +643,21 @@ export default function ScreenSharePage() {
             ref={videoRef}
             autoPlay
             playsInline
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'contain',
+              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+              transformOrigin: 'center center',
+              willChange: zoom > 1 ? 'transform' : undefined,
+            }}
+          />
+        ) : p.canvasFallback && mjpegUrl ? (
+          <img
+            src={mjpegUrl}
+            alt=""
+            draggable={false}
+            onLoad={markFrameRendered}
             style={{
               width: '100%',
               height: '100%',
@@ -592,6 +689,7 @@ export default function ScreenSharePage() {
           </div>
         )}
         {isSwitching && <ShareSwitchingOverlay displayName={p.username} />}
+        {shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && <ShareLoadingOverlay />}
 
         {/* Zoom overlay */}
         {zoom > 1 && (
@@ -632,6 +730,7 @@ export default function ScreenSharePage() {
           onVoiceVolumeChange={handleVoiceVolumeChange}
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
+          onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (

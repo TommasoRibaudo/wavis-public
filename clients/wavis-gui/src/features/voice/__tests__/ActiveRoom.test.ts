@@ -14,8 +14,43 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ShareQualityInfo } from '../livekit-media';
+import type { VoiceRoomState } from '../voice-room';
+import {
+  SHARE_PICKER_LOADING_LABEL,
+  SHARE_STARTING_LOADING_LABEL,
+  isVideoShareSelectionMode,
+} from '../active-room-share-loading';
+import { participantNameVisualState } from '../active-room-participant-row';
+import type { RoomParticipant } from '../voice-room';
 
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
+
+type VoiceRoomLayoutBand = 'mobile' | 'intermediate' | 'desktop';
+type GroupedPanelTab = 'chat' | 'log' | 'video';
+
+function voiceRoomLayoutBand(widthPx: number): VoiceRoomLayoutBand {
+  if (widthPx < 768) return 'mobile';
+  if (widthPx < 1039) return 'intermediate';
+  return 'desktop';
+}
+
+function groupedPanelTabs(videoPopoutOpen: boolean): GroupedPanelTab[] {
+  return videoPopoutOpen ? ['chat', 'log'] : ['chat', 'log', 'video'];
+}
+
+function nextGroupedPanelTab(
+  current: GroupedPanelTab,
+  previousVideoActivityKey: string,
+  nextVideoActivityKey: string,
+): GroupedPanelTab {
+  if (previousVideoActivityKey === nextVideoActivityKey) return current;
+  if (nextVideoActivityKey !== '') return 'video';
+  return current === 'video' ? 'chat' : current;
+}
+
+function groupedPanelTabAfterPopout(current: GroupedPanelTab, videoPopoutOpen: boolean): GroupedPanelTab {
+  return videoPopoutOpen && current === 'video' ? 'chat' : current;
+}
 
 /* ─── Mock voice-room module ────────────────────────────────────── */
 
@@ -45,6 +80,62 @@ vi.mock('../voice-room', () => ({
   changeShareSource: vi.fn(),
 }));
 
+describe('voice room responsive layout bands', () => {
+  it('keeps the current mobile layout below 768px', () => {
+    expect(voiceRoomLayoutBand(320)).toBe('mobile');
+    expect(voiceRoomLayoutBand(767)).toBe('mobile');
+  });
+
+  it('uses the grouped-panel intermediate layout from 768px through 1038px', () => {
+    expect(voiceRoomLayoutBand(768)).toBe('intermediate');
+    expect(voiceRoomLayoutBand(900)).toBe('intermediate');
+    expect(voiceRoomLayoutBand(1038)).toBe('intermediate');
+  });
+
+  it('keeps the existing desktop three-column layout at 1039px and wider', () => {
+    expect(voiceRoomLayoutBand(1039)).toBe('desktop');
+    expect(voiceRoomLayoutBand(1440)).toBe('desktop');
+  });
+});
+
+describe('intermediate grouped panel tabs', () => {
+  it('defaults the grouped panel to chat', () => {
+    const initialTab: GroupedPanelTab = 'chat';
+    expect(initialTab).toBe('chat');
+  });
+
+  it('shows chat, log, and video unless the video popout is open', () => {
+    expect(groupedPanelTabs(false)).toEqual(['chat', 'log', 'video']);
+    expect(groupedPanelTabs(true)).toEqual(['chat', 'log']);
+  });
+
+  it('auto-switches to video when video activity starts', () => {
+    expect(nextGroupedPanelTab('chat', '', 'alice')).toBe('video');
+    expect(nextGroupedPanelTab('log', '', 'alice')).toBe('video');
+  });
+
+  it('respects a manual chat or log choice while video activity stays unchanged', () => {
+    expect(nextGroupedPanelTab('chat', 'alice', 'alice')).toBe('chat');
+    expect(nextGroupedPanelTab('log', 'alice', 'alice')).toBe('log');
+  });
+
+  it('auto-switches again when the active video set changes', () => {
+    expect(nextGroupedPanelTab('chat', 'alice', 'alice|bob')).toBe('video');
+    expect(nextGroupedPanelTab('log', 'alice|bob', 'bob')).toBe('video');
+  });
+
+  it('returns to chat when video activity ends while the video tab is active', () => {
+    expect(nextGroupedPanelTab('video', 'alice', '')).toBe('chat');
+    expect(nextGroupedPanelTab('log', 'alice', '')).toBe('log');
+  });
+
+  it('moves away from the hidden video tab when the popout opens', () => {
+    expect(groupedPanelTabAfterPopout('video', true)).toBe('chat');
+    expect(groupedPanelTabAfterPopout('log', true)).toBe('log');
+    expect(groupedPanelTabAfterPopout('video', false)).toBe('video');
+  });
+});
+
 /* ─── Quality Indicator Rendering Logic ─────────────────────────── */
 
 /**
@@ -59,6 +150,24 @@ function formatQualityIndicator(
 ): string | null {
   if (!isSelfShare || !shareQualityInfo) return null;
   return `${shareQualityInfo.height}p @ ${Math.round(shareQualityInfo.frameRate)}fps`;
+}
+
+function selfShareBadges(
+  isSelf: boolean,
+  isSharing: boolean,
+  activeVideoShare: VoiceRoomState['activeVideoShare'],
+  activeAudioShare: VoiceRoomState['activeAudioShare'],
+): string[] {
+  if (!isSelf || !isSharing) return [];
+
+  const badges: string[] = [];
+  if (activeVideoShare !== null || activeAudioShare === null) {
+    badges.push('\u25C9');
+  }
+  if (activeAudioShare !== null) {
+    badges.push('\u266A');
+  }
+  return badges;
 }
 
 /* ─── System Audio Warning State Machine ────────────────────────── */
@@ -100,6 +209,21 @@ function handleFallbackShareStarted(
 ): ShareAudioUiState {
   if (!shareStarted || !isPromptPlatform) return state;
   return { ...state, showAudioWarning: false, showPostShareAudioPrompt: true };
+}
+
+function handleCustomShareStarted(
+  _state: ShareAudioUiState,
+  selection: { mode: 'screen_audio' | 'window' | 'audio_only'; withAudio: boolean },
+): ShareAudioUiState {
+  if (selection.mode === 'audio_only') {
+    return { showAudioWarning: false, showPostShareAudioPrompt: false, shareAudioOn: false };
+  }
+
+  return {
+    showAudioWarning: false,
+    showPostShareAudioPrompt: false,
+    shareAudioOn: selection.withAudio,
+  };
 }
 
 /** Simulates accepting the post-share audio prompt. */
@@ -148,6 +272,24 @@ function coldStartWaitMinutes(estimatedWaitSecs: number | null): number {
   return Math.ceil((estimatedWaitSecs ?? 120) / 60);
 }
 
+function shareStartingLabel(
+  mode: 'screen_audio' | 'window' | 'audio_only',
+  isStarting: boolean,
+): string | null {
+  if (!isStarting || !isVideoShareSelectionMode(mode)) return null;
+  return SHARE_STARTING_LOADING_LABEL;
+}
+
+function shouldShowShareControls(isVideoActive: boolean, isStarting: boolean): boolean {
+  return isVideoActive && !isStarting;
+}
+
+function windowsNativeShareQualityLabels(): string[] {
+  return (['low', 'high', 'max'] as const).map((q) =>
+    q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps',
+  );
+}
+
 /* ═══ Tests ═════════════════════════════════════════════════════════ */
 
 describe('Quality Indicator Rendering', () => {
@@ -190,6 +332,78 @@ describe('Quality Indicator Rendering', () => {
   });
 });
 
+describe('Participant Row Media Readiness', () => {
+  const participant: RoomParticipant = {
+    id: 'peer-1',
+    displayName: 'Alice',
+    color: '#44AA88',
+    role: 'guest',
+    isSpeaking: true,
+    isMuted: false,
+    isHostMuted: false,
+    isDeafened: false,
+    isSharing: false,
+    mediaConnected: false,
+    rmsLevel: 0.8,
+    volume: 70,
+  };
+
+  it('grays the name and suppresses speaking effects while connecting self', () => {
+    expect(participantNameVisualState(participant, true)).toMatchObject({
+      color: 'var(--wavis-text-secondary)',
+      opacity: 0.68,
+      animation: 'none',
+      filter: 'brightness(0.7)',
+      showConnecting: true,
+    });
+  });
+
+  it('does not show the connecting label for remote participants', () => {
+    expect(participantNameVisualState(participant, false)).toMatchObject({
+      color: 'var(--wavis-text-secondary)',
+      opacity: 0.68,
+      animation: 'none',
+      filter: 'brightness(0.7)',
+      showConnecting: false,
+    });
+  });
+});
+
+describe('Self Share Badges', () => {
+  it('shows both sharer and music badges when video and audio-only slots are both active', () => {
+    expect(
+      selfShareBadges(
+        true,
+        true,
+        {
+          mode: 'screen_audio',
+          sourceName: 'Display 1',
+          withAudio: false,
+          audioSourceId: null,
+        },
+        {
+          sourceId: 'audio-2',
+          sourceName: 'Spotify',
+        },
+      ),
+    ).toEqual(['\u25C9', '\u266A']);
+  });
+
+  it('shows only the music badge for audio-only sharing', () => {
+    expect(
+      selfShareBadges(
+        true,
+        true,
+        null,
+        {
+          sourceId: 'audio-1',
+          sourceName: 'Spotify',
+        },
+      ),
+    ).toEqual(['\u266A']);
+  });
+});
+
 describe('Cold Start UI', () => {
   it('rounds the estimated cold-start wait up to minutes', () => {
     expect(coldStartWaitMinutes(120)).toBe(2);
@@ -199,6 +413,35 @@ describe('Cold Start UI', () => {
 
   it('defaults cold-start wait copy to two minutes', () => {
     expect(coldStartWaitMinutes(null)).toBe(2);
+  });
+});
+
+describe('Share Loading UX', () => {
+  it('shows the starting indicator for video shares but not audio-only shares', () => {
+    expect(shareStartingLabel('screen_audio', true)).toBe(SHARE_STARTING_LOADING_LABEL);
+    expect(shareStartingLabel('window', true)).toBe(SHARE_STARTING_LOADING_LABEL);
+    expect(shareStartingLabel('audio_only', true)).toBeNull();
+    expect(shareStartingLabel('screen_audio', false)).toBeNull();
+  });
+
+  it('keeps the picker loading copy unchanged', () => {
+    expect(SHARE_PICKER_LOADING_LABEL).toBe('waiting for screen picker...');
+  });
+
+  it('hides post-share controls while video share startup is visible', () => {
+    expect(shouldShowShareControls(true, true)).toBe(false);
+    expect(shouldShowShareControls(true, false)).toBe(true);
+    expect(shouldShowShareControls(false, false)).toBe(false);
+  });
+
+  it('advertises correct resolution and fps per quality preset', () => {
+    const labels = windowsNativeShareQualityLabels();
+
+    expect(labels).toEqual([
+      'Smooth  1080p @ 60fps',
+      'Sharp   1440p @ 30fps',
+      'Max     1440p @ 60fps',
+    ]);
   });
 });
 
@@ -289,6 +532,17 @@ describe('Share Audio UX', () => {
     let state = initialShareAudioUiState();
 
     state = handleFallbackShareStarted(state, true, false);
+
+    expect(state.showAudioWarning).toBe(false);
+    expect(state.showPostShareAudioPrompt).toBe(false);
+    expect(state.shareAudioOn).toBe(false);
+    expect(mockToggleShareAudio).not.toHaveBeenCalled();
+  });
+
+  it('explicit custom video-only share does not show the post-share audio prompt', () => {
+    let state = initialShareAudioUiState();
+
+    state = handleCustomShareStarted(state, { mode: 'screen_audio', withAudio: false });
 
     expect(state.showAudioWarning).toBe(false);
     expect(state.showPostShareAudioPrompt).toBe(false);

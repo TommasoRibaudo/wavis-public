@@ -1,5 +1,6 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
 import { VolumeSlider } from '@shared/VolumeSlider';
+import { LoadingBars } from '@shared/LoadingBars';
 import { useBlocker, useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
 import type { Channel } from '@features/channels/channels';
@@ -18,6 +19,7 @@ import {
   leaveRoom,
   toggleSelfMute,
   toggleSelfDeafen,
+  toggleCameraIntent,
   stopShare,
   startCustomShare,
   stopCustomShare,
@@ -43,16 +45,22 @@ import {
   attachScreenShareAudio,
   detachScreenShareAudio,
   setScreenShareAudioVolume,
+  persistStreamVolume,
+  getPersistedStreamVolume,
+  persistStreamMuted,
+  getPersistedStreamMuted,
   activeShareType,
   computeStopRoute,
-  isShareButtonDisabled,
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
   buildChatDisplayItems,
+  buildRoomEventDisplayItems,
   resolveChatMessageDisplayColor,
+  preserveVideoShareSelectionForSourceChange,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
+import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -62,13 +70,15 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/too
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startSending, stopSending, stopSendingForWindow, stopAllSending, resendStream } from '@features/screen-share/screen-share-viewer';
-import { getWatchAllHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
+import { getWatchAllHotkey, getFocusMainHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const LOG_SS = '[wavis:active-room:screen-share]';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
-import { registerWatchAllHotkey, unregisterWatchAllHotkey } from '@shared/hotkey-bridge';
+const NOT_AUTHORIZED_REJECTION_PREFIX = 'Unable to join voice.';
+import { registerWatchAllHotkey, unregisterWatchAllHotkey, registerFocusMainHotkey, unregisterFocusMainHotkey } from '@shared/hotkey-bridge';
+import { useHotkeys } from '@shared/useHotkeys';
 import { listenTrayEvents, updateTrayState } from './tray-bridge';
 import type { TrayAction } from './tray-bridge';
 import { useDebug } from '@shared/debug-context';
@@ -92,6 +102,21 @@ import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
+import {
+  cameraButtonLabel,
+  hasBrowserCameraMediaSupport,
+  shouldDisableCameraButton,
+  shouldMountCameraButton,
+} from './active-room-camera';
+import {
+  SHARE_PICKER_LOADING_LABEL,
+  SHARE_STARTING_LOADING_LABEL,
+  isVideoShareSelectionMode,
+} from './active-room-share-loading';
+import { participantNameVisualState } from './active-room-participant-row';
+import { selectRoomPanelTab } from './voice-room';
+import { VideoTab } from './VideoTab';
+import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function voiceIcon(p: RoomParticipant, isDeafened?: boolean): { char: string; color: string; strikethrough?: boolean; transform?: string } {
@@ -174,7 +199,7 @@ function renderChatText(text: string): ReactNode[] {
       <a
         key={`link-${index}-${hrefText}`}
         href={href}
-        className="text-wavis-accent underline underline-offset-2 break-all hover:opacity-80"
+        className="text-wavis-accent underline underline-offset-2 break-words hover:opacity-80"
         onClick={(event) => {
           event.preventDefault();
           void open(href);
@@ -216,6 +241,28 @@ interface ShareViewerWindow {
   window: WebviewWindow;
 }
 
+function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
+  return {
+    participantId: tile.participantId,
+    displayName: tile.displayName,
+    color: tile.color,
+    hasTrack: tile.track !== null,
+    isSelf: tile.isSelf,
+    isMuted: tile.isMuted,
+    hasError: tile.hasError,
+  };
+}
+
+function areVideoTileSnapshotsEqual(a: VideoTileSnapshot, b: VideoTileSnapshot): boolean {
+  return a.participantId === b.participantId
+    && a.displayName === b.displayName
+    && a.color === b.color
+    && a.hasTrack === b.hasTrack
+    && a.isSelf === b.isSelf
+    && a.isMuted === b.isMuted
+    && a.hasError === b.hasError;
+}
+
 /* ─── Sub-components ────────────────────────────────────────────── */
 
 function signalingIndicator(
@@ -246,6 +293,12 @@ function mediaIndicator(state: MediaState, error: string | null): { color: strin
     case 'disconnected':
     default: return { color: 'var(--wavis-text-secondary)', label: 'Media: disconnected' };
   }
+}
+
+function shareLoadingNotice(label: string, className: string): ReactNode {
+  return (
+    <LoadingBars label={label} className={className} />
+  );
 }
 
 function combinedStatusBadge(
@@ -293,11 +346,11 @@ function StatusDot({ color, label }: { color: string; label: string }) {
 
 
 /**
- * Temporarily expands the Tauri window before a native getDisplayMedia picker
- * dialog opens so the picker's 2-column grid is never clipped on narrow windows,
- * then restores the original size when the dialog closes (or if it throws).
- * No-op on macOS — that platform opens getDisplayMedia as a system dialog
- * outside the WebView, so window width is irrelevant there.
+ * Temporarily expands the Tauri window before the macOS getDisplayMedia system
+ * picker opens so its grid is never clipped on narrow windows, then restores the
+ * original size when the dialog closes (or if it throws).
+ * No-op on macOS (system dialog ignores WebView width) and unused on Windows
+ * (Windows uses the inline SharePicker, not getDisplayMedia).
  */
 async function withPickerResize<T>(isMacPlatform: boolean, fn: () => Promise<T>): Promise<T> {
   const MIN_NATIVE_PICKER_WIDTH = 700;
@@ -320,6 +373,7 @@ async function withPickerResize<T>(isMacPlatform: boolean, fn: () => Promise<T>)
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
 export default function ActiveRoom() {
+  const hotkeys = useHotkeys();
   const location = useLocation();
   const navigate = useNavigate();
   const { channelId, channelName, channelRole } =
@@ -359,6 +413,7 @@ export default function ActiveRoom() {
   }
   const initRef = useRef(false);
   const allowNavigationRef = useRef(false);
+  const skipUnmountLeaveRef = useRef(false);
   const chatThrottledRef = useRef(false);
   const [cliFocused, setCliFocused] = useState(false);
   const cliHistoryRef = useRef<string[]>([]);
@@ -388,8 +443,10 @@ export default function ActiveRoom() {
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
   // Mobile tab state
-  type MobileTab = 'participants' | 'chat' | 'log';
+  type MobileTab = 'participants' | 'chat' | 'log' | 'video';
   const [mobileTab, setMobileTab] = useState<MobileTab>('participants');
+  type GroupedPanelTab = 'chat' | 'log' | 'video';
+  const [groupedPanelTab, setGroupedPanelTab] = useState<GroupedPanelTab>('chat');
 
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     shouldBlockRoomNavigation(
@@ -399,10 +456,14 @@ export default function ActiveRoom() {
     ));
 
   const navigateAwayFromRoom = useCallback(
-    (target: string, shouldLeave = false) => {
+    (target: string, leaveMode: 'none' | 'immediate' = 'none') => {
       allowNavigationRef.current = true;
-      if (shouldLeave) leaveRoom();
-      navigate(target);
+      // skipUnmountLeaveRef stays false so the unmount cleanup calls leaveRoom().
+      // We do NOT call leaveRoom() here: calling it before navigate() causes
+      // notify() to re-render ActiveRoom in idle state before the route changes,
+      // making the lower leave button flash on screen for one frame.
+      skipUnmountLeaveRef.current = false;
+      navigate(target, leaveMode === 'immediate' ? { state: { skipAutoRedirect: true } } : undefined);
     },
     [navigate],
   );
@@ -465,9 +526,13 @@ export default function ActiveRoom() {
     if (!channelId || initRef.current) return;
     initRef.current = true;
     allowNavigationRef.current = false;
+    skipUnmountLeaveRef.current = false;
     initSession(channelId, channelName, channelRole, setRoomState);
     return () => {
-      leaveRoom();
+      if (!skipUnmountLeaveRef.current) {
+        leaveRoom();
+      }
+      skipUnmountLeaveRef.current = false;
       initRef.current = false;
       prevEventsLenRef.current = 0;
     };
@@ -514,12 +579,15 @@ export default function ActiveRoom() {
     };
   }, []);
 
-  // Clear persisted last channel when kicked (so next launch falls back to ChannelsList)
+  // Clear persisted last channel when the saved channel is no longer safe to auto-join.
   useEffect(() => {
-    if (roomState?.error === 'You were kicked') {
+    if (
+      roomState?.error === 'You were kicked'
+      || roomState?.rejectionReason?.startsWith(NOT_AUTHORIZED_REJECTION_PREFIX)
+    ) {
       void clearLastChannel();
     }
-  }, [roomState?.error]);
+  }, [roomState?.error, roomState?.rejectionReason]);
 
   // Tray event wiring: dispatch tray menu actions to voice room
   useEffect(() => {
@@ -528,8 +596,11 @@ export default function ActiveRoom() {
         case 'toggle-mute':
           toggleSelfMute();
           break;
+        case 'toggle-deafen':
+          toggleSelfDeafen();
+          break;
         case 'leave':
-          navigateAwayFromRoom('/', true);
+          navigateAwayFromRoom('/', 'immediate');
           break;
         case 'show':
           // handled by Rust side (window.show + set_focus)
@@ -547,13 +618,14 @@ export default function ActiveRoom() {
     updateTrayState({
       inVoiceSession: inVoice,
       isMuted: selfP?.isMuted ?? false,
+      isDeafened: roomState.isDeafened,
     });
-  }, [roomState?.machineState, roomState?.participants, roomState?.selfParticipantId]);
+  }, [roomState?.machineState, roomState?.participants, roomState?.selfParticipantId, roomState?.isDeafened]);
 
   // Send "not in voice" on unmount so tray items get disabled
   useEffect(() => {
     return () => {
-      updateTrayState({ inVoiceSession: false, isMuted: false });
+      updateTrayState({ inVoiceSession: false, isMuted: false, isDeafened: false });
     };
   }, []);
 
@@ -566,6 +638,7 @@ export default function ActiveRoom() {
     if (prevLen === 0 || events.length <= prevLen) return;
     const newEvents = events.slice(prevLen);
     for (const ev of newEvents) {
+      if (ev.shouldToast === false) continue;
       const name = ev.message.split(' ')[0] ?? '';
       const msg = toastMessageForEvent(ev.type, name);
       if (!msg) continue;
@@ -645,17 +718,46 @@ export default function ActiveRoom() {
   const watchAllReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [watchAllOpen, setWatchAllOpen] = useState(false);
   const watchAllReadyRef = useRef(false);
+  const videoPopoutWindowRef = useRef<WebviewWindow | null>(null);
+  const videoPopoutReadyUnlistenRef = useRef<(() => void) | null>(null);
+  const [videoPopoutOpen, setVideoPopoutOpen] = useState(false);
+  const videoPopoutReadyRef = useRef(false);
   const watchAllHotkeyRef = useRef<string | null>(null);
+  const focusMainHotkeyRef = useRef<string | null>(null);
   const toggleWatchAllRef = useRef<() => void>(() => { });
+  const groupedPanelVideoActivityKey = roomState
+    ? Object.entries(roomState.videoTilesById)
+      .filter(([, tile]) => !tile.isMuted)
+      .map(([participantId]) => participantId)
+      .sort()
+      .join('|')
+    : '';
+  const groupedPanelVideoActivityRef = useRef(groupedPanelVideoActivityKey);
+
+  useEffect(() => {
+    const previous = groupedPanelVideoActivityRef.current;
+    if (previous === groupedPanelVideoActivityKey) return;
+    groupedPanelVideoActivityRef.current = groupedPanelVideoActivityKey;
+    setGroupedPanelTab((current) => {
+      if (groupedPanelVideoActivityKey !== '') return 'video';
+      return current === 'video' ? 'chat' : current;
+    });
+  }, [groupedPanelVideoActivityKey]);
+
+  useEffect(() => {
+    if (!videoPopoutOpen) return;
+    setGroupedPanelTab((current) => (current === 'video' ? 'chat' : current));
+  }, [videoPopoutOpen]);
 
   // Screen share window state (multi-window: one per sharer)
   const [watchingShareIds, setWatchingShareIds] = useState<Set<string>>(new Set());
   const [shareVolumes, setShareVolumes] = useState<Map<string, number>>(new Map());
   const shareVolumesRef = useRef(shareVolumes);
   const watchAllVolumesRef = useRef<Map<string, number>>(new Map());
+  const [shareMuted, setShareMuted] = useState<Map<string, boolean>>(new Map());
+  const shareMutedRef = useRef(shareMuted);
   // Local mute state: key = participantId, value = pre-mute volume (presence means muted).
   const [localMicMuted, setLocalMicMuted] = useState<Map<string, number>>(new Map());
-  const [localSysMuted, setLocalSysMuted] = useState<Map<string, number>>(new Map());
   const watchAllAttachedAudioRef = useRef<Set<string>>(new Set());
   const [shareQualityState, setShareQualityState] = useState<ShareQuality>('high');
   const [shareAudioOn, setShareAudioOn] = useState(false);
@@ -665,8 +767,17 @@ export default function ActiveRoom() {
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
   const shareErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shareEnumerating = useRef(false);
-  // True while waiting for the OS screen picker to appear (macOS/Windows getDisplayMedia)
+  // True while waiting for the OS screen picker to appear (macOS getDisplayMedia)
   const [sharePickerLoading, setSharePickerLoading] = useState(false);
+  // True while a selected video share source is starting publication.
+  const [shareStarting, setShareStarting] = useState(false);
+  // Windows: inline share picker data (replaces getDisplayMedia to suppress WebView2 capture indicator)
+  const [winSharePicker, setWinSharePicker] = useState<{
+    enumResult: EnumerationResult | null;
+    occupied: OccupiedSlots;
+    isChangingSource?: boolean;
+    initialWithAudio?: boolean;
+  } | null>(null);
   // macOS audio driver install prompt state
   const [showDriverPrompt, setShowDriverPrompt] = useState(false);
   const pendingShareRef = useRef<boolean>(false);
@@ -677,6 +788,7 @@ export default function ActiveRoom() {
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
   const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
+  const nativeShareViewersRef = useRef<Set<string>>(new Set());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -732,6 +844,10 @@ export default function ActiveRoom() {
     shareVolumesRef.current = shareVolumes;
   }, [shareVolumes]);
 
+  useEffect(() => {
+    shareMutedRef.current = shareMuted;
+  }, [shareMuted]);
+
   const prevStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   useEffect(() => {
     if (!roomState) return;
@@ -741,14 +857,65 @@ export default function ActiveRoom() {
       if (current && current !== prev) {
         console.log(LOG_SS, `resendStream(${id}, screen-share-${id}) — stream: ${current?.id}, prevStream: ${prev?.id ?? 'none'}, active: ${current?.active}, ts: ${Date.now()}`);
         resendStream(id, `screen-share-${id}`, current);
+        attachScreenShareAudio(id);
+        const volume =
+          watchAllVolumesRef.current.get(id) ??
+          shareVolumesRef.current.get(id) ??
+          getPersistedStreamVolume(id) ??
+          70;
+        const muted = shareMutedRef.current.get(id) ?? getPersistedStreamMuted(id) ?? (volume === 0);
+        setScreenShareAudioVolume(id, muted ? 0 : volume);
       }
     }
     prevStreamsRef.current = new Map(roomState.screenShareStreams);
   }, [watchingShareIds, roomState?.screenShareStreams]);
 
-  const getSavedShareVolume = useCallback((participantId: string) => {
-    return shareVolumesRef.current.get(participantId) ?? watchAllVolumesRef.current.get(participantId) ?? 70;
+  useEffect(() => {
+    const unlisten = listen('camera-popout:closed', () => {
+      closeVideoPopoutWindow(true);
+    });
+    return () => { unlisten.then((fn) => fn?.()); };
   }, []);
+
+  const getSavedShareVolume = useCallback((participantId: string) => {
+    // watchAllVolumesRef is updated synchronously by syncScreenShareVolume;
+    // shareVolumesRef lags by one render cycle (useEffect). Prefer the sync ref.
+    return watchAllVolumesRef.current.get(participantId) ?? shareVolumesRef.current.get(participantId) ?? getPersistedStreamVolume(participantId) ?? 70;
+  }, []);
+
+  const getSavedShareMuted = useCallback((participantId: string) => {
+    return shareMutedRef.current.get(participantId) ?? getPersistedStreamMuted(participantId) ?? (getSavedShareVolume(participantId) === 0);
+  }, [getSavedShareVolume]);
+
+  const applySavedScreenShareAudio = useCallback((participantId: string) => {
+    const volume = getSavedShareVolume(participantId);
+    setScreenShareAudioVolume(participantId, getSavedShareMuted(participantId) ? 0 : volume);
+  }, [getSavedShareMuted, getSavedShareVolume]);
+
+  const syncScreenShareMuted = useCallback((participantId: string, muted: boolean) => {
+    const savedVolume = getSavedShareVolume(participantId);
+    const restoredVolume = !muted && savedVolume === 0 ? 70 : savedVolume;
+    if (restoredVolume !== savedVolume) {
+      watchAllVolumesRef.current.set(participantId, restoredVolume);
+      setShareVolumes((prev) => {
+        const next = new Map(prev);
+        next.set(participantId, restoredVolume);
+        return next;
+      });
+      persistStreamVolume(participantId, restoredVolume);
+    }
+    shareMutedRef.current.set(participantId, muted);
+    setShareMuted((prev) => {
+      if (prev.get(participantId) === muted) return prev;
+      const next = new Map(prev);
+      next.set(participantId, muted);
+      return next;
+    });
+    persistStreamMuted(participantId, muted);
+    setScreenShareAudioVolume(participantId, muted ? 0 : restoredVolume);
+    emit('watch-all:restore-volume', { participantId, volume: restoredVolume, muted });
+    emit('screen-share:restore-volume', { participantId, volume: restoredVolume, muted });
+  }, [getSavedShareVolume]);
 
   const syncScreenShareVolume = useCallback((participantId: string, volume: number) => {
     setShareVolumes((prev) => {
@@ -758,9 +925,19 @@ export default function ActiveRoom() {
       return next;
     });
     watchAllVolumesRef.current.set(participantId, volume);
-    setScreenShareAudioVolume(participantId, volume);
-    emit('watch-all:restore-volume', { participantId, volume });
-    emit('screen-share:restore-volume', { participantId, volume });
+    const muted = volume === 0;
+    shareMutedRef.current.set(participantId, muted);
+    setShareMuted((prev) => {
+      if (prev.get(participantId) === muted) return prev;
+      const next = new Map(prev);
+      next.set(participantId, muted);
+      return next;
+    });
+    setScreenShareAudioVolume(participantId, muted ? 0 : volume);
+    persistStreamVolume(participantId, volume);
+    persistStreamMuted(participantId, muted);
+    emit('watch-all:restore-volume', { participantId, volume, muted });
+    emit('screen-share:restore-volume', { participantId, volume, muted });
   }, []);
 
   const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
@@ -778,28 +955,13 @@ export default function ActiveRoom() {
     });
   }, []);
 
-  const toggleLocalSysMute = useCallback((participantId: string) => {
-    setLocalSysMuted((prev) => {
-      const next = new Map(prev);
-      if (next.has(participantId)) {
-        const saved = next.get(participantId)!;
-        next.delete(participantId);
-        setScreenShareAudioVolume(participantId, saved);
-      } else {
-        const current = shareVolumesRef.current.get(participantId) ?? 70;
-        next.set(participantId, current || 70);
-        setScreenShareAudioVolume(participantId, 0);
-      }
-      return next;
-    });
-  }, []);
-
   const emitWatchAllRestoreVolume = useCallback((participantId: string) => {
     emit('watch-all:restore-volume', {
       participantId,
       volume: getSavedShareVolume(participantId),
+      muted: getSavedShareMuted(participantId),
     });
-  }, [getSavedShareVolume]);
+  }, [getSavedShareMuted, getSavedShareVolume]);
 
   const getWatchAllScope = useCallback((currentState: VoiceRoomState | null) => {
     if (!currentState || !currentState.joinedSubRoomId) {
@@ -840,10 +1002,17 @@ export default function ActiveRoom() {
     if (!rs || !rs.screenShareStreams.has(participantId)) return;
 
     if (windowLabel === 'watch-all') {
-      if (!watchAllWindowRef.current || !watchAllReadyRef.current) return;
-      if (shareWindowsRef.current.has(participantId)) return;
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        console.log('[wavis:active-room] handleViewerReady: watch-all skipped — window:', !!watchAllWindowRef.current, 'ready:', watchAllReadyRef.current);
+        return;
+      }
+      if (shareWindowsRef.current.has(participantId)) {
+        console.log('[wavis:active-room] handleViewerReady: watch-all skipped — pop-out window exists for', participantId);
+        return;
+      }
+      console.log('[wavis:active-room] handleViewerReady: attaching watch-all audio for', participantId);
       attachScreenShareAudio(participantId);
-      setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+      applySavedScreenShareAudio(participantId);
       watchAllAttachedAudioRef.current.add(participantId);
       void emit('share:user-state', shareUserStateRef.current);
       void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
@@ -853,10 +1022,10 @@ export default function ActiveRoom() {
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (!shareWindow || shareWindow.window.label !== windowLabel) return;
     attachScreenShareAudio(participantId);
-    setScreenShareAudioVolume(participantId, getSavedShareVolume(participantId));
+    applySavedScreenShareAudio(participantId);
     void emit('share:user-state', shareUserStateRef.current);
     void emit('share:voice-participants', voiceParticipantsRef.current);
-  }, [getSavedShareVolume]);
+  }, [applySavedScreenShareAudio]);
 
   /** Re-add a participant's stream to the Watch All grid after their pop-out closes. */
   const reAddStreamToWatchAll = (participantId: string) => {
@@ -879,6 +1048,15 @@ export default function ActiveRoom() {
     });
     emitWatchAllRestoreVolume(participantId);
     prevWatchAllStreamsRef.current.set(participantId, stream);
+    // Attach audio directly. If the tile already exists in Watch All,
+    // share-added is a no-op and viewer-ready never fires, so audio would be
+    // left unattached. This covers both the new-tile path (idempotent with
+    // the viewer-ready attach) and the existing-tile path.
+    if (!shareWindowsRef.current.has(participantId)) {
+      attachScreenShareAudio(participantId);
+      applySavedScreenShareAudio(participantId);
+      watchAllAttachedAudioRef.current.add(participantId);
+    }
   };
 
   const handleShareWindowClosed = (participantId: string) => {
@@ -886,7 +1064,13 @@ export default function ActiveRoom() {
     // If another close path already removed it, skip duplicate cleanup.
     if (!shareWindowsRef.current.delete(participantId)) return;
     stopSending(participantId, `screen-share-${participantId}`);
-    detachScreenShareAudio(participantId);
+    // Skip detach when Watch All will take the stream back: detaching triggers
+    // setSubscribed(false/true) which can race TrackUnsubscribed/TrackSubscribed
+    // unpredictably. Keeping the gain node alive lets reAddStreamToWatchAll
+    // update volume immediately without any subscription churn.
+    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+      detachScreenShareAudio(participantId);
+    }
     setWatchingShareIds((prev) => {
       const next = new Set(prev);
       next.delete(participantId);
@@ -903,7 +1087,9 @@ export default function ActiveRoom() {
       // delete() returns false and we skip to avoid double-add.
       if (!shareWindowsRef.current.delete(pid)) return;
       stopSending(pid, `screen-share-${pid}`);
-      detachScreenShareAudio(pid);
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        detachScreenShareAudio(pid);
+      }
       setWatchingShareIds((prev) => {
         const next = new Set(prev);
         next.delete(pid);
@@ -942,7 +1128,31 @@ export default function ActiveRoom() {
     );
     cleanups.push(
       listen('screen-share:change-source', async () => {
-        await withPickerResize(isMacPlatform, () => changeShareSource());
+        if (isWindowsPlatform) {
+          const occupied = {
+            videoOccupied: false,
+            audioOccupied: roomStateRef.current?.activeAudioShare !== null,
+          };
+          const initialWithAudio = roomStateRef.current?.activeVideoShare?.withAudio ?? false;
+          setWinSharePicker({
+            enumResult: null,
+            occupied,
+            isChangingSource: true,
+            initialWithAudio,
+          });
+          try {
+            const enumResult = await invoke<EnumerationResult>('list_share_sources');
+            setWinSharePicker((current) => (
+              current ? { ...current, enumResult } : current
+            ));
+          } catch (err) {
+            setWinSharePicker(null);
+            const detail = err instanceof Error ? err.message : String(err);
+            toast.error(`Screen sharing failed: ${detail}`);
+          }
+        } else {
+          await withPickerResize(isMacPlatform, () => changeShareSource());
+        }
       }),
     );
     cleanups.push(
@@ -955,6 +1165,16 @@ export default function ActiveRoom() {
       listen<{ participantId: string; volume: number }>('screen-share:volume-change', (event) => {
         const { participantId, volume } = event.payload;
         syncScreenShareVolume(participantId, volume);
+      }),
+    );
+    cleanups.push(
+      listen<{ participantId: string; muted: boolean }>('watch-all:mute-change', (event) => {
+        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
+      }),
+    );
+    cleanups.push(
+      listen<{ participantId: string; muted: boolean }>('screen-share:mute-change', (event) => {
+        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
       }),
     );
     cleanups.push(
@@ -986,7 +1206,7 @@ export default function ActiveRoom() {
     return () => {
       for (const p of cleanups) p.then((fn) => fn());
     };
-  }, [syncScreenShareVolume]); // syncScreenShareVolume is stable (useCallback[]) but listed for exhaustive-deps
+  }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   useEffect(() => {
     const unlisten = listen<{ participantId: string; windowLabel: string }>('screen-share-viewer:ready', (event) => {
@@ -1019,10 +1239,13 @@ export default function ActiveRoom() {
 
   // Watch All: listen for pop-out request from WatchAllPage
   useEffect(() => {
-    const unlisten = listen<{ participantId: string; volume?: number }>('watch-all:pop-out', (event) => {
+    const unlisten = listen<{ participantId: string; volume?: number; muted?: boolean }>('watch-all:pop-out', (event) => {
       const pid = event.payload.participantId;
       if (typeof event.payload.volume === 'number') {
         syncScreenShareVolume(pid, event.payload.volume);
+      }
+      if (typeof event.payload.muted === 'boolean') {
+        syncScreenShareMuted(pid, event.payload.muted);
       }
       const rs = roomStateRef.current;
       const participant = rs?.participants.find((p) => p.id === pid);
@@ -1037,7 +1260,7 @@ export default function ActiveRoom() {
       openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
     });
     return () => { unlisten.then((fn) => fn?.()); };
-  }, [syncScreenShareVolume]);
+  }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   useEffect(() => {
     const unlisten = listen<{ participantId: string }>('watch-all:request-resend', (event) => {
@@ -1059,6 +1282,7 @@ export default function ActiveRoom() {
 
   // Dynamic share tracking for Watch All window
   const prevWatchAllStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
+  const prevAudioOnlySharersRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!roomState || !watchAllOpen) {
       prevWatchAllStreamsRef.current = new Map();
@@ -1104,6 +1328,15 @@ export default function ActiveRoom() {
         if (stream && stream !== prevStream) {
           console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
           resendStream(pid, 'watch-all', stream);
+          // Only re-attach audio if the viewer already owns this stream's audio.
+          // A stream reference change can fire before viewer-ready resolves (e.g.
+          // the SFU delivers the track muted then unmutes it within the same
+          // subscription window). Attaching audio here in that case would bypass
+          // the viewer-ready gate and leak audio before the tile visually connects.
+          if (watchAllAttachedAudioRef.current.has(pid)) {
+            attachScreenShareAudio(pid);
+            applySavedScreenShareAudio(pid);
+          }
         }
       }
     }
@@ -1120,6 +1353,33 @@ export default function ActiveRoom() {
 
     prevWatchAllStreamsRef.current = new Map(currentStreams);
   }, [getWatchAllScope, watchAllOpen, roomState?.screenShareStreams, roomState?.participants, roomState?.joinedSubRoomId, roomState?.subRooms, roomState?.passthrough]);
+
+  // Watch All: sync audio-only sharer additions/removals
+  useEffect(() => {
+    if (!roomState || !watchAllOpen || !watchAllReadyRef.current) return;
+    const curr = roomState.audioOnlySharers;
+    const prev = prevAudioOnlySharersRef.current;
+    for (const identity of curr) {
+      if (prev.has(identity)) continue;
+      const participant = roomState.participants.find((p) => p.id === identity);
+      if (!participant) continue;
+      const vol = getSavedShareVolume(identity);
+      // Always start audio shares muted; preserve the last-set volume for restore.
+      shareMutedRef.current.set(identity, true);
+      setShareMuted((prev) => {
+        if (prev.get(identity) === true) return prev;
+        const next = new Map(prev);
+        next.set(identity, true);
+        return next;
+      });
+      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
+    }
+    for (const identity of prev) {
+      if (curr.has(identity)) continue;
+      void emit('watch-all:audio-share-removed', { participantId: identity });
+    }
+    prevAudioOnlySharersRef.current = new Set(curr);
+  }, [getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(new Map());
@@ -1153,11 +1413,15 @@ export default function ActiveRoom() {
     cleanups.push(
       listen<ShareSelection>('share-picker:selected', async (event) => {
         setPendingSharePickerData(null);
+        const showStartingIndicator = isVideoShareSelectionMode(event.payload.mode);
+        if (showStartingIndicator) setShareStarting(true);
         try {
           await startCustomShare(event.payload);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           showTransientScreenShareError(msg);
+        } finally {
+          if (showStartingIndicator) setShareStarting(false);
         }
       }),
     );
@@ -1166,6 +1430,21 @@ export default function ActiveRoom() {
     cleanups.push(
       listen('share-picker:cancelled', () => {
         setPendingSharePickerData(null);
+      }),
+    );
+
+    cleanups.push(
+      listen('share-picker:use-portal', async () => {
+        setPendingSharePickerData(null);
+        setShareStarting(true);
+        try {
+          await startPortalShare();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          showTransientScreenShareError(msg);
+        } finally {
+          setShareStarting(false);
+        }
       }),
     );
 
@@ -1201,9 +1480,30 @@ export default function ActiveRoom() {
   // tear down the voice session and close all child windows so nothing
   // is orphaned. The Rust on_window_event handler emits this event.
   useEffect(() => {
-    const unlisten = listen('main-window-closing', () => {
+    const unlisten = listen('main-window-closing', async () => {
       closeAllShareWindows();
       leaveRoom();
+      // Give the JS event loop a tick so room.disconnect() can flush its
+      // WebSocket Leave signal to the LiveKit SFU before the webview is
+      // destroyed. The Rust side uses prevent_close() until this resolves.
+      await invoke('close_main_window').catch(() => {});
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  // Child windows (watch-all, screen-share) emit this to restore and focus the
+  // main window. The main window restores itself — more reliable than calling
+  // unminimize/setFocus on another window from a child webview.
+  useEffect(() => {
+    console.log('[wavis:focus-main] registering focus-main-window listener');
+    const unlisten = listen('focus-main-window', async () => {
+      console.log('[wavis:focus-main] event received — calling show_main_window');
+      try {
+        await invoke('show_main_window');
+        console.log('[wavis:focus-main] show_main_window done');
+      } catch (e) {
+        console.error('[wavis:focus-main] error:', e);
+      }
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -1215,6 +1515,10 @@ export default function ActiveRoom() {
     stream: MediaStream | null,
     scope: ShareViewerScope = 'direct',
   ) => {
+    if (nativeShareViewersRef.current.has(participantId)) {
+      closeShareWindow(participantId);
+    }
+
     // If already watching this participant, close it first and wait for Tauri to
     // destroy the webview before creating a new one with the same label.
     if (shareWindowsRef.current.has(participantId)) {
@@ -1234,11 +1538,31 @@ export default function ActiveRoom() {
       isOwner: isSelf,
       canvasFallback: stream === null,
       initialVolume: getSavedShareVolume(participantId),
+      initialMuted: getSavedShareMuted(participantId),
     };
     const hash = encodeURIComponent(JSON.stringify(params));
     const windowLabel = `screen-share-${participantId}`;
 
     try {
+      if (stream === null) {
+        await invoke('media_open_native_screen_share_viewer', {
+          identity: participantId,
+          title: `${participant.displayName} — screen share`,
+        });
+
+        nativeShareViewersRef.current.add(participantId);
+        attachScreenShareAudio(participantId);
+        applySavedScreenShareAudio(participantId);
+        setWatchingShareIds((prev) => new Set(prev).add(participantId));
+
+        if (watchAllWindowRef.current && watchAllReadyRef.current) {
+          watchAllAttachedAudioRef.current.delete(participantId);
+          prevWatchAllStreamsRef.current.delete(participantId);
+          emit('watch-all:share-removed', { participantId });
+        }
+        return;
+      }
+
       const win = new WebviewWindow(windowLabel, {
         url: `/screen-share#${hash}`,
         title: `${participant.displayName} — screen share`,
@@ -1278,9 +1602,11 @@ export default function ActiveRoom() {
       shareWindowsRef.current.set(participantId, { window: win, scope });
       setWatchingShareIds((prev) => new Set(prev).add(participantId));
 
-      // If Watch All is open, remove this tile from the grid — the pop-out owns it now
+      // If Watch All is open, remove this tile from the grid — the pop-out owns it now.
+      // Do NOT detach audio here: the gain node and subscription remain alive so the
+      // pop-out's handleViewerReady finds them intact and only needs to set the volume.
+      // closeShareWindow handles detach when the pop-out is actually closed.
       if (watchAllWindowRef.current && watchAllReadyRef.current) {
-        detachScreenShareAudio(participantId);
         watchAllAttachedAudioRef.current.delete(participantId);
         stopSending(participantId, 'watch-all');
         prevWatchAllStreamsRef.current.delete(participantId);
@@ -1288,13 +1614,19 @@ export default function ActiveRoom() {
       }
     } catch (err) {
       console.error('[wavis:active-room] failed to open screen share window:', err);
+      showTransientScreenShareError(err instanceof Error ? err.message : String(err));
     }
   };
 
   /** Close a specific screen share OS window and clean up the bridge. */
   const closeShareWindow = (participantId: string) => {
     stopSending(participantId, `screen-share-${participantId}`);
-    detachScreenShareAudio(participantId);
+    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+      detachScreenShareAudio(participantId);
+    }
+    if (nativeShareViewersRef.current.delete(participantId)) {
+      invoke('media_close_native_screen_share_viewer', { identity: participantId }).catch(() => {});
+    }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
       // Delete BEFORE win.close() so the screen-share:closed handler
@@ -1312,8 +1644,14 @@ export default function ActiveRoom() {
 
   /** Close all share windows. */
   const closeAllShareWindows = () => {
+    closeVideoPopoutWindow();
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
+    for (const pid of nativeShareViewersRef.current) {
+      detachScreenShareAudio(pid);
+      invoke('media_close_native_screen_share_viewer', { identity: pid }).catch(() => {});
+    }
+    nativeShareViewersRef.current.clear();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
       detachScreenShareAudio(pid);
       shareWindow.window.close().catch(() => { });
@@ -1325,6 +1663,125 @@ export default function ActiveRoom() {
   // Ref to latest roomState so the ready callback always reads fresh data
   const roomStateRef = useRef(roomState);
   roomStateRef.current = roomState;
+  const prevVideoPopoutTracksRef = useRef<Map<string, MediaStreamTrack | null>>(new Map());
+  const prevVideoPopoutTilesRef = useRef<Map<string, VideoTileSnapshot>>(new Map());
+
+  const closeVideoPopoutWindow = (alreadyDestroyed = false) => {
+    if (!videoPopoutWindowRef.current) return;
+    if (videoPopoutReadyUnlistenRef.current) {
+      videoPopoutReadyUnlistenRef.current();
+      videoPopoutReadyUnlistenRef.current = null;
+    }
+    videoPopoutReadyRef.current = false;
+    stopSendingForWindow('camera-popout');
+    if (!alreadyDestroyed) {
+      videoPopoutWindowRef.current.close().catch(() => { });
+    }
+    videoPopoutWindowRef.current = null;
+    setVideoPopoutOpen(false);
+    prevVideoPopoutTracksRef.current = new Map();
+    prevVideoPopoutTilesRef.current = new Map();
+  };
+
+  const syncVideoPopoutSnapshot = useCallback((nextTilesById: Record<string, VideoTileViewModel>) => {
+    const prevTracks = prevVideoPopoutTracksRef.current;
+    const prevTiles = prevVideoPopoutTilesRef.current;
+    const nextTracks = new Map<string, MediaStreamTrack | null>();
+    const nextTiles = new Map<string, VideoTileSnapshot>();
+
+    for (const tile of Object.values(nextTilesById)) {
+      const snapshot = buildVideoTileSnapshot(tile);
+      const sendableTrack = snapshot.hasTrack && !snapshot.isMuted && !snapshot.hasError ? tile.track : null;
+      nextTracks.set(tile.participantId, sendableTrack);
+      nextTiles.set(tile.participantId, snapshot);
+
+      const prevSnapshot = prevTiles.get(tile.participantId);
+      if (!prevSnapshot) {
+        void emit('camera-popout:tile-added', snapshot);
+      } else if (!areVideoTileSnapshotsEqual(prevSnapshot, snapshot)) {
+        void emit('camera-popout:tile-updated', snapshot);
+      }
+
+      const prevTrack = prevTracks.get(tile.participantId) ?? null;
+      if (sendableTrack && !prevTrack) {
+        void startSending(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
+      } else if (sendableTrack && prevTrack !== sendableTrack) {
+        void resendStream(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
+      } else if (!sendableTrack && prevTrack) {
+        stopSending(tile.participantId, 'camera-popout');
+      }
+    }
+
+    for (const participantId of prevTiles.keys()) {
+      if (!nextTiles.has(participantId)) {
+        stopSending(participantId, 'camera-popout');
+        void emit('camera-popout:tile-removed', { participantId });
+      }
+    }
+
+    prevVideoPopoutTracksRef.current = nextTracks;
+    prevVideoPopoutTilesRef.current = nextTiles;
+  }, []);
+
+  const openVideoPopoutWindow = useCallback(async () => {
+    if (videoPopoutWindowRef.current) {
+      videoPopoutWindowRef.current.setFocus().catch(() => { });
+      return;
+    }
+
+    const rs = roomStateRef.current;
+    if (!rs) return;
+
+    const hash = encodeURIComponent(JSON.stringify({ channelName: rs.channelName }));
+
+    try {
+      videoPopoutReadyRef.current = false;
+      const unlistenReady = await listen('camera-popout:ready', () => {
+        if (videoPopoutReadyRef.current) return;
+        videoPopoutReadyRef.current = true;
+        syncVideoPopoutSnapshot(roomStateRef.current?.videoTilesById ?? {});
+      });
+      videoPopoutReadyUnlistenRef.current = unlistenReady;
+
+      const win = new WebviewWindow('camera-popout', {
+        url: `/camera-popout#${hash}`,
+        title: `Camera — ${rs.channelName}`,
+        width: 960,
+        height: 540,
+        minWidth: 480,
+        minHeight: 320,
+        resizable: true,
+        decorations: false,
+        center: true,
+      });
+
+      win.once('tauri://error', (event) => {
+        console.error('[wavis:active-room] video popout window error:', event);
+        closeVideoPopoutWindow(true);
+      });
+
+      win.once('tauri://destroyed', () => {
+        closeVideoPopoutWindow(true);
+      });
+
+      videoPopoutWindowRef.current = win;
+      setVideoPopoutOpen(true);
+      // Switch away from the video tab — it's now in the pop-out window
+      selectRoomPanelTab('logs');
+    } catch (err) {
+      console.error('[wavis:active-room] failed to open video popout window:', err);
+    }
+  }, [syncVideoPopoutSnapshot]);
+
+  useEffect(() => {
+    if (!videoPopoutOpen) {
+      prevVideoPopoutTracksRef.current = new Map();
+      prevVideoPopoutTilesRef.current = new Map();
+      return;
+    }
+    if (!videoPopoutReadyRef.current) return;
+    syncVideoPopoutSnapshot(roomState?.videoTilesById ?? {});
+  }, [roomState?.videoTilesById, syncVideoPopoutSnapshot, videoPopoutOpen]);
 
   /** Open the Watch All window showing all active screen shares in a grid. */
   const openWatchAllWindow = async () => {
@@ -1361,6 +1818,7 @@ export default function ActiveRoom() {
         console.log('[wavis:active-room] watch-all:ready received, readyRef was:', watchAllReadyRef.current);
         if (watchAllReadyRef.current) return; // idempotent
         watchAllReadyRef.current = true;
+        watchAllWindowRef.current?.setFocus();
         // Read fresh roomState via ref — the closure captured at
         // openWatchAllWindow time may be stale by now.
         const rs = roomStateRef.current;
@@ -1388,6 +1846,22 @@ export default function ActiveRoom() {
         // Seed the dynamic tracking ref so the useEffect doesn't
         // re-emit these same shares as "new".
         prevWatchAllStreamsRef.current = new Map(scope.streams);
+        // Seed audio-only sharers into Watch All — always start muted
+        for (const identity of rs.audioOnlySharers) {
+          const participant = scope.participants.find((p) => p.id === identity);
+          if (!participant) continue;
+          const vol = getSavedShareVolume(identity);
+          shareMutedRef.current.set(identity, true);
+          setShareMuted((prev) => {
+            if (prev.get(identity) === true) return prev;
+            const next = new Map(prev);
+            next.set(identity, true);
+            return next;
+          });
+          setScreenShareAudioVolume(identity, 0);
+          void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
+        }
+        prevAudioOnlySharersRef.current = new Set(rs.audioOnlySharers);
       });
       watchAllReadyUnlistenRef.current = unlistenReady;
 
@@ -1456,16 +1930,25 @@ export default function ActiveRoom() {
     }
   }, [getWatchAllScope, roomState, roomState?.joinedSubRoomId]);
 
-  /** Toggle the Watch All window open/closed. */
-  const toggleWatchAllWindow = () => {
-    if (watchAllOpen) {
-      closeWatchAllWindow(); // unconditional close (Req 6.3)
-    } else {
-      // Only open if the joined room has active remote shares.
+  /** Toggle the Watch All window:
+   *  - closed          → open + focus
+   *  - open + visible  → close
+   *  - open + minimized → restore + focus (don't close)
+   */
+  const toggleWatchAllWindow = async () => {
+    if (!watchAllWindowRef.current) {
       const hasShares = roomState ? getWatchAllScope(roomState).remoteSharers.length > 0 : false;
       if (hasShares) {
         openWatchAllWindow();
       }
+      return;
+    }
+    const minimized = await watchAllWindowRef.current.isMinimized();
+    if (minimized) {
+      await watchAllWindowRef.current.unminimize();
+      await watchAllWindowRef.current.setFocus();
+    } else {
+      closeWatchAllWindow();
     }
   };
 
@@ -1492,9 +1975,31 @@ export default function ActiveRoom() {
     };
   }, [roomState?.mediaState]);
 
+  // Register Focus Main hotkey when media connects
+  useEffect(() => {
+    if (roomState?.mediaState !== 'connected') return;
+
+    let cancelled = false;
+    getFocusMainHotkey().then((hotkey) => {
+      if (cancelled) return;
+      focusMainHotkeyRef.current = hotkey;
+      registerFocusMainHotkey(hotkey, () => { console.log('[wavis:focus-main] hotkey fired'); void invoke('show_main_window').catch((e) => console.error('[wavis:focus-main] hotkey error:', e)); });
+    });
+
+    return () => {
+      cancelled = true;
+      if (focusMainHotkeyRef.current) {
+        unregisterFocusMainHotkey(focusMainHotkeyRef.current);
+        focusMainHotkeyRef.current = null;
+      }
+    };
+  }, [roomState?.mediaState]);
+
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
   const isMacPlatform = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
+  const isWindowsPlatform = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent);
+  const supportedCapturePlatform = isWindowsPlatform || isMacPlatform || isLinuxPlatform || hasBrowserCameraMediaSupport();
   const macShareAudioDisabledMessage =
     'System audio on macOS requires the WavisAudioTap driver — stop sharing and restart to enable audio.';
 
@@ -1506,6 +2011,20 @@ export default function ActiveRoom() {
   const selfP = roomState?.participants.find((p) => p.id === roomState.selfParticipantId);
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
+  // True when video capture (or fallback getDisplayMedia) is active — does NOT include audio-only share.
+  // Used to decide whether the ◉ compact button and the expanded /stopshare button should be in stop-mode.
+  const isVideoOrFallbackSharing = !!roomState?.activeVideoShare || (selfSharing && !roomState?.activeAudioShare);
+  const voiceRoomConnected = roomState
+    ? roomState.machineState === 'active' || roomState.machineState === 'reconnecting'
+    : false;
+  const showCameraButton = shouldMountCameraButton(voiceRoomConnected, supportedCapturePlatform);
+  const cameraButtonDisabled = shouldDisableCameraButton(
+    voiceRoomConnected,
+    roomState?.mediaState,
+    roomState?.joinedSubRoomId,
+  );
+  const videoButtonLabel = cameraButtonLabel(roomState?.cameraIntent ?? false);
+  const cameraLabel = `/${videoButtonLabel}`;
   const sharers = roomState?.participants.filter((p) => p.isSharing) ?? [];
   const watchAllScope = getWatchAllScope(roomState);
   const shareEnabled = roomState
@@ -1522,8 +2041,11 @@ export default function ActiveRoom() {
     : null;
   const stopShareAction = () => {
     const route = computeStopRoute(currentShareType, selfSharing);
-    if (route === 'stop_custom') stopCustomShare('all');
-    else if (route === 'stop_fallback') stopShare();
+    if (route === 'stop_custom') {
+      // Stop only the video share when video is active — audio-only share stays running.
+      // Stopping both is handled by /stop-audio for the audio slot.
+      void stopCustomShare(roomState?.activeVideoShare !== null ? 'video' : 'audio');
+    } else if (route === 'stop_fallback') stopShare();
   };
   shareUserStateRef.current = {
     isMuted: selfP?.isMuted ?? false,
@@ -1578,12 +2100,10 @@ export default function ActiveRoom() {
 
     try {
       if (!isLinuxPlatform) {
-        // Windows/macOS: use the browser/WebView getDisplayMedia path, not the
-        // custom native-source path below. If share diagnostics or leak logging
-        // are changed, this branch must be updated too — otherwise logs will only
-        // appear for Linux/native-picker flows and Windows repros will miss them.
-        //
-        // This path is what normal Windows `/share` currently exercises.
+        // macOS: uses getDisplayMedia() via startFallbackShare() below.
+        // Windows: intercepted below by isWindowsPlatform — uses native Rust
+        //   capture pipeline (inline SharePicker → WinCapture → startNativeCapture
+        //   + startWasapiAudioBridge). getDisplayMedia() is never called on Windows.
         if (isMacPlatform) {
           const access = await invoke<{
             authorized: boolean;
@@ -1618,6 +2138,29 @@ export default function ActiveRoom() {
         }
         skipDriverCheckRef.current = false;
 
+        // Windows: use native Rust source picker to avoid getDisplayMedia() and
+        // the WebView2 capture indicator bar it triggers.
+        if (isWindowsPlatform) {
+          const occupied: OccupiedSlots = {
+            videoOccupied: roomState?.activeVideoShare !== null,
+            audioOccupied: roomState?.activeAudioShare !== null,
+          };
+          setWinSharePicker({ enumResult: null, occupied });
+          setSharePickerLoading(false);
+          try {
+            const enumResult = await invoke<EnumerationResult>('list_share_sources');
+            setWinSharePicker((current) => (
+              current ? { ...current, enumResult } : current
+            ));
+          } catch (err) {
+            setWinSharePicker(null);
+            const detail = err instanceof Error ? err.message : String(err);
+            showTransientScreenShareError(`Screen sharing failed: ${detail}`);
+            toast.error(`Screen sharing failed: ${detail}`);
+          }
+          return;
+        }
+
         try {
           await withPickerResize(isMacPlatform, async () => {
             const result = await startFallbackShare();
@@ -1650,48 +2193,28 @@ export default function ActiveRoom() {
         return;
       }
 
-      const captureAuthStatus = await invoke<{
-        display_server: string;
-        authorized: boolean;
-        needs_auth: boolean;
-        was_attempted: boolean;
-      }>('get_capture_auth_status');
-
-      if (captureAuthStatus.display_server === 'wayland') {
-        await startPortalShare();
-        return;
-      }
-
       // Linux: custom picker path — getDisplayMedia() doesn't work in WebKitGTK.
-      const result = await invoke<EnumerationResult>('list_share_sources');
-
-      if (result.sources.length > 0 || result.fallback_reason === 'portal') {
-        const occupied: OccupiedSlots = {
-          videoOccupied: roomState?.activeVideoShare !== null,
-          audioOccupied: roomState?.activeAudioShare !== null,
-        };
-
-        // Linux: standalone OS window — PostMessage works fine on WebKitGTK.
-        setPendingSharePickerData({ enumResult: result, occupied });
-        const pickerPayload = encodeURIComponent(
-          JSON.stringify({ enumResult: result, occupied }),
-        );
-        new WebviewWindow('share-picker', {
-          url: `/share-picker#${pickerPayload}`,
-          title: 'Wavis — Share Picker',
-          width: 640,
-          height: 480,
-          minWidth: 360,
-          minHeight: 320,
-          resizable: true,
-          decorations: false,
-          center: true,
-        });
-      } else if (result.fallback_reason === 'get_display_media' && roomState?.connectionMode === 'livekit') {
-        await startFallbackShare();
-      } else {
-        toast.error('No shareable sources found');
-      }
+      // Open the picker before source enumeration so slow PipeWire/PulseAudio
+      // discovery does not block the OS window from appearing.
+      const occupied: OccupiedSlots = {
+        videoOccupied: roomState?.activeVideoShare !== null,
+        audioOccupied: roomState?.activeAudioShare !== null,
+      };
+      setPendingSharePickerData({ enumResult: { sources: [], warnings: [], fallback_reason: null }, occupied });
+      const pickerPayload = encodeURIComponent(
+        JSON.stringify({ enumResult: null, occupied }),
+      );
+      new WebviewWindow('share-picker', {
+        url: `/share-picker#${pickerPayload}`,
+        title: 'Wavis — Share Picker',
+        width: 640,
+        height: 480,
+        minWidth: 360,
+        minHeight: 320,
+        resizable: true,
+        decorations: false,
+        center: true,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showTransientScreenShareError(msg);
@@ -1780,7 +2303,6 @@ export default function ActiveRoom() {
           </div>
           <button
             className="mt-3 text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors"
-            onClick={() => navigateAwayFromRoom(`/channel/${channelId}`, true)}
           >
             /back
           </button>
@@ -1798,7 +2320,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.rejectionReason}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => navigateAwayFromRoom(`/channel/${channelId}`)}>/back</button>
+              <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/back</button>
             </div>
           </div>
         </div>
@@ -1815,7 +2337,7 @@ export default function ActiveRoom() {
             <div className="text-wavis-danger mb-4">{roomState.error}</div>
             <div className="flex gap-4 justify-center">
               <button className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast" onClick={() => { initRef.current = false; initSession(channelId, channelName, channelRole, setRoomState); initRef.current = true; }}>/retry</button>
-              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', true); }}>/leave</button>
+              <button className="text-xs text-wavis-danger border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg" onClick={() => { void clearLastChannel(); navigateAwayFromRoom('/', 'immediate'); }}>/leave</button>
             </div>
           </div>
         </div>
@@ -1830,7 +2352,6 @@ export default function ActiveRoom() {
         <span>you were kicked from the room</span>
         <button
           className="text-xs text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-          onClick={() => navigateAwayFromRoom('/', false)}
         >/back</button>
       </div>
     );
@@ -1839,7 +2360,7 @@ export default function ActiveRoom() {
   /* ── Actions ── */
   const handleLeave = () => {
     setLeaving(true);
-    navigateAwayFromRoom('/', true);
+    navigateAwayFromRoom('/', 'immediate');
   };
 
   const handleChannelSwitch = async (ch: Channel) => {
@@ -2009,6 +2530,18 @@ export default function ActiveRoom() {
   const mediaDot = mediaIndicator(roomState.mediaState, roomState.mediaError);
   const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
+  const renderChannelSwitcherToggle = () => (
+    <button
+      onClick={() => { setChannelSwitcherOpen((v) => !v); setShowSettings(false); }}
+      className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
+        channelSwitcherOpen
+          ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+          : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
+      }`}
+      title="Change channel"
+    >{channelSwitcherOpen ? '<' : '>'}</button>
+  );
+
   const roomHeader = (
     <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex items-center gap-3 overflow-hidden">
       <div className="flex-1 flex flex-col justify-center gap-0.5 min-w-0">
@@ -2031,15 +2564,7 @@ export default function ActiveRoom() {
           {roomState.channelName}
         </div>
       </div>
-      <button
-        onClick={() => setChannelSwitcherOpen((v) => !v)}
-        className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
-          channelSwitcherOpen
-            ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-            : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
-        }`}
-        title="Change channel"
-      >{channelSwitcherOpen ? '<' : '>'}</button>
+      {renderChannelSwitcherToggle()}
     </div>
   );
 
@@ -2074,6 +2599,9 @@ export default function ActiveRoom() {
   const renderParticipantRow = (p: RoomParticipant) => {
     const isSelf = p.id === roomState.selfParticipantId;
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
+    const videoTile = roomState.videoTilesById[p.id];
+    const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
+    const nameVisual = participantNameVisualState(p, isSelf);
 
     return (
       <div key={p.id} className="pl-2">
@@ -2086,23 +2614,87 @@ export default function ActiveRoom() {
           style={{ cursor: isSelf ? 'default' : 'pointer' }}
         >
           {isSelf ? <span className="text-xs text-wavis-accent inline-block w-6 text-center flex-none">&gt;</span> : <span className="text-[0.625rem] text-wavis-text-secondary inline-block w-6 text-center flex-none">{expandedUser === p.id ? '[-]' : '[+]'}</span>}
-          <span style={{
-            color: p.color,
-            animation: p.isSpeaking && !p.isMuted ? 'pulse 3s ease-in-out infinite' : 'none',
-            filter: p.isSpeaking && !p.isMuted ? 'brightness(1.5)' : 'brightness(0.7)',
-          }}>{p.displayName}</span>
+          <span className="inline-flex min-h-5 items-center gap-1.5">
+            <span style={{
+              color: nameVisual.color,
+              opacity: nameVisual.opacity,
+              animation: nameVisual.animation,
+              filter: nameVisual.filter,
+            }}>{p.displayName}</span>
+          </span>
           <span style={{ color: icon.color, textDecoration: icon.strikethrough ? 'line-through' : undefined, ...(icon.transform ? { display: 'inline-block', transform: icon.transform } : {}) }}>{icon.char}</span>
+          {nameVisual.showConnecting && (
+            <span className="inline-flex h-4 items-center gap-1 text-[0.625rem] leading-none text-wavis-text-secondary opacity-80">
+              <LoadingBars size="sm" />
+              <span>connecting</span>
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-1">
-            {isSelf && p.isSharing && (
+            {cameraOn && (
               <span
-                className="text-sm leading-none"
-                style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
-                title="you are sharing"
-              >
-                {"\u25C9"}
-              </span>
+                aria-label={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
+                title={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
+                style={{
+                  display: 'inline-block',
+                  width: '0.75rem',
+                  height: '0.75rem',
+                  backgroundColor: 'var(--wavis-accent)',
+                  WebkitMaskImage: 'url(/video-camera.png)',
+                  WebkitMaskSize: 'contain',
+                  WebkitMaskRepeat: 'no-repeat',
+                  WebkitMaskPosition: 'center',
+                  maskImage: 'url(/video-camera.png)',
+                  maskSize: 'contain',
+                  maskRepeat: 'no-repeat',
+                  maskPosition: 'center',
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+            {isSelf && p.isSharing && (
+              <>
+                {(roomState.activeVideoShare !== null || roomState.activeAudioShare === null) && (
+                  <span
+                    className="text-sm leading-none"
+                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
+                    title="you are sharing"
+                  >
+                    {"\u25C9"}
+                  </span>
+                )}
+                {roomState.activeAudioShare !== null && (
+                  <span
+                    className="text-sm leading-none"
+                    style={{ color: 'var(--wavis-danger)', animation: 'watchPulse 2s ease-in-out infinite' }}
+                    title="you are sharing audio"
+                  >
+                    {"\u266A"}
+                  </span>
+                )}
+              </>
             )}
             {!isSelf && p.isSharing && (() => {
+              const isAudioOnly = roomState.audioOnlySharers.has(p.id);
+              if (isAudioOnly) {
+                const isAudioMuted = getSavedShareMuted(p.id);
+                return (
+                  <button
+                    className="text-sm leading-none hover:opacity-70 transition-opacity"
+                    style={{
+                      color: isAudioMuted ? 'var(--wavis-danger)' : 'transparent',
+                      WebkitTextStroke: isAudioMuted ? undefined : '1px var(--wavis-danger)',
+                      animation: isAudioMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+                    }}
+                    title={isAudioMuted ? 'unmute audio share' : 'mute audio share'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      syncScreenShareMuted(p.id, !isAudioMuted);
+                    }}
+                  >
+                    {"\u266A"}
+                  </button>
+                );
+              }
               const hasStream = roomState.screenShareStreams.has(p.id);
               const isWatching = watchingShareIds.has(p.id);
               return (
@@ -2157,21 +2749,20 @@ export default function ActiveRoom() {
                 <span className="text-wavis-text-secondary shrink-0">share vol</span>
                 <div className="flex-1">
                   <VolumeSlider
-                    value={shareVolumes.get(p.id) ?? 70}
+                    value={shareVolumes.get(p.id) ?? getSavedShareVolume(p.id)}
                     onChange={(v) => {
-                      if (localSysMuted.has(p.id)) setLocalSysMuted((prev) => { const next = new Map(prev); next.delete(p.id); return next; });
                       syncScreenShareVolume(p.id, v);
                     }}
                     color={p.color}
                   />
                 </div>
-                <span className="text-wavis-text-secondary w-6 text-right">{localSysMuted.has(p.id) ? 0 : (shareVolumes.get(p.id) ?? 70)}</span>
+                <span className="text-wavis-text-secondary w-6 text-right">{getSavedShareMuted(p.id) ? 0 : (shareVolumes.get(p.id) ?? getSavedShareVolume(p.id))}</span>
                 <button
-                  onClick={() => toggleLocalSysMute(p.id)}
+                  onClick={() => syncScreenShareMuted(p.id, !getSavedShareMuted(p.id))}
                   className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
-                  style={localSysMuted.has(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
-                  title={localSysMuted.has(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'}
-                >{localSysMuted.has(p.id) ? '/unmute' : '/mute'}</button>
+                  style={getSavedShareMuted(p.id) ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' } : undefined}
+                  title={getSavedShareMuted(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'}
+                >{getSavedShareMuted(p.id) ? '/unmute' : '/mute'}</button>
               </div>
             )}
             {isHost && (
@@ -2181,7 +2772,6 @@ export default function ActiveRoom() {
                   ? <button onClick={() => unmuteParticipant(p.id)} className="text-xs text-center border border-wavis-accent text-wavis-accent px-1 py-0.5 transition-colors hover:opacity-70">/unmute</button>
                   : !p.isMuted && <button onClick={() => muteParticipant(p.id)} className="text-xs text-center border px-1 py-0.5 transition-colors hover:opacity-70" style={{ color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }}>/mute</button>
                 }
-                {p.isSharing && <button onClick={() => stopParticipantShare(p.id)} className="text-xs text-center border border-wavis-danger text-wavis-danger px-1 py-0.5 transition-colors hover:opacity-70">/revoke</button>}
               </div>
             )}
           </div>
@@ -2223,7 +2813,7 @@ export default function ActiveRoom() {
             activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId
             || activePassthrough.targetSubRoomId === roomState.joinedSubRoomId
           );
-        const canSetPassthrough = !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
+        const canSetPassthrough = roomState.passthroughEnabled && !activePassthrough && !!roomState.joinedSubRoomId && !isJoinedRoom;
         const canClearPassthrough = activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
         const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
         const passthroughLabel = activePassthroughInvolvesRoom && activePassthrough?.label
@@ -2336,6 +2926,7 @@ export default function ActiveRoom() {
                       <button
                         type="button"
                         onClick={toggleWatchAllWindow}
+                        title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${hotkeys.watchAll})`}
                         className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                       >
                         {watchAllOpen ? '/close-all' : '/watch-all'}
@@ -2381,7 +2972,7 @@ export default function ActiveRoom() {
   );
 
   const youBar = (
-    <div className="p-4 border-t border-wavis-text-secondary">
+    <div className="shrink-0 p-4 border-t border-wavis-text-secondary">
       <div className="flex items-center gap-1 border-b border-wavis-text-secondary font-mono text-wavis-text">
         <button onClick={() => toggleSection('you')} className="bg-transparent outline-none px-1 py-1 text-xs text-wavis-text-secondary hover:opacity-80">
           {expandedSections.you ? '[-]' : '[+]'}
@@ -2396,8 +2987,8 @@ export default function ActiveRoom() {
               disabled={!!selfP?.isHostMuted}
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
               style={{ color: selfP?.isMuted ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-              title={selfP?.isMuted ? '/unmute' : '/mute'}
-            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">○</span></button>
+              title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`}
+            ><span className="inline-flex w-3 h-3 items-center justify-center leading-none -translate-y-px">○</span></button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
               onClick={toggleSelfDeafen}
@@ -2405,13 +2996,39 @@ export default function ActiveRoom() {
               style={{ color: roomState.isDeafened ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
               title={roomState.isDeafened ? '/undeafen' : '/deafen'}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none" style={{ fontSize: '1.1em' }}>¤</span></button>
+            {showCameraButton && (
+              <>
+                <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
+                <button
+                  onClick={toggleCameraIntent}
+                  disabled={cameraButtonDisabled}
+                  className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ color: roomState.cameraIntent ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
+                  title={cameraLabel}
+                  aria-label={videoButtonLabel}
+                ><span style={{
+                    display: 'inline-block',
+                    width: '0.75rem',
+                    height: '0.75rem',
+                    backgroundColor: 'currentColor',
+                    WebkitMaskImage: 'url(/video-camera.png)',
+                    WebkitMaskSize: 'contain',
+                    WebkitMaskRepeat: 'no-repeat',
+                    WebkitMaskPosition: 'center',
+                    maskImage: 'url(/video-camera.png)',
+                    maskSize: 'contain',
+                    maskRepeat: 'no-repeat',
+                    maskPosition: 'center',
+                  }} /></button>
+              </>
+            )}
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
-              onClick={selfSharing ? stopShareAction : handleStartShare}
-              disabled={!selfSharing && (!shareEnabled || sharePickerLoading)}
+              onClick={isVideoOrFallbackSharing ? stopShareAction : handleStartShare}
+              disabled={!isVideoOrFallbackSharing && (!shareEnabled || sharePickerLoading || shareStarting)}
               className="px-1.5 h-5 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-70 transition-opacity"
-              style={{ color: selfSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
-              title={selfSharing ? '/stopshare' : '/share'}
+              style={{ color: isVideoOrFallbackSharing ? 'var(--wavis-danger)' : 'var(--wavis-text-secondary)' }}
+              title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
             ><span className="inline-flex w-3 h-3 items-center justify-center leading-none">◉</span></button>
           </div>
         )}
@@ -2420,118 +3037,188 @@ export default function ActiveRoom() {
         <div className="pt-2 pl-6 text-sm">
           <div className="flex flex-col gap-1 w-full">
             <div className="flex flex-col md:flex-row gap-1">
-              <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
+              <button onClick={toggleSelfMute} disabled={selfP?.isHostMuted} title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfP?.isMuted ? 'border-wavis-danger text-wavis-danger bg-wavis-danger/8 hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{selfP?.isMuted ? '/unmute' : '/mute'}</button>
               <button onClick={toggleSelfDeafen} className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}>{roomState.isDeafened ? '/undeafen' : '/deafen'}</button>
             </div>
-            {(selfSharing || !(roomState.activeVideoShare && roomState.activeAudioShare)) && (() => {
-              const shareDisabled = !shareEnabled || isShareButtonDisabled(currentShareType, selfSharing) || sharePickerLoading;
+            {showCameraButton && (
+              <button
+                onClick={toggleCameraIntent}
+                disabled={cameraButtonDisabled}
+                className={`w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${roomState.cameraIntent ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+              >
+                {cameraLabel}
+              </button>
+            )}
+            {(() => {
+              const isVideoActive = roomState.activeVideoShare !== null;
+              const isFallbackSharing = selfSharing && !isVideoActive && roomState.activeAudioShare === null;
+              if (isVideoActive || isFallbackSharing) {
+                return (
+                  <>
+                    <button
+                      onClick={stopShareAction}
+                      className="w-full py-0.5 px-1 text-xs text-center transition-colors border text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
+                    >
+                      /stopshare
+                    </button>
+                    {sharePickerLoading && shareLoadingNotice(
+                      SHARE_PICKER_LOADING_LABEL,
+                      '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+                    )}
+                    {shareStarting && shareLoadingNotice(
+                      SHARE_STARTING_LOADING_LABEL,
+                      '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+                    )}
+                    {isVideoActive && !shareStarting && (
+                      <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => {
+                              if (isWindowsPlatform) {
+                                void (async () => {
+                                  const occupied = {
+                                    videoOccupied: false,
+                                    audioOccupied: roomState.activeAudioShare !== null,
+                                  };
+                                  const initialWithAudio = roomState.activeVideoShare?.withAudio ?? false;
+                                  setWinSharePicker({
+                                    enumResult: null,
+                                    occupied,
+                                    isChangingSource: true,
+                                    initialWithAudio,
+                                  });
+                                  try {
+                                    const enumResult = await invoke<EnumerationResult>('list_share_sources');
+                                    setWinSharePicker((current) => (
+                                      current ? { ...current, enumResult } : current
+                                    ));
+                                  } catch (err) {
+                                    setWinSharePicker(null);
+                                    const detail = err instanceof Error ? err.message : String(err);
+                                    toast.error(`Screen sharing failed: ${detail}`);
+                                  }
+                                })();
+                              } else {
+                                void withPickerResize(isMacPlatform, () => changeShareSource());
+                              }
+                            }}
+                            className="flex-1 py-0.5 px-1 text-xs text-center border border-wavis-text-secondary text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+                          >
+                            /window
+                          </button>
+                          {(() => {
+                            // Turning companion audio ON conflicts with a running audio-only share (same WASAPI device).
+                            const companionBlocked = !isMacPlatform && !shareAudioOn && roomState.activeAudioShare !== null;
+                            const companionDisabled = isMacPlatform || companionBlocked;
+                            return (
+                              <button
+                                onClick={async () => {
+                                  if (companionDisabled) return;
+                                  const next = !shareAudioOn;
+                                  const ok = await toggleShareAudio(next);
+                                  if (ok) setShareAudioOn(next);
+                                }}
+                                disabled={companionDisabled}
+                                title={companionBlocked ? 'audio device busy — stop your audio share first' : undefined}
+                                className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${companionDisabled
+                                  ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
+                                  : shareAudioOn
+                                    ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
+                                    : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
+                                  }`}
+                              >
+                                {shareAudioOn ? '/audio on' : '/audio off'}
+                              </button>
+                            );
+                          })()}
+                        </div>
+                        <select
+                          value={shareQualityState}
+                          onChange={(e) => {
+                            const q = e.target.value as 'low' | 'high' | 'max';
+                            setShareQualityState(q);
+                            setShareQuality(q);
+                            e.currentTarget.blur();
+                          }}
+                          onClick={(e) => {
+                            if (e.currentTarget.dataset.open === 'true') {
+                              e.currentTarget.blur();
+                              e.currentTarget.dataset.open = 'false';
+                            } else if (document.activeElement === e.currentTarget) {
+                              e.currentTarget.dataset.open = 'true';
+                            }
+                          }}
+                          onBlur={(e) => { e.currentTarget.dataset.open = 'false'; }}
+                          onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
+                          className="w-full bg-wavis-panel border border-wavis-text-secondary text-wavis-text text-xs py-0.5 px-1 cursor-pointer"
+                        >
+                          {(['low', 'high', 'max'] as const).map((q) => {
+                            const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps';
+                            return <option key={q} value={q}>{label}</option>;
+                          })}
+                        </select>
+                      </div>
+                    )}
+                  </>
+                );
+              }
+              const shareDisabled = !shareEnabled || sharePickerLoading || shareStarting;
               return (
                 <>
                   <button
-                    onClick={selfSharing ? stopShareAction : handleStartShare}
-                    disabled={selfSharing ? false : shareDisabled}
-                    className={`w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${selfSharing ? 'text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg'}`}
+                    onClick={handleStartShare}
+                    disabled={shareDisabled}
+                    className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg"
                   >
-                    {shareButtonLabel(shareEnabled, selfSharing, roomState.sharePermission, isHost)}
+                    {shareButtonLabel(shareEnabled, false, roomState.sharePermission, isHost)}
                   </button>
-                  {sharePickerLoading && (
-                    <div className="-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
-                      <div className="flex items-center gap-1">
-                        {[0, 1, 2].map((bar) => (
-                          <span
-                            key={bar}
-                            className="inline-block w-1 bg-wavis-purple"
-                            style={{
-                              height: '0.55rem',
-                              animation: 'pulse 1.2s ease-in-out infinite',
-                              animationDelay: `${bar * 0.16}s`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <span className="text-wavis-text-secondary">waiting for screen picker...</span>
-                    </div>
+                  {sharePickerLoading && shareLoadingNotice(
+                    SHARE_PICKER_LOADING_LABEL,
+                    '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
                   )}
-                  {selfSharing && (
-                    <div className="border-x border-b border-wavis-text-secondary p-2 space-y-1 text-xs">
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => { void withPickerResize(isMacPlatform, () => changeShareSource()); }}
-                          className="flex-1 py-0.5 px-1 text-xs text-center border border-wavis-text-secondary text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-                        >
-                          /window
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (isMacPlatform) return;
-                            const next = !shareAudioOn;
-                            setShareAudioOn(next);
-                            void toggleShareAudio(next);
-                          }}
-                          disabled={isMacPlatform}
-                          className={`flex-1 py-0.5 px-1 text-xs text-center border transition-colors ${isMacPlatform
-                            ? 'cursor-not-allowed border-wavis-text-secondary text-wavis-text-secondary opacity-50'
-                            : shareAudioOn
-                              ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-                              : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-                            }`}
-                        >
-                          {shareAudioOn ? '/audio on' : '/audio off'}
-                        </button>
-                      </div>
-                      <select
-                        value={shareQualityState}
-                        onChange={(e) => {
-                          const q = e.target.value as 'low' | 'high' | 'max';
-                          setShareQualityState(q);
-                          setShareQuality(q);
-                          e.currentTarget.blur();
-                        }}
-                        onClick={(e) => {
-                          if (e.currentTarget.dataset.open === 'true') {
-                            e.currentTarget.blur();
-                            e.currentTarget.dataset.open = 'false';
-                          } else if (document.activeElement === e.currentTarget) {
-                            e.currentTarget.dataset.open = 'true';
-                          }
-                        }}
-                        onBlur={(e) => { e.currentTarget.dataset.open = 'false'; }}
-                        onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
-                        className="w-full bg-wavis-panel border border-wavis-text-secondary text-wavis-text text-xs py-0.5 px-1 cursor-pointer"
-                      >
-                        {(['low', 'high', 'max'] as const).map((q) => {
-                          const label = q === 'low' ? 'Smooth  1080p @ 60fps' : q === 'high' ? 'Sharp   1440p @ 30fps' : 'Max     1440p @ 60fps';
-                          return <option key={q} value={q}>{label}</option>;
-                        })}
-                      </select>
-                    </div>
+                  {shareStarting && shareLoadingNotice(
+                    SHARE_STARTING_LOADING_LABEL,
+                    '-mt-1 border-x border-b border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
                   )}
                 </>
               );
             })()}
+            {roomState.activeVideoShare !== null && roomState.activeAudioShare === null && (
+              <button
+                onClick={handleStartShare}
+                disabled={!shareEnabled || sharePickerLoading || !!roomState.activeVideoShare.withAudio}
+                title={roomState.activeVideoShare.withAudio ? 'audio device busy — turn off /audio first' : undefined}
+                className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
+              >
+                /share audio
+              </button>
+            )}
+            {roomState.activeAudioShare !== null && (
+              <button
+                onClick={() => { void stopCustomShare('audio'); }}
+                className="w-full py-0.5 px-1 text-xs text-center transition-colors border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
+              >
+                /stop-audio
+              </button>
+            )}
             <div className="mt-4 flex flex-col gap-1">
-              <button onClick={() => setShowSettings(true)} className="w-full text-wavis-text border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">/settings</button>
+              <button
+                onClick={() => { if (showSettings) { setShowSettings(false); } else { setShowSettings(true); setChannelSwitcherOpen(false); } }}
+                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+              >
+                {showSettings ? '/close-settings' : '/settings'}
+              </button>
             </div>
           </div>
         </div>
       )}
-      {!expandedSections.you && sharePickerLoading && (
-        <div className="ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2">
-          <div className="flex items-center gap-1">
-            {[0, 1, 2].map((bar) => (
-              <span
-                key={bar}
-                className="inline-block w-1 bg-wavis-purple"
-                style={{
-                  height: '0.55rem',
-                  animation: 'pulse 1.2s ease-in-out infinite',
-                  animationDelay: `${bar * 0.16}s`,
-                }}
-              />
-            ))}
-          </div>
-          <span className="text-wavis-text-secondary">waiting for screen picker...</span>
-        </div>
+      {!expandedSections.you && sharePickerLoading && shareLoadingNotice(
+        SHARE_PICKER_LOADING_LABEL,
+        'ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
+      )}
+      {!expandedSections.you && shareStarting && shareLoadingNotice(
+        SHARE_STARTING_LOADING_LABEL,
+        'ml-6 mt-2 border border-wavis-text-secondary/30 bg-wavis-panel p-2 text-xs flex items-center gap-2',
       )}
       {screenShareError && (
         <div className="mx-4 mt-2 border border-wavis-danger bg-wavis-panel p-2 text-xs text-wavis-danger flex items-start gap-2">
@@ -2569,7 +3256,7 @@ export default function ActiveRoom() {
               {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
             </div>
           ) : (
-            <div key={item.message.id} className="break-all">
+            <div key={item.message.id} className="break-words">
               <span className="text-wavis-text-secondary">[{formatTime(item.message.timestamp)}]</span>{' '}
               <span style={{ color: resolveChatMessageDisplayColor(item.message, roomState.participants) }}>{item.message.displayName}</span>
               <span>: {renderChatText(item.message.text)}</span>
@@ -2600,13 +3287,22 @@ export default function ActiveRoom() {
     </div>
   );
 
-  const logPanel = (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex flex-col justify-center">
-        <div className="font-bold text-sm">LOGS</div>
-      </div>
+  const currentPanelTab = roomState?.roomPanelTab ?? 'logs';
+  const videoTilesById = roomState?.videoTilesById ?? {};
+
+  const logsContent = (
+    <>
       <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
-        {roomState.events.map((evt) => {
+        {buildRoomEventDisplayItems(roomState.events).map((item) => {
+          if (item.type === 'date-divider') {
+            return (
+              <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
+                {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
+              </div>
+            );
+          }
+
+          const evt = item.event;
           const username = getEventUsername(evt);
           const userColor = getUserColor(roomState.participants, evt.participantId);
           return (
@@ -2640,6 +3336,121 @@ export default function ActiveRoom() {
           />
         </div>
       </div>
+    </>
+  );
+
+  const videoPanel = (
+    <div className="flex flex-col flex-1 min-h-0">
+      <VideoTab videoTilesById={videoTilesById} />
+      <div className="shrink-0 p-4 border-t border-wavis-text-secondary -translate-y-px">
+        <button
+          onClick={() => { void openVideoPopoutWindow(); }}
+          className={`w-full py-[7px] px-2 text-xs text-center transition-colors border ${videoPopoutOpen ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+        >
+          /pop-out
+        </button>
+      </div>
+    </div>
+  );
+
+  // Desktop right-panel: LOGS / VIDEOS tab switcher
+  const logPanel = (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* ── Tab header ── */}
+      <div className="flex h-[4.5rem] border-b border-wavis-text-secondary">
+        {(['logs', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
+          const label = tab === 'logs' ? 'LOGS' : 'VIDEOS';
+          const active = currentPanelTab === tab;
+          return (
+            <button
+              key={tab}
+              role="tab"
+              aria-selected={active}
+              onClick={() => selectRoomPanelTab(tab)}
+              onDoubleClick={() => {
+                if (tab !== 'video') return;
+                selectRoomPanelTab('video');
+                void openVideoPopoutWindow();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectRoomPanelTab(tab);
+                }
+              }}
+              className="flex-1 flex items-center justify-center font-bold text-sm border-r border-wavis-text-secondary last:border-r-0 transition-colors"
+              style={{
+                color: active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent',
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {/* ── Tab body ── */}
+      {currentPanelTab === 'video' && !videoPopoutOpen ? (
+        videoPanel
+      ) : (
+        logsContent
+      )}
+    </div>
+  );
+
+  const groupedPanel = (
+    <div className="flex-1 flex flex-col min-h-0">
+      {showSettings ? (
+        <Settings onClose={() => setShowSettings(false)} onNavigateAway={navigateAwayFromRoom} channelId={channelId} />
+      ) : channelSwitcherOpen ? (
+        <ChannelSwitcherPanel
+          onChannelSelect={handleChannelSwitch}
+          onClose={() => setChannelSwitcherOpen(false)}
+          currentChannelId={channelId}
+        />
+      ) : (
+        <>
+          <div className="flex h-[4.5rem] border-b border-wavis-text-secondary bg-wavis-panel">
+            {(['chat', 'log', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
+              const active = groupedPanelTab === tab;
+              const label = tab === 'chat'
+                ? `CHAT (${roomState.chatMessages.length})`
+                : tab === 'log'
+                  ? `LOG (${roomState.events.length})`
+                  : 'VIDEO';
+              return (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setGroupedPanelTab(tab)}
+                  onDoubleClick={() => {
+                    if (tab !== 'video') return;
+                    setGroupedPanelTab('video');
+                    void openVideoPopoutWindow();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setGroupedPanelTab(tab);
+                    }
+                  }}
+                  className="flex-1 flex items-center justify-center font-bold text-xs border-r border-wavis-text-secondary last:border-r-0 transition-colors"
+                  style={{
+                    color: active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                    backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {groupedPanelTab === 'chat' && chatPanel}
+          {groupedPanelTab === 'log' && logsContent}
+          {groupedPanelTab === 'video' && !videoPopoutOpen && videoPanel}
+        </>
+      )}
     </div>
   );
 
@@ -2662,14 +3473,15 @@ export default function ActiveRoom() {
       {/* ═══ MOBILE LAYOUT (< md) ═══ */}
       <div className="flex flex-col flex-1 overflow-hidden md:hidden">
         {/* Compact header */}
-        <div className="flex items-center px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-wavis-text-secondary bg-wavis-panel">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <StatusDot color={sigDot.color} label={sigDot.label} />
             <StatusDot color={mediaDot.color} label={mediaDot.label} />
             <span className="truncate text-sm">{roomState.channelName}</span>
             <span className="shrink-0 text-[0.625rem] text-wavis-text-secondary">{Object.keys(roomState.participantSubRoomById).length}/6</span>
             <span className="shrink-0 text-[0.625rem]" style={{ color: rttColor(roomState.networkStats.rttMs) }}>{roomState.networkStats.rttMs}ms</span>
           </div>
+          {renderChannelSwitcherToggle()}
         </div>
 
         {mediaReconnectingBanner}
@@ -2678,19 +3490,29 @@ export default function ActiveRoom() {
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
-          {(['participants', 'chat', 'log'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setMobileTab(tab)}
-              className="flex-1 py-2 text-center border-r border-wavis-text-secondary last:border-r-0 text-xs"
-              style={{
-                color: mobileTab === tab ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
-                backgroundColor: mobileTab === tab ? 'rgba(46,160,67,0.08)' : 'transparent',
-              }}
-            >
-              {tab === 'participants' ? `VOICE (${Object.keys(roomState.participantSubRoomById).length})` : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})` : `LOG (${roomState.events.length})`}
-            </button>
-          ))}
+          {(['participants', 'chat', 'log', 'video'] as const).filter((tab) => !(tab === 'video' && videoPopoutOpen)).map((tab) => {
+            const active = mobileTab === tab;
+            const color = active ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)';
+            return (
+              <button
+                key={tab}
+                onClick={() => setMobileTab(tab)}
+                onDoubleClick={() => {
+                  if (tab !== 'video') return;
+                  setMobileTab('video');
+                  void openVideoPopoutWindow();
+                }}
+                className="flex-1 py-2 text-center border-r border-wavis-text-secondary last:border-r-0 text-xs"
+                style={{ color, backgroundColor: active ? 'rgba(46,160,67,0.08)' : 'transparent' }}
+              >
+                {tab === 'participants' ? `VOICE (${Object.keys(roomState.participantSubRoomById).length})`
+                  : tab === 'chat' ? `CHAT (${roomState.chatMessages.length})`
+                  : tab === 'log' ? `LOG (${roomState.events.length})`
+                  : 'VIDEO'
+                }
+              </button>
+            );
+          })}
         </div>
 
         {/* Tab content */}
@@ -2707,13 +3529,29 @@ export default function ActiveRoom() {
             <>
               {mobileTab === 'participants' && <div className="flex flex-col flex-1 min-h-0">{participantsSections}{youBar}</div>}
               {mobileTab === 'chat' && chatPanel}
-              {mobileTab === 'log' && logPanel}
+              {mobileTab === 'log' && logsContent}
+              {mobileTab === 'video' && !videoPopoutOpen && videoPanel}
             </>
           )}
         </div>
       </div>
 
-      {/* ═══ DESKTOP LAYOUT (md+) ═══ */}
+      {/* Intermediate layout (md to 1038px) */}
+      <div className="wavis-room-intermediate-layout flex-1 overflow-hidden">
+        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col">
+          {roomHeader}
+          {mediaReconnectingBanner}
+          {mediaRetryBanner}
+          {reconnectBanner}
+          {participantsSections}
+          {youBar}
+        </div>
+        <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+          {groupedPanel}
+        </div>
+      </div>
+
+      {/* Desktop layout (1039px+) */}
       <div className="hidden md:flex flex-1 overflow-hidden">
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
@@ -2758,6 +3596,51 @@ export default function ActiveRoom() {
             }
           }}
         />
+      )}
+      {winSharePicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-bg/80 px-4">
+          <div className="w-[640px] max-w-[90vw] h-[480px] max-h-[80vh] border border-wavis-text-secondary shadow-xl overflow-hidden flex flex-col">
+            <SharePicker
+              inline
+              enumResult={winSharePicker.enumResult}
+              occupied={winSharePicker.occupied}
+              modeScope={winSharePicker.isChangingSource ? 'video_only' : 'all'}
+              initialWithAudio={winSharePicker.initialWithAudio}
+              onSelect={async (selection) => {
+                const wasChangingSource = winSharePicker.isChangingSource ?? false;
+                const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
+                setWinSharePicker(null);
+                const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
+                if (showStartingIndicator) setShareStarting(true);
+                try {
+                  const nextSelection = wasChangingSource
+                    ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
+                    : selection;
+                  if (wasChangingSource) {
+                    // keepPublication=true: skip unpublishTrack so the LiveKit
+                    // publication stays alive for replaceNativeCaptureSource().
+                    // Viewers never see a TrackUnpublished/TrackPublished cycle.
+                    await stopCustomShare('video', { suppressSignaling: true, keepPublication: true });
+                  }
+                  await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
+                  setShowPostShareAudioPrompt(false);
+                  if (nextSelection.mode !== 'audio_only') {
+                    setShareAudioOn(nextSelection.withAudio);
+                  } else {
+                    setShareAudioOn(false);
+                  }
+                } catch (err) {
+                  const detail = err instanceof Error ? err.message : String(err);
+                  showTransientScreenShareError(`Screen sharing failed: ${detail}`);
+                  toast.error(`Screen sharing failed: ${detail}`);
+                } finally {
+                  if (showStartingIndicator) setShareStarting(false);
+                }
+              }}
+              onCancel={() => setWinSharePicker(null)}
+            />
+          </div>
+        </div>
       )}
       {showPostShareAudioPrompt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-bg/80 px-4">

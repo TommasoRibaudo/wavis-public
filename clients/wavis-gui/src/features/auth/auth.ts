@@ -99,6 +99,16 @@ export function parseJwtExpiry(jwt: string): number | null {
   }
 }
 
+function retryAfterMessage(res: Response): string {
+  const retryAfter = res.headers.get('Retry-After');
+  if (!retryAfter) return 'too many requests -- try again later';
+  const seconds = Number.parseFloat(retryAfter);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'too many requests -- try again later';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes <= 1) return 'too many requests -- try again in about 1 minute';
+  return `too many requests -- try again in about ${minutes} minutes`;
+}
+
 export function redactToken(token: string): string {
   if (token.length >= 16) return token.slice(0, 16) + '...';
   return '***';
@@ -191,6 +201,21 @@ export async function getRefreshToken(): Promise<string | null> {
   return invoke<string | null>('get_token', { key: 'wavis_refresh_token' });
 }
 
+export async function storeRecoveryId(id: string): Promise<void> {
+  const store = await getStore();
+  await store.set('recovery_id', id);
+}
+
+export async function getStoredRecoveryId(): Promise<string | null> {
+  const store = await getStore();
+  return (await store.get<string>('recovery_id')) ?? null;
+}
+
+export async function deleteStoredRecoveryId(): Promise<void> {
+  const store = await getStore();
+  await store.delete('recovery_id');
+}
+
 export async function setInsecureTls(value: boolean): Promise<void> {
   const store = await getStore();
   await store.set('insecure_tls', INSECURE_TLS_ALLOWED && value);
@@ -207,7 +232,7 @@ export async function getInsecureTls(): Promise<boolean> {
 export async function registerUser(
   serverUrl: string,
   phrase: string,
-  deviceName: string,
+  username: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
 ): Promise<{ success: true; recovery_id: string } | { success: false; error?: string }> {
@@ -228,7 +253,7 @@ export async function registerUser(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phrase, device_name: deviceName }),
+      body: JSON.stringify({ phrase, username }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -239,7 +264,7 @@ export async function registerUser(
   }
 
   if (res.status === 429) {
-    const msg = 'too many requests -- try again later';
+    const msg = retryAfterMessage(res);
     onLog(makeLogEntry(msg, 'warning'));
     return { success: false, error: msg };
   }
@@ -274,8 +299,8 @@ export async function registerUser(
   await store.set('device_id', body.device_id);
   onLog(makeLogEntry('Device registered: ' + body.device_id, 'success'));
 
-  await invoke('store_token', { key: 'wavis_recovery_id', value: body.recovery_id });
-  onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
+  await storeRecoveryId(body.recovery_id);
+  onLog(makeLogEntry('Recovery ID stored locally', 'info'));
 
   notifyTokenRefreshedCallbacks();
   return { success: true, recovery_id: body.recovery_id };
@@ -287,9 +312,10 @@ export async function recoverAccount(
   serverUrl: string,
   recoveryId: string,
   phrase: string,
-  deviceName: string,
+  _username: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
+  rememberRecoveryId = true,
 ): Promise<{ success: boolean; error?: string }> {
   onLog(makeLogEntry('Validating server URL: ' + serverUrl, 'info'));
   const validation = validateServerUrl(serverUrl, insecureTls);
@@ -302,13 +328,14 @@ export async function recoverAccount(
   await setInsecureTls(insecureTls);
 
   onLog(makeLogEntry('Sending recovery request...', 'info'));
+  const trimmedRecoveryId = recoveryId.trim();
   let res: Response;
   try {
     const url = serverUrl.replace(/\/+$/, '') + '/auth/recover';
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recovery_id: recoveryId, phrase, device_name: deviceName }),
+      body: JSON.stringify({ recovery_id: trimmedRecoveryId, phrase }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -325,7 +352,7 @@ export async function recoverAccount(
   }
 
   if (res.status === 429) {
-    const msg = 'too many requests -- try again later';
+    const msg = retryAfterMessage(res);
     onLog(makeLogEntry(msg, 'warning'));
     return { success: false, error: msg };
   }
@@ -358,6 +385,14 @@ export async function recoverAccount(
   const store = await getStore();
   await store.set('device_id', body.device_id);
   onLog(makeLogEntry('Device recovered: ' + body.device_id, 'success'));
+
+  if (rememberRecoveryId) {
+    await storeRecoveryId(trimmedRecoveryId);
+    onLog(makeLogEntry('Recovery ID stored locally', 'info'));
+  } else {
+    await deleteStoredRecoveryId();
+    onLog(makeLogEntry('Recovery ID not stored on this device', 'info'));
+  }
 
   notifyTokenRefreshedCallbacks();
   return { success: true };
@@ -630,17 +665,77 @@ export async function refreshTokens(): Promise<RefreshResult> {
   }
 }
 
-// --- Display Name (exported) ---
+// --- Username (exported) ---
 
-export async function getDisplayName(): Promise<string | null> {
+export async function getUsername(): Promise<string | null> {
   const store = await getStore();
-  return (await store.get<string>('display_name')) ?? null;
+  return (await store.get<string>('username')) ?? (await store.get<string>('display_name')) ?? null;
 }
 
-export async function setDisplayName(name: string): Promise<void> {
+export async function setUsername(name: string): Promise<void> {
   const store = await getStore();
-  await store.set('display_name', name);
+  await store.set('username', name);
+  await store.delete('display_name');
 }
+
+export async function updateUsername(username: string): Promise<void> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const insecure = await getInsecureTls();
+  const url = serverUrl.replace(/\/+$/, '') + '/auth/username';
+
+  const doRequest = async (token: string) =>
+    tauriFetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ username }),
+      ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+    });
+
+  let accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+
+  let res = await doRequest(accessToken);
+
+  if (res.status === 401) {
+    const refreshResult = await refreshTokens();
+    if (refreshResult.status !== 'success') {
+      throw new Error('Session expired — please log in again');
+    }
+    const newToken = await getAccessToken();
+    if (!newToken) throw new Error('Session expired — please log in again');
+    res = await doRequest(newToken);
+  }
+
+  if (!res.ok) {
+    throw new Error('Failed to update username');
+  }
+
+  await setUsername(username);
+}
+
+export async function fetchMyUsername(): Promise<string | null> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+  const insecure = await getInsecureTls();
+
+  const res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/me', {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+  });
+
+  if (!res.ok) return null;
+  const body = (await res.json()) as { username?: string };
+  return body.username ?? null;
+}
+export const getDisplayName = getUsername;
+export const setDisplayName = setUsername;
 
 // --- Session Clearing (exported) ---
 
@@ -658,7 +753,7 @@ export async function clearAccessTokens(): Promise<void> {
 
 /**
  * Clear access tokens from Tauri store AND refresh token from OS keychain.
- * Preserves device identity fields (device_id, server_url, display_name, insecure_tls).
+ * Preserves device identity fields (device_id, server_url, username, insecure_tls).
  * Used after non-recoverable failures (401, 400) or missing/corrupt keychain token.
  */
 export async function clearSessionFull(): Promise<void> {
@@ -675,14 +770,20 @@ export async function clearSessionFull(): Promise<void> {
 // --- Logout (exported) ---
 
 /**
- * Logout: clears tokens and device_id but preserves server_url, display_name,
- * and insecure_tls so the login page can pre-fill them.
+ * Logout: clears tokens, device_id, and display name from local store.
+ * Preserves server_url and insecure_tls (connection settings, not identity).
+ * Username is cleared so a subsequent login on the same device does not
+ * inherit the previous account's display name.
+ * Recovery ID is intentionally preserved: removing device_id routes the next
+ * launch to /setup, and a new registration overwrites the trusted-device ID.
  */
 export async function logout(): Promise<void> {
   const store = await getStore();
   await store.delete('access_token');
   await store.delete('access_token_exp');
   await store.delete('device_id');
+  await store.delete('username');
+  await store.delete('display_name');
   try {
     await invoke('delete_token', { key: 'wavis_refresh_token' });
   } catch (err) {
@@ -699,10 +800,16 @@ export async function resetAuth(): Promise<void> {
   await store.delete('access_token');
   await store.delete('access_token_exp');
   await store.delete('insecure_tls');
+  await store.delete('username');
   await store.delete('display_name');
   try {
     await invoke('delete_token', { key: 'wavis_refresh_token' });
   } catch (err) {
     console.error(LOG_PREFIX, 'Failed to delete refresh token from keychain:', err);
+  }
+  try {
+    await deleteStoredRecoveryId();
+  } catch (err) {
+    console.error(LOG_PREFIX, 'Failed to delete recovery ID from local store:', err);
   }
 }

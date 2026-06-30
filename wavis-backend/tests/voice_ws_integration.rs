@@ -197,6 +197,10 @@ async fn start_server(pool: PgPool) -> (SocketAddr, AppState) {
         )
         .route("/channels/join", post(channel_routes::join_channel))
         .route(
+            "/channels/voice-status",
+            get(channel_routes::get_batch_voice_status),
+        )
+        .route(
             "/channels/{channel_id}",
             get(channel_routes::get_channel).delete(channel_routes::delete_channel),
         )
@@ -931,4 +935,84 @@ async fn test_28_13_room_cleanup_on_last_leave() {
         room_id_1, room_id_2,
         "re-join after cleanup should get a new room"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn passthrough_permission_allows_member_link_but_not_member_toggle() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let member = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "passthrough-permission").await;
+    add_member(&pool, channel_id, owner, member).await;
+    let (addr, _state) = start_server(pool).await;
+
+    let (mut owner_sink, mut owner_stream) = ws_connect(addr).await;
+    ws_auth(&mut owner_sink, &mut owner_stream, &sign_test_token(&owner)).await;
+    ws_join_voice(
+        &mut owner_sink,
+        &mut owner_stream,
+        &channel_id.to_string(),
+        "Owner",
+    )
+    .await;
+
+    let (mut member_sink, mut member_stream) = ws_connect(addr).await;
+    ws_auth(
+        &mut member_sink,
+        &mut member_stream,
+        &sign_test_token(&member),
+    )
+    .await;
+    ws_join_voice(
+        &mut member_sink,
+        &mut member_stream,
+        &channel_id.to_string(),
+        "Member",
+    )
+    .await;
+
+    ws_send(&mut owner_sink, json!({"type":"create_sub_room"})).await;
+    let created = recv_type(&mut owner_stream, "sub_room_created").await;
+    let room_2 = created["room"]["subRoomId"].as_str().unwrap().to_string();
+    ws_send(
+        &mut owner_sink,
+        json!({"type":"join_sub_room","subRoomId":&room_2}),
+    )
+    .await;
+    let _ = recv_type(&mut owner_stream, "sub_room_joined").await;
+
+    ws_send(
+        &mut member_sink,
+        json!({"type":"set_passthrough","targetSubRoomId":&room_2}),
+    )
+    .await;
+    let disabled = recv_type(&mut member_stream, "error").await;
+    assert_eq!(disabled["message"], "passthrough is disabled");
+
+    ws_send(
+        &mut owner_sink,
+        json!({"type":"set_passthrough_enabled","enabled":true}),
+    )
+    .await;
+    let enabled = recv_type(&mut owner_stream, "sub_room_state").await;
+    assert_eq!(enabled["passthroughEnabled"], true);
+
+    ws_send(
+        &mut member_sink,
+        json!({"type":"set_passthrough","targetSubRoomId":&room_2}),
+    )
+    .await;
+    let linked = recv_type(&mut member_stream, "sub_room_state").await;
+    assert!(linked["passthrough"].is_object());
+
+    ws_send(
+        &mut member_sink,
+        json!({"type":"set_passthrough_enabled","enabled":false}),
+    )
+    .await;
+    let unauthorized = recv_type(&mut member_stream, "error").await;
+    assert_eq!(unauthorized["message"], "unauthorized");
 }

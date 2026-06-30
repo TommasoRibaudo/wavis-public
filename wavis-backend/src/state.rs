@@ -89,6 +89,14 @@ pub struct SubRoomState {
     pub membership_sources: HashMap<String, SubRoomMembershipSource>,
     /// Optional active passthrough pair for this voice session.
     pub active_passthrough: Option<PassthroughPair>,
+    /// Whether channel members may create new passthrough links.
+    pub passthrough_enabled: bool,
+    /// Passthrough volume as a percentage (0–100), set by an admin and applied to all participants.
+    pub passthrough_volume_percent: u8,
+    /// Whether passthrough participants are spectrally muffled.
+    pub passthrough_filters_enabled: bool,
+    /// Passthrough muffle strength (0–100), set by an admin and applied to all participants.
+    pub passthrough_filter_strength: u8,
 }
 
 impl SubRoomState {
@@ -98,6 +106,10 @@ impl SubRoomState {
             participant_assignments: HashMap::new(),
             membership_sources: HashMap::new(),
             active_passthrough: None,
+            passthrough_enabled: false,
+            passthrough_volume_percent: 20,
+            passthrough_filters_enabled: true,
+            passthrough_filter_strength: 50,
         }
     }
 }
@@ -126,6 +138,8 @@ pub struct RoomInfo {
     pub revoked_participants: HashMap<String, Instant>,
     /// Participant IDs currently sharing their screen. SFU rooms only.
     pub active_shares: HashSet<String>,
+    /// Authoritative share types for active shares that supplied metadata.
+    pub active_share_types: HashMap<String, shared::signaling::WireShareType>,
     /// Screen share permission policy (default: AllParticipants).
     pub share_permission: SharePermission,
     /// Optional synchronized sub-room state for channel-based voice sessions.
@@ -145,6 +159,7 @@ impl RoomInfo {
             media_connected: HashSet::new(),
             revoked_participants: HashMap::new(),
             active_shares: HashSet::new(),
+            active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
         }
@@ -161,6 +176,7 @@ impl RoomInfo {
             media_connected: HashSet::new(),
             revoked_participants: HashMap::new(),
             active_shares: HashSet::new(),
+            active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
         }

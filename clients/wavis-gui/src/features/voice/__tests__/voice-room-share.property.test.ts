@@ -13,6 +13,7 @@ import {
   computeShareRoute,
   computeStopRoute,
   isShareButtonDisabled,
+  preserveVideoShareSelectionForSourceChange,
 } from '../voice-room';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
@@ -493,13 +494,24 @@ describe('Property 18: canStartShare slot conflict detection', () => {
     );
   });
 
-  it('video share is allowed when video slot is empty', () => {
+  it('video share (without system audio) is allowed when video slot is empty regardless of audio share', () => {
     fc.assert(
       fc.property(arbShareSelection, arbAudioShare, (sel, audio) => {
         const videoMode = fc.sample(fc.constantFrom('screen_audio' as const, 'window' as const), 1)[0];
-        const s = { ...sel, mode: videoMode };
+        const s = { ...sel, mode: videoMode, withAudio: false };
         const result = canStartShare(s, null, audio);
         expect(result.allowed).toBe(true);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('video share with system audio is blocked when audio-only share is active', () => {
+    fc.assert(
+      fc.property(arbAudioShare.filter((a) => a !== null), (audio) => {
+        const s = { mode: 'screen_audio' as const, sourceId: 'test', sourceName: 'Test', withAudio: true };
+        const result = canStartShare(s, null, audio);
+        expect(result.allowed).toBe(false);
       }),
       { numRuns: 100 },
     );
@@ -511,6 +523,41 @@ describe('Property 18: canStartShare slot conflict detection', () => {
         const result = canStartShare(sel, null, null);
         expect(result.allowed).toBe(true);
       }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+describe('Video source change selection preservation', () => {
+  it('preserves the active video share audio setting for replacement video sources', () => {
+    fc.assert(
+      fc.property(
+        arbShareSelection.filter((selection) => selection.mode !== 'audio_only'),
+        arbVideoShare.filter((share) => share !== null),
+        (selection, videoShare) => {
+          const result = preserveVideoShareSelectionForSourceChange(selection, videoShare);
+          expect(result.mode).toBe(selection.mode);
+          expect(result.sourceId).toBe(selection.sourceId);
+          expect(result.sourceName).toBe(selection.sourceName);
+          expect(result.withAudio).toBe(videoShare!.withAudio);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it('rejects audio_only as a replacement for an active video share', () => {
+    fc.assert(
+      fc.property(
+        arbShareSelection,
+        arbVideoShare.filter((share) => share !== null),
+        (selection, videoShare) => {
+          const audioOnlySelection = { ...selection, mode: 'audio_only' as const };
+          expect(() => preserveVideoShareSelectionForSourceChange(audioOnlySelection, videoShare)).toThrow(
+            'changing a video share source cannot switch to audio-only',
+          );
+        },
+      ),
       { numRuns: 100 },
     );
   });
@@ -816,12 +863,12 @@ describe('Property 21: Stop button routes to correct stop function', () => {
 // Feature: cross-platform-share-picker, Property 22: Share button disabled during any active share
 // **Validates: Requirements 7.4**
 
-describe('Property 22: Share button disabled during any active share', () => {
-  it('disabled iff activeShareType !== null || selfSharing', () => {
+describe('Property 22: Share button disabled during active video share', () => {
+  it('disabled iff activeVideoShare !== null || selfSharing', () => {
     fc.assert(
-      fc.property(arbActiveShareType, arbSelfSharing, (activeShareType, selfSharing) => {
-        const disabled = isShareButtonDisabled(activeShareType, selfSharing);
-        const expected = activeShareType !== null || selfSharing;
+      fc.property(arbVideoShare, arbSelfSharing, (activeVideoShare, selfSharing) => {
+        const disabled = isShareButtonDisabled(activeVideoShare, selfSharing);
+        const expected = activeVideoShare !== null || selfSharing;
         expect(disabled).toBe(expected);
       }),
       { numRuns: 100 },
@@ -830,29 +877,34 @@ describe('Property 22: Share button disabled during any active share', () => {
 
   it('both null and false means not disabled', () => {
     fc.assert(
-      fc.property(fc.constant(null), fc.constant(false), (activeShareType, selfSharing) => {
-        expect(isShareButtonDisabled(activeShareType, selfSharing)).toBe(false);
+      fc.property(fc.constant(null as VoiceRoomState['activeVideoShare']), fc.constant(false), (activeVideoShare, selfSharing) => {
+        expect(isShareButtonDisabled(activeVideoShare, selfSharing)).toBe(false);
       }),
       { numRuns: 100 },
     );
   });
 
-  it('non-null activeShareType always means disabled regardless of selfSharing', () => {
+  it('non-null activeVideoShare always means disabled regardless of selfSharing', () => {
     fc.assert(
-      fc.property(arbShareMode, arbSelfSharing, (mode, selfSharing) => {
-        expect(isShareButtonDisabled(mode, selfSharing)).toBe(true);
+      fc.property(arbVideoShare.filter((v) => v !== null), arbSelfSharing, (activeVideoShare, selfSharing) => {
+        expect(isShareButtonDisabled(activeVideoShare, selfSharing)).toBe(true);
       }),
       { numRuns: 100 },
     );
   });
 
-  it('selfSharing=true always means disabled regardless of activeShareType', () => {
+  it('selfSharing=true always means disabled regardless of activeVideoShare', () => {
     fc.assert(
-      fc.property(arbActiveShareType, (activeShareType) => {
-        expect(isShareButtonDisabled(activeShareType, true)).toBe(true);
+      fc.property(arbVideoShare, (activeVideoShare) => {
+        expect(isShareButtonDisabled(activeVideoShare, true)).toBe(true);
       }),
       { numRuns: 100 },
     );
+  });
+
+  it('audio-only share without video does not disable the button', () => {
+    // The share button stays enabled so the user can layer a video share on top.
+    expect(isShareButtonDisabled(null, false)).toBe(false);
   });
 });
 

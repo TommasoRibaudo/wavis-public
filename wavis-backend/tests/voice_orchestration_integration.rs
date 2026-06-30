@@ -1939,6 +1939,52 @@ async fn example_last_leave_cleans_up_active_room_map() {
     );
 }
 
+#[tokio::test]
+#[ignore] // requires Postgres
+async fn passthrough_permission_persists_across_empty_session_recreation() {
+    use wavis_backend::voice::sfu_relay;
+
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "passthrough-persistence").await;
+    let channel_str = channel_id.to_string();
+    let ctx = VoiceTestContext::new();
+
+    let first = ctx
+        .join_voice(&pool, &channel_str, &owner, "peer-owner-1", "Owner")
+        .await
+        .unwrap();
+    voice_orchestrator::set_passthrough_enabled(
+        &pool,
+        &ctx.room_state,
+        &first.room_id,
+        &channel_str,
+        true,
+    )
+    .await
+    .expect("enable passthrough");
+
+    sfu_relay::handle_sfu_leave(
+        ctx.sfu_bridge.as_ref(),
+        &ctx.room_state,
+        &first.room_id,
+        "peer-owner-1",
+    )
+    .await
+    .expect("leave should succeed");
+    ctx.room_state.remove_empty_room(&first.room_id);
+    ctx.active_room_map.write().await.remove(&channel_id);
+
+    let second = ctx
+        .join_voice(&pool, &channel_str, &owner, "peer-owner-2", "Owner")
+        .await
+        .unwrap();
+    let info = ctx.room_state.get_room_info(&second.room_id).unwrap();
+    assert!(info.sub_room_state.unwrap().passthrough_enabled);
+}
+
 // ---------------------------------------------------------------------------
 // Example: JoinVoice after ban â€” rejected with opaque NotAuthorized reason
 // Validates: Requirements 3.3

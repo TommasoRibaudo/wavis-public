@@ -10,35 +10,52 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
-import { startSending } from '@features/screen-share/screen-share-viewer';
-import { getDenoiseEnabled, inputVolumeToGain } from '@features/settings/settings-store';
+import type { CameraQuality } from './camera-types';
+import {
+  getAudioInputDevice,
+  getAudioOutputDevice,
+  getDenoiseEnabled,
+  inputVolumeToGain,
+  setStoreValue,
+  STORE_KEYS,
+} from '@features/settings/settings-store';
 
 const LOG = '[wavis:native-media]';
-
-/* ─── OffscreenCanvas.captureStream() runtime detection ─────────── */
-
-/**
- * Detect whether OffscreenCanvas + captureStream() are available.
- * Requires WebKitGTK ≥ 2.44 (GNOME 46 / Ubuntu 24.04+).
- */
-const hasOffscreenCaptureStream: boolean = (() => {
-  try {
-    const test = new OffscreenCanvas(1, 1);
-    return typeof (test as unknown as { captureStream: unknown }).captureStream === 'function';
-  } catch {
-    return false;
-  }
-})();
+type RemoteShareType = 'screen_audio' | 'window' | 'audio_only' | 'browser';
+type AudioDeviceKind = 'input' | 'output';
 
 /* ─── Tauri Event Payload Types ─────────────────────────────────── */
 
 interface ScreenShareFramePayload {
   identity: string;
-  frame: string; // base64-encoded JPEG
+}
+
+interface ScreenShareAvailablePayload {
+  identity: string;
 }
 
 interface ScreenShareEndedPayload {
   identity: string;
+}
+
+interface ScreenShareAudioPayload {
+  identity: string;
+}
+
+interface CameraAvailablePayload {
+  identity: string;
+}
+
+interface CameraEndedPayload {
+  identity: string;
+}
+
+interface PolledCameraFrame {
+  identity: string;
+  frame: string;
+  width: number;
+  height: number;
+  seq: number;
 }
 
 /* ─── Active Share Tracking ─────────────────────────────────────── */
@@ -46,9 +63,15 @@ interface ScreenShareEndedPayload {
 interface ActiveShareEntry {
   stream: MediaStream | null;
   canvas: HTMLCanvasElement | null;
-  offscreenCanvas?: OffscreenCanvas;
-  ctx?: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
   startedAtMs: number;
+}
+
+interface ActiveCameraEntry {
+  stream: MediaStream;
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  pollInterval: ReturnType<typeof setInterval> | null;
+  lastSeq: number | null;
 }
 
 export type ActiveShareInfo = {
@@ -114,14 +137,43 @@ export class NativeMediaModule {
   private callbacks: MediaCallbacks;
   private unlistenMedia: UnlistenFn | null = null;
   private unlistenFrame: UnlistenFn | null = null;
+  private unlistenAvailable: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
+  private unlistenAudioAvailable: UnlistenFn | null = null;
+  private unlistenAudioEnded: UnlistenFn | null = null;
+  private unlistenCameraAvailable: UnlistenFn | null = null;
+  private unlistenCameraEnded: UnlistenFn | null = null;
   private disposed = false;
   private activeShares = new Map<string, ActiveShareEntry>();
+  private activeCameras = new Map<string, ActiveCameraEntry>();
+  private localCamera: ActiveCameraEntry | null = null;
+  private localCameraTrack: MediaStreamTrack | null = null;
+  private currentScreenShareQuality: 'low' | 'high' | 'max' = 'high';
+  private remoteShareTypes = new Map<string, RemoteShareType | undefined>();
+  private audioOnlySharers = new Set<string>();
+  private inferredAudioOnlySharers = new Set<string>();
 
   constructor(callbacks: MediaCallbacks) {
     this.callbacks = callbacks;
-    console.log(LOG, 'created (native Rust path)',
-      hasOffscreenCaptureStream ? '(OffscreenCanvas+captureStream available)' : '(canvas fallback)');
+    console.log(LOG, 'created (native Rust path)');
+  }
+
+  private async applySavedAudioDevice(deviceId: string | null, kind: AudioDeviceKind): Promise<void> {
+    if (!deviceId) return;
+
+    try {
+      await invoke('set_audio_device', { deviceId, kind });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(LOG, `saved ${kind} device unavailable; falling back to system default:`, reason);
+      this.callbacks.onSystemEvent?.(
+        `${kind} device unavailable, using system default`,
+      );
+      await setStoreValue(
+        kind === 'input' ? STORE_KEYS.audioInputDevice : STORE_KEYS.audioOutputDevice,
+        '',
+      ).catch(() => {});
+    }
   }
 
   /** Connect to LiveKit SFU via the Rust-side RealLiveKitConnection. */
@@ -190,21 +242,63 @@ export class NativeMediaModule {
       }
     });
 
-    // 2. Subscribe to remote screen share frame events
+    // 2. Subscribe to remote screen share frame events for backward compatibility.
+    // The Linux native viewer path renders pixels outside WebKit; this event
+    // only marks the share as available in the room UI.
     this.unlistenFrame = await listen<ScreenShareFramePayload>('screen_share_frame', (event) => {
       if (this.disposed) return;
       this.handleScreenShareFrame(event.payload);
     });
 
-    // 3. Subscribe to remote screen share ended events
+    // 3. Subscribe to lightweight remote screen share availability events.
+    // Linux stores frames in Rust and the native GTK viewer renders them.
+    this.unlistenAvailable = await listen<ScreenShareAvailablePayload>('screen_share_available', (event) => {
+      if (this.disposed) return;
+      this.handleScreenShareAvailable(event.payload.identity);
+    });
+
+    // 4. Subscribe to remote screen share ended events
     this.unlistenEnded = await listen<ScreenShareEndedPayload>('screen_share_ended', (event) => {
       if (this.disposed) return;
       this.handleScreenShareEnded(event.payload.identity);
     });
 
-    // 4. Tell Rust to connect
+    // 5. Subscribe to remote screen-share audio availability events. The Rust
+    // native path can receive ScreenshareAudio without any video frames, so
+    // this is the Linux/WebKit equivalent of LiveKitModule's audio-only
+    // publication inference.
+    this.unlistenAudioAvailable = await listen<ScreenShareAudioPayload>('screen_share_audio_available', (event) => {
+      if (this.disposed) return;
+      this.handleScreenShareAudioAvailable(event.payload.identity);
+    });
+
+    this.unlistenAudioEnded = await listen<ScreenShareAudioPayload>('screen_share_audio_ended', (event) => {
+      if (this.disposed) return;
+      this.handleScreenShareAudioEnded(event.payload.identity);
+    });
+
+    // 6. Subscribe to remote camera availability events. The Rust native
+    // LiveKit path decodes camera frames, and this module paints them into a
+    // canvas-backed MediaStreamTrack so the existing VideoTile UI can render.
+    this.unlistenCameraAvailable = await listen<CameraAvailablePayload>('camera_available', (event) => {
+      if (this.disposed) return;
+      this.handleCameraAvailable(event.payload.identity);
+    });
+
+    this.unlistenCameraEnded = await listen<CameraEndedPayload>('camera_ended', (event) => {
+      if (this.disposed) return;
+      this.handleCameraEnded(event.payload.identity);
+    });
+
+    // 7. Tell Rust which persisted devices to open before it starts CPAL streams.
     try {
       const denoiseEnabled = await getDenoiseEnabled();
+      const [inputDeviceId, outputDeviceId] = await Promise.all([
+        getAudioInputDevice().catch(() => null),
+        getAudioOutputDevice().catch(() => null),
+      ]);
+      await this.applySavedAudioDevice(inputDeviceId, 'input');
+      await this.applySavedAudioDevice(outputDeviceId, 'output');
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
     } catch (err) {
       this.callbacks.onMediaFailed(
@@ -221,12 +315,21 @@ export class NativeMediaModule {
     // Clean up all event listeners
     if (this.unlistenMedia) { this.unlistenMedia(); this.unlistenMedia = null; }
     if (this.unlistenFrame) { this.unlistenFrame(); this.unlistenFrame = null; }
+    if (this.unlistenAvailable) { this.unlistenAvailable(); this.unlistenAvailable = null; }
     if (this.unlistenEnded) { this.unlistenEnded(); this.unlistenEnded = null; }
+    if (this.unlistenAudioAvailable) { this.unlistenAudioAvailable(); this.unlistenAudioAvailable = null; }
+    if (this.unlistenAudioEnded) { this.unlistenAudioEnded(); this.unlistenAudioEnded = null; }
+    if (this.unlistenCameraAvailable) { this.unlistenCameraAvailable(); this.unlistenCameraAvailable = null; }
+    if (this.unlistenCameraEnded) { this.unlistenCameraEnded(); this.unlistenCameraEnded = null; }
 
     // Clean up all active shares
     for (const identity of [...this.activeShares.keys()]) {
       this.disposeShareEntry(identity);
     }
+    for (const identity of [...this.activeCameras.keys()]) {
+      this.disposeCameraEntry(identity);
+    }
+    this.disposeLocalCameraEntry();
 
     invoke('media_disconnect').catch((err) => {
       console.warn(LOG, 'disconnect error:', err);
@@ -248,6 +351,20 @@ export class NativeMediaModule {
     }).catch(() => {});
   }
 
+  setParticipantPassthrough(participantIdentity: string, enabled: boolean): void {
+    invoke('media_set_participant_passthrough', {
+      id: participantIdentity,
+      enabled,
+    }).catch(() => {});
+  }
+
+  setPassthroughFilterSettings(settings: { enabled: boolean; strength: number }): void {
+    invoke('media_set_passthrough_filter_settings', {
+      enabled: Boolean(settings.enabled),
+      strength: Math.max(0, Math.min(100, Math.round(settings.strength))),
+    }).catch(() => {});
+  }
+
   /** Set per-participant screen share audio volume (0–100). */
   setScreenShareAudioVolume(participantIdentity: string, volume: number): void {
     invoke('media_set_screen_share_audio_volume', {
@@ -266,6 +383,47 @@ export class NativeMediaModule {
     invoke('media_detach_screen_share_audio', { id: participantIdentity }).catch(() => {});
   }
 
+  /** Keep native Linux audio-only shares in sync with signaling metadata. */
+  setRemoteShareType(participantIdentity: string, shareType?: RemoteShareType): void {
+    this.applyRemoteShareType(participantIdentity, shareType, false);
+  }
+
+  private applyRemoteShareType(
+    participantIdentity: string,
+    shareType: RemoteShareType | undefined,
+    inferred: boolean,
+  ): void {
+    if (inferred) {
+      this.inferredAudioOnlySharers.add(participantIdentity);
+    } else {
+      this.inferredAudioOnlySharers.delete(participantIdentity);
+    }
+    this.remoteShareTypes.set(participantIdentity, shareType);
+    if (shareType === 'audio_only') {
+      if (!this.audioOnlySharers.has(participantIdentity)) {
+        this.audioOnlySharers.add(participantIdentity);
+        this.callbacks.onAudioOnlySharerAdded?.(participantIdentity);
+      }
+      this.attachScreenShareAudio(participantIdentity);
+      return;
+    }
+
+    if (this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+      this.detachScreenShareAudio(participantIdentity);
+    }
+  }
+
+  /** Remove stale remote share metadata when signaling says the share ended. */
+  clearRemoteShareType(participantIdentity: string): void {
+    this.remoteShareTypes.delete(participantIdentity);
+    this.inferredAudioOnlySharers.delete(participantIdentity);
+    if (this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+      this.detachScreenShareAudio(participantIdentity);
+    }
+  }
+
   /** Set master volume (0–100). */
   setMasterVolume(volume: number): void {
     invoke('media_set_master_volume', {
@@ -282,6 +440,7 @@ export class NativeMediaModule {
     // Ok(true) → started, Ok(false) → user cancelled, Err(msg) → reject
     console.log(LOG, 'screen_share_start: invoking IPC command');
     try {
+      await invoke('media_set_screen_share_quality', { quality: this.currentScreenShareQuality });
       const result = await invoke<boolean>('screen_share_start');
       console.log(LOG, 'screen_share_start: IPC returned', result);
       return result;
@@ -303,6 +462,7 @@ export class NativeMediaModule {
    * at runtime without restarting the capture.
    */
   async setScreenShareQuality(quality: 'low' | 'high' | 'max'): Promise<void> {
+    this.currentScreenShareQuality = quality;
     try {
       await invoke('media_set_screen_share_quality', { quality });
       console.log(LOG, `screen share quality set: ${quality}`);
@@ -346,6 +506,75 @@ export class NativeMediaModule {
     await invoke('set_input_gain', { gain: inputVolumeToGain(volume) });
   }
 
+  async publishCamera(opts: {
+    deviceId: string | null;
+    quality: CameraQuality;
+  }): Promise<{ trackId: string }> {
+    const entry = this.createCameraCanvasEntry('local');
+    if (!entry) {
+      throw { kind: 'device_unavailable' };
+    }
+
+    const track = entry.stream.getVideoTracks()[0] ?? null;
+    if (!track) {
+      this.disposeCameraCanvasEntry(entry);
+      throw { kind: 'device_unavailable' };
+    }
+
+    try {
+      await invoke('media_camera_start', {
+        deviceId: opts.deviceId,
+        width: opts.quality.width,
+        height: opts.quality.height,
+        fps: opts.quality.maxFps,
+      });
+    } catch (err) {
+      this.disposeCameraCanvasEntry(entry);
+      throw this.classifyNativeCameraError(err);
+    }
+
+    this.localCamera = entry;
+    this.localCameraTrack = track;
+    entry.pollInterval = setInterval(() => {
+      void this.pollLocalCameraFrame();
+    }, 66);
+    void this.pollLocalCameraFrame();
+    return { trackId: 'native-linux-camera' };
+  }
+
+  async unpublishCamera(): Promise<void> {
+    await invoke('media_camera_stop').catch(() => {});
+    this.disposeLocalCameraEntry();
+  }
+
+  getLocalCameraTrack(): MediaStreamTrack | null {
+    return this.localCameraTrack;
+  }
+
+  applyRemoteCameraVisibility(_visibleParticipantIds: ReadonlySet<string>): void {
+    // Native Rust LiveKit subscribes to remote tracks itself. Visibility is
+    // enforced in voice-room by deciding which canvas-backed tracks are exposed.
+  }
+
+  async setCameraQuality(_quality: CameraQuality): Promise<void> {
+    // The ffmpeg/v4l2 native path is fixed at publish time for now.
+  }
+
+  async replaceCameraDevice(deviceId: string | null): Promise<{ trackId: string }> {
+    await this.unpublishCamera();
+    return this.publishCamera({
+      deviceId,
+      quality: {
+        tier: 'low',
+        width: 320,
+        height: 240,
+        maxFps: 15,
+        maxBitrate: 120_000,
+        codec: 'vp8',
+      },
+    });
+  }
+
   /** Return active remote screen shares. */
   getActiveScreenShares(): ActiveShareInfo[] {
     const result: ActiveShareInfo[] = [];
@@ -367,118 +596,45 @@ export class NativeMediaModule {
 
   /* ─── Private: Screen Share Frame Handling ───────────────────── */
 
-  /**
-   * Handle an incoming screen_share_frame event from Rust.
-   * Primary path (OffscreenCanvas): createImageBitmap → drawImage → requestFrame
-   * Fallback path (visible canvas): Image → drawImage
-   */
   private handleScreenShareFrame(payload: ScreenShareFramePayload): void {
-    const { identity, frame } = payload;
-
-    if (hasOffscreenCaptureStream) {
-      this.handleFramePrimary(identity, frame);
-    } else {
-      this.handleFrameFallback(identity, frame);
-    }
+    this.handleScreenShareAvailable(payload.identity);
   }
 
-  /**
-   * Primary path — OffscreenCanvas + captureStream (WebKitGTK ≥ 2.44).
-   * Creates a synthetic MediaStream and feeds into the loopback bridge.
-   */
-  private handleFramePrimary(identity: string, frameData: string): void {
-    const binary = atob(frameData);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'image/jpeg' });
+  private handleScreenShareAvailable(identity: string): void {
+    if (this.activeShares.has(identity)) return;
 
-    createImageBitmap(blob).then((bitmap) => {
-      let entry = this.activeShares.get(identity);
-
-      if (!entry) {
-        // First frame for this identity — create OffscreenCanvas + stream
-        const offscreenCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        const ctx = offscreenCanvas.getContext('2d');
-        const stream = (offscreenCanvas as unknown as { captureStream(fps: number): MediaStream }).captureStream(0);
-
-        entry = {
-          stream,
-          canvas: null,
-          offscreenCanvas,
-          ctx,
-          startedAtMs: Date.now(),
-        };
-        this.activeShares.set(identity, entry);
-
-        console.log(LOG, `screen share subscribed (primary path): ${identity}`);
-        this.callbacks.onScreenShareSubscribed(identity, stream);
-
-        // Feed into loopback bridge for ScreenShareWindow rendering
-        startSending(identity, 'watch-all', stream).catch((err) => {
-          console.warn(LOG, `loopback bridge start failed for ${identity}:`, err);
-        });
-      }
-
-      // Resize canvas if frame dimensions changed
-      if (entry.offscreenCanvas &&
-          (entry.offscreenCanvas.width !== bitmap.width || entry.offscreenCanvas.height !== bitmap.height)) {
-        entry.offscreenCanvas.width = bitmap.width;
-        entry.offscreenCanvas.height = bitmap.height;
-      }
-
-      // Paint frame and push to stream
-      if (entry.ctx) {
-        entry.ctx.drawImage(bitmap, 0, 0);
-        const tracks = entry.stream?.getVideoTracks();
-        if (tracks && tracks.length > 0) {
-          (tracks[0] as unknown as { requestFrame(): void }).requestFrame();
-        }
-      }
-      bitmap.close();
-    }).catch((err) => {
-      console.warn(LOG, `frame decode failed for ${identity}:`, err);
-    });
-  }
-
-  /**
-   * Fallback path — visible <canvas> element (WebKitGTK < 2.44).
-   * No MediaStream — canvas is rendered directly in ScreenShareWindow.
-   */
-  private handleFrameFallback(identity: string, frameData: string): void {
-    let entry = this.activeShares.get(identity);
-
-    if (!entry) {
-      // First frame — create visible canvas
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      entry = {
-        stream: null,
-        canvas,
-        ctx,
-        startedAtMs: Date.now(),
-      };
-      this.activeShares.set(identity, entry);
-
-      console.log(LOG, `screen share subscribed (canvas fallback): ${identity}`);
-      // Pass null stream — ScreenShareWindow will use the canvas directly
-      this.callbacks.onScreenShareSubscribed(identity, null as unknown as MediaStream);
+    if (this.inferredAudioOnlySharers.has(identity)) {
+      this.inferredAudioOnlySharers.delete(identity);
+      this.setRemoteShareType(identity, undefined);
     }
 
-    // Decode base64 JPEG and paint onto canvas
-    const img = new Image();
-    img.onload = () => {
-      if (!entry) return;
-      // Resize canvas to match frame dimensions
-      if (entry.canvas && (entry.canvas.width !== img.width || entry.canvas.height !== img.height)) {
-        entry.canvas.width = img.width;
-        entry.canvas.height = img.height;
-      }
-      if (entry.ctx) {
-        (entry.ctx as CanvasRenderingContext2D).drawImage(img, 0, 0);
-      }
+    const entry: ActiveShareEntry = {
+      stream: null,
+      canvas: null,
+      startedAtMs: Date.now(),
     };
-    img.src = `data:image/jpeg;base64,${frameData}`;
+    this.activeShares.set(identity, entry);
+
+    console.log(LOG, `screen share available (native viewer path): ${identity}`);
+    this.callbacks.onScreenShareSubscribed(identity, null as unknown as MediaStream);
+  }
+
+  private handleScreenShareAudioAvailable(identity: string): void {
+    if (this.activeShares.has(identity)) {
+      return;
+    }
+    if (this.remoteShareTypes.get(identity) !== 'audio_only') {
+      this.applyRemoteShareType(identity, 'audio_only', true);
+    }
+  }
+
+  private handleScreenShareAudioEnded(identity: string): void {
+    if (
+      this.inferredAudioOnlySharers.has(identity) ||
+      this.remoteShareTypes.get(identity) === 'audio_only'
+    ) {
+      this.clearRemoteShareType(identity);
+    }
   }
 
   /** Handle screen_share_ended event — clean up and notify. */
@@ -506,5 +662,152 @@ export class NativeMediaModule {
     }
 
     this.activeShares.delete(identity);
+  }
+
+  private handleCameraAvailable(identity: string): void {
+    if (this.activeCameras.has(identity)) return;
+    const entry = this.createCameraCanvasEntry(identity);
+    const track = entry?.stream.getVideoTracks()[0] ?? null;
+    if (!entry || !track) {
+      console.warn(LOG, `remote camera unavailable: canvas captureStream unsupported for ${identity}`);
+      return;
+    }
+    entry.pollInterval = setInterval(() => {
+      void this.pollCameraFrame(identity);
+    }, 66);
+    this.activeCameras.set(identity, entry);
+
+    console.log(LOG, `camera available (native viewer path): ${identity}`);
+    this.callbacks.onRemoteCameraPublished?.(identity);
+    this.callbacks.onRemoteCameraReady?.(identity, track);
+    void this.pollCameraFrame(identity);
+  }
+
+  private handleCameraEnded(identity: string): void {
+    console.log(LOG, `camera ended: ${identity}`);
+    this.disposeCameraEntry(identity);
+    this.callbacks.onRemoteCameraUnpublished?.(identity);
+  }
+
+  private async pollCameraFrame(identity: string): Promise<void> {
+    if (this.disposed) return;
+    const entry = this.activeCameras.get(identity);
+    if (!entry) return;
+
+    let payload: PolledCameraFrame | null = null;
+    try {
+      payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
+        identity,
+        lastSeq: entry.lastSeq,
+      });
+    } catch (err) {
+      console.warn(LOG, `camera frame poll failed for ${identity}:`, err);
+      return;
+    }
+    if (!payload || payload.seq === entry.lastSeq) return;
+    this.paintCameraPayload(entry, payload);
+  }
+
+  private async pollLocalCameraFrame(): Promise<void> {
+    if (this.disposed || !this.localCamera) return;
+    const entry = this.localCamera;
+    let payload: PolledCameraFrame | null = null;
+    try {
+      payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
+        lastSeq: entry.lastSeq,
+      });
+    } catch (err) {
+      console.warn(LOG, 'local camera frame poll failed:', err);
+      return;
+    }
+    if (!payload || payload.seq === entry.lastSeq) return;
+    this.paintCameraPayload(entry, payload);
+  }
+
+  private createCameraCanvasEntry(_identity: string): ActiveCameraEntry | null {
+    if (typeof document === 'undefined') return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 240;
+    canvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    const context = canvas.getContext('2d');
+    const stream = typeof canvas.captureStream === 'function'
+      ? canvas.captureStream(15)
+      : null;
+    if (!context || !stream || stream.getVideoTracks().length === 0) {
+      return null;
+    }
+    document.body.appendChild(canvas);
+    context.fillStyle = '#11111f';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    return {
+      stream,
+      canvas,
+      context,
+      pollInterval: null,
+      lastSeq: null,
+    };
+  }
+
+  private paintCameraPayload(entry: ActiveCameraEntry, payload: PolledCameraFrame): void {
+    entry.lastSeq = payload.seq;
+    if (entry.canvas.width !== payload.width || entry.canvas.height !== payload.height) {
+      entry.canvas.width = payload.width;
+      entry.canvas.height = payload.height;
+    }
+
+    const image = new Image();
+    image.onload = () => {
+      if (entry.lastSeq !== payload.seq) return;
+      entry.context.drawImage(image, 0, 0, payload.width, payload.height);
+    };
+    image.src = `data:image/jpeg;base64,${payload.frame}`;
+  }
+
+  private disposeCameraEntry(identity: string): void {
+    const entry = this.activeCameras.get(identity);
+    if (!entry) return;
+
+    if (entry.pollInterval) clearInterval(entry.pollInterval);
+    for (const track of entry.stream.getTracks()) {
+      track.stop();
+    }
+    if (entry.canvas.parentNode) {
+      entry.canvas.parentNode.removeChild(entry.canvas);
+    }
+    this.activeCameras.delete(identity);
+  }
+
+  private disposeLocalCameraEntry(): void {
+    if (this.localCamera) {
+      this.disposeCameraCanvasEntry(this.localCamera);
+    }
+    this.localCamera = null;
+    this.localCameraTrack = null;
+  }
+
+  private disposeCameraCanvasEntry(entry: ActiveCameraEntry): void {
+    if (entry.pollInterval) clearInterval(entry.pollInterval);
+    for (const track of entry.stream.getTracks()) {
+      track.stop();
+    }
+    if (entry.canvas.parentNode) {
+      entry.canvas.parentNode.removeChild(entry.canvas);
+    }
+  }
+
+  private classifyNativeCameraError(err: unknown): { kind: string } {
+    const message = String(err ?? '').toLowerCase();
+    if (message.includes('no camera') || message.includes('/dev/video')) {
+      return { kind: 'no_camera_configured' };
+    }
+    if (message.includes('permission') || message.includes('denied')) {
+      return { kind: 'permission_denied' };
+    }
+    if (message.includes('busy') || message.includes('in use')) {
+      return { kind: 'device_in_use' };
+    }
+    return { kind: 'device_unavailable' };
   }
 }

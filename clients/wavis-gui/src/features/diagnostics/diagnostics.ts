@@ -21,10 +21,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { RingBuffer } from '@shared/ring-buffer';
 import type { NetworkStats } from '@features/voice/voice-room';
-import type { ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
+import type { NativeBridgeCadenceStats, ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
 
 const LOG = '[wavis:diagnostics]';
 
@@ -32,15 +31,29 @@ const LOG = '[wavis:diagnostics]';
 
 export interface DiagnosticsConfig {
   enabled: boolean;
-  notificationsEnabled: boolean;
   pollMs: number;
   memoryWarnMb: number;
   networkWarnMbps: number;
   renderWarnMs: number;
 }
 
+export interface AppDimensions {
+  nativeWindow: {
+    width: number;
+    height: number;
+  };
+  viewport: {
+    width: number;
+    height: number;
+  };
+  devicePixelRatio: number;
+  capturedAt: number;
+}
+
 export interface DiagnosticsSnapshot {
   timestamp: number;
+  /** Main Wavis app window dimensions, pushed from the main webview. */
+  appDimensions: AppDimensions | null;
   rss: { mb: number; childCount: number } | null;
   /** JS heap size. Null on macOS (WKWebView does not expose performance.memory). */
   jsHeap: { usedMb: number; totalMb: number } | null;
@@ -77,6 +90,9 @@ export interface DiagnosticsSnapshot {
   share: {
     bitrateKbps: number;
     fps: number;
+    browserReportedFps?: number;
+    framesSentFps?: number;
+    framesEncodedFps?: number;
     qualityLimitationReason: string;
     packetLossPercent: number;
     frameWidth: number;
@@ -86,7 +102,14 @@ export interface DiagnosticsSnapshot {
     /** Delta NACKs since last poll. */
     nackCount: number;
     availableBandwidthKbps: number;
+    nativeBridge?: NativeBridgeCadenceStats;
   } | null;
+  /** True when a local screen share is active even if sender stats have not arrived. */
+  shareActive: boolean;
+  /** Local share mode reported by the voice room, when active. */
+  shareMode: string | null;
+  /** Local share source name reported by the voice room, when active. */
+  shareSourceName: string | null;
   /** Wall-clock HH:MM:SS when share last started. */
   shareStartedAt: string | null;
   /** Wall-clock HH:MM:SS when share last stopped. */
@@ -123,7 +146,6 @@ export interface WarningEntry {
 
 interface RustDiagnosticsConfig {
   enabled: boolean;
-  notificationsEnabled: boolean;
   pollMs: number;
   memoryWarnMb: number;
   networkWarnMbps: number;
@@ -143,8 +165,12 @@ interface DiagnosticsVoiceStatsPayload {
   networkStats: NetworkStats;
   shareStats: ShareStats | null;
   videoReceiveStats: VideoReceiveStats | null;
+  isSharing: boolean;
+  shareMode: string | null;
+  shareSourceName: string | null;
   participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
   selfParticipantId: string | null;
+  appDimensions?: AppDimensions;
 }
 
 /* ─── Module state ──────────────────────────────────────────────── */
@@ -172,16 +198,28 @@ let prevWasSharing = false;
 /** Latest voice-room stats received from the main window via 'diagnostics:voice-stats' event. */
 let cachedVoiceStats: DiagnosticsVoiceStatsPayload | null = null;
 
+/** Latest main app dimensions received from the main window via 'diagnostics:app-dimensions'. */
+let cachedAppDimensions: AppDimensions | null = null;
+
 /** Unlisten function for the 'diagnostics:voice-stats' event listener. */
 let unlistenVoiceStats: UnlistenFn | null = null;
 
-const WARN_SUSTAIN_MS = 8_000;
-const WARN_COOLDOWN_MS = 60_000;
+/** Unlisten function for the 'diagnostics:app-dimensions' event listener. */
+let unlistenAppDimensions: UnlistenFn | null = null;
+
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
-function formatTime(date: Date): string {
-  return date.toTimeString().slice(0, 8); // HH:MM:SS
+function formatTimestamp(date: Date): string {
+  return date.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
 }
 
 function readJsHeap(): DiagnosticsSnapshot['jsHeap'] {
@@ -220,39 +258,13 @@ function checkWarning(
   key: string,
   message: string,
   condition: boolean,
-  notificationsEnabled: boolean,
 ): void {
   if (condition) {
     if (!warnings.has(key)) {
       warnings.set(key, { key, message, since: Date.now(), lastNotifiedAt: 0 });
-    } else {
-      const entry = warnings.get(key)!;
-      const sustainedMs = Date.now() - entry.since;
-      if (
-        notificationsEnabled &&
-        sustainedMs >= WARN_SUSTAIN_MS &&
-        Date.now() - entry.lastNotifiedAt >= WARN_COOLDOWN_MS
-      ) {
-        entry.lastNotifiedAt = Date.now();
-        fireNotification(message).catch(() => {});
-      }
     }
   } else {
     warnings.delete(key);
-  }
-}
-
-async function fireNotification(body: string): Promise<void> {
-  try {
-    let permitted = await isPermissionGranted();
-    if (!permitted) {
-      const result = await requestPermission();
-      permitted = result === 'granted';
-    }
-    if (!permitted) return;
-    sendNotification({ title: 'Wavis Diagnostics', body });
-  } catch {
-    // Silent failure on platforms where notifications are unavailable
   }
 }
 
@@ -271,7 +283,6 @@ export async function initDiagnostics(
   const raw = await invoke<RustDiagnosticsConfig>('get_diagnostics_config');
   config = {
     enabled: raw.enabled,
-    notificationsEnabled: raw.notificationsEnabled,
     pollMs: raw.pollMs,
     memoryWarnMb: raw.memoryWarnMb,
     networkWarnMbps: raw.networkWarnMbps,
@@ -285,6 +296,10 @@ export async function initDiagnostics(
   unlistenVoiceStats = await listen<DiagnosticsVoiceStatsPayload>(
     'diagnostics:voice-stats',
     (event) => { cachedVoiceStats = event.payload; },
+  );
+  unlistenAppDimensions = await listen<AppDimensions>(
+    'diagnostics:app-dimensions',
+    (event) => { cachedAppDimensions = event.payload; },
   );
 
   // VITE_DIAGNOSTICS=true is the build-time gate; the Rust `enabled` flag is
@@ -312,7 +327,10 @@ export function destroyDiagnostics(): void {
   shareStoppedAt = null;
   unlistenVoiceStats?.();
   unlistenVoiceStats = null;
+  unlistenAppDimensions?.();
+  unlistenAppDimensions = null;
   cachedVoiceStats = null;
+  cachedAppDimensions = null;
 }
 
 /** Store a baseline snapshot for delta display. */
@@ -351,6 +369,17 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
 
   lines.push('=== WAVIS DIAGNOSTICS SNAPSHOT ===');
   lines.push(`Captured: ${now.toISOString()}`);
+  lines.push('');
+
+  // App dimensions
+  lines.push('[APP DIMENSIONS]');
+  if (snap.appDimensions) {
+    lines.push(pad('Window:', `${snap.appDimensions.nativeWindow.width}x${snap.appDimensions.nativeWindow.height} physical px`));
+    lines.push(pad('Viewport:', `${snap.appDimensions.viewport.width}x${snap.appDimensions.viewport.height} CSS px`));
+    lines.push(pad('DPR:', snap.appDimensions.devicePixelRatio.toFixed(2)));
+  } else {
+    lines.push(pad('Status:', 'Waiting for main app dimensions'));
+  }
   lines.push('');
 
   // Memory
@@ -404,9 +433,19 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
 
   // Screen Share
   lines.push('[SCREEN SHARE]');
-  if (snap.share) {
+  if (snap.shareActive && !snap.share) {
+    lines.push(pad('Status:', 'Sharing, waiting for stats'));
+    if (snap.shareMode) lines.push(pad('Mode:', snap.shareMode));
+    if (snap.shareSourceName) lines.push(pad('Source:', snap.shareSourceName));
+  } else if (snap.share) {
     lines.push(pad('Sender Bitrate:', `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`));
     lines.push(pad('FPS:', snap.share.fps.toFixed(1)));
+    if (snap.share.framesSentFps !== undefined || snap.share.framesEncodedFps !== undefined || snap.share.browserReportedFps !== undefined) {
+      lines.push(pad(
+        'FPS Layers:',
+        `sent ${snap.share.framesSentFps?.toFixed(1) ?? 'N/A'}, encoded ${snap.share.framesEncodedFps?.toFixed(1) ?? 'N/A'}, browser ${snap.share.browserReportedFps?.toFixed(1) ?? 'N/A'}`,
+      ));
+    }
     lines.push(pad('Resolution:', snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A'));
     lines.push(pad('Quality Limit:', snap.share.qualityLimitationReason || 'none'));
     lines.push(pad('Outbound Loss:', `${snap.share.packetLossPercent.toFixed(1)}%`));
@@ -421,6 +460,30 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
     }
   } else {
     lines.push(pad('Status:', 'Not sharing'));
+  }
+  if (snap.share?.nativeBridge) {
+    const b = snap.share.nativeBridge;
+    lines.push(pad('Bridge Target:', `${b.jsBridgeFps} writer target / ${b.rustTargetFps} backend target`));
+    lines.push(pad('Bridge Polls:', `${b.pollTicks} ticks, ${b.pollHits} hits`));
+    lines.push(pad('Bridge Frames:', `${b.newSeqCount} new, ${b.duplicateSeqSkips} dup skips`));
+    lines.push(pad('JS Bridge Input:', `${b.jsObservedRustSeqFps.toFixed(1)} fps, ${(b.duplicatePollRatio * 100).toFixed(1)}% duplicate polls`));
+    lines.push(pad('Stream Reads:', `${b.streamReads} reads, ${(b.streamBytesPerSec / 1024 / 1024).toFixed(1)} MiB/s, avg ${b.streamReadAvgMs.toFixed(1)} ms`));
+    lines.push(pad('JS Writer FPS:', `${b.writerFps.toFixed(1)} fps`));
+    lines.push(pad('Bridge Writes:', `${b.generatorWrites + b.canvasPaints} real, ${b.keepaliveWrites} keepalive`));
+    lines.push(pad('Bridge Keepalive:', `${b.keepaliveFps.toFixed(1)} fps, avg ${b.keepaliveWriteAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Decode:', `${b.jsDecodedFrames} ok, ${b.decodeFailures} failed, avg ${b.avgDecodeMs.toFixed(1)} ms (${b.rawI420Frames} raw I420, ${b.jpegFallbackFrames} JPEG fallback)`));
+    lines.push(pad('Bridge Decode Parts:', `base64 ${b.base64FetchAvgMs.toFixed(1)} ms, jpeg ${b.jpegDecodeAvgMs.toFixed(1)} ms, vf ${b.videoFrameCreateAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Write:', `avg ${b.writerAvgMs.toFixed(1)} ms, real ${b.realWriteAvgMs.toFixed(1)} ms`));
+    lines.push(pad('Bridge Backpressure:', `${b.pollSkippedForWork} poll skips, ${b.writerBackpressureSkips} writer skips, ${b.staleFrameDrops} stale drops`));
+    lines.push(pad('Latest Rust Seq Age:', b.latestSeqAgeMs === null ? 'N/A' : `${b.latestSeqAgeMs.toFixed(0)} ms`));
+    lines.push(pad('Track State:', `${b.trackReadyState}, muted=${b.trackMuted ?? 'n/a'}`));
+    if (b.windowsNativeCapture) {
+      const rust = b.windowsNativeCapture;
+      lines.push(pad('Backend Cadence:', `${rust.rawBackendCallbackFps.toFixed(1)} callbacks/s, ${rust.emittedPollableFrameFps.toFixed(1)} pollable/s, ${rust.throttleDropFps.toFixed(1)} throttled/s`));
+      lines.push(pad('Backend Counts:', `${rust.frameArrivedCallbacks} callbacks, ${rust.emittedPollableFrames} pollable, ${rust.throttleDropCount} throttled`));
+      lines.push(pad('Rust Convert:', `cap ${rust.capDownscaleAvgMs.toFixed(1)} ms, i420 ${rust.i420ConvertAvgMs.toFixed(1)} ms, rgba ${rust.rgbaToRgbAvgMs.toFixed(1)} ms`));
+      lines.push(pad('Rust JPEG Fallback:', `jpeg ${rust.jpegEncodeAvgMs.toFixed(1)} ms, base64 ${rust.base64EncodeAvgMs.toFixed(1)} ms, write ${rust.latestFrameWriteAvgMs.toFixed(1)} ms`));
+    }
   }
   lines.push('');
 
@@ -513,9 +576,13 @@ async function poll(): Promise<void> {
     availableBandwidthKbps: 0,
   };
   const shareStats = voiceStats?.shareStats ?? null;
+  const shareActive = voiceStats?.isSharing ?? false;
+  const shareMode = voiceStats?.shareMode ?? null;
+  const shareSourceName = voiceStats?.shareSourceName ?? null;
   const videoReceiveStats = voiceStats?.videoReceiveStats ?? null;
   const participants = voiceStats?.participants ?? [];
   const selfParticipantId = voiceStats?.selfParticipantId ?? null;
+  const appDimensions = cachedAppDimensions ?? voiceStats?.appDimensions ?? null;
 
   // Show network block whenever we're in a session (selfParticipantId is non-null).
   // Avoid gating on rttMs > 0: the subscriber PC often returns RTT=0 on cycles where
@@ -538,6 +605,9 @@ async function poll(): Promise<void> {
     ? {
         bitrateKbps: shareStats.bitrateKbps,
         fps: shareStats.fps,
+        browserReportedFps: shareStats.browserReportedFps,
+        framesSentFps: shareStats.framesSentFps,
+        framesEncodedFps: shareStats.framesEncodedFps,
         qualityLimitationReason: shareStats.qualityLimitationReason,
         packetLossPercent: shareStats.packetLossPercent,
         frameWidth: shareStats.frameWidth,
@@ -545,6 +615,7 @@ async function poll(): Promise<void> {
         pliCount: shareStats.pliCount,
         nackCount: shareStats.nackCount,
         availableBandwidthKbps: shareStats.availableBandwidthKbps,
+        nativeBridge: shareStats.nativeBridge,
       }
     : null;
 
@@ -564,14 +635,13 @@ async function poll(): Promise<void> {
   }
 
   // 6. Track share lifecycle events for correlation with RSS deltas
-  const isSharing = shareStats !== null;
-  if (isSharing && !prevWasSharing) {
-    shareStartedAt = formatTime(new Date());
+  if (shareActive && !prevWasSharing) {
+    shareStartedAt = formatTimestamp(new Date());
     shareStoppedAt = null;
-  } else if (!isSharing && prevWasSharing) {
-    shareStoppedAt = formatTime(new Date());
+  } else if (!shareActive && prevWasSharing) {
+    shareStoppedAt = formatTimestamp(new Date());
   }
-  prevWasSharing = isSharing;
+  prevWasSharing = shareActive;
 
   const videoReceive = videoReceiveStats
     ? {
@@ -591,6 +661,7 @@ async function poll(): Promise<void> {
 
   const snap: DiagnosticsSnapshot = {
     timestamp: Date.now(),
+    appDimensions,
     rss,
     jsHeap,
     domNodes,
@@ -598,6 +669,9 @@ async function poll(): Promise<void> {
     network,
     audio,
     share,
+    shareActive,
+    shareMode,
+    shareSourceName,
     shareStartedAt,
     shareStoppedAt,
     videoReceive,
@@ -608,54 +682,45 @@ async function poll(): Promise<void> {
   pollCount++;
 
   // 8. Warnings state machine
-  const notif = config.notificationsEnabled;
   checkWarning(
     'rss_high',
     `Process memory high (${Math.round(rss?.mb ?? 0)} MB > ${config.memoryWarnMb} MB)`,
     rss !== null && rss.mb > config.memoryWarnMb,
-    notif,
   );
   checkWarning(
     'network_loss_high',
     `Packet loss high (${network?.packetLossPercent.toFixed(1) ?? '?'}%)`,
     network !== null && network.packetLossPercent > 5,
-    notif,
   );
   checkWarning(
     'share_bw_limited',
     'Screen share is bandwidth-limited',
     share !== null && share.qualityLimitationReason === 'bandwidth',
-    notif,
   );
   checkWarning(
     'jitter_buffer_high',
     `Voice lag high — jitter buffer delay ${network?.jitterBufferDelayMs ?? 0} ms`,
     network !== null && network.jitterBufferDelayMs > 150,
-    notif,
   );
   checkWarning(
     'concealment_high',
     `Audio quality degraded — ${network?.concealmentEventsPerInterval ?? 0} concealment events`,
     network !== null && network.concealmentEventsPerInterval > 10,
-    notif,
   );
   checkWarning(
     'share_resolution_low',
     'Screen share quality reduced — resolution downgraded',
     share !== null && share.frameHeight > 0 && share.frameHeight < 720,
-    notif,
   );
   checkWarning(
     'video_recv_frozen',
     `Received video is freezing — ${snap.videoReceive?.freezeCount ?? 0} freeze events`,
     snap.videoReceive !== null && snap.videoReceive.freezeCount > 0,
-    notif,
   );
   checkWarning(
     'video_recv_loss_high',
     `Received video packet loss high (${snap.videoReceive?.packetLossPercent.toFixed(1) ?? '?'}%)`,
     snap.videoReceive !== null && snap.videoReceive.packetLossPercent > 5,
-    notif,
   );
 
   // Pass history snapshot to UI every 5th poll (~5s, matching chart resolution)

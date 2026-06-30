@@ -22,8 +22,9 @@ export type TelemetryEvent =
   | { name: 'share.leak.transceiver_cap'; before: number; after: number; ts: number }
   | { name: 'share.reuse_patch.missing'; ts: number }
   | { name: 'network.event'; kind: 'loss' | 'rtt' | 'bwe_drop'; detail: Record<string, number>; ts: number }
-  | { name: 'capture.path.selected'; os: 'windows' | 'macos' | 'linux'; path: string; ts: number }
+  | { name: 'capture.path.selected'; os: 'windows' | 'macos' | 'linux'; path: string; sourceKind?: 'screen' | 'window'; backend?: string; ts: number }
   | { name: 'capture.fallback.activated'; os: 'windows' | 'macos' | 'linux'; from: string; to: string; reason: string; ts: number }
+  | { name: 'capture.native.failed'; os: 'windows'; sourceKind: 'screen' | 'window'; backend: string; reason: string; ts: number }
   | { name: 'codec.session.start'; primary: 'vp9' | 'vp8' | 'av1'; ts: number }
   | { name: 'codec.session.fallback'; from: 'vp9' | 'vp8' | 'av1'; to: 'vp9' | 'vp8'; reason: string; ts: number }
   | { name: 'codec.session.end'; smoothnessFreezeMs: number; publisherCpuPctMedian: number; ts: number };

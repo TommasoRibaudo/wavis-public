@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import * as fc from 'fast-check';
-import { openExternalLink, truncateIssueBody, validateDescription } from '../BugReportFlow';
+import { openExternalLink, truncateIssueBody, truncateTitle, validateDescription } from '../BugReportFlow';
 import type { BugReportPayload } from '../bug-report';
 
 describe('Feature: in-app-bug-report, Property 9: Description minimum length enforcement', () => {
@@ -235,6 +235,51 @@ describe('Feature: in-app-bug-report, issue body truncation before submission', 
         fc.string({ minLength: 0, maxLength: LIMIT }),
         (body) => {
           expect(truncateIssueBody(body)).toBe(body);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('Feature: in-app-bug-report, issue title truncation for branch naming', () => {
+  const LIMIT = 72;
+
+  it('returns the title unchanged when it is at or under the limit', () => {
+    const title = 'x'.repeat(LIMIT);
+    expect(truncateTitle(title)).toBe(title);
+  });
+
+  it('truncates to 72 characters when the title exceeds the limit', () => {
+    const title = 'x'.repeat(LIMIT + 10);
+    expect(truncateTitle(title).length).toBeLessThanOrEqual(LIMIT);
+  });
+
+  it('trims trailing whitespace after truncation', () => {
+    const title = 'a'.repeat(LIMIT - 2) + '   extra';
+    const result = truncateTitle(title);
+    expect(result.length).toBeLessThanOrEqual(LIMIT);
+    expect(result).not.toMatch(/ $/);
+  });
+
+  it('Property: result never exceeds 72 characters for any title', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 0, maxLength: 200 }),
+        (title) => {
+          expect(truncateTitle(title).length).toBeLessThanOrEqual(LIMIT);
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  it('Property: title under the limit is always returned as-is', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 0, maxLength: LIMIT }),
+        (title) => {
+          expect(truncateTitle(title)).toBe(title);
         },
       ),
       { numRuns: 200 },

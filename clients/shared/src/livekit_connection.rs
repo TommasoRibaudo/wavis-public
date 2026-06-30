@@ -21,6 +21,8 @@ use crate::cpal_audio::AudioBuffer;
 use crate::cpal_audio::PeerVolumes;
 #[cfg(feature = "real-backends")]
 use crate::denoise_filter::DenoiseFilter;
+#[cfg(feature = "real-backends")]
+use crate::passthrough_filter::PassthroughFilters;
 use crate::room_session::{LiveKitConnection, RoomError};
 use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackSource};
 use livekit::Room as LkRoom;
@@ -67,6 +69,12 @@ pub struct RealLiveKitConnection {
     /// The callback MUST NOT block — it is invoked on a background task.
     #[allow(clippy::type_complexity)]
     audio_cb: Arc<Mutex<Option<Box<dyn Fn(&str, &[f32]) + Send + 'static>>>>,
+    /// Callback for when a remote screen-share audio track is subscribed.
+    #[allow(clippy::type_complexity)]
+    screen_share_audio_available_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
+    /// Callback for when a remote screen-share audio track is unsubscribed.
+    #[allow(clippy::type_complexity)]
+    screen_share_audio_ended_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
     /// Background task handle for the room event listener loop.
     event_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Background task that pushes mic PCM into the NativeAudioSource.
@@ -99,6 +107,9 @@ pub struct RealLiveKitConnection {
     /// Per-peer volume map for scaling individual participant audio.
     #[cfg(feature = "real-backends")]
     peer_volumes: Arc<Mutex<Option<PeerVolumes>>>,
+    /// Shared passthrough membership and filter settings for playback-only muffle.
+    #[cfg(feature = "real-backends")]
+    passthrough_filters: Arc<Mutex<Option<PassthroughFilters>>>,
     /// Participants whose remote screen-share audio is currently allowed to
     /// enter the playback mix. This is driven by the viewer open/close state
     /// on Linux/WebKit where remote media is handled entirely on the Rust side.
@@ -158,6 +169,8 @@ impl RealLiveKitConnection {
             published_track: Arc::new(Mutex::new(None)),
             mic_enabled: Arc::new(AtomicBool::new(false)),
             audio_cb: Arc::new(Mutex::new(None)),
+            screen_share_audio_available_cb: Arc::new(Mutex::new(None)),
+            screen_share_audio_ended_cb: Arc::new(Mutex::new(None)),
             event_task: Arc::new(Mutex::new(None)),
             capture_task: Arc::new(Mutex::new(None)),
             closing: Arc::new(AtomicBool::new(false)),
@@ -176,6 +189,8 @@ impl RealLiveKitConnection {
             sender_frames_dropped: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "real-backends")]
             peer_volumes: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "real-backends")]
+            passthrough_filters: Arc::new(Mutex::new(None)),
             #[cfg(feature = "real-backends")]
             screen_share_audio_enabled: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(feature = "real-backends")]
@@ -212,6 +227,12 @@ impl RealLiveKitConnection {
     #[cfg(feature = "real-backends")]
     pub fn set_peer_volumes(&self, volumes: PeerVolumes) {
         *self.peer_volumes.lock().unwrap() = Some(volumes);
+    }
+
+    /// Wire shared passthrough filter state before `connect()`.
+    #[cfg(feature = "real-backends")]
+    pub fn set_passthrough_filters(&self, filters: PassthroughFilters) {
+        *self.passthrough_filters.lock().unwrap() = Some(filters);
     }
 
     /// Allow or block a participant's remote ScreenShareAudio track from being
@@ -293,12 +314,18 @@ impl LiveKitConnection for RealLiveKitConnection {
 
         // Clone Arcs for the background event task.
         let audio_cb = Arc::clone(&self.audio_cb);
+        let screen_share_audio_available_cb = Arc::clone(&self.screen_share_audio_available_cb);
+        let screen_share_audio_ended_cb = Arc::clone(&self.screen_share_audio_ended_cb);
         let video_frame_cb = Arc::clone(&self.video.video_frame_cb);
         let video_track_ended_cb = Arc::clone(&self.video.video_track_ended_cb);
+        let camera_frame_cb = Arc::clone(&self.video.camera_frame_cb);
+        let camera_track_ended_cb = Arc::clone(&self.video.camera_track_ended_cb);
         let connected = Arc::clone(&self.connected);
         let closing = Arc::clone(&self.closing);
         #[cfg(feature = "real-backends")]
         let peer_volumes_outer = Arc::clone(&self.peer_volumes);
+        #[cfg(feature = "real-backends")]
+        let passthrough_filters_outer = Arc::clone(&self.passthrough_filters);
         #[cfg(feature = "real-backends")]
         let screen_share_audio_enabled_outer = Arc::clone(&self.screen_share_audio_enabled);
         #[cfg(feature = "real-backends")]
@@ -352,10 +379,19 @@ impl LiveKitConnection for RealLiveKitConnection {
                             publication.sid(),
                             publication.name(),
                         );
+                        if source == TrackSource::ScreenshareAudio {
+                            if let Some(cb) =
+                                screen_share_audio_available_cb.lock().unwrap().as_ref()
+                            {
+                                cb(&participant_id);
+                            }
+                        }
                         let audio_cb = Arc::clone(&audio_cb);
                         let closing2 = Arc::clone(&closing);
                         #[cfg(feature = "real-backends")]
                         let peer_vols = Arc::clone(&peer_volumes_outer);
+                        #[cfg(feature = "real-backends")]
+                        let passthrough_filters = Arc::clone(&passthrough_filters_outer);
                         #[cfg(feature = "real-backends")]
                         let screen_share_audio_enabled =
                             Arc::clone(&screen_share_audio_enabled_outer);
@@ -373,6 +409,7 @@ impl LiveKitConnection for RealLiveKitConnection {
                                 audio_cb,
                                 closing: closing2,
                                 peer_volumes: peer_vols,
+                                passthrough_filters,
                                 screen_share_audio_enabled,
                                 remote_queues,
                             },
@@ -388,41 +425,87 @@ impl LiveKitConnection for RealLiveKitConnection {
                     }
                     livekit::RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Video(video_track),
+                        publication,
                         participant,
                         ..
                     } => {
+                        use livekit::track::TrackSource;
                         use livekit::webrtc::video_stream::native::NativeVideoStream;
 
                         let rtc_track = video_track.rtc_track();
                         let stream = NativeVideoStream::new(rtc_track);
                         let participant_id = participant.identity().to_string();
+                        let source = publication.source();
                         log::info!(
-                            "livekit_video: subscribed to video track from {participant_id}"
+                            "livekit_video: subscribed to video track from {participant_id}, source={source:?}"
                         );
+                        let (frame_cb, ended_cb) = if source == TrackSource::Camera {
+                            (
+                                Arc::clone(&camera_frame_cb),
+                                Arc::clone(&camera_track_ended_cb),
+                            )
+                        } else {
+                            (
+                                Arc::clone(&video_frame_cb),
+                                Arc::clone(&video_track_ended_cb),
+                            )
+                        };
 
                         tokio::spawn(super::livekit_video::run_video_receiver_task(
                             stream,
                             participant_id,
-                            Arc::clone(&video_frame_cb),
-                            Arc::clone(&video_track_ended_cb),
+                            frame_cb,
+                            ended_cb,
                             Arc::clone(&closing),
                         ));
                     }
                     livekit::RoomEvent::TrackUnsubscribed {
                         track: RemoteTrack::Video(_),
+                        publication,
+                        participant,
+                        ..
+                    } => {
+                        use livekit::track::TrackSource;
+
+                        let participant_id = participant.identity().to_string();
+                        let source = publication.source();
+                        log::info!(
+                            "livekit_video: video track unsubscribed from {participant_id}, source={source:?}"
+                        );
+                        if source == TrackSource::Camera {
+                            if let Some(cb) = camera_track_ended_cb.lock().unwrap().as_ref() {
+                                cb(&participant_id);
+                            }
+                        } else if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
+                            cb(&participant_id);
+                        }
+                    }
+                    livekit::RoomEvent::TrackUnsubscribed {
+                        track: RemoteTrack::Audio(_),
+                        publication,
                         participant,
                         ..
                     } => {
                         let participant_id = participant.identity().to_string();
-                        log::info!("livekit_video: video track unsubscribed from {participant_id}");
-                        if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
-                            cb(&participant_id);
+                        let source = publication.source();
+                        log::info!(
+                            "livekit_audio: audio track unsubscribed from {participant_id}, source={source:?}"
+                        );
+                        if source == TrackSource::ScreenshareAudio {
+                            if let Some(cb) =
+                                screen_share_audio_ended_cb.lock().unwrap().as_ref()
+                            {
+                                cb(&participant_id);
+                            }
                         }
                     }
                     livekit::RoomEvent::ParticipantDisconnected(participant) => {
                         let participant_id = participant.identity().to_string();
                         log::info!("livekit_video: participant disconnected: {participant_id}");
                         if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
+                            cb(&participant_id);
+                        }
+                        if let Some(cb) = camera_track_ended_cb.lock().unwrap().as_ref() {
                             cb(&participant_id);
                         }
                     }
@@ -552,6 +635,8 @@ impl LiveKitConnection for RealLiveKitConnection {
         *self.published_track.lock().unwrap() = None;
         *self.video.published_video_track.lock().unwrap() = None;
         *self.video.video_source.lock().unwrap() = None;
+        *self.video.published_camera_track.lock().unwrap() = None;
+        *self.video.camera_source.lock().unwrap() = None;
         *self.published_screen_audio_track.lock().unwrap() = None;
         *self.screen_audio_source.lock().unwrap() = None;
         #[cfg(feature = "real-backends")]
@@ -573,6 +658,22 @@ impl LiveKitConnection for RealLiveKitConnection {
 
     fn on_video_track_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
         *self.video.video_track_ended_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_camera_frame(&self, cb: Box<dyn Fn(&str, &[u8], u32, u32) + Send + 'static>) {
+        *self.video.camera_frame_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_camera_track_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.video.camera_track_ended_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_screen_share_audio_available(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.screen_share_audio_available_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_screen_share_audio_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.screen_share_audio_ended_cb.lock().unwrap() = Some(cb);
     }
 
     // Task 4.3
@@ -981,6 +1082,134 @@ impl LiveKitConnection for RealLiveKitConnection {
         }
 
         log::info!("unpublish_video: screen share track unpublished");
+        Ok(())
+    }
+
+    fn publish_camera_video(&self, width: u32, height: u32) -> Result<(), RoomError> {
+        use livekit::options::TrackPublishOptions;
+        use livekit::webrtc::video_source::native::NativeVideoSource;
+        use livekit::webrtc::video_source::RtcVideoSource;
+        use livekit::webrtc::video_source::VideoResolution;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        if !self.connected.load(SeqCst) {
+            return Err(RoomError::NotInRoom);
+        }
+
+        if self.video.published_camera_track.lock().unwrap().is_some() {
+            log::debug!("publish_camera_video: already publishing, returning Ok");
+            return Ok(());
+        }
+
+        let room_guard = self.room.lock().unwrap();
+        let room = room_guard.as_ref().ok_or(RoomError::NotInRoom)?;
+
+        let resolution = VideoResolution { width, height };
+        let source = NativeVideoSource::new(resolution, false);
+        let rtc_source = RtcVideoSource::Native(source.clone());
+        let lk_track = livekit::track::LocalVideoTrack::create_video_track("camera", rtc_source);
+
+        let publish_opts = TrackPublishOptions {
+            source: TrackSource::Camera,
+            video_codec: livekit::options::VideoCodec::VP8,
+            video_encoding: Some(livekit::options::VideoEncoding {
+                max_bitrate: 500_000,
+                max_framerate: 15.0,
+            }),
+            simulcast: false,
+            ..Default::default()
+        };
+
+        log::info!("publish_camera_video: publishing {width}x{height} camera track");
+        self.video
+            .next_camera_timestamp_us
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+
+        tokio::task::block_in_place(|| {
+            self.rt_handle.block_on(async {
+                room.local_participant()
+                    .publish_track(
+                        livekit::track::LocalTrack::Video(lk_track.clone()),
+                        publish_opts,
+                    )
+                    .await
+                    .map_err(map_publish_error)
+            })
+        })?;
+
+        *self.video.published_camera_track.lock().unwrap() = Some(lk_track);
+        *self.video.camera_source.lock().unwrap() = Some(source);
+
+        log::info!("publish_camera_video: camera track published successfully");
+        Ok(())
+    }
+
+    fn feed_camera_frame(&self, data: &[u8], width: u32, height: u32) -> Result<(), RoomError> {
+        use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let source_guard = self.video.camera_source.lock().unwrap();
+        let source = source_guard.as_ref().ok_or_else(|| {
+            RoomError::PublishFailed(
+                "no camera source — call publish_camera_video first".to_string(),
+            )
+        })?;
+
+        let expected_len = (width as usize) * (height as usize) * 4;
+        if data.len() != expected_len {
+            return Err(RoomError::PublishFailed(format!(
+                "camera RGBA data length mismatch: expected {} bytes ({}x{}x4), got {}",
+                expected_len,
+                width,
+                height,
+                data.len()
+            )));
+        }
+
+        let i420 = rgba_to_i420(data, width, height);
+        let timestamp_us = self
+            .video
+            .next_camera_timestamp_us
+            .fetch_add(66_666, Relaxed);
+
+        let frame = VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            buffer: i420,
+            timestamp_us,
+        };
+
+        source.capture_frame(&frame);
+        Ok(())
+    }
+
+    fn unpublish_camera_video(&self) -> Result<(), RoomError> {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        *self.video.camera_source.lock().unwrap() = None;
+
+        let camera_track = self.video.published_camera_track.lock().unwrap().take();
+        if camera_track.is_none() {
+            return Ok(());
+        }
+
+        if !self.connected.load(SeqCst) {
+            return Ok(());
+        }
+
+        let room_guard = self.room.lock().unwrap();
+        if let Some(room) = room_guard.as_ref() {
+            let track_sid = camera_track.as_ref().unwrap().sid();
+
+            tokio::task::block_in_place(|| {
+                self.rt_handle.block_on(async {
+                    if let Err(e) = room.local_participant().unpublish_track(&track_sid).await {
+                        warn!("unpublish_camera_video: failed to unpublish track: {e}");
+                    }
+                })
+            });
+        }
+
+        log::info!("unpublish_camera_video: camera track unpublished");
         Ok(())
     }
 

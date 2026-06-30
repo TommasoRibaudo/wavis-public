@@ -1,24 +1,25 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
-const ChannelDetail = lazy(() => import('@features/channels/ChannelDetail'));
 import { useNavigate } from 'react-router';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
-import { resetAuth, logout, getServerUrl, getDeviceId, getDisplayName, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
+import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUsername, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
-import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getScreenShareCodec, setScreenShareCodec, type ScreenShareCodecOverride, DEFAULT_SCREEN_SHARE_CODEC } from './settings-store';
+import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
 import { updateCachedNotificationVolume, updateCachedSoundVolumes } from '@features/voice/notification-sounds';
-import { updateSessionProfileColor, getState as getVoiceRoomState } from '@features/voice/voice-room';
+import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceRoomState, changeSelectedCamera, setPassthroughEnabled, setPassthroughVolume, setPassthroughFilter, setPassthrough, clearPassthrough, leaveRoom } from '@features/voice/voice-room';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
 import { redactToken } from '@shared/helpers';
 import { useDebug } from '@shared/debug-context';
-import { formatHotkeyCombination, unregisterMuteHotkey, unregisterWatchAllHotkey, isHotkeyRegistered } from '@shared/hotkey-bridge';
+import { formatHotkeyCombination, unregisterMuteHotkey, unregisterWatchAllHotkey, unregisterFocusMainHotkey, registerFocusMainHotkey, isHotkeyRegistered } from '@shared/hotkey-bridge';
 import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
+import ChannelDetail from '@features/channels/ChannelDetail';
 
 /* ─── Audio Types ───────────────────────────────────────────────── */
 interface AudioDevice {
@@ -80,13 +81,13 @@ export function describeDenoiseStatus(params: {
   if (isMacOrWindows) {
     return {
       tone: 'saved',
-      message: 'Saved. Will apply on next session.',
+      message: 'On. Will be active when you join a session.',
     };
   }
 
   return {
     tone: 'saved',
-    message: 'Saved. RNNoise applies on native Rust audio sessions; JS fallback sessions may not use it.',
+    message: 'On. Applies on native Rust audio sessions; JS fallback sessions may not use it.',
   };
 }
 
@@ -112,10 +113,15 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'general' | 'channel'>('general');
 
-  const handleNavigateAway = (path: string) => {
+  const handleNavigateAway = useCallback((path: string) => {
     if (onNavigateAway) onNavigateAway(path);
     else navigate(path);
-  };
+  }, [onNavigateAway, navigate]);
+
+  const handleAuthNavigateAway = useCallback((path: string) => {
+    if (onNavigateAway) onNavigateAway(path);
+    else navigate(path, { replace: true });
+  }, [onNavigateAway, navigate]);
   const { showSecrets } = useDebug();
 
   const [showConfirm, setShowConfirm] = useState(false);
@@ -123,12 +129,17 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [loggingOut, setLoggingOut] = useState(false);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [displayName, setDisplayNameVal] = useState<string | null>(null);
+  const [username, setUsernameState] = useState<string>('');
+  const [usernameSaving, setUsernameSaving] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
   const [selectedColor, setSelectedColor] = useState<string>(PROFILE_COLORS[0]);
   const [tlsEnabled, setTlsEnabled] = useState(true);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [selectedInputDevice, setSelectedInputDevice] = useState<string>('');
+  const [videoInputDevices, setVideoInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedVideoDevice, setSelectedVideoDevice] = useState<string | null>(null);
+  const supportedCapturePlatform = /Windows|Macintosh/.test(navigator.userAgent);
   const [selectedOutputDevice, setSelectedOutputDevice] = useState<string>('');
   const [volume, setVolume] = useState<number>(DEFAULT_VOLUME);
   const [accessToken, setAccessTokenVal] = useState<string | null>(null);
@@ -143,11 +154,20 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     participantKicked: true,
     participantMutedByHost: true,
     inviteReceived: true,
+    passthroughChanged: true,
   });
+  const [passthroughVolume, setPassthroughVolumeState] = useState<number>(
+    getVoiceRoomState().passthroughVolume,
+  );
+  const [passthroughFiltersEnabled, setPassthroughFiltersEnabledState] = useState<boolean>(
+    getVoiceRoomState().passthroughFiltersEnabled,
+  );
+  const [passthroughFilterStrength, setPassthroughFilterStrengthState] = useState<number>(
+    getVoiceRoomState().passthroughFilterStrength,
+  );
   const [muteHotkey, setMuteHotkeyState] = useState<string>(DEFAULT_MUTE_HOTKEY);
   const [watchAllHotkey, setWatchAllHotkeyState] = useState<string>(DEFAULT_WATCH_ALL_HOTKEY);
   const [denoiseEnabled, setDenoiseEnabledState] = useState(true);
-  const [screenShareCodecState, setScreenShareCodecState] = useState<ScreenShareCodecOverride>(DEFAULT_SCREEN_SHARE_CODEC);
   const [inputVolume, setInputVolumeState] = useState<number>(100);
   const [notificationVolume, setNotificationVolumeState] = useState<number>(50);
   const [soundVolumes, setSoundVolumesState] = useState<Record<string, number>>({});
@@ -160,6 +180,11 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [recordedWatchAllModifiers, setRecordedWatchAllModifiers] = useState<string[]>([]);
   const [_recordedWatchAllKey, setRecordedWatchAllKey] = useState<string | null>(null);
   const [watchAllHotkeyError, setWatchAllHotkeyError] = useState<string | null>(null);
+  const [focusMainHotkey, setFocusMainHotkeyState] = useState<string>(DEFAULT_FOCUS_MAIN_HOTKEY);
+  const [recordingFocusMainHotkey, setRecordingFocusMainHotkey] = useState(false);
+  const [recordedFocusMainModifiers, setRecordedFocusMainModifiers] = useState<string[]>([]);
+  const [_recordedFocusMainKey, setRecordedFocusMainKey] = useState<string | null>(null);
+  const [focusMainHotkeyError, setFocusMainHotkeyError] = useState<string | null>(null);
   const denoiseStatus = describeDenoiseStatus({
     denoiseEnabled,
     connectionMode: getVoiceRoomState().connectionMode,
@@ -170,7 +195,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   useEffect(() => {
     getServerUrl().then(setServerUrl);
     getDeviceId().then(setDeviceId);
-    getDisplayName().then(setDisplayNameVal);
+    getUsername().then((name) => setUsernameState(name ?? ''));
     getProfileColor().then(setSelectedColor);
     getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
     getDefaultVolume().then(setVolume);
@@ -179,10 +204,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     getAccessToken().then(setAccessTokenVal);
     getMinimizeToTray().then(setMinimizeToTrayState);
     getNotificationToggles().then(setNotifyToggles);
+    setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
+    setPassthroughFiltersEnabledState(getVoiceRoomState().passthroughFiltersEnabled);
+    setPassthroughFilterStrengthState(getVoiceRoomState().passthroughFilterStrength);
     getMuteHotkey().then(setMuteHotkeyState);
     getWatchAllHotkey().then(setWatchAllHotkeyState);
+    getFocusMainHotkey().then(setFocusMainHotkeyState);
     getDenoiseEnabled().then(setDenoiseEnabledState);
-    getScreenShareCodec().then(setScreenShareCodecState);
     getInputVolume().then(setInputVolumeState);
     getNotificationVolume().then(setNotificationVolumeState);
     getSoundVolumes().then(setSoundVolumesState);
@@ -196,7 +224,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     invoke<AudioDevice[]>('list_audio_devices')
       .then(setAudioDevices)
       .catch(() => setAudioError('Failed to load audio devices'));
-  }, []);
+    getVideoInputDevice().then(setSelectedVideoDevice);
+    if (supportedCapturePlatform) {
+      navigator.mediaDevices.enumerateDevices()
+        .then((devs) => setVideoInputDevices(devs.filter((d) => d.kind === 'videoinput')))
+        .catch(() => {});
+    }
+  }, [supportedCapturePlatform]);
 
   // Startup sync: emit minimize-to-tray-changed to Rust after store loads
   useEffect(() => {
@@ -207,14 +241,16 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   const handleLogout = async () => {
     setLoggingOut(true);
+    leaveRoom();
     await logout();
-    navigate('/login', { replace: true });
+    handleAuthNavigateAway('/login');
   };
 
   const handleReset = async () => {
     setResetting(true);
+    leaveRoom();
     await resetAuth();
-    navigate('/setup', { replace: true });
+    handleAuthNavigateAway('/setup');
   };
 
   const handleMinimizeToTrayChange = useCallback((checked: boolean) => {
@@ -229,6 +265,29 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     await invoke('media_set_denoise_enabled', { enabled: checked });
     await setMediaDenoiseEnabled(checked);
   }, []);
+
+  const handleUsernameSave = useCallback(async () => {
+    const trimmed = username.trim();
+    if (!trimmed) {
+      setUsernameError('username is required');
+      return;
+    }
+    if (trimmed.length > 64) {
+      setUsernameError('username must be 64 characters or less');
+      return;
+    }
+    setUsernameSaving(true);
+    setUsernameError(null);
+    try {
+      await updateUsername(trimmed);
+      setUsernameState(trimmed);
+      updateSessionUsername(trimmed);
+    } catch (err) {
+      setUsernameError(err instanceof Error ? err.message : 'failed to save username');
+    } finally {
+      setUsernameSaving(false);
+    }
+  }, [username]);
 
   // Hotkey recording: capture keydown events when in recording mode
   useEffect(() => {
@@ -347,54 +406,245 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     return () => document.removeEventListener('keydown', handleKeyDown, true);
   }, [recordingWatchAllHotkey, watchAllHotkey]);
 
+  // Focus Main hotkey recording: capture keydown events when in recording mode
+  useEffect(() => {
+    if (!recordingFocusMainHotkey) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.key === 'Escape') {
+        setRecordingFocusMainHotkey(false);
+        setRecordedFocusMainModifiers([]);
+        setRecordedFocusMainKey(null);
+        setFocusMainHotkeyError(null);
+        return;
+      }
+
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push('Ctrl');
+      if (e.shiftKey) mods.push('Shift');
+      if (e.altKey) mods.push('Alt');
+      if (e.metaKey) mods.push('Meta');
+
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+        setRecordedFocusMainModifiers(mods);
+        return;
+      }
+
+      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+      setRecordedFocusMainModifiers(mods);
+      setRecordedFocusMainKey(mainKey);
+
+      const combo = formatHotkeyCombination(mods, mainKey);
+      setRecordingFocusMainHotkey(false);
+      setRecordedFocusMainModifiers([]);
+      setRecordedFocusMainKey(null);
+      setFocusMainHotkeyError(null);
+
+      const oldHotkey = focusMainHotkey;
+      setFocusMainHotkeyState(combo);
+      setFocusMainHotkey(combo);
+
+      isHotkeyRegistered(oldHotkey).then(async (wasRegistered) => {
+        if (wasRegistered) {
+          try {
+            await unregisterFocusMainHotkey(oldHotkey);
+          } catch {
+            // best effort
+          }
+          // Re-register new hotkey immediately so it works without reconnecting
+          registerFocusMainHotkey(combo, () => {
+            void getCurrentWindow().unminimize().then(() => getCurrentWindow().setFocus());
+          });
+        }
+      }).catch(() => {});
+    };
+
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => document.removeEventListener('keydown', handleKeyDown, true);
+  }, [recordingFocusMainHotkey, focusMainHotkey]);
+
   return (
     <div className="h-full flex flex-col min-w-0 bg-wavis-bg font-mono text-wavis-text">
-      <div className="flex-shrink-0 px-3 sm:px-6 py-2 border-b border-wavis-text-secondary/30 bg-wavis-bg">
-        {onClose ? (
-          <button onClick={onClose} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ✕ /close settings
-          </button>
-        ) : (
-          <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
-            ← /channels
-          </button>
-        )}
-      </div>
       {channelId && (
-        <div className="flex shrink-0 border-b border-wavis-text-secondary font-mono text-xs">
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            general
-          </button>
-          <button
-            onClick={() => setActiveTab('channel')}
-            className={`px-4 py-1.5 transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
-          >
-            channel
-          </button>
+        <div className="flex shrink-0 h-[4.5rem] px-3 py-3 border-b border-wavis-text-secondary font-mono text-xs items-center justify-between">
+          <div className="flex items-center h-full">
+            <button
+              onClick={() => setActiveTab('general')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'general' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              general
+            </button>
+            <button
+              onClick={() => setActiveTab('channel')}
+              className={`px-4 h-full flex items-center transition-colors ${activeTab === 'channel' ? 'text-wavis-accent border-b border-wavis-accent' : 'text-wavis-text-secondary hover:text-wavis-text'}`}
+            >
+              channel
+            </button>
+          </div>
+          {onClose ? (
+            <button
+              onClick={onClose}
+              className="text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : (
+            <button onClick={() => navigate('/')} className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          )}
         </div>
       )}
       {channelId && activeTab === 'channel' ? (
-        <div className="flex-1 min-h-0">
-          <Suspense fallback={<div className="p-4 text-wavis-text-secondary">loading...</div>}>
-            <ChannelDetail channelIdProp={channelId} hideJoinVoice={true} hideBackButton={true} />
-          </Suspense>
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-2xl mx-auto px-3 sm:px-6 py-4 space-y-4">
+            <ChannelDetail
+              channelIdProp={channelId}
+              hideJoinVoice
+              hideBackButton
+              embedded
+              onNavigateAway={handleNavigateAway}
+              embeddedMiddle={(() => {
+                const vs = getVoiceRoomState();
+                if (!vs.selfIsHost || vs.machineState !== 'active') return null;
+                const activePassthrough = vs.passthrough;
+                const passthroughEnabled = vs.passthroughEnabled;
+                const showPassthroughControls = passthroughEnabled || !!activePassthrough;
+                const joinedSubRoomId = vs.joinedSubRoomId;
+                const otherSubRooms = vs.subRooms.filter((r) => r.id !== joinedSubRoomId);
+                return (
+                  <div>
+                    <p className="text-sm text-wavis-text-secondary mb-2">PASSTHROUGH</p>
+                    <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-wavis-text-secondary">Enable passthrough</span>
+                        <Switch
+                          checked={passthroughEnabled}
+                          onCheckedChange={setPassthroughEnabled}
+                          aria-label="Toggle passthrough"
+                        />
+                      </div>
+                      <p className="text-xs text-wavis-text-secondary/70">
+                        Link two rooms so their participants can hear each other
+                      </p>
+                      {showPassthroughControls && (
+                        <>
+                          <div>
+                            <label className="text-wavis-text-secondary block mb-1">
+                              Passthrough volume ({passthroughVolume}%)
+                            </label>
+                            <p className="text-xs text-wavis-text-secondary/70 mb-1">
+                              Attenuates audio from the linked room — applies to all participants
+                            </p>
+                            <VolumeSlider
+                              value={passthroughVolume}
+                              onChange={(v) => {
+                                setPassthroughVolumeState(v);
+                                setPassthroughVolume(v);
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-wavis-text-secondary">Muffle passthrough voices</span>
+                              <Switch
+                                checked={passthroughFiltersEnabled}
+                                onCheckedChange={(checked: boolean) => {
+                                  setPassthroughFiltersEnabledState(checked);
+                                  setPassthroughFilter(checked, passthroughFilterStrength);
+                                }}
+                                aria-label="Toggle passthrough muffle"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-wavis-text-secondary block mb-1">
+                                Muffle strength ({passthroughFilterStrength}%)
+                              </label>
+                              <p className="text-xs text-wavis-text-secondary/70 mb-1">
+                                {passthroughFilterStrength < 25 ? 'Subtle' : passthroughFilterStrength < 75 ? 'Balanced' : 'Strong'}
+                              </p>
+                              <VolumeSlider
+                                value={passthroughFilterStrength}
+                                onChange={(v) => {
+                                  setPassthroughFilterStrengthState(v);
+                                  setPassthroughFilter(passthroughFiltersEnabled, v);
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            {activePassthrough ? (
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <span className="text-wavis-text-secondary">Linked</span>
+                                  <p className="text-xs text-wavis-text-secondary/70">{activePassthrough.label}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    clearPassthrough();
+                                  }}
+                                  className="text-xs px-2 py-0.5 border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
+                                >
+                                  /unlink
+                                </button>
+                              </div>
+                            ) : passthroughEnabled && joinedSubRoomId && otherSubRooms.length > 0 ? (
+                              <div>
+                                <span className="text-wavis-text-secondary block mb-1">Link to room</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {otherSubRooms.map((r) => (
+                                    <button
+                                      key={r.id}
+                                      type="button"
+                                      onClick={() => { setPassthrough(r.id); }}
+                                      className="text-xs px-2 py-0.5 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors"
+                                    >
+                                      Room {r.roomNumber}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : passthroughEnabled ? (
+                              <p className="text-xs text-wavis-text-secondary/70">
+                                Join a room to link rooms
+                              </p>
+                            ) : null}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            />
+          </div>
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
+          {!channelId && onClose ? (
+            <button
+              onClick={onClose}
+              className="mb-4 text-wavis-text-secondary hover:text-wavis-text transition-colors text-xs px-1"
+              aria-label="Close settings"
+            >[x]</button>
+          ) : !channelId ? (
+            <button onClick={() => navigate('/')} className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast">
+              ← /channels
+            </button>
+          ) : null}
           <h2>settings</h2>
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-          {/* Device info */}
+          {/* Account info */}
           <div className="mb-6">
-            <p className="text-sm text-wavis-text-secondary mb-2">DEVICE</p>
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
-                <span className="text-wavis-text-secondary">name: </span>
-                <span>{displayName ?? '—'}</span>
+                <span className="text-wavis-text-secondary">username: </span>
+                <span>{username || '—'}</span>
               </div>
               <div>
                 <span className="text-wavis-text-secondary">server: </span>
@@ -411,55 +661,77 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             </div>
           </div>
 
-          {/* Only show account management on standalone settings page */}
-          {!onClose && (
-            <>
-              <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
+          <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-              {/* Account management */}
-              <div className="mb-6">
-                <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
-                <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
-                  <button
-                    onClick={() => handleNavigateAway('/devices')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /devices — manage devices
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/pair')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /pair-device — add a new device
-                  </button>
-                  <button
-                    onClick={() => handleNavigateAway('/phrase')}
-                    className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
-                  >
-                    /change-password — change password
-                  </button>
-                  <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
-                    <button
-                      onClick={handleLogout}
-                      disabled={loggingOut}
-                      className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
-                    </button>
-                  </div>
-                </div>
+          {/* Account management */}
+          <div className="mb-6">
+            <p className="text-sm text-wavis-text-secondary mb-2">ACCOUNT</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-2">
+              <button
+                onClick={() => handleNavigateAway('/devices')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /devices — manage devices
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/pair')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /pair-device — add a new device
+              </button>
+              <button
+                onClick={() => handleNavigateAway('/phrase')}
+                className="block text-sm text-wavis-text hover:text-wavis-accent transition-colors"
+              >
+                /change-password — change password
+              </button>
+              <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
+                <button
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {loggingOut ? 'logging out...' : '/logout — sign out of this device'}
+                </button>
               </div>
-            </>
-          )}
+            </div>
+          </div>
 
           <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
           {/* Profile color picker */}
           <div className="mb-6">
             <p className="text-sm text-wavis-text-secondary mb-2">PROFILE</p>
-            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary">
-              <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
-              <div className="flex flex-wrap gap-2">
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3">
+              <div>
+                <label htmlFor="username" className="text-sm text-wavis-text-secondary block mb-1">Username</label>
+                <div className="flex gap-2">
+                  <input
+                    id="username"
+                    value={username}
+                    maxLength={64}
+                    onChange={(e) => {
+                      setUsernameState(e.target.value);
+                      setUsernameError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleUsernameSave();
+                    }}
+                    className="flex-1 min-w-0 bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
+                  />
+                  <button
+                    onClick={() => { void handleUsernameSave(); }}
+                    disabled={usernameSaving}
+                    className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-3 py-1 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {usernameSaving ? 'saving...' : '/save'}
+                  </button>
+                </div>
+                {usernameError && <p className="text-xs text-wavis-danger mt-1">{usernameError}</p>}
+              </div>
+              <div>
+                <p className="text-sm text-wavis-text-secondary mb-2">Color</p>
+                <div className="flex flex-wrap gap-2">
                 {PROFILE_COLORS.map((color) => (
                   <button
                     key={color}
@@ -473,6 +745,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     aria-label={`Select color ${color}`}
                   />
                 ))}
+                </div>
               </div>
             </div>
           </div>
@@ -667,30 +940,60 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               }`}>
                 {denoiseStatus.message}
               </p>
-              <div>
-                <label className="text-wavis-text-secondary block mb-1 text-sm">Screen Share Codec</label>
-                <div className="flex gap-0">
-                  {(['auto', 'vp9', 'vp8', 'av1'] as const).map((codec) => (
-                    <button
-                      key={codec}
-                      onClick={() => {
-                        setScreenShareCodecState(codec);
-                        void setScreenShareCodec(codec);
-                      }}
-                      className={`flex-1 py-1 px-1 text-xs text-center border transition-colors ${
-                        screenShareCodecState === codec
-                          ? 'border-wavis-accent text-wavis-accent'
-                          : 'border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-                      }`}
-                    >
-                      {codec.toUpperCase()}
-                    </button>
-                  ))}
+            </div>
+          </div>
+
+          <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
+
+          {/* Video settings */}
+          <div className="mb-6">
+            <p className="text-sm text-wavis-text-secondary mb-2">VIDEO</p>
+            <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
+              {!supportedCapturePlatform ? (
+                <p className="text-wavis-text-secondary text-xs">Camera capture is not supported on this platform.</p>
+              ) : videoInputDevices.length === 0 ? (
+                <>
+                  <p className="text-wavis-text-secondary text-xs">No camera detected.</p>
+                  <select
+                    disabled
+                    className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text-secondary font-mono text-sm px-2 py-1 outline-none opacity-50 cursor-not-allowed"
+                  >
+                    <option>No cameras available</option>
+                  </select>
+                </>
+              ) : videoInputDevices.length === 1 ? (
+                <div>
+                  <label className="text-wavis-text-secondary block mb-1">Camera</label>
+                  <div className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1">
+                    {videoInputDevices[0].label || 'Camera 1'}
+                  </div>
                 </div>
-                <p className="text-xs text-wavis-text-secondary mt-1">
-                  Auto: uses W4 shootout winner. Override only for testing.
-                </p>
-              </div>
+              ) : (
+                <div>
+                  <label htmlFor="video-input" className="text-wavis-text-secondary block mb-1">Camera</label>
+                  <select
+                    id="video-input"
+                    value={selectedVideoDevice ?? ''}
+                    onChange={(e) => {
+                      const deviceId = e.target.value || null;
+                      setSelectedVideoDevice(deviceId);
+                      void setVideoInputDevice(deviceId);
+                      const voiceState = getVoiceRoomState();
+                      if (voiceState.cameraPublication === 'published') {
+                        void changeSelectedCamera(deviceId);
+                      }
+                    }}
+                    className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
+                  >
+                    <option value="">Default camera</option>
+                    {videoInputDevices.map((d, i) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || `Camera ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
           </div>
 
@@ -750,6 +1053,31 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               {watchAllHotkeyError && (
                 <p className="text-wavis-danger text-xs">{watchAllHotkeyError}</p>
               )}
+              <div>
+                <label className="text-wavis-text-secondary block mb-1">Focus main window hotkey</label>
+                <button
+                  onClick={() => {
+                    setRecordingFocusMainHotkey(true);
+                    setRecordedFocusMainModifiers([]);
+                    setRecordedFocusMainKey(null);
+                    setFocusMainHotkeyError(null);
+                  }}
+                  className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
+                  aria-label="Record focus main hotkey"
+                >
+                  {recordingFocusMainHotkey
+                    ? (recordedFocusMainModifiers.length > 0
+                        ? `${recordedFocusMainModifiers.join('+')}+...`
+                        : 'Press keys...')
+                    : focusMainHotkey}
+                </button>
+              </div>
+              {recordingFocusMainHotkey && (
+                <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
+              )}
+              {focusMainHotkeyError && (
+                <p className="text-wavis-danger text-xs">{focusMainHotkeyError}</p>
+              )}
             </div>
           </div>
 
@@ -765,6 +1093,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 ['participantKicked', 'Participant kicked'],
                 ['participantMutedByHost', 'Muted by host'],
                 ['inviteReceived', 'Invite received'],
+                ['passthroughChanged', 'Passthrough changed'],
               ] as const).map(([key, label]) => (
                 <div key={key} className="flex items-center justify-between">
                   <span className="text-wavis-text-secondary">{label}</span>
@@ -834,15 +1163,22 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-1 text-sm">
               <div>
                 <span className="text-wavis-text-secondary">sounds: </span>
-                <span>Universfield, floraphonic, humordome, pixabay, SoundReality</span>
-              </div>
-              <div>
-                <span className="text-wavis-text-secondary">source: </span>
+                <span>Universfield, floraphonic, humordome, pixabay, SoundReality - </span>
                 <button
                   onClick={() => open('https://pixabay.com')}
                   className="hover:text-wavis-accent hover:underline"
                 >
                   pixabay.com
+                </button>
+              </div>
+              <div>
+                <span className="text-wavis-text-secondary">icons: </span>
+                <span>video camera by Kiranshastry — </span>
+                <button
+                  onClick={() => open('https://www.flaticon.com/free-icons/video-camera')}
+                  className="hover:text-wavis-accent hover:underline"
+                >
+                  flaticon.com
                 </button>
               </div>
             </div>

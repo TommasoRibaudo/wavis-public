@@ -19,7 +19,7 @@
 //! functions and translates `ChannelError` variants into HTTP responses.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -31,8 +31,8 @@ use crate::channel::channel;
 use crate::channel::channel_models::{ChannelError, ChannelRole};
 use crate::error::ErrorResponse;
 use crate::voice::voice_orchestrator;
-use axum::response::{IntoResponse, Response};
 use crate::ws::ws_dispatch::{dispatch_signals, schedule_sub_room_expiry};
+use axum::response::{IntoResponse, Response};
 
 pub struct ChannelErrorResponse(Box<(StatusCode, HeaderMap, Json<ErrorResponse>)>);
 
@@ -147,6 +147,17 @@ pub struct VoiceParticipantInfo {
     pub display_name: String,
 }
 
+#[derive(Deserialize)]
+pub struct BatchVoiceStatusQuery {
+    pub ids: String,
+}
+
+#[derive(Serialize)]
+pub struct BatchVoiceStatusItem {
+    pub active: bool,
+    pub participant_count: u32,
+}
+
 #[derive(Serialize)]
 pub struct BanListResponse {
     pub banned: Vec<BanListItem>,
@@ -156,6 +167,7 @@ pub struct BanListResponse {
 pub struct BanListItem {
     pub user_id: String,
     pub banned_at: String,
+    pub display_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,10 +264,7 @@ fn map_channel_error(
 // Rate limiting helper
 // ---------------------------------------------------------------------------
 
-fn check_rate_limit(
-    state: &AppState,
-    user_id: Uuid,
-) -> Result<(), ChannelErrorResponse> {
+fn check_rate_limit(state: &AppState, user_id: Uuid) -> Result<(), ChannelErrorResponse> {
     let now = Instant::now();
     let retry_after_secs = state.channel_rate_limiter.seconds_until_retry(user_id, now);
     if retry_after_secs.is_some() {
@@ -504,7 +513,12 @@ pub async fn ban_member(
                     state.connections.as_ref(),
                 );
                 if let Some(expiry) = sub_room_result.expiry {
-                    schedule_sub_room_expiry(&state, &room_id, &expiry.sub_room_id, expiry.delete_at);
+                    schedule_sub_room_expiry(
+                        &state,
+                        &room_id,
+                        &expiry.sub_room_id,
+                        expiry.delete_at,
+                    );
                 }
             }
             Err(e) => {
@@ -664,7 +678,11 @@ pub async fn get_voice_status(
                     let active = !participants.is_empty();
                     Ok(Json(VoiceStatusResponse {
                         active,
-                        participant_count: if active { Some(participants.len() as u32) } else { None },
+                        participant_count: if active {
+                            Some(participants.len() as u32)
+                        } else {
+                            None
+                        },
                         participants: if active { Some(participants) } else { None },
                     }))
                 }
@@ -686,6 +704,88 @@ pub async fn get_voice_status(
     }
 }
 
+/// GET /channels/voice-status?ids=<uuid>,<uuid>
+/// Returns active voice indicators for multiple channels.
+pub async fn get_batch_voice_status(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Query(query): Query<BatchVoiceStatusQuery>,
+) -> Result<Json<std::collections::HashMap<String, BatchVoiceStatusItem>>, ChannelErrorResponse> {
+    let mut channel_ids = Vec::new();
+    for raw_id in query.ids.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        let channel_id = raw_id.parse::<Uuid>().map_err(|_| {
+            ChannelErrorResponse(Box::new((
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                Json(ErrorResponse {
+                    error: "invalid channel id".to_string(),
+                }),
+            )))
+        })?;
+        channel_ids.push(channel_id);
+    }
+
+    let mut response = std::collections::HashMap::with_capacity(channel_ids.len());
+    if channel_ids.is_empty() {
+        return Ok(Json(response));
+    }
+
+    let memberships = sqlx::query_scalar::<_, Uuid>(
+        "SELECT channel_id FROM channel_memberships \
+         WHERE user_id = $1 AND banned_at IS NULL AND channel_id = ANY($2)",
+    )
+    .bind(user.user_id)
+    .bind(&channel_ids)
+    .fetch_all(&state.db_pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            user_id = %user.user_id,
+            error = %e,
+            "batch voice status DB error"
+        );
+        ChannelErrorResponse(Box::new((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            HeaderMap::new(),
+            Json(ErrorResponse {
+                error: "internal error".to_string(),
+            }),
+        )))
+    })?;
+    let visible: std::collections::HashSet<Uuid> = memberships.into_iter().collect();
+
+    let map = state.active_room_map.read().await;
+    for channel_id in channel_ids {
+        let mut participant_count = 0;
+        if visible.contains(&channel_id)
+            && let Some(room_id) = map.get(&channel_id)
+            && let Some(room_info) = state.room_state.get_room_info(room_id)
+        {
+            participant_count = match &room_info.sub_room_state {
+                Some(sub_room_state) => room_info
+                    .participants
+                    .iter()
+                    .filter(|p| {
+                        sub_room_state
+                            .participant_assignments
+                            .contains_key(&p.participant_id)
+                    })
+                    .count() as u32,
+                None => room_info.participants.len() as u32,
+            };
+        }
+        response.insert(
+            channel_id.to_string(),
+            BatchVoiceStatusItem {
+                active: participant_count > 0,
+                participant_count,
+            },
+        );
+    }
+
+    Ok(Json(response))
+}
+
 /// GET /channels/:channel_id/bans
 pub async fn list_bans(
     State(state): State<AppState>,
@@ -702,6 +802,7 @@ pub async fn list_bans(
             .map(|b| BanListItem {
                 user_id: b.user_id.to_string(),
                 banned_at: b.banned_at.to_rfc3339(),
+                display_name: b.display_name,
             })
             .collect(),
     }))

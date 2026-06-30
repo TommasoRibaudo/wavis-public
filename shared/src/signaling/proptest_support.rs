@@ -142,6 +142,9 @@ impl Arbitrary for ParticipantInfo {
                     display_name,
                     user_id,
                     profile_color,
+                    is_muted: false,
+                    is_host_muted: false,
+                    is_deafened: false,
                 },
             )
             .boxed()
@@ -336,6 +339,21 @@ impl Arbitrary for WireSharePermission {
     }
 }
 
+impl Arbitrary for WireShareType {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        prop_oneof![
+            Just(WireShareType::ScreenAudio),
+            Just(WireShareType::Window),
+            Just(WireShareType::AudioOnly),
+            Just(WireShareType::Browser),
+        ]
+        .boxed()
+    }
+}
+
 impl Arbitrary for JoinRejectionReason {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -457,11 +475,23 @@ impl Arbitrary for ShareStartedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>())
-            .prop_map(|(participant_id, display_name)| ShareStartedPayload {
+        (any::<String>(), any::<String>(), prop::option::of(any::<WireShareType>()))
+            .prop_map(|(participant_id, display_name, share_type)| ShareStartedPayload {
                 participant_id,
                 display_name,
+                share_type,
             })
+            .boxed()
+    }
+}
+
+impl Arbitrary for StartSharePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        prop::option::of(any::<WireShareType>())
+            .prop_map(|share_type| StartSharePayload { share_type })
             .boxed()
     }
 }
@@ -497,8 +527,28 @@ impl Arbitrary for ShareStatePayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        prop::collection::vec(any::<String>(), 0..=6)
-            .prop_map(|participant_ids| ShareStatePayload { participant_ids })
+        (
+            prop::collection::vec(any::<String>(), 0..=6),
+            prop::collection::vec(any::<ActiveSharePayload>(), 0..=6),
+        )
+            .prop_map(|(participant_ids, active_shares)| ShareStatePayload {
+                participant_ids,
+                active_shares,
+            })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ActiveSharePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<String>(), prop::option::of(any::<WireShareType>()))
+            .prop_map(|(participant_id, share_type)| ActiveSharePayload {
+                participant_id,
+                share_type,
+            })
             .boxed()
     }
 }
@@ -703,6 +753,39 @@ impl Arbitrary for ClearPassthroughPayload {
     }
 }
 
+impl Arbitrary for SetPassthroughEnabledPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<bool>()
+            .prop_map(|enabled| SetPassthroughEnabledPayload { enabled })
+            .boxed()
+    }
+}
+
+impl Arbitrary for SetPassthroughVolumePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<u8>()
+            .prop_map(|volume| SetPassthroughVolumePayload { volume })
+            .boxed()
+    }
+}
+
+impl Arbitrary for SetPassthroughFilterPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<bool>(), 0u8..=100u8)
+            .prop_map(|(enabled, strength)| SetPassthroughFilterPayload { enabled, strength })
+            .boxed()
+    }
+}
+
 impl Arbitrary for PassthroughStatePayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -728,8 +811,28 @@ impl Arbitrary for SubRoomStatePayload {
         (
             prop::collection::vec(any::<SubRoomInfoPayload>(), 1..=6),
             prop::option::of(any::<PassthroughStatePayload>()),
+            any::<bool>(),
+            any::<u8>(),
+            any::<bool>(),
+            0u8..=100u8,
         )
-            .prop_map(|(rooms, passthrough)| SubRoomStatePayload { rooms, passthrough })
+            .prop_map(
+                |(
+                    rooms,
+                    passthrough,
+                    passthrough_enabled,
+                    passthrough_volume_percent,
+                    passthrough_filters_enabled,
+                    passthrough_filter_strength,
+                )| SubRoomStatePayload {
+                    rooms,
+                    passthrough,
+                    passthrough_enabled,
+                    passthrough_volume_percent,
+                    passthrough_filters_enabled,
+                    passthrough_filter_strength,
+                },
+            )
             .boxed()
     }
 }
@@ -928,6 +1031,33 @@ impl Arbitrary for SessionDisplacedPayload {
     }
 }
 
+impl Arbitrary for UpdateUsernamePayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|username| UpdateUsernamePayload { username })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ParticipantUsernameUpdatedPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (any::<String>(), any::<String>())
+            .prop_map(
+                |(participant_id, username)| ParticipantUsernameUpdatedPayload {
+                    participant_id,
+                    username,
+                },
+            )
+            .boxed()
+    }
+}
+
 impl Arbitrary for SignalingMessage {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -971,7 +1101,7 @@ impl Arbitrary for SignalingMessage {
             any::<ParticipantDeafenedPayload>().prop_map(SignalingMessage::ParticipantDeafened),
             any::<ParticipantUndeafenedPayload>().prop_map(SignalingMessage::ParticipantUndeafened),
             // Phase 3: Screen share lifecycle
-            Just(SignalingMessage::StartShare),
+            any::<StartSharePayload>().prop_map(SignalingMessage::StartShare),
             any::<ShareStartedPayload>().prop_map(SignalingMessage::ShareStarted),
             any::<StopSharePayload>().prop_map(SignalingMessage::StopShare),
             any::<ShareStoppedPayload>().prop_map(SignalingMessage::ShareStopped),
@@ -998,6 +1128,9 @@ impl Arbitrary for SignalingMessage {
             any::<LeaveSubRoomPayload>().prop_map(SignalingMessage::LeaveSubRoom),
             any::<SetPassthroughPayload>().prop_map(SignalingMessage::SetPassthrough),
             any::<ClearPassthroughPayload>().prop_map(SignalingMessage::ClearPassthrough),
+            any::<SetPassthroughEnabledPayload>().prop_map(SignalingMessage::SetPassthroughEnabled),
+            any::<SetPassthroughVolumePayload>().prop_map(SignalingMessage::SetPassthroughVolume),
+            any::<SetPassthroughFilterPayload>().prop_map(SignalingMessage::SetPassthroughFilter),
             any::<SubRoomStatePayload>().prop_map(SignalingMessage::SubRoomState),
             any::<SubRoomCreatedPayload>().prop_map(SignalingMessage::SubRoomCreated),
             any::<SubRoomJoinedPayload>().prop_map(SignalingMessage::SubRoomJoined),
@@ -1018,6 +1151,10 @@ impl Arbitrary for SignalingMessage {
             Just(SignalingMessage::Ping),
             // Session displacement
             any::<SessionDisplacedPayload>().prop_map(SignalingMessage::SessionDisplaced),
+            // Username update
+            any::<UpdateUsernamePayload>().prop_map(SignalingMessage::UpdateUsername),
+            any::<ParticipantUsernameUpdatedPayload>()
+                .prop_map(SignalingMessage::ParticipantUsernameUpdated),
         ]
         .boxed()
     }

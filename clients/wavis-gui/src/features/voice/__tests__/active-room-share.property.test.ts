@@ -94,14 +94,28 @@ describe('Property 14: Concurrent share slot independence', () => {
     );
   });
 
-  it('can start video share while audio share is active', () => {
+  it('can start video share (without system audio) while audio share is active', () => {
+    fc.assert(
+      fc.property(
+        arbAudioShare.filter((a) => a !== null),
+        (audio) => {
+          const sel = { mode: 'screen_audio' as const, sourceId: 'test', sourceName: 'Test', withAudio: false };
+          const result = canStartShare(sel, null, audio);
+          expect(result.allowed).toBe(true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it('cannot start video share with system audio while audio-only share is active', () => {
     fc.assert(
       fc.property(
         arbAudioShare.filter((a) => a !== null),
         (audio) => {
           const sel = { mode: 'screen_audio' as const, sourceId: 'test', sourceName: 'Test', withAudio: true };
           const result = canStartShare(sel, null, audio);
-          expect(result.allowed).toBe(true);
+          expect(result.allowed).toBe(false);
         },
       ),
       { numRuns: 100 },

@@ -23,7 +23,7 @@ use crate::ec2_control::Ec2InstanceState;
 use crate::state::{InMemoryRoomState, RoomType};
 use crate::voice::relay::{self, P2PJoinResult, RelayResult, RoomState, handle_p2p_join};
 use crate::voice::screen_share::{
-    ShareResult, handle_set_share_permission, handle_start_share, handle_stop_all_shares,
+    ShareResult, handle_set_share_permission, handle_start_share_with_type, handle_stop_all_shares,
     handle_stop_share,
 };
 use crate::voice::sfu_bridge::SfuHealth;
@@ -40,8 +40,8 @@ use axum::extract::ws::WebSocket;
 use shared::signaling::{
     self, AnswerPayload, ErrorPayload, IceCandidatePayload, JoinRejectedPayload,
     ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantSelfMutedPayload,
-    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, SessionDescription,
-    SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
+    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, ParticipantUsernameUpdatedPayload,
+    SessionDescription, SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
 };
 use std::env;
 use std::net::IpAddr;
@@ -108,6 +108,13 @@ pub(crate) fn inject_turn_credentials(
         .as_secs();
     let creds = generate_turn_credentials(peer_id, config, now_unix);
     let ice_payload = build_ice_config_payload(config, &creds);
+    tracing::debug!(
+        target: "wavis::turn",
+        peer_id,
+        username = %creds.username,
+        turn_urls = config.turn_urls.len(),
+        "issued TURN credentials"
+    );
 
     for signal in signals.iter_mut() {
         if let SignalingMessage::Joined(ref mut joined) = signal.msg {
@@ -199,6 +206,60 @@ pub(crate) enum DispatchOutcome {
     Continue,
     /// Close the connection (e.g. Leave, or fatal dispatch error).
     Break,
+}
+
+/// Lazily re-query the caller's channel role and verify they are a Host (Owner or Admin).
+///
+/// Used by passthrough and share-permission actions that require admin/owner access.
+/// Returns `Ok(())` if the role check passes. On any failure it sends an `Error` message
+/// to the caller and returns `Err(())` — the caller should `return DispatchOutcome::Continue`.
+///
+/// Takes only `&AppState` (not `&DispatchContext`) so the future stays `Send` across the await.
+async fn require_host_role(
+    app_state: &AppState,
+    caller_id: &str,
+    channel_id: &str,
+    user_id_uuid: Uuid,
+    op_name: &str,
+) -> Result<(), ()> {
+    let role = match voice_orchestrator::get_current_channel_role(
+        &app_state.db_pool,
+        channel_id,
+        &user_id_uuid,
+    )
+    .await
+    {
+        Ok(Some(r)) => voice_orchestrator::map_channel_role(r),
+        Ok(None) => {
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "not authorized".to_string(),
+                }),
+            );
+            return Err(());
+        }
+        Err(e) => {
+            error!(caller_id = %caller_id, op = %op_name, error = %e, "DB error during role check");
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "internal error".to_string(),
+                }),
+            );
+            return Err(());
+        }
+    };
+    if role != ParticipantRole::Host {
+        app_state.connections.send_to(
+            caller_id,
+            &SignalingMessage::Error(ErrorPayload {
+                message: "unauthorized".to_string(),
+            }),
+        );
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Route a parsed `SignalingMessage` to the appropriate domain function.
@@ -1639,6 +1700,16 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_muted = true;
+                }
+            });
+
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
                     SignalingMessage::ParticipantSelfMuted(ParticipantSelfMutedPayload {
@@ -1682,6 +1753,16 @@ pub(crate) async fn dispatch_message(
                     return DispatchOutcome::Continue;
                 }
             };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_muted = participant.is_host_muted;
+                }
+            });
 
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
@@ -1727,6 +1808,16 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_deafened = true;
+                }
+            });
+
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
                     SignalingMessage::ParticipantDeafened(ParticipantDeafenedPayload {
@@ -1770,6 +1861,16 @@ pub(crate) async fn dispatch_message(
                     return DispatchOutcome::Continue;
                 }
             };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|p| p.participant_id == sender_id)
+                {
+                    participant.is_deafened = false;
+                }
+            });
 
             dispatch_signals(
                 vec![OutboundSignal::broadcast_all(
@@ -1828,7 +1929,64 @@ pub(crate) async fn dispatch_message(
             );
             DispatchOutcome::Continue
         }
-        SignalingMessage::StartShare => {
+        SignalingMessage::UpdateUsername(payload) => {
+            let session_ref = ctx.session.as_ref().unwrap();
+            let sender_id = session_ref.participant_id.as_str();
+
+            if !ctx.rate_limiter.action_allow() {
+                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit on UpdateUsername");
+                ctx.app_state
+                    .abuse_metrics
+                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+                ctx.app_state.connections.send_to(
+                    sender_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+
+            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
+            let room_id = match room_id_opt {
+                Some(ref r) => r.clone(),
+                None => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "not in a room".to_string(),
+                        }),
+                    );
+                    return DispatchOutcome::Continue;
+                }
+            };
+
+            ctx.app_state.room_state.update_room_info(&room_id, |info| {
+                if let Some(participant) = info
+                    .participants
+                    .iter_mut()
+                    .find(|participant| participant.participant_id == sender_id)
+                {
+                    participant.display_name = payload.username.clone();
+                }
+            });
+
+            dispatch_signals(
+                vec![OutboundSignal::broadcast_all(
+                    SignalingMessage::ParticipantUsernameUpdated(
+                        ParticipantUsernameUpdatedPayload {
+                            participant_id: sender_id.to_string(),
+                            username: payload.username,
+                        },
+                    ),
+                )],
+                &room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::StartShare(payload) => {
             // Session is guaranteed Some here (pre-join gate already handled above)
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
@@ -1866,11 +2024,12 @@ pub(crate) async fn dispatch_message(
                 }
             };
 
-            match handle_start_share(
+            match handle_start_share_with_type(
                 ctx.app_state.room_state.as_ref(),
                 &room_id,
                 sender_id,
                 sender_role,
+                payload.share_type,
             ) {
                 ShareResult::Ok(signals) => {
                     dispatch_signals(
@@ -2485,7 +2644,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -2531,7 +2690,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -2579,7 +2738,7 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
-                        message: "sub-rooms require a channel voice session".to_string(),
+                        message: "rooms require a channel voice session".to_string(),
                     }),
                 );
                 return DispatchOutcome::Continue;
@@ -2622,7 +2781,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            if session_ref.channel_id.is_none() {
+            let Some(_) = session_ref.channel_id.as_ref() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2630,11 +2789,10 @@ pub(crate) async fn dispatch_message(
                     }),
                 );
                 return DispatchOutcome::Continue;
-            }
+            };
             if !ctx.rate_limiter.action_allow() {
                 return DispatchOutcome::Continue;
             }
-
             match voice_orchestrator::set_passthrough(
                 ctx.app_state.room_state.as_ref(),
                 &session_ref.room_id,
@@ -2662,7 +2820,7 @@ pub(crate) async fn dispatch_message(
             let Some(session_ref) = ctx.session.as_ref() else {
                 return DispatchOutcome::Continue;
             };
-            if session_ref.channel_id.is_none() {
+            let Some(_) = session_ref.channel_id.as_ref() else {
                 ctx.app_state.connections.send_to(
                     ctx.peer_id,
                     &SignalingMessage::Error(ErrorPayload {
@@ -2670,11 +2828,10 @@ pub(crate) async fn dispatch_message(
                     }),
                 );
                 return DispatchOutcome::Continue;
-            }
+            };
             if !ctx.rate_limiter.action_allow() {
                 return DispatchOutcome::Continue;
             }
-
             match voice_orchestrator::clear_passthrough(
                 ctx.app_state.room_state.as_ref(),
                 &session_ref.room_id,
@@ -2697,6 +2854,166 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
+        SignalingMessage::SetPassthroughEnabled(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            let Some(channel_id) = session_ref.channel_id.as_deref() else {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "set_passthrough_enabled requires a channel voice session"
+                            .to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            };
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref
+                    .user_id
+                    .as_ref()
+                    .expect("channel session always has user_id"),
+            )
+            .expect("session user_id is always a valid UUID");
+            if require_host_role(
+                ctx.app_state,
+                ctx.peer_id,
+                channel_id,
+                user_id_uuid,
+                "set_passthrough_enabled",
+            )
+            .await
+            .is_err()
+            {
+                return DispatchOutcome::Continue;
+            }
+
+            match voice_orchestrator::set_passthrough_enabled(
+                &ctx.app_state.db_pool,
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                channel_id,
+                payload.enabled,
+            )
+            .await
+            {
+                Ok(result) => dispatch_signals(
+                    result.signals,
+                    &session_ref.room_id,
+                    ctx.app_state.room_state.as_ref(),
+                    ctx.app_state.connections.as_ref(),
+                ),
+                Err(message) => ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload { message }),
+                ),
+            }
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::SetPassthroughVolume(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            let Some(ref channel_id) = session_ref.channel_id.clone() else {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "set_passthrough_volume requires a channel voice session"
+                            .to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            };
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let user_id_uuid = Uuid::parse_str(
+                session_ref
+                    .user_id
+                    .as_ref()
+                    .expect("channel session always has user_id"),
+            )
+            .expect("session user_id is always a valid UUID");
+            if require_host_role(
+                ctx.app_state,
+                ctx.peer_id,
+                channel_id,
+                user_id_uuid,
+                "set_passthrough_volume",
+            )
+            .await
+            .is_err()
+            {
+                return DispatchOutcome::Continue;
+            }
+
+            let result = voice_orchestrator::set_passthrough_volume(
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                payload.volume,
+            );
+            dispatch_signals(
+                result.signals,
+                &session_ref.room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::SetPassthroughFilter(payload) => {
+            let Some(session_ref) = ctx.session.as_ref() else {
+                return DispatchOutcome::Continue;
+            };
+            let Some(channel_id) = session_ref.channel_id.as_deref() else {
+                ctx.app_state.connections.send_to(
+                    ctx.peer_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: "set_passthrough_filter requires a channel voice session"
+                            .to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            };
+            if !ctx.rate_limiter.action_allow() {
+                return DispatchOutcome::Continue;
+            }
+            let Some(user_id) = session_ref.user_id.as_deref() else {
+                return DispatchOutcome::Continue;
+            };
+            let user_id_uuid =
+                Uuid::parse_str(user_id).expect("session user_id is always a valid UUID");
+            if require_host_role(
+                ctx.app_state,
+                ctx.peer_id,
+                channel_id,
+                user_id_uuid,
+                "set_passthrough_filter",
+            )
+            .await
+            .is_err()
+            {
+                return DispatchOutcome::Continue;
+            }
+
+            let Ok(result) = voice_orchestrator::set_passthrough_filter(
+                ctx.app_state.room_state.as_ref(),
+                &session_ref.room_id,
+                payload.enabled,
+                payload.strength,
+            ) else {
+                return DispatchOutcome::Continue;
+            };
+            dispatch_signals(
+                result.signals,
+                &session_ref.room_id,
+                ctx.app_state.room_state.as_ref(),
+                ctx.app_state.connections.as_ref(),
+            );
+            DispatchOutcome::Continue
+        }
         SignalingMessage::SubRoomState(_)
         | SignalingMessage::SubRoomCreated(_)
         | SignalingMessage::SubRoomJoined(_)
@@ -2705,7 +3022,7 @@ pub(crate) async fn dispatch_message(
             ctx.app_state.connections.send_to(
                 ctx.peer_id,
                 &SignalingMessage::Error(ErrorPayload {
-                    message: "unexpected server-generated sub-room message".to_string(),
+                    message: "unexpected server-generated room message".to_string(),
                 }),
             );
             DispatchOutcome::Continue
@@ -2986,7 +3303,7 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::SelfUndeafen
         | SignalingMessage::ParticipantDeafened(_)
         | SignalingMessage::ParticipantUndeafened(_)
-        | SignalingMessage::StartShare
+        | SignalingMessage::StartShare(_)
         | SignalingMessage::ShareStarted(_)
         | SignalingMessage::StopShare(_)
         | SignalingMessage::ShareStopped(_)
@@ -3005,6 +3322,9 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::LeaveSubRoom(_)
         | SignalingMessage::SetPassthrough(_)
         | SignalingMessage::ClearPassthrough(_)
+        | SignalingMessage::SetPassthroughEnabled(_)
+        | SignalingMessage::SetPassthroughVolume(_)
+        | SignalingMessage::SetPassthroughFilter(_)
         | SignalingMessage::SubRoomState(_)
         | SignalingMessage::SubRoomCreated(_)
         | SignalingMessage::SubRoomJoined(_)
@@ -3020,6 +3340,8 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::ViewerJoined(_)
         | SignalingMessage::UpdateProfileColor(_)
         | SignalingMessage::ParticipantColorUpdated(_)
+        | SignalingMessage::UpdateUsername(_)
+        | SignalingMessage::ParticipantUsernameUpdated(_)
         | SignalingMessage::Ping => {
             connections.send_to(
                 sender_peer_id,
@@ -3366,6 +3688,67 @@ mod tests {
                 assert_eq!(payload.message, "invalid message type from client");
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[test]
+    fn test_inject_turn_credentials_updates_only_target_joined_signal() {
+        let turn_config = crate::voice::turn_cred::TurnConfig::new(
+            b"0123456789abcdef0123456789abcdef".to_vec(),
+            None,
+            3600,
+            vec!["stun:127.0.0.1:3478".to_string()],
+            vec!["turn:127.0.0.1:3478?transport=udp".to_string()],
+        );
+        let mut signals = vec![
+            OutboundSignal::to_peer(
+                "peer-1",
+                SignalingMessage::Joined(shared::signaling::JoinedPayload {
+                    room_id: "room-1".to_string(),
+                    peer_id: "peer-1".to_string(),
+                    peer_count: 2,
+                    participants: vec![],
+                    ice_config: None,
+                    share_permission: None,
+                }),
+            ),
+            OutboundSignal::to_peer(
+                "peer-2",
+                SignalingMessage::Joined(shared::signaling::JoinedPayload {
+                    room_id: "room-1".to_string(),
+                    peer_id: "peer-2".to_string(),
+                    peer_count: 2,
+                    participants: vec![],
+                    ice_config: None,
+                    share_permission: None,
+                }),
+            ),
+        ];
+
+        inject_turn_credentials(&mut signals, "peer-1", Some(&turn_config));
+
+        match &signals[0].msg {
+            SignalingMessage::Joined(payload) => {
+                let ice = payload
+                    .ice_config
+                    .as_ref()
+                    .expect("target peer should receive turn credentials");
+                assert_eq!(ice.stun_urls, vec!["stun:127.0.0.1:3478"]);
+                assert_eq!(ice.turn_urls, vec!["turn:127.0.0.1:3478?transport=udp"]);
+                assert!(ice.turn_username.ends_with(":peer-1"));
+                assert!(!ice.turn_credential.is_empty());
+            }
+            other => panic!("expected Joined signal, got {other:?}"),
+        }
+
+        match &signals[1].msg {
+            SignalingMessage::Joined(payload) => {
+                assert!(
+                    payload.ice_config.is_none(),
+                    "non-target peer must not be mutated"
+                );
+            }
+            other => panic!("expected Joined signal, got {other:?}"),
         }
     }
 

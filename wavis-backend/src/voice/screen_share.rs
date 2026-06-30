@@ -31,8 +31,8 @@
 use crate::state::{InMemoryRoomState, RoomType, SharePermission};
 use crate::voice::sfu_relay::{OutboundSignal, ParticipantRole};
 use shared::signaling::{
-    ErrorPayload, SharePermissionChangedPayload, ShareStartedPayload, ShareStatePayload,
-    ShareStoppedPayload, SignalingMessage,
+    ActiveSharePayload, ErrorPayload, SharePermissionChangedPayload, ShareStartedPayload,
+    ShareStatePayload, ShareStoppedPayload, SignalingMessage, WireShareType,
 };
 
 /// Look up a participant's display name from the room's participant list.
@@ -67,11 +67,23 @@ pub enum ShareResult {
 /// - Sender is not already sharing
 ///
 /// On success, inserts sender into `active_shares` and returns a `BroadcastAll` `ShareStarted` signal.
+#[allow(dead_code)] // Retained for legacy callers and domain tests without share-type metadata.
 pub fn handle_start_share(
     state: &InMemoryRoomState,
     room_id: &str,
     sender_id: &str,
     role: ParticipantRole,
+) -> ShareResult {
+    handle_start_share_with_type(state, room_id, sender_id, role, None)
+}
+
+/// Start a share while preserving optional validated wire metadata.
+pub fn handle_start_share_with_type(
+    state: &InMemoryRoomState,
+    room_id: &str,
+    sender_id: &str,
+    role: ParticipantRole,
+    share_type: Option<WireShareType>,
 ) -> ShareResult {
     let result = state.with_room_write(room_id, |members| {
         // Check room type
@@ -107,17 +119,42 @@ pub fn handle_start_share(
 
         // Check sender not already sharing
         if members.info.active_shares.contains(sender_id) {
-            return ShareResult::Noop;
+            if members.info.active_share_types.get(sender_id).copied() == share_type {
+                return ShareResult::Noop;
+            }
+            if let Some(share_type) = share_type {
+                members
+                    .info
+                    .active_share_types
+                    .insert(sender_id.to_string(), share_type);
+            } else {
+                members.info.active_share_types.remove(sender_id);
+            }
+            let display_name = lookup_display_name(&members.info.participants, sender_id);
+            return ShareResult::Ok(vec![OutboundSignal::broadcast_all(
+                SignalingMessage::ShareStarted(ShareStartedPayload {
+                    participant_id: sender_id.to_string(),
+                    display_name,
+                    share_type,
+                }),
+            )]);
         }
 
         // All preconditions pass — atomically insert into active_shares
         members.info.active_shares.insert(sender_id.to_string());
+        if let Some(share_type) = share_type {
+            members
+                .info
+                .active_share_types
+                .insert(sender_id.to_string(), share_type);
+        }
 
         let display_name = lookup_display_name(&members.info.participants, sender_id);
         let signal =
             OutboundSignal::broadcast_all(SignalingMessage::ShareStarted(ShareStartedPayload {
                 participant_id: sender_id.to_string(),
                 display_name,
+                share_type,
             }));
         ShareResult::Ok(vec![signal])
     });
@@ -186,6 +223,7 @@ pub fn handle_stop_share(
 
         // All preconditions pass — atomically remove from active_shares
         members.info.active_shares.remove(effective_target);
+        members.info.active_share_types.remove(effective_target);
 
         let display_name = lookup_display_name(&members.info.participants, effective_target);
         let signal =
@@ -237,6 +275,7 @@ pub fn handle_stop_all_shares(
 
         // Collect all current sharers, then clear
         let sharers: Vec<String> = members.info.active_shares.drain().collect();
+        members.info.active_share_types.clear();
 
         let signals = sharers
             .into_iter()
@@ -268,14 +307,27 @@ pub fn share_state_snapshot(
     room_id: &str,
     target_peer_id: &str,
 ) -> OutboundSignal {
-    let participant_ids: Vec<String> = state
+    let (participant_ids, active_shares) = state
         .get_room_info(room_id)
-        .map(|info| info.active_shares.iter().cloned().collect())
+        .map(|info| {
+            let participant_ids: Vec<String> = info.active_shares.iter().cloned().collect();
+            let active_shares = participant_ids
+                .iter()
+                .map(|participant_id| ActiveSharePayload {
+                    participant_id: participant_id.clone(),
+                    share_type: info.active_share_types.get(participant_id).copied(),
+                })
+                .collect();
+            (participant_ids, active_shares)
+        })
         .unwrap_or_default();
 
     OutboundSignal::to_peer(
         target_peer_id,
-        SignalingMessage::ShareState(ShareStatePayload { participant_ids }),
+        SignalingMessage::ShareState(ShareStatePayload {
+            participant_ids,
+            active_shares,
+        }),
     )
 }
 
@@ -292,6 +344,7 @@ pub fn cleanup_share_on_disconnect(
         if !members.info.active_shares.remove(peer_id) {
             return None;
         }
+        members.info.active_share_types.remove(peer_id);
 
         let display_name = lookup_display_name(&members.info.participants, peer_id);
         let signal =
@@ -345,9 +398,7 @@ pub fn handle_set_share_permission(
         members.info.share_permission = new_perm;
 
         let signal = OutboundSignal::broadcast_all(SignalingMessage::SharePermissionChanged(
-            SharePermissionChangedPayload {
-                permission,
-            },
+            SharePermissionChangedPayload { permission },
         ));
         ShareResult::Ok(vec![signal])
     });
@@ -720,6 +771,49 @@ mod tests {
             }
             _ => panic!("expected ShareState message"),
         }
+    }
+
+    #[test]
+    fn share_state_snapshot_includes_authoritative_share_type() {
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["peer-a", "peer-b"]);
+        let result = handle_start_share_with_type(
+            &state,
+            "room-1",
+            "peer-a",
+            ParticipantRole::Guest,
+            Some(WireShareType::AudioOnly),
+        );
+        assert!(matches!(result, ShareResult::Ok(_)));
+
+        let signal = share_state_snapshot(&state, "room-1", "peer-b");
+        match signal.msg {
+            SignalingMessage::ShareState(payload) => {
+                assert_eq!(payload.active_shares.len(), 1);
+                assert_eq!(payload.active_shares[0].participant_id, "peer-a");
+                assert_eq!(payload.active_shares[0].share_type, Some(WireShareType::AudioOnly));
+            }
+            _ => panic!("expected ShareState message"),
+        }
+    }
+
+    #[test]
+    fn disconnect_cleanup_removes_authoritative_share_type() {
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["peer-a"]);
+        let result = handle_start_share_with_type(
+            &state,
+            "room-1",
+            "peer-a",
+            ParticipantRole::Guest,
+            Some(WireShareType::Browser),
+        );
+        assert!(matches!(result, ShareResult::Ok(_)));
+
+        cleanup_share_on_disconnect(&state, "room-1", "peer-a");
+
+        let info = state.get_room_info("room-1").unwrap();
+        assert!(!info.active_share_types.contains_key("peer-a"));
     }
 
     #[test]

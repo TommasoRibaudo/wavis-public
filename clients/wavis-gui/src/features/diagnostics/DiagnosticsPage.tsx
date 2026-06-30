@@ -16,9 +16,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import type { UnlistenFn } from '@tauri-apps/api/event';
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import {
   LineChart,
@@ -41,7 +42,22 @@ import {
   type DiagnosticsBaseline,
   type WarningEntry,
 } from './diagnostics';
+import {
+  DEFAULT_SCREEN_SHARE_CODEC,
+  getScreenShareCodec,
+  setScreenShareCodec,
+  type ScreenShareCodecOverride,
+} from '@features/settings/settings-store';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
+import { FixedBugReportButton } from './BugReportButton';
+import {
+  WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL,
+  WATCH_ALL_TEST_CHANNEL_NAME,
+  WATCH_ALL_TEST_READY_EVENT,
+  WATCH_ALL_TEST_STATE_EVENT,
+  encodeWatchAllHash,
+  type WatchAllTestTile,
+} from '@features/screen-share/watch-all-test-mode';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -82,6 +98,49 @@ function candidateLabel(ct: string): string {
   if (ct === 'srflx') return 'STUN (NAT traversal)';
   if (ct === 'relay') return 'TURN relay';
   return 'Unknown';
+}
+
+function fmtAspectRatio(value: number): string {
+  return `${value.toFixed(2)}:1`;
+}
+
+function fmtDimensions(width: number, height: number): string {
+  return `${width}x${height}`;
+}
+
+const WATCH_ALL_TEST_PRESETS = [
+  { label: '1080', width: 1920, height: 1080, color: '#60a5fa' },
+  { label: 'wide', width: 1728, height: 1080, color: '#34d399' },
+  { label: 'ultrawide', width: 2520, height: 1080, color: '#a78bfa' },
+  { label: 'mobile', width: 608, height: 1080, color: '#f472b6' },
+] as const;
+
+const SCREEN_SHARE_CODEC_OPTIONS: ScreenShareCodecOverride[] = ['auto', 'vp9', 'vp8', 'av1'];
+
+function waitForWatchAllTestReady(sessionId: string): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    let cleanup: UnlistenFn | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cleanup?.();
+      cleanup = null;
+      resolve();
+    };
+    const timeoutId = setTimeout(finish, 1500);
+    void listen<{ sessionId: string }>(WATCH_ALL_TEST_READY_EVENT, (event) => {
+      if (event.payload.sessionId !== sessionId) return;
+      clearTimeout(timeoutId);
+      finish();
+    }).then((unlisten) => {
+      cleanup = unlisten;
+      if (done) {
+        cleanup();
+        cleanup = null;
+      }
+    });
+  });
 }
 
 /* ─── Sub-components ─────────────────────────────────────────────── */
@@ -241,6 +300,8 @@ export default function DiagnosticsPage() {
   const [activeWarnings, setActiveWarnings] = useState<WarningEntry[]>([]);
   const [history, setHistory] = useState<DiagnosticsSnapshot[]>([]);
   const [openCharts, setOpenCharts] = useState<Set<string>>(new Set());
+  const [screenShareCodec, setScreenShareCodecState] = useState<ScreenShareCodecOverride>(DEFAULT_SCREEN_SHARE_CODEC);
+  const [watchAllTestTiles, setWatchAllTestTiles] = useState<WatchAllTestTile[]>([]);
   const [copy, copied] = useCopyToClipboardFeedback({
     feedbackMs: 1500,
     writeText: async (text) => {
@@ -253,6 +314,10 @@ export default function DiagnosticsPage() {
   const unlistenCloseRef = useRef<UnlistenFn | null>(null);
   const unlistenMainRef = useRef<UnlistenFn | null>(null);
   const closingRef = useRef(false);
+  const watchAllTestSessionIdRef = useRef(crypto.randomUUID());
+  const watchAllTestNextIdRef = useRef(1);
+  const watchAllTestTilesRef = useRef<WatchAllTestTile[]>([]);
+  watchAllTestTilesRef.current = watchAllTestTiles;
 
   const toggleChart = useCallback((key: string) => {
     setOpenCharts(prev => {
@@ -272,6 +337,82 @@ export default function DiagnosticsPage() {
     unlistenMainRef.current = null;
     await getCurrentWindow().destroy();
   };
+
+  const ensureWatchAllTestWindow = useCallback(async () => {
+    const existing = await WebviewWindow.getByLabel(WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL);
+    if (existing) {
+      await existing.setFocus();
+      return;
+    }
+
+    const sessionId = watchAllTestSessionIdRef.current;
+    const readyPromise = waitForWatchAllTestReady(sessionId);
+    const hash = encodeWatchAllHash({
+      channelName: WATCH_ALL_TEST_CHANNEL_NAME,
+      testSessionId: sessionId,
+    });
+    const win = new WebviewWindow(WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL, {
+      url: `/watch-all#${hash}`,
+      title: 'Watch All - Diagnostics',
+      width: 960,
+      height: 540,
+      minWidth: 480,
+      minHeight: 320,
+      resizable: true,
+      decorations: false,
+      center: true,
+    });
+    win.once('tauri://error', (event) => {
+      console.warn('[wavis:diagnostics] watch-all test window open error:', event);
+    });
+    await readyPromise;
+    await win.setFocus().catch(() => {});
+  }, []);
+
+  const syncWatchAllTestTiles = useCallback(async (tiles: WatchAllTestTile[]) => {
+    await ensureWatchAllTestWindow();
+    await emit(WATCH_ALL_TEST_STATE_EVENT, {
+      sessionId: watchAllTestSessionIdRef.current,
+      channelName: WATCH_ALL_TEST_CHANNEL_NAME,
+      tiles,
+    });
+  }, [ensureWatchAllTestWindow]);
+
+  const applyWatchAllTestTiles = useCallback((updater: (current: WatchAllTestTile[]) => WatchAllTestTile[]) => {
+    const next = updater(watchAllTestTilesRef.current);
+    watchAllTestTilesRef.current = next;
+    setWatchAllTestTiles(next);
+    void syncWatchAllTestTiles(next);
+  }, [syncWatchAllTestTiles]);
+
+  const handleAddWatchAllTestTile = useCallback((preset: (typeof WATCH_ALL_TEST_PRESETS)[number]) => {
+    const nextId = watchAllTestNextIdRef.current++;
+    applyWatchAllTestTiles((current) => {
+      const matchingCount = current.filter((tile) => tile.displayName.startsWith(preset.label)).length;
+      return [
+        ...current,
+        {
+          participantId: `diagnostics-test-${nextId}`,
+          displayName: `${preset.label} #${matchingCount + 1}`,
+          color: preset.color,
+          width: preset.width,
+          height: preset.height,
+        },
+      ];
+    });
+  }, [applyWatchAllTestTiles]);
+
+  const handleRemoveLastWatchAllTestTile = useCallback(() => {
+    applyWatchAllTestTiles((current) => current.slice(0, -1));
+  }, [applyWatchAllTestTiles]);
+
+  const handleClearWatchAllTestTiles = useCallback(() => {
+    applyWatchAllTestTiles(() => []);
+  }, [applyWatchAllTestTiles]);
+
+  const handleOpenWatchAllTestWindow = useCallback(() => {
+    void syncWatchAllTestTiles(watchAllTestTilesRef.current);
+  }, [syncWatchAllTestTiles]);
 
   useEffect(() => {
     let mounted = true;
@@ -315,6 +456,12 @@ export default function DiagnosticsPage() {
       .catch((err) => {
         console.error('[wavis:diagnostics] init failed:', err);
       });
+
+    getScreenShareCodec()
+      .then((codec) => {
+        if (mounted) setScreenShareCodecState(codec);
+      })
+      .catch(() => {});
 
     return () => {
       mounted = false;
@@ -385,6 +532,11 @@ export default function DiagnosticsPage() {
     void copy(exportSnapshot(snap));
   };
 
+  const handleScreenShareCodecChange = (codec: ScreenShareCodecOverride) => {
+    setScreenShareCodecState(codec);
+    void setScreenShareCodec(codec);
+  };
+
   /* ── Render ──────────────────────────────────────────────────── */
 
   return (
@@ -397,6 +549,7 @@ export default function DiagnosticsPage() {
         </span>
         <div className="flex items-center gap-2">
           <span className="text-[0.6rem] text-wavis-text-secondary/60">{pollLabel}</span>
+          <FixedBugReportButton captureScreenshot={false} />
           <button
             onClick={() => { void closeWindow(); }}
             className="text-wavis-text-secondary hover:text-wavis-text leading-none px-1"
@@ -406,6 +559,36 @@ export default function DiagnosticsPage() {
           </button>
         </div>
       </div>
+
+      {/* App dimensions */}
+      <Section>
+        <SectionHeader>App Dimensions</SectionHeader>
+        {snap.appDimensions ? (
+          <>
+            <MetricRow
+              label="Window"
+              value={`${fmtDimensions(snap.appDimensions.nativeWindow.width, snap.appDimensions.nativeWindow.height)} physical px`}
+            />
+            <div className="text-[0.6rem] text-wavis-text-secondary/60">
+              Native Tauri window size, including OS window frame/decorations.
+            </div>
+            <MetricRow
+              label="Viewport"
+              value={`${fmtDimensions(snap.appDimensions.viewport.width, snap.appDimensions.viewport.height)} CSS px`}
+            />
+            <div className="text-[0.6rem] text-wavis-text-secondary/60">
+              Webview content area used by the React layout.
+            </div>
+            <MetricRow
+              label="DPR"
+              value={snap.appDimensions.devicePixelRatio.toFixed(2)}
+              dim
+            />
+          </>
+        ) : (
+          <MetricRow label="Status" value="Waiting for main app" dim />
+        )}
+      </Section>
 
       {/* Network */}
       <Section>
@@ -567,6 +750,12 @@ export default function DiagnosticsPage() {
               value={snap.share.availableBandwidthKbps > 0 ? `${(snap.share.availableBandwidthKbps / 1000).toFixed(1)} Mbps` : '—'}
             />
           </>
+        ) : snap.shareActive ? (
+          <>
+            <MetricRow label="Status" value="Sharing, waiting for stats" />
+            {snap.shareMode && <MetricRow label="Mode" value={snap.shareMode} dim />}
+            {snap.shareSourceName && <MetricRow label="Source" value={snap.shareSourceName} dim />}
+          </>
         ) : (
           <MetricRow label="Status" value="Not sharing" dim />
         )}
@@ -577,6 +766,29 @@ export default function DiagnosticsPage() {
               : `Started ${snap.shareStartedAt}`}
           </div>
         )}
+      </Section>
+
+      <Section>
+        <SectionHeader>Screen Share Override</SectionHeader>
+        <MetricRow label="Codec" value={screenShareCodec.toUpperCase()} />
+        <div className="grid grid-cols-4 gap-1 mt-1">
+          {SCREEN_SHARE_CODEC_OPTIONS.map((codec) => (
+            <button
+              key={codec}
+              onClick={() => { handleScreenShareCodecChange(codec); }}
+              className={`px-2 py-1 border text-[0.65rem] transition-colors ${
+                screenShareCodec === codec
+                  ? 'border-wavis-accent text-wavis-accent'
+                  : 'border-wavis-text-secondary/40 text-wavis-text-secondary hover:border-wavis-text-secondary hover:text-wavis-text'
+              }`}
+            >
+              {codec.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <div className="text-[0.6rem] text-wavis-text-secondary/60 mt-1">
+          Auto uses the W4 shootout winner. Override only for testing.
+        </div>
       </Section>
 
       {/* Screen Share (Received) — viewer perspective, only shown when watching a share */}
@@ -636,6 +848,46 @@ export default function DiagnosticsPage() {
         </Section>
       )}
 
+      <Section>
+        <SectionHeader>Watch All Test Panel</SectionHeader>
+        <MetricRow label="Test streams" value={String(watchAllTestTiles.length)} />
+        <MetricRow label="Window" value={WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL} dim />
+        <div className="flex flex-wrap gap-2 mt-1">
+          <ActionButton onClick={handleOpenWatchAllTestWindow}>
+            Open Watch All
+          </ActionButton>
+          <ActionButton onClick={handleRemoveLastWatchAllTestTile}>
+            Remove Last
+          </ActionButton>
+          <ActionButton onClick={handleClearWatchAllTestTiles}>
+            Clear
+          </ActionButton>
+        </div>
+        <div className="flex flex-wrap gap-2 mt-1">
+          {WATCH_ALL_TEST_PRESETS.map((preset) => (
+            <ActionButton key={preset.label} onClick={() => { handleAddWatchAllTestTile(preset); }}>
+              Add {preset.label}
+            </ActionButton>
+          ))}
+        </div>
+        <div className="mt-1 flex flex-col gap-1">
+          {watchAllTestTiles.length === 0 ? (
+            <div className="text-xs text-wavis-text-secondary">No synthetic Watch All streams yet.</div>
+          ) : (
+            watchAllTestTiles.map((tile) => (
+              <div key={tile.participantId} className="flex justify-between gap-2 text-xs">
+                <span className="truncate" style={{ color: tile.color }}>
+                  {tile.displayName}
+                </span>
+                <span className="text-wavis-text-secondary font-mono tabular-nums shrink-0">
+                  {tile.width}x{tile.height} ({fmtAspectRatio(tile.width / tile.height)})
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </Section>
+
       {/* Warnings */}
       {activeWarnings.length > 0 && (
         <Section>
@@ -668,6 +920,45 @@ export default function DiagnosticsPage() {
           Baseline set {new Date(bl.capturedAt).toLocaleTimeString()}
         </div>
       )}
+
+      {import.meta.env.DEV && <CrashTestSection />}
     </div>
+  );
+}
+
+function CrashTestSection() {
+  const [armed, setArmed] = useState(false);
+
+  const handleTrigger = () => {
+    void invoke('panic_now');
+  };
+
+  return (
+    <Section>
+      <SectionHeader>Crash Report Test (dev only)</SectionHeader>
+      <div className="text-[0.6rem] text-wavis-text-secondary/60 mb-1">
+        Triggers a Rust panic. The app will crash and write a crash-report-*.txt to app data.
+      </div>
+      {armed ? (
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={handleTrigger}
+            className="text-xs border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-white px-2 py-0.5 transition-colors"
+          >
+            Confirm — crash now
+          </button>
+          <button
+            onClick={() => { setArmed(false); }}
+            className="text-xs border border-wavis-text-secondary/40 text-wavis-text-secondary hover:border-wavis-text hover:text-wavis-text px-2 py-0.5 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <ActionButton onClick={() => { setArmed(true); }}>
+          Trigger Panic
+        </ActionButton>
+      )}
+    </Section>
   );
 }

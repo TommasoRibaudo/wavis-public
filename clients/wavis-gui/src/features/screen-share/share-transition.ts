@@ -4,6 +4,10 @@ export const SHARE_TRANSITION_THRESHOLD_MS = 1200;
 export const SHARE_STREAM_STABILIZATION_MS = 2000;
 const SHARE_TRANSITION_POLL_MS = 250;
 
+export function shouldShowShareLoadingOverlay(hasRenderedFrame: boolean, hasError: boolean): boolean {
+  return !hasRenderedFrame && !hasError;
+}
+
 interface ShareTransitionVisibilityInput {
   hasSurface: boolean;
   hasRenderedFrame: boolean;
@@ -53,12 +57,14 @@ export function useShareTransitionOverlay({
   thresholdMs = SHARE_TRANSITION_THRESHOLD_MS,
 }: UseShareTransitionOverlayOptions) {
   const [isSwitching, setIsSwitching] = useState(false);
+  const [hasRenderedFrame, setHasRenderedFrame] = useState(false);
   const hasRenderedFrameRef = useRef(false);
   const firstFrameAtRef = useRef<number | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
 
   const markFrameRendered = useCallback(() => {
     hasRenderedFrameRef.current = true;
+    setHasRenderedFrame(true);
     if (firstFrameAtRef.current === null) {
       firstFrameAtRef.current = Date.now();
     }
@@ -68,6 +74,7 @@ export function useShareTransitionOverlay({
 
   const reset = useCallback(() => {
     hasRenderedFrameRef.current = false;
+    setHasRenderedFrame(false);
     firstFrameAtRef.current = null;
     lastFrameAtRef.current = null;
     setIsSwitching(false);
@@ -112,5 +119,5 @@ export function useShareTransitionOverlay({
     return () => clearInterval(interval);
   }, [hasError, hasSurface, thresholdMs]);
 
-  return { isSwitching, markFrameRendered, reset };
+  return { isSwitching, hasRenderedFrame, markFrameRendered, reset };
 }

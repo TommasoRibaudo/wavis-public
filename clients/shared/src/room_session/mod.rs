@@ -105,6 +105,25 @@ pub trait LiveKitConnection: Send + Sync {
         Ok(())
     }
 
+    /// Publish a camera video track. Default: returns error (not supported).
+    fn publish_camera_video(&self, _width: u32, _height: u32) -> Result<(), RoomError> {
+        Err(RoomError::PublishFailed(
+            "camera publishing not supported".to_string(),
+        ))
+    }
+
+    /// Feed a captured RGBA frame into the published camera track.
+    fn feed_camera_frame(&self, _data: &[u8], _width: u32, _height: u32) -> Result<(), RoomError> {
+        Err(RoomError::PublishFailed(
+            "camera publishing not supported".to_string(),
+        ))
+    }
+
+    /// Unpublish the camera track and clean up resources.
+    fn unpublish_camera_video(&self) -> Result<(), RoomError> {
+        Ok(())
+    }
+
     /// Register callback for receiving decoded video frames from a remote
     /// participant's screen share. The callback receives
     /// `(identity, rgba_data, width, height)`.
@@ -115,6 +134,27 @@ pub trait LiveKitConnection: Send + Sync {
     /// (unsubscribed or participant disconnected). Receives `(identity)`.
     /// Default: no-op.
     fn on_video_track_ended(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
+
+    /// Register callback for receiving decoded video frames from a remote
+    /// participant's camera track. The callback receives
+    /// `(identity, rgba_data, width, height)`.
+    /// Default: no-op.
+    fn on_camera_frame(&self, _cb: Box<dyn Fn(&str, &[u8], u32, u32) + Send + 'static>) {}
+
+    /// Register callback for when a remote camera video track ends
+    /// (unsubscribed or participant disconnected). Receives `(identity)`.
+    /// Default: no-op.
+    fn on_camera_track_ended(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
+
+    /// Register callback for when a remote screen-share audio track is
+    /// subscribed. Receives `(identity)`.
+    /// Default: no-op.
+    fn on_screen_share_audio_available(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
+
+    /// Register callback for when a remote screen-share audio track ends.
+    /// Receives `(identity)`.
+    /// Default: no-op.
+    fn on_screen_share_audio_ended(&self, _cb: Box<dyn Fn(&str) + Send + 'static>) {}
 
     /// Publish a second audio track for system audio capture (screen share audio).
     /// Creates a `NativeAudioSource` and `LocalAudioTrack` published with

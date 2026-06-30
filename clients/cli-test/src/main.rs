@@ -487,7 +487,7 @@ async fn run_sfu_mode(
                                 }
                             }
                             "stop-share" => {
-                                let json = r#"{"type":"stop_share"}"#;
+                                let json = r#"{"type":"stop-share"}"#;
                                 if let Err(e) = repl_ws.send_text(json) {
                                     warn!("failed to send stop-share: {e}");
                                 }
@@ -504,7 +504,7 @@ async fn run_sfu_mode(
                                     warn!("usage: stop-share <participant_id>");
                                 } else {
                                     let json = format!(
-                                        r#"{{"type":"stop_share","targetParticipantId":"{}"}}"#,
+                                        r#"{{"type":"stop-share","targetParticipantId":"{}"}}"#,
                                         target_id
                                     );
                                     if let Err(e) = repl_ws.send_text(&json) {

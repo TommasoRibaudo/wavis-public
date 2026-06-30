@@ -15,6 +15,11 @@ clients/wavis-gui/src-tauri/gen/
 clients/wavis-gui/src-tauri/target/
 infrastructure/wavis-backend-dev-jey.pem
 
+# Git worktree artifacts
+.wt/
+tauri-watchall-dev.log
+tauri-watchall-dev.err.log
+
 # Misc
 .DS_Store
 .nvimlog
@@ -41,8 +46,12 @@ __pycache__/
 wavis-deploy-key*
 infrastructure/environments/dev/wavis-deploy-key*
 
+# Agent memory tooling (local-only, never pushed)
+tools/agent-memory/
+
 # AI tool configs and local assistant artifacts
 .kiro/
+.kiro/steering/.learning.lock
 *.kiro
 *.kiro.*
 .gemini/
@@ -61,6 +70,7 @@ peerA.logclea
 /target-clippy-docsrs
 /target-clippy-repro
 /target-clippy-workspace
+/target-short-107
 clippy-workspace.log
 *.tfvars
 *.tfvars.json
@@ -74,3 +84,4 @@ clients/shared/SECURITY.md
 deploy/MIGRATION-RUNBOOK.md
 /compat-results
 /tools/compat
+clients/wavis-gui/bash.exe.stackdump

@@ -120,7 +120,8 @@ pub fn get_rust_log_buffer(state: tauri::State<'_, RustLogBufferState>) -> Vec<S
 ///
 /// - Windows: Uses Win32 GDI APIs (GetWindowRect, BitBlt) to capture the window content.
 /// - macOS: Uses CGWindowListCreateImage to capture the window.
-/// - Linux: Returns an error — descoped to follow-up.
+/// - Linux: Uses xdg-desktop-portal Screenshot (works on Wayland, X11, XWayland);
+///   returns the full screen — bug-report redactor handles cropping/masking.
 #[tauri::command]
 pub fn capture_window_screenshot(window: tauri::Window) -> Result<Vec<u8>, String> {
     capture_window_screenshot_impl(window)
@@ -359,5 +360,177 @@ extern "C" {
 
 #[cfg(target_os = "linux")]
 fn capture_window_screenshot_impl(_window: tauri::Window) -> Result<Vec<u8>, String> {
-    Err("Screenshot capture not available on Linux".to_string())
+    // xdg-desktop-portal Screenshot API — works on Wayland, X11, and XWayland.
+    // Returns the full screen; the bug-report redactor handles any cropping
+    // or sensitive-area masking client-side.
+    if let Ok(h) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(move || h.block_on(capture_via_portal_async()))
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime build failed: {e}"))?;
+        rt.block_on(capture_via_portal_async())
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_via_portal_async() -> Result<Vec<u8>, String> {
+    use ashpd::desktop::screenshot::Screenshot;
+
+    let response = Screenshot::request()
+        .interactive(false)
+        .modal(false)
+        .send()
+        .await
+        .map_err(|e| format!("portal Screenshot request failed: {e}"))?
+        .response()
+        .map_err(|e| format!("portal Screenshot response failed: {e}"))?;
+
+    let uri = response.uri();
+    let path = uri
+        .to_file_path()
+        .map_err(|_| format!("portal returned non-file URI: {uri}"))?;
+    std::fs::read(&path).map_err(|e| format!("read portal screenshot {path:?}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_buffer_is_empty() {
+        let buf = RustLogBuffer::new(10);
+        assert!(buf.snapshot().is_empty());
+    }
+
+    #[test]
+    fn push_appends_lines_in_order() {
+        let mut buf = RustLogBuffer::new(10);
+        buf.push("line-1".to_string());
+        buf.push("line-2".to_string());
+        buf.push("line-3".to_string());
+        assert_eq!(buf.snapshot(), vec!["line-1", "line-2", "line-3"]);
+    }
+
+    #[test]
+    fn snapshot_does_not_drain_buffer() {
+        let mut buf = RustLogBuffer::new(10);
+        buf.push("line-1".to_string());
+        let _ = buf.snapshot();
+        assert_eq!(buf.snapshot(), vec!["line-1"]);
+    }
+
+    #[test]
+    fn push_at_capacity_evicts_oldest() {
+        let mut buf = RustLogBuffer::new(3);
+        buf.push("a".to_string());
+        buf.push("b".to_string());
+        buf.push("c".to_string());
+        buf.push("d".to_string());
+        assert_eq!(buf.snapshot(), vec!["b", "c", "d"]);
+    }
+
+    #[test]
+    fn push_many_beyond_capacity_keeps_newest() {
+        let capacity = 5;
+        let mut buf = RustLogBuffer::new(capacity);
+        for i in 0..20 {
+            buf.push(format!("line-{i}"));
+        }
+        let snap = buf.snapshot();
+        assert_eq!(snap.len(), capacity);
+        assert_eq!(snap[0], "line-15");
+        assert_eq!(snap[4], "line-19");
+    }
+
+    #[test]
+    fn capacity_one_always_holds_last_line() {
+        let mut buf = RustLogBuffer::new(1);
+        buf.push("first".to_string());
+        buf.push("second".to_string());
+        assert_eq!(buf.snapshot(), vec!["second"]);
+    }
+
+    #[test]
+    fn writer_pushes_trimmed_line_into_buffer() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        writer.write_all(b"[INFO][target] hello world\n").unwrap();
+        let snap = shared.lock().unwrap().snapshot();
+        assert_eq!(snap, vec!["[INFO][target] hello world"]);
+    }
+
+    #[test]
+    fn writer_strips_trailing_newline() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        writer.write_all(b"no newline here").unwrap();
+        let snap = shared.lock().unwrap().snapshot();
+        assert_eq!(snap, vec!["no newline here"]);
+    }
+
+    #[test]
+    fn writer_strips_crlf() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        writer.write_all(b"windows line\r\n").unwrap();
+        let snap = shared.lock().unwrap().snapshot();
+        assert_eq!(snap, vec!["windows line"]);
+    }
+
+    #[test]
+    fn writer_ignores_empty_lines() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        writer.write_all(b"\n").unwrap();
+        writer.write_all(b"\r\n").unwrap();
+        let snap = shared.lock().unwrap().snapshot();
+        assert!(snap.is_empty(), "empty lines must not be pushed");
+    }
+
+    #[test]
+    fn writer_returns_buf_len_on_success() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        let data = b"test line\n";
+        let n = writer.write(data).unwrap();
+        assert_eq!(n, data.len());
+    }
+
+    #[test]
+    fn writer_flush_is_noop() {
+        let shared = new_shared_buffer(10);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        assert!(writer.flush().is_ok());
+    }
+
+    #[test]
+    fn writer_respects_buffer_capacity() {
+        let shared = new_shared_buffer(2);
+        let mut writer = BugReportLogWriter(Arc::clone(&shared));
+        writer.write_all(b"line-1\n").unwrap();
+        writer.write_all(b"line-2\n").unwrap();
+        writer.write_all(b"line-3\n").unwrap();
+        let snap = shared.lock().unwrap().snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0], "line-2");
+        assert_eq!(snap[1], "line-3");
+    }
+
+    #[test]
+    fn new_shared_buffer_creates_empty_buffer() {
+        let shared = new_shared_buffer(200);
+        let snap = shared.lock().unwrap().snapshot();
+        assert!(snap.is_empty());
+    }
+
+    #[test]
+    fn shared_buffer_can_be_cloned_and_shared() {
+        let shared = new_shared_buffer(10);
+        let clone = Arc::clone(&shared);
+        shared.lock().unwrap().push("from-original".to_string());
+        let snap = clone.lock().unwrap().snapshot();
+        assert_eq!(snap, vec!["from-original"]);
+    }
 }

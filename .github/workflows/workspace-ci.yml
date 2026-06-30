@@ -36,6 +36,9 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
   # Limit to 1 parallel link job as a secondary guard against OOM.
   CARGO_BUILD_JOBS: 1
+  # Retry transient crates.io network failures (SSL EOF, timeout, etc).
+  CARGO_NET_RETRY: 10
+  CARGO_HTTP_TIMEOUT: 120
   # All workspace packages EXCEPT wavis-gui (Tauri crate needs GTK/WebKit
   # system libs that aren't available on the CI runner).
   CI_PACKAGES: >-

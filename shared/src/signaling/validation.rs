@@ -188,7 +188,7 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
         SignalingMessage::ParticipantUndeafened(p) => {
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
         }
-        SignalingMessage::StartShare => {}
+        SignalingMessage::StartShare(_) => {}
         SignalingMessage::ShareStarted(p) => {
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
             check("display_name", &p.display_name, MAX_DISPLAY_NAME_LEN)?;
@@ -213,6 +213,16 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
                     });
                 }
                 check("participant_id", id, MAX_PEER_ID_LEN)?;
+            }
+            for share in &p.active_shares {
+                if share.participant_id.is_empty() {
+                    return Err(ValidationError {
+                        field: "participant_id".to_string(),
+                        actual_len: 0,
+                        max_len: MAX_PEER_ID_LEN,
+                    });
+                }
+                check("participant_id", &share.participant_id, MAX_PEER_ID_LEN)?;
             }
         }
         SignalingMessage::SetSharePermission(_) => {
@@ -266,6 +276,19 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             )?;
         }
         SignalingMessage::ClearPassthrough(_) => {}
+        SignalingMessage::SetPassthroughEnabled(_) => {}
+        SignalingMessage::SetPassthroughVolume(_) => {
+            // volume is u8 (0–255) and clamped to 0–100 server-side; no string fields to check.
+        }
+        SignalingMessage::SetPassthroughFilter(p) => {
+            if p.strength > 100 {
+                return Err(ValidationError {
+                    field: "strength".to_string(),
+                    actual_len: p.strength as usize,
+                    max_len: 100,
+                });
+            }
+        }
         SignalingMessage::SubRoomState(p) => {
             for room in &p.rooms {
                 check("subRoomId", &room.sub_room_id, MAX_SUB_ROOM_ID_LEN)?;
@@ -338,6 +361,13 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
             check("profileColor", &p.profile_color, MAX_PROFILE_COLOR_LEN)?;
         }
+        SignalingMessage::UpdateUsername(p) => {
+            check("username", &p.username, MAX_DISPLAY_NAME_LEN)?;
+        }
+        SignalingMessage::ParticipantUsernameUpdated(p) => {
+            check("participant_id", &p.participant_id, MAX_PEER_ID_LEN)?;
+            check("username", &p.username, MAX_DISPLAY_NAME_LEN)?;
+        }
     }
     Ok(())
 }
@@ -408,6 +438,18 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_filter_strength_over_100_rejected() {
+        let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
+            enabled: true,
+            strength: 101,
+        });
+        let err = validate_field_lengths(&msg).unwrap_err();
+        assert_eq!(err.field, "strength");
+        assert_eq!(err.actual_len, 101);
+        assert_eq!(err.max_len, 100);
+    }
+
+    #[test]
     fn exact_max_room_id_passes() {
         let msg = SignalingMessage::Join(JoinPayload {
             room_id: long_str(MAX_ROOM_ID_LEN),
@@ -472,6 +514,7 @@ mod tests {
         let msg = SignalingMessage::ShareStarted(ShareStartedPayload {
             participant_id: long_str(MAX_PEER_ID_LEN + 1),
             display_name: "test".to_string(),
+            share_type: None,
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -487,6 +530,7 @@ mod tests {
     fn share_state_empty_participant_id_rejected() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec!["peer-1".to_string(), "".to_string()],
+            active_shares: vec![],
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -497,6 +541,7 @@ mod tests {
     fn share_state_oversized_participant_id_rejected() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec![long_str(MAX_PEER_ID_LEN + 1)],
+            active_shares: vec![],
         });
         let err = validate_field_lengths(&msg).unwrap_err();
         assert_eq!(err.field, "participant_id");
@@ -506,6 +551,7 @@ mod tests {
     fn share_state_valid_passes() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec!["peer-1".to_string(), "peer-2".to_string()],
+            active_shares: vec![],
         });
         assert!(validate_field_lengths(&msg).is_ok());
     }
@@ -514,6 +560,7 @@ mod tests {
     fn share_state_empty_list_passes() {
         let msg = SignalingMessage::ShareState(ShareStatePayload {
             participant_ids: vec![],
+            active_shares: vec![],
         });
         assert!(validate_field_lengths(&msg).is_ok());
     }
@@ -767,11 +814,15 @@ mod tests {
                 "peer_left", "leave", "error", "participant_joined", "participant_left",
                 "room_state", "media_token", "kick_participant", "mute_participant",
                 "participant_kicked", "participant_muted",
-                "start_share", "share_started", "stop_share", "share_stopped",
+                "start_share", "share_started", "stop-share", "share_stopped",
                 "stop_all_shares", "share_state",
                 "create_room", "room_created",
                 "auth", "auth_success", "auth_failed",
                 "join_voice",
+                "create_sub_room", "join_sub_room", "leave_sub_room",
+                "set_passthrough", "clear_passthrough", "set_passthrough_enabled", "set_passthrough_volume",
+                "set_passthrough_filter", "sub_room_state", "sub_room_created",
+                "sub_room_joined", "sub_room_left", "sub_room_deleted",
                 "sfu_cold_starting",
                 "chat_send", "chat_message",
                 "chat_history_request", "chat_history_response",
@@ -779,6 +830,7 @@ mod tests {
                 "set_share_permission", "share_permission_changed",
                 "ping",
                 "update_profile_color", "participant_color_updated",
+                "update_username", "participant_username_updated",
             ];
             prop_assume!(!known.contains(&type_val.as_str()));
 

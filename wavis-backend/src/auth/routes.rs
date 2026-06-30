@@ -41,6 +41,9 @@ use crate::error::ErrorResponse;
 
 type AuthErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 
+// Mirror of shared::signaling::validation::MAX_DISPLAY_NAME_LEN.
+const MAX_USERNAME_LEN: usize = shared::signaling::validation::MAX_DISPLAY_NAME_LEN;
+
 // ---------------------------------------------------------------------------
 // Request / Response types
 // ---------------------------------------------------------------------------
@@ -48,7 +51,8 @@ type AuthErrorResponse = (StatusCode, HeaderMap, Json<ErrorResponse>);
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub phrase: String,
-    pub device_name: String,
+    #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
+    pub username: String,
 }
 
 #[derive(Serialize)]
@@ -64,7 +68,8 @@ pub struct RegisterResponse {
 pub struct RecoverRequest {
     pub recovery_id: String,
     pub phrase: String,
-    pub device_name: String,
+    #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
+    pub username: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -125,6 +130,16 @@ pub struct RotatePhraseRequest {
     pub new_phrase: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateUsernameRequest {
+    pub username: String,
+}
+
+#[derive(Serialize)]
+pub struct MeResponse {
+    pub username: String,
+}
+
 #[derive(Serialize)]
 pub struct DeviceInfoResponse {
     pub device_id: String,
@@ -153,6 +168,15 @@ fn error_response(status: StatusCode, error: &str) -> AuthErrorResponse {
     )
 }
 
+
+#[allow(clippy::result_large_err)]
+fn validate_username(username: &str) -> Result<&str, AuthErrorResponse> {
+    let username = username.trim();
+    if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+        return Err(error_response(StatusCode::BAD_REQUEST, "invalid username"));
+    }
+    Ok(username)
+}
 fn map_register_error(err: &AuthError) -> AuthErrorResponse {
     match err {
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
@@ -167,7 +191,9 @@ fn map_recover_error(err: &AuthError) -> AuthErrorResponse {
         AuthError::PhraseVerificationFailed | AuthError::RecoveryIdNotFound => {
             error_response(StatusCode::UNAUTHORIZED, "authentication failed")
         }
-        AuthError::DeviceRevoked => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        AuthError::DeviceRevoked => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -182,7 +208,9 @@ fn map_refresh_error(err: &AuthError) -> AuthErrorResponse {
         | AuthError::ValidationFailed
         | AuthError::TokenExpired
         | AuthError::InvalidToken
-        | AuthError::EpochMismatch => error_response(StatusCode::UNAUTHORIZED, "authentication failed"),
+        | AuthError::EpochMismatch => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -200,7 +228,9 @@ fn map_pairing_error(err: &PairingError) -> AuthErrorResponse {
             error_response(StatusCode::CONFLICT, "conflict")
         }
         PairingError::NotApproved => error_response(StatusCode::FORBIDDEN, "forbidden"),
-        PairingError::LockedOut => error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+        PairingError::LockedOut => {
+            error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests")
+        }
         PairingError::DatabaseError(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -211,7 +241,9 @@ fn map_device_error(err: &DeviceError) -> AuthErrorResponse {
     match err {
         DeviceError::NotFound => error_response(StatusCode::NOT_FOUND, "not found"),
         DeviceError::NotOwned => error_response(StatusCode::FORBIDDEN, "forbidden"),
-        DeviceError::DatabaseError(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        DeviceError::DatabaseError(_) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
     }
 }
 
@@ -243,7 +275,9 @@ pub async fn register_device(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "register_device rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -290,17 +324,20 @@ pub async fn register(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "register rate-limited");
         return Err(rate_limited_response(retry_after_secs));
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
+    let username = validate_username(&body.username)?;
 
     let result = auth::register_user(
         &app_state.db_pool,
         &body.phrase,
-        &body.device_name,
+        username,
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
@@ -342,7 +379,9 @@ pub async fn recover(
     let now = Instant::now();
 
     // Per-IP rate limit BEFORE any DB lookup; always count the attempt.
-    let retry_after_secs = app_state.recovery_rate_limiter.seconds_until_ip(client_ip, now);
+    let retry_after_secs = app_state
+        .recovery_rate_limiter
+        .seconds_until_ip(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "recover rate-limited (IP)");
         return Err(rate_limited_response(retry_after_secs));
@@ -368,7 +407,7 @@ pub async fn recover(
         &app_state.db_pool,
         &body.recovery_id,
         &body.phrase,
-        &body.device_name,
+        body.username.as_deref().unwrap_or(""),
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
@@ -436,7 +475,9 @@ pub async fn pair_start(
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour (reuse register limiter slot for pairing start).
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_start rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -525,7 +566,9 @@ pub async fn pair_finish(
     let now = Instant::now();
 
     // Rate-limit: 10 per IP per hour.
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_register(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_register(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "pair_finish rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -671,12 +714,60 @@ pub async fn rotate_phrase(
 
     match result {
         Ok(()) => Ok(StatusCode::OK),
-        Err(AuthError::PhraseVerificationFailed) => {
-            Err(error_response(StatusCode::UNAUTHORIZED, "authentication failed"))
-        }
+        Err(AuthError::PhraseVerificationFailed) => Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "authentication failed",
+        )),
         Err(err) => {
             warn!(user_id = %user.user_id, error = %err, "rotate_phrase failed");
-            Err(error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /auth/me (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn get_me(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<MeResponse>, AuthErrorResponse> {
+    match auth::get_username(&app_state.db_pool, user.user_id).await {
+        Ok(username) => Ok(Json(MeResponse { username })),
+        Err(err) => {
+            warn!(user_id = %user.user_id, error = %err, "get_me failed");
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /auth/username (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn update_username(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(body): Json<UpdateUsernameRequest>,
+) -> Result<StatusCode, AuthErrorResponse> {
+    let username = validate_username(&body.username)?;
+
+    let result = auth::update_username(&app_state.db_pool, user.user_id, username).await;
+    match result {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(err) => {
+            warn!(user_id = %user.user_id, error = %err, "update_username failed");
+            Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ))
         }
     }
 }
@@ -694,7 +785,9 @@ pub async fn refresh_token(
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
-    let retry_after_secs = app_state.auth_rate_limiter.seconds_until_refresh(client_ip, now);
+    let retry_after_secs = app_state
+        .auth_rate_limiter
+        .seconds_until_refresh(client_ip, now);
     if retry_after_secs.is_some() {
         warn!(ip = %client_ip, retry_after = retry_after_secs, "refresh_token rate-limited");
         return Err(rate_limited_response(retry_after_secs));
@@ -727,5 +820,47 @@ pub async fn refresh_token(
             );
             Err(map_refresh_error(&err))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_username_trims_valid_names() {
+        match validate_username("  Alice  ") {
+            Ok(username) => assert_eq!(username, "Alice"),
+            Err(_) => panic!("valid username should be accepted"),
+        }
+    }
+
+    #[test]
+    fn validate_username_rejects_empty_and_long_names() {
+        let (empty_status, _, _) = validate_username("   ").unwrap_err();
+        assert_eq!(empty_status, StatusCode::BAD_REQUEST);
+
+        let too_long = "a".repeat(MAX_USERNAME_LEN + 1);
+        let (long_status, _, _) = validate_username(&too_long).unwrap_err();
+        assert_eq!(long_status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Recovery accepts a missing or empty username because recovery does not
+    /// rename the account. validate_username is NOT called on the recover path.
+    #[test]
+    fn recover_request_allows_missing_or_empty_username() {
+        let missing = RecoverRequest {
+            recovery_id: "wvs-ABCD-1234".to_string(),
+            phrase: "phrase".to_string(),
+            username: None,
+        };
+        let empty = RecoverRequest {
+            recovery_id: "wvs-ABCD-1234".to_string(),
+            phrase: "phrase".to_string(),
+            username: Some(String::new()),
+        };
+        assert_eq!(missing.username.as_deref().unwrap_or(""), "");
+        assert_eq!(empty.username.as_deref().unwrap_or(""), "");
+        assert!(validate_username("").is_err());
     }
 }
