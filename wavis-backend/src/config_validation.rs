@@ -15,6 +15,8 @@ pub struct SecurityConfig {
     pub rate_limit_window_secs: u64,
     pub bug_report_rate_limit_max: u32,
     pub bug_report_rate_limit_window_secs: u64,
+    pub llm_rate_limit_max: u32,
+    pub llm_rate_limit_window_secs: u64,
     pub github_bug_report_token_set: bool,
     pub github_bug_report_repo_set: bool,
 }
@@ -48,6 +50,12 @@ pub fn validate_security_config(config: &SecurityConfig) -> Result<(), String> {
     if config.bug_report_rate_limit_window_secs == 0 {
         return Err("BUG_REPORT_RATE_LIMIT_WINDOW_SECS must be > 0".into());
     }
+    if config.llm_rate_limit_max == 0 {
+        return Err("LLM_RATE_LIMIT_MAX must be > 0".into());
+    }
+    if config.llm_rate_limit_window_secs == 0 {
+        return Err("LLM_RATE_LIMIT_WINDOW_SECS must be > 0".into());
+    }
     if !config.github_bug_report_token_set {
         return Err("GITHUB_BUG_REPORT_TOKEN must be set and non-empty".into());
     }
@@ -72,6 +80,8 @@ mod tests {
             rate_limit_window_secs: 10,
             bug_report_rate_limit_max: 5,
             bug_report_rate_limit_window_secs: 3600,
+            llm_rate_limit_max: 5,
+            llm_rate_limit_window_secs: 86400,
             github_bug_report_token_set: true,
             github_bug_report_repo_set: true,
         }
@@ -162,6 +172,22 @@ mod tests {
         assert!(err.contains("GITHUB_BUG_REPORT_REPO"));
     }
 
+    #[test]
+    fn zero_llm_rate_limit_max_rejected() {
+        let mut c = valid_config();
+        c.llm_rate_limit_max = 0;
+        let err = validate_security_config(&c).unwrap_err();
+        assert!(err.contains("LLM_RATE_LIMIT_MAX"));
+    }
+
+    #[test]
+    fn zero_llm_rate_limit_window_rejected() {
+        let mut c = valid_config();
+        c.llm_rate_limit_window_secs = 0;
+        let err = validate_security_config(&c).unwrap_err();
+        assert!(err.contains("LLM_RATE_LIMIT_WINDOW_SECS"));
+    }
+
     // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
@@ -170,47 +196,35 @@ mod tests {
     /// Strategy: generate a SecurityConfig with all positive (non-zero) values,
     /// then randomly zero out at least one field via a bitmask.
     fn config_with_at_least_one_zero() -> impl Strategy<Value = SecurityConfig> {
-        // 10 fields → bitmask 1..=0b1111111111 guarantees at least one bit set
+        // 12 fields → bitmask 1..=0b111111111111 guarantees at least one bit set
         (
-            1u16..=0b1111111111u16,
+            1u16..=0b111111111111u16,
             1u32..=10_000u32,
             1u32..=10_000u32,
             1u64..=1_000_000u64,
             1u64..=1_000_000u64,
             1u64..=1_000_000u64,
+            1u64..=1_000_000u64,
+            1u32..=10_000u32,
             1u64..=1_000_000u64,
             1u32..=10_000u32,
             1u64..=1_000_000u64,
         )
             .prop_map(
-                |(mask, ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window)| {
+                |(mask, ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window, llm_max, llm_window)| {
                     SecurityConfig {
-                        global_ws_per_sec: if mask & 0b0000000001 != 0 { 0 } else { ws },
-                        global_joins_per_sec: if mask & 0b0000000010 != 0 { 0 } else { joins },
-                        invite_ttl_secs: if mask & 0b0000000100 != 0 {
-                            0
-                        } else {
-                            invite_ttl
-                        },
-                        token_ttl_secs: if mask & 0b0000001000 != 0 {
-                            0
-                        } else {
-                            token_ttl
-                        },
-                        ban_duration_secs: if mask & 0b0000010000 != 0 { 0 } else { ban },
-                        rate_limit_window_secs: if mask & 0b0000100000 != 0 { 0 } else { window },
-                        bug_report_rate_limit_max: if mask & 0b0001000000 != 0 {
-                            0
-                        } else {
-                            br_max
-                        },
-                        bug_report_rate_limit_window_secs: if mask & 0b0010000000 != 0 {
-                            0
-                        } else {
-                            br_window
-                        },
-                        github_bug_report_token_set: mask & 0b0100000000 == 0,
-                        github_bug_report_repo_set: mask & 0b1000000000 == 0,
+                        global_ws_per_sec: if mask & 0b000000000001 != 0 { 0 } else { ws },
+                        global_joins_per_sec: if mask & 0b000000000010 != 0 { 0 } else { joins },
+                        invite_ttl_secs: if mask & 0b000000000100 != 0 { 0 } else { invite_ttl },
+                        token_ttl_secs: if mask & 0b000000001000 != 0 { 0 } else { token_ttl },
+                        ban_duration_secs: if mask & 0b000000010000 != 0 { 0 } else { ban },
+                        rate_limit_window_secs: if mask & 0b000000100000 != 0 { 0 } else { window },
+                        bug_report_rate_limit_max: if mask & 0b000001000000 != 0 { 0 } else { br_max },
+                        bug_report_rate_limit_window_secs: if mask & 0b000010000000 != 0 { 0 } else { br_window },
+                        llm_rate_limit_max: if mask & 0b000100000000 != 0 { 0 } else { llm_max },
+                        llm_rate_limit_window_secs: if mask & 0b001000000000 != 0 { 0 } else { llm_window },
+                        github_bug_report_token_set: mask & 0b010000000000 == 0,
+                        github_bug_report_repo_set: mask & 0b100000000000 == 0,
                     }
                 },
             )
@@ -226,9 +240,11 @@ mod tests {
             1u64..=1_000_000u64,
             1u32..=10_000u32,
             1u64..=1_000_000u64,
+            1u32..=10_000u32,
+            1u64..=1_000_000u64,
         )
             .prop_map(
-                |(ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window)| {
+                |(ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window, llm_max, llm_window)| {
                     SecurityConfig {
                         global_ws_per_sec: ws,
                         global_joins_per_sec: joins,
@@ -238,6 +254,8 @@ mod tests {
                         rate_limit_window_secs: window,
                         bug_report_rate_limit_max: br_max,
                         bug_report_rate_limit_window_secs: br_window,
+                        llm_rate_limit_max: llm_max,
+                        llm_rate_limit_window_secs: llm_window,
                         github_bug_report_token_set: true,
                         github_bug_report_repo_set: true,
                     }

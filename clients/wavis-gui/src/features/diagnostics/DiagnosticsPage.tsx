@@ -49,6 +49,7 @@ import {
   type ScreenShareCodecOverride,
 } from '@features/settings/settings-store';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
+import { FixedBugReportButton } from './BugReportButton';
 import {
   WATCH_ALL_DIAGNOSTICS_WINDOW_LABEL,
   WATCH_ALL_TEST_CHANNEL_NAME,
@@ -101,6 +102,10 @@ function candidateLabel(ct: string): string {
 
 function fmtAspectRatio(value: number): string {
   return `${value.toFixed(2)}:1`;
+}
+
+function fmtDimensions(width: number, height: number): string {
+  return `${width}x${height}`;
 }
 
 const WATCH_ALL_TEST_PRESETS = [
@@ -544,6 +549,7 @@ export default function DiagnosticsPage() {
         </span>
         <div className="flex items-center gap-2">
           <span className="text-[0.6rem] text-wavis-text-secondary/60">{pollLabel}</span>
+          <FixedBugReportButton captureScreenshot={false} />
           <button
             onClick={() => { void closeWindow(); }}
             className="text-wavis-text-secondary hover:text-wavis-text leading-none px-1"
@@ -553,6 +559,36 @@ export default function DiagnosticsPage() {
           </button>
         </div>
       </div>
+
+      {/* App dimensions */}
+      <Section>
+        <SectionHeader>App Dimensions</SectionHeader>
+        {snap.appDimensions ? (
+          <>
+            <MetricRow
+              label="Window"
+              value={`${fmtDimensions(snap.appDimensions.nativeWindow.width, snap.appDimensions.nativeWindow.height)} physical px`}
+            />
+            <div className="text-[0.6rem] text-wavis-text-secondary/60">
+              Native Tauri window size, including OS window frame/decorations.
+            </div>
+            <MetricRow
+              label="Viewport"
+              value={`${fmtDimensions(snap.appDimensions.viewport.width, snap.appDimensions.viewport.height)} CSS px`}
+            />
+            <div className="text-[0.6rem] text-wavis-text-secondary/60">
+              Webview content area used by the React layout.
+            </div>
+            <MetricRow
+              label="DPR"
+              value={snap.appDimensions.devicePixelRatio.toFixed(2)}
+              dim
+            />
+          </>
+        ) : (
+          <MetricRow label="Status" value="Waiting for main app" dim />
+        )}
+      </Section>
 
       {/* Network */}
       <Section>
@@ -713,6 +749,12 @@ export default function DiagnosticsPage() {
               label="Avail. bandwidth"
               value={snap.share.availableBandwidthKbps > 0 ? `${(snap.share.availableBandwidthKbps / 1000).toFixed(1)} Mbps` : '—'}
             />
+          </>
+        ) : snap.shareActive ? (
+          <>
+            <MetricRow label="Status" value="Sharing, waiting for stats" />
+            {snap.shareMode && <MetricRow label="Mode" value={snap.shareMode} dim />}
+            {snap.shareSourceName && <MetricRow label="Source" value={snap.shareSourceName} dim />}
           </>
         ) : (
           <MetricRow label="Status" value="Not sharing" dim />

@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LoadingBars } from '@shared/LoadingBars';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip';
 import type {
   ShareMode,
   ShareSource,
@@ -20,6 +22,7 @@ const MODES: { key: ShareMode; label: string; sourceType: ShareSourceType }[] = 
 const ECHO_WARNING_SUBSTRING = 'echo possible';
 const DEBUG_SCREEN_CAPTURE = import.meta.env.VITE_DEBUG_SCREEN_CAPTURE === 'true';
 const LOG = '[share-picker]';
+const PORTAL_SOURCE_ID = 'portal';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -35,23 +38,29 @@ export interface OccupiedSlots {
  * When omitted, falls back to URL hash + Tauri event relay (Linux path).
  */
 export interface SharePickerProps {
-  enumResult?: EnumerationResult;
+  inline?: boolean;
+  enumResult?: EnumerationResult | null;
   occupied?: OccupiedSlots;
+  modeScope?: 'all' | 'video_only';
+  initialWithAudio?: boolean;
   onSelect?: (selection: ShareSelection) => void;
+  onPortalFallback?: () => void;
   onCancel?: () => void;
 }
 
 /** Parse the picker data from the URL hash (standalone window mode). */
-function parseHashData(): { enumResult: EnumerationResult; occupied: OccupiedSlots } | null {
+function parseHashData(): { enumResult: EnumerationResult | null; occupied: OccupiedSlots } | null {
   try {
     const raw = decodeURIComponent(window.location.hash.slice(1));
     if (!raw) return null;
     const data = JSON.parse(raw);
-    const result: EnumerationResult = {
-      sources: Array.isArray(data.enumResult?.sources) ? data.enumResult.sources : [],
-      warnings: Array.isArray(data.enumResult?.warnings) ? data.enumResult.warnings : [],
-      fallback_reason: data.enumResult?.fallback_reason ?? null,
-    };
+    const result: EnumerationResult | null = data.enumResult
+      ? {
+        sources: Array.isArray(data.enumResult.sources) ? data.enumResult.sources : [],
+        warnings: Array.isArray(data.enumResult.warnings) ? data.enumResult.warnings : [],
+        fallback_reason: data.enumResult.fallback_reason ?? null,
+      }
+      : null;
     const occupied: OccupiedSlots = {
       videoOccupied: data.occupied?.videoOccupied ?? false,
       audioOccupied: data.occupied?.audioOccupied ?? false,
@@ -72,6 +81,36 @@ export function filterSourcesByMode(
   return sources.filter((s) => s.source_type === entry.sourceType);
 }
 
+function isPortalSource(source: ShareSource): boolean {
+  return source.id === PORTAL_SOURCE_ID;
+}
+
+function withPortalFallbackSources(enumResult: EnumerationResult | null): ShareSource[] {
+  const sources = enumResult?.sources ?? [];
+  if (enumResult?.fallback_reason !== 'portal') return sources;
+
+  const next = [...sources];
+  if (!next.some((source) => source.source_type === 'screen')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Screen or display',
+      source_type: 'screen',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  if (!next.some((source) => source.source_type === 'window')) {
+    next.push({
+      id: PORTAL_SOURCE_ID,
+      name: 'Window or app',
+      source_type: 'window',
+      thumbnail: null,
+      app_name: 'System picker',
+    });
+  }
+  return next;
+}
+
 /** Pick the first mode that has sources, or default to screen_audio. */
 function pickDefaultMode(sources: ShareSource[]): ShareMode {
   for (const m of MODES) {
@@ -82,13 +121,27 @@ function pickDefaultMode(sources: ShareSource[]): ShareMode {
 
 /** Pick the first mode that has sources and is not blocked by an occupied slot. */
 export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
-  for (const m of MODES) {
-    const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
-    if (!blocked && sources.some((s) => s.source_type === m.sourceType)) {
-      return m.key;
+  for (const allowPortal of [false, true]) {
+    for (const m of MODES) {
+      const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
+      const hasSource = sources.some((s) =>
+        s.source_type === m.sourceType && (allowPortal || !isPortalSource(s)),
+      );
+      if (!blocked && hasSource) {
+        return m.key;
+      }
     }
   }
   return pickDefaultMode(sources);
+}
+
+export function pickInitialVideoMode(sources: ShareSource[], occupied: OccupiedSlots): ShareMode {
+  for (const m of MODES.filter((mode) => mode.key !== 'audio_only')) {
+    if (!occupied.videoOccupied && sources.some((s) => s.source_type === m.sourceType)) {
+      return m.key;
+    }
+  }
+  return 'screen_audio';
 }
 
 export function defaultWithAudioForMode(mode: ShareMode, occupied: OccupiedSlots): boolean {
@@ -211,9 +264,10 @@ function SourceItem({
               onError={onThumbnailError}
             />
           ) : isThumbnailLoading ? (
-            <div
-              className="w-5 h-5 rounded-full border-2 border-wavis-text-secondary border-t-wavis-accent animate-spin"
-              aria-label="Loading thumbnail"
+            <LoadingBars
+              className="flex items-center justify-center"
+              barClassName="w-1 bg-wavis-purple"
+              ariaLabel="Loading thumbnail"
             />
           ) : (
             <span className="text-wavis-text-secondary text-[0.625rem] text-center px-1 truncate">
@@ -252,10 +306,10 @@ function SourceItem({
 
 export default function SharePicker(props: SharePickerProps) {
   // ── Mode detection: inline modal (props) vs standalone window (hash) ──
-  const isInline = props.enumResult !== undefined;
+  const isInline = props.inline === true || props.enumResult !== undefined;
 
   /* ── State ── */
-  const [parsed] = useState(() => (isInline ? null : parseHashData()));
+  const [parsed, setParsed] = useState(() => (isInline ? null : parseHashData()));
 
   const enumResult = isInline
     ? (props.enumResult ?? null)
@@ -265,15 +319,18 @@ export default function SharePicker(props: SharePickerProps) {
     ? (props.occupied ?? { videoOccupied: false, audioOccupied: false })
     : (parsed?.occupied ?? { videoOccupied: false, audioOccupied: false });
 
-  const initSources = enumResult?.sources ?? [];
-  const initialMode = pickInitialMode(initSources, occupied);
+  const initPickerSources = withPortalFallbackSources(enumResult);
+  const modeScope = props.modeScope ?? 'all';
+  const initialMode = modeScope === 'video_only'
+    ? pickInitialVideoMode(initPickerSources, occupied)
+    : pickInitialMode(initPickerSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
-    initSources.length > 0 ? initialMode : 'screen_audio',
+    initPickerSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
   const [withAudio, setWithAudio] = useState<boolean>(() =>
-    defaultWithAudioForMode(initSources.length > 0 ? initialMode : 'screen_audio', occupied),
+    props.initialWithAudio ?? defaultWithAudioForMode(initPickerSources.length > 0 ? initialMode : 'screen_audio', occupied),
   );
   // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
   const [compatibilityMode, setCompatibilityMode] = useState(false);
@@ -284,13 +341,42 @@ export default function SharePicker(props: SharePickerProps) {
   const listboxRef = useRef<HTMLDivElement>(null);
   const activeIndexRef = useRef<number>(-1);
 
+  /* ── Standalone source loading ── */
+  useEffect(() => {
+    if (isInline || enumResult !== null) return;
+    let cancelled = false;
+
+    invoke<EnumerationResult>('list_share_sources')
+      .then((result) => {
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: result,
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      })
+      .catch((err: unknown) => {
+        if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'source enumeration failed', err);
+        if (!cancelled) {
+          setParsed((current) => ({
+            enumResult: { sources: [], warnings: [String(err)], fallback_reason: null },
+            occupied: current?.occupied ?? { videoOccupied: false, audioOccupied: false },
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enumResult, isInline]);
+
   /* ── Lazy thumbnail loading ── */
   useEffect(() => {
     if (!enumResult) return;
     let cancelled = false;
 
     const visualSources = enumResult.sources.filter(
-      (s) => s.source_type === 'screen' || s.source_type === 'window',
+      (s) => !isPortalSource(s) && (s.source_type === 'screen' || s.source_type === 'window'),
     );
 
     if (visualSources.length > 0) {
@@ -323,26 +409,27 @@ export default function SharePicker(props: SharePickerProps) {
   const isWindowsPlatform = /Windows NT/i.test(navigator.userAgent || '');
 
   /* ── Derived ── */
-  const sources = enumResult?.sources ?? [];
+  const sources = withPortalFallbackSources(enumResult);
   const warnings = enumResult?.warnings ?? [];
   const filteredSources = filterSourcesByMode(sources, activeMode);
   const isVisualMode = activeMode !== 'audio_only';
   const showAudioCheckbox = activeMode !== 'audio_only';
   // Disable system audio checkbox when an audio-only share is already occupying the audio device.
-  const audioCheckboxDisabled = occupied.audioOccupied;
+  const audioCheckboxDisabled = occupied.audioOccupied || modeScope === 'video_only';
   const canShare = selectedSource !== null;
   const showFallback = enumResult !== null && shouldShowPortalFallback(enumResult.fallback_reason) && filteredSources.length === 0;
   const isEmpty = filteredSources.length === 0 && !showFallback;
   const echoWarningActive = hasEchoWarning(warnings);
 
   useEffect(() => {
-    if (audioCheckboxDisabled && withAudio) {
+    if (occupied.audioOccupied && withAudio) {
       setWithAudio(false);
     }
-  }, [audioCheckboxDisabled, withAudio]);
+  }, [occupied.audioOccupied, withAudio]);
 
   /** Check if a mode tab should be disabled due to occupied slot. */
   const isModeDisabled = (mode: ShareMode): boolean => {
+    if (modeScope === 'video_only' && mode === 'audio_only') return true;
     if (mode === 'audio_only') return occupied.audioOccupied;
     return occupied.videoOccupied;
   };
@@ -354,6 +441,9 @@ export default function SharePicker(props: SharePickerProps) {
       setSelectedSource(null);
       activeIndexRef.current = -1;
       setWithAudio((current) => {
+        if (modeScope === 'video_only') {
+          return props.initialWithAudio ?? current;
+        }
         if (mode === 'audio_only' || occupied.audioOccupied) {
           return false;
         }
@@ -363,7 +453,7 @@ export default function SharePicker(props: SharePickerProps) {
         return current;
       });
     },
-    [occupied.audioOccupied],
+    [modeScope, occupied.audioOccupied, props.initialWithAudio],
   );
 
   /* ── Source selection ── */
@@ -408,7 +498,7 @@ export default function SharePicker(props: SharePickerProps) {
     const selection: ShareSelection = {
       mode: activeMode,
       sourceId: selectedSource.id,
-      sourceName: selectedSource.name,
+      sourceName: isPortalSource(selectedSource) ? 'System picker' : selectedSource.name,
       withAudio: activeMode === 'audio_only' ? false : withAudio,
       sourceKind: selectedSource.source_type === 'window' ? 'window' : 'screen',
       compatibilityMode,
@@ -430,6 +520,16 @@ export default function SharePicker(props: SharePickerProps) {
       props.onCancel?.();
     } else {
       await invoke('share_picker_cancel');
+      await getCurrentWindow().close();
+    }
+  }, [isInline, props]);
+
+  /* ── Portal fallback action ── */
+  const handlePortalFallback = useCallback(async () => {
+    if (isInline) {
+      props.onPortalFallback?.();
+    } else {
+      await invoke('share_picker_use_portal');
       await getCurrentWindow().close();
     }
   }, [isInline, props]);
@@ -503,7 +603,7 @@ export default function SharePicker(props: SharePickerProps) {
               ⚠ Direct access unavailable
             </span>
             <button
-              onClick={handleCancel}
+              onClick={handlePortalFallback}
               className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"
             >
               Use system picker
@@ -520,8 +620,10 @@ export default function SharePicker(props: SharePickerProps) {
             tabIndex={0}
             onKeyDown={handleListKeyDown}
             className={[
-              'grid gap-2',
-              isVisualMode ? 'grid-cols-1 @[480px]:grid-cols-2' : 'grid-cols-1',
+              'grid',
+              isVisualMode
+                ? 'grid-cols-1 gap-2 @[480px]:grid-cols-2'
+                : 'grid-cols-1 divide-y divide-wavis-text-secondary/20',
               'focus:outline focus:outline-2 focus:outline-wavis-accent',
             ].join(' ')}
           >
@@ -544,8 +646,8 @@ export default function SharePicker(props: SharePickerProps) {
       </div>
 
       {/* ── Footer ── */}
-      <div className="border-t border-wavis-text-secondary px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="border-t border-wavis-text-secondary px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-3">
           {showAudioCheckbox && (
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
@@ -566,19 +668,39 @@ export default function SharePicker(props: SharePickerProps) {
               </span>
             </label>
           )}
-          {selectedSource?.source_type === 'window' && isWindowsPlatform && (
-            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={compatibilityMode}
-                onChange={(e) => setCompatibilityMode(e.target.checked)}
-                className="accent-wavis-accent"
-              />
-              <span className="text-wavis-text-secondary">Game compatibility mode</span>
-            </label>
+          {activeMode === 'window' && isWindowsPlatform && (
+            <div className="flex items-center gap-1 text-sm select-none">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={compatibilityMode}
+                  onChange={(e) => setCompatibilityMode(e.target.checked)}
+                  className="accent-wavis-accent"
+                />
+                <span className="text-wavis-text-secondary">Game compatibility mode</span>
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Game compatibility mode help"
+                    className="inline-flex h-5 w-5 items-center justify-center border border-wavis-text-secondary text-[0.6875rem] text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent focus:outline focus:outline-2 focus:outline-wavis-accent"
+                  >
+                    ?
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  sideOffset={6}
+                  className="max-w-72 border border-wavis-text-secondary bg-wavis-panel text-wavis-text shadow-lg"
+                >
+                  Use this for games or apps that show a black screen, missing cursor, or fail to capture with the default method.
+                </TooltipContent>
+              </Tooltip>
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
           <button
             onClick={handleCancel}
             className="border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"

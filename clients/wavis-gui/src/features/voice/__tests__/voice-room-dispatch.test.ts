@@ -45,6 +45,9 @@ vi.mock('@shared/hotkey-bridge', () => ({
 }));
 vi.mock('../notification-sounds', () => ({
   playNotificationSound: vi.fn().mockResolvedValue(undefined),
+  updateCachedNotificationVolume: vi.fn(),
+  updateCachedSoundVolumes: vi.fn(),
+  prewarmAudioContext: vi.fn(),
 }));
 vi.mock('../livekit-media', () => ({
   LiveKitModule: vi.fn().mockImplementation(() => ({
@@ -57,9 +60,12 @@ vi.mock('../livekit-media', () => ({
     setPassthroughFilterSettings: vi.fn(),
     startNativeCapture: vi.fn().mockResolvedValue(undefined),
     stopNativeCapture: vi.fn().mockResolvedValue(undefined),
+    replaceNativeCaptureSource: vi.fn().mockResolvedValue(undefined),
     startWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     stopWasapiAudioBridge: vi.fn().mockResolvedValue(undefined),
     prepareNativeCapture: vi.fn(),
+    prepareNativeCaptureFailureListener: vi.fn().mockResolvedValue(undefined),
+    attachWindowsNativeCaptureDiagnostics: vi.fn(),
     startFallbackShare: vi.fn().mockResolvedValue({ started: false, withAudio: false }),
     stopShare: vi.fn().mockResolvedValue(undefined),
     setScreenShareQuality: vi.fn().mockResolvedValue(undefined),
@@ -104,6 +110,8 @@ vi.mock('@features/settings/settings-store', () => ({
   setChannelVolumes: vi.fn().mockResolvedValue(undefined),
   getVideoInputDevice: vi.fn().mockResolvedValue(null),
   setVideoInputDevice: vi.fn().mockResolvedValue(undefined),
+  getNotificationVolume: vi.fn().mockResolvedValue(100),
+  getSoundVolumes: vi.fn().mockResolvedValue({}),
   DEFAULT_PASSTHROUGH_VOLUME: 20,
 }));
 // ─── Message injection state ──────────────────────────────────────
@@ -230,6 +238,15 @@ describe('participant_undeafened', () => {
 // ─── sub_room_state ───────────────────────────────────────────────
 
 describe('sub_room_state', () => {
+  it('synchronizes passthrough permission and defaults it off when absent', async () => {
+    await setupActiveSession();
+    inject({ type: 'sub_room_state', rooms: [], passthroughEnabled: true });
+    expect(getState().passthroughEnabled).toBe(true);
+
+    inject({ type: 'sub_room_state', rooms: [] });
+    expect(getState().passthroughEnabled).toBe(false);
+  });
+
   it('populates subRooms from the message', async () => {
     await setupActiveSession();
     inject({

@@ -210,7 +210,7 @@ impl<
                 | SignalingMessage::ParticipantKicked(_)
                 | SignalingMessage::ParticipantMuted(_)
                 | SignalingMessage::ParticipantUnmuted(_)
-                | SignalingMessage::StartShare
+                | SignalingMessage::StartShare(_)
                 | SignalingMessage::ShareStarted(_)
                 | SignalingMessage::StopShare(_)
                 | SignalingMessage::ShareStopped(_)
@@ -245,6 +245,7 @@ impl<
                 | SignalingMessage::LeaveSubRoom(_)
                 | SignalingMessage::SetPassthrough(_)
                 | SignalingMessage::ClearPassthrough(_)
+                | SignalingMessage::SetPassthroughEnabled(_)
                 | SignalingMessage::SetPassthroughVolume(_)
                 | SignalingMessage::SetPassthroughFilter(_)
                 | SignalingMessage::SubRoomState(_)

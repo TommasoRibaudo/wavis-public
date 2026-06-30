@@ -21,6 +21,7 @@ locals {
     CF_ORIGIN_SECRET          = "CHANGE-ME-cf-origin-secret"
     GITHUB_DEPLOY_KEY         = "CHANGE-ME-github-deploy-key"
     GITHUB_BUG_REPORT_TOKEN   = "CHANGE-ME-github-bug-report-token"
+    ADMIN_TOKEN               = "CHANGE-ME-admin-token"
   }
 
   # When LiveKit runs on a separate instance, point LIVEKIT_HOST at its
@@ -35,9 +36,11 @@ locals {
     POSTGRES_USER       = local.postgres_user
     POSTGRES_DB         = local.postgres_db
     RUST_LOG                        = "info"
-    GITHUB_BUG_REPORT_REPO          = "example/wavis"
-    BUG_REPORT_RATE_LIMIT_MAX       = "5"
+    GITHUB_BUG_REPORT_REPO            = "TommasoRibaudo/wavis-public"
+    BUG_REPORT_RATE_LIMIT_MAX         = "5"
     BUG_REPORT_RATE_LIMIT_WINDOW_SECS = "3600"
+    LLM_RATE_LIMIT_MAX                = "5"
+    LLM_RATE_LIMIT_WINDOW_SECS        = "86400"
   }
 }
 

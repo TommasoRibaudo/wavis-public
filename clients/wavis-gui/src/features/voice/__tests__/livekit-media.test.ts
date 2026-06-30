@@ -611,6 +611,8 @@ function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
     onSystemEvent: (msg) => calls.push({ method: 'onSystemEvent', args: [msg] }),
     onShareLeakSummary: (summary) => calls.push({ method: 'onShareLeakSummary', args: [summary] }),
     onNoiseSuppressionState: (active) => calls.push({ method: 'onNoiseSuppressionState', args: [active] }),
+    onAudioOnlySharerAdded: (identity) => calls.push({ method: 'onAudioOnlySharerAdded', args: [identity] }),
+    onAudioOnlySharerRemoved: (identity) => calls.push({ method: 'onAudioOnlySharerRemoved', args: [identity] }),
   };
 }
 
@@ -2149,6 +2151,60 @@ describe('Screen share and device selection', () => {
 
   // Feature: gui-livekit-media, Property 15: Device switching delegates to LiveKit SDK
   describe('P15: Device switching delegates to LiveKit SDK', () => {
+    it('passes the saved input device to the initial microphone capture request', async () => {
+      resetAll();
+      mockSettingsStorage.set('wavis_audio_input_device', 'input:Headset Microphone');
+      realEnumerateDevicesMock.mockResolvedValue([
+        {
+          kind: 'audioinput',
+          deviceId: 'browser-headset-id',
+          groupId: '',
+          label: 'Headset Microphone (USB Audio)',
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ]);
+
+      const mod = new LiveKitModule(createMockCallbacks());
+      await mod.connect('wss://sfu.test', 'tok');
+      emitRoomEvent('connected');
+      await mod.setMicEnabled(true);
+
+      const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+      expect(micCall?.args[0]).toBe(true);
+      expect(micCall?.args[1]).toMatchObject({
+        deviceId: 'browser-headset-id',
+        noiseSuppression: false,
+      });
+
+      mod.disconnect();
+    });
+
+    it('does not retry microphone capture on the system default when the saved input device fails', async () => {
+      resetAll();
+      mockSettingsStorage.set('wavis_audio_input_device', 'missing-input-device');
+      micShouldReject = true;
+      micRejectMsg = 'Requested device not found';
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await mod.connect('wss://sfu.test', 'tok');
+      emitRoomEvent('connected');
+      await mod.setMicEnabled(true);
+
+      const micCalls = sdkCalls.filter(c => c.method === 'setMicrophoneEnabled');
+      expect(micCalls).toHaveLength(1);
+      expect(micCalls[0].args[1]).toMatchObject({
+        deviceId: 'missing-input-device',
+        noiseSuppression: false,
+      });
+      expect(cbs.calls.some(c =>
+        c.method === 'onSystemEvent'
+        && String(c.args[0]).includes('listen-only mode'),
+      )).toBe(true);
+
+      mod.disconnect();
+    });
+
     it('setInputDevice and setOutputDevice call switchActiveDevice with correct kind and id', async () => {
       /**
        * Validates: Requirements 10.2, 10.3
@@ -2396,6 +2452,31 @@ describe('Screen share and device selection', () => {
         logSpy.mockRestore();
       }
     });
+
+    it('re-pins screen-share subscription demand on stream-state changes', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const publication = {
+        source: 'screen_share',
+        kind: 'video',
+        trackSid: 'screen-track-1',
+        isEnabled: false,
+        setSubscribed: vi.fn(),
+        setEnabled: vi.fn(),
+        setVideoQuality: vi.fn(),
+      };
+
+      emitRoomEvent('trackStreamStateChanged', publication, 'paused', { identity: 'alice' });
+
+      expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+      expect(publication.setEnabled).toHaveBeenCalledWith(true);
+      expect(publication.setVideoQuality).toHaveBeenCalledWith(2);
+
+      mod.disconnect();
+    });
   });
 
   describe('Screen share audio attachment lifecycle', () => {
@@ -2503,6 +2584,99 @@ describe('Screen share and device selection', () => {
       );
 
       expect(setSubscribed).toHaveBeenCalledWith(false);
+
+      mod.disconnect();
+    });
+
+    it('infers legacy ScreenShareAudio without video as audio-only and autoplays it', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const setSubscribed = vi.fn();
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-legacy-race' } },
+        { source: 'screen_share_audio', setSubscribed },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(setSubscribed).toHaveBeenCalledWith(true);
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
+
+      mod.disconnect();
+    });
+
+    it('infers already-present ScreenShareAudio without video as audio-only on connect', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      const setSubscribed = vi.fn();
+      const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-existing-audio-only' } };
+      const publication = { source: 'screen_share_audio', kind: 'audio', track: remoteTrack, setSubscribed };
+      mockRoom.remoteParticipants.set('alice', {
+        identity: 'alice',
+        getTrackPublication: vi.fn((source: string) => source === 'screen_share_audio' ? publication : undefined),
+        trackPublications: new Map([['ssa-existing', publication]]),
+      });
+
+      await driveToConnected(mod);
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(setSubscribed).toHaveBeenCalledWith(true);
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
+
+      mod.disconnect();
+    });
+
+    it('autoplays confirmed audio-only shares and detaches autoplay when promoted to video', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      const setSubscribed = vi.fn();
+      mod.setRemoteShareType('alice', 'audio_only');
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-audio-only' } },
+        { source: 'screen_share_audio', setSubscribed },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+
+      mod.setRemoteShareType('alice', 'screen_audio');
+
+      expect(setSubscribed).toHaveBeenLastCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+
+      mod.disconnect();
+    });
+
+    it('keeps promoted video-share audio attached while a viewer owns the stream', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      mod.setRemoteShareType('alice', 'audio_only');
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-watched-promotion' } },
+        { source: 'screen_share_audio', setSubscribed: vi.fn() },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+      mod.attachScreenShareAudio('alice');
+      mod.setRemoteShareType('alice', 'window');
+
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
 
       mod.disconnect();
     });
@@ -3424,6 +3598,10 @@ describe('Screen share quality optimization', () => {
      */
     it('falls back to defaults when first call throws OverconstrainedError, returns true', async () => {
       resetAll();
+      vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0',
+        mediaDevices: createMockMediaDevices(),
+      });
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
       await driveToConnected(mod);
@@ -3448,9 +3626,12 @@ describe('Screen share quality optimization', () => {
       expect(calls[0][1]).toBeDefined(); // captureOpts
       expect(calls[0][2]).toBeDefined(); // publishOpts
 
-      // Second call: fallback with just `true` (no constraints)
+      // Second call: fallback without video constraints. Native/Rust audio
+      // platforms may still pass audio:false so browser audio stays disabled.
       expect(calls[1][0]).toBe(true);
-      expect(calls[1].length).toBe(1);
+      if (calls[1][1] !== undefined) {
+        expect(calls[1][1]).toEqual({ audio: false });
+      }
 
       // onSystemEvent called with constraint rejection message
       const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
@@ -3459,6 +3640,7 @@ describe('Screen share quality optimization', () => {
       )).toBe(true);
 
       mod.disconnect();
+      vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
     });
 
     it('returns false when both constrained and fallback calls fail', async () => {
@@ -3633,6 +3815,18 @@ describe('Screen share quality optimization', () => {
         ),
         { numRuns: 100 },
       );
+    });
+
+    it('stores selected quality before a room or screen-share publication exists', async () => {
+      resetAll();
+
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+
+      await mod.setScreenShareQuality('max');
+
+      expect((mod as unknown as Record<string, unknown>).currentQuality).toBe('max');
+      expect(cbs.calls.filter(c => c.method === 'onSystemEvent')).toHaveLength(0);
     });
 
     it('quality preset failure retains previous quality and does not emit event', async () => {
@@ -4831,6 +5025,9 @@ let audioShareStartResult: {
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     tauriInvokeCalls.push({ cmd, args });
+    if (cmd === 'get_default_audio_monitor_fast') {
+      return 'alsa_output.test.monitor';
+    }
     if (cmd === 'audio_share_start') {
       return audioShareStartResult;
     }
@@ -5466,11 +5663,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
   /**
    * Validates: Requirements 3.3
    *
-   * Preservation Property 1: For all non-Windows platforms with audio: true,
-   * captureOpts.audio === true is passed to setScreenShareEnabled.
-   * macOS getDisplayMedia audio path unchanged.
+   * Linux share audio must use the Rust PulseAudio path. Browser-managed
+   * getDisplayMedia audio can capture the room output and feed it back.
    */
-  it('non-Windows platforms with audio:true → captureOpts.audio === true (PBT)', async () => {
+  it('Linux startScreenShare with audio:true → browser video-only plus PulseAudio IPC (PBT)', async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constant('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'),
@@ -5486,6 +5682,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           const cbs = createMockCallbacks();
           const mod = new LiveKitModule(cbs);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (mod as any).currentCaptureProfile = {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ...(mod as any).currentCaptureProfile,
+            audio: true,
+          };
           await driveToConnected(mod);
 
           await mod.startScreenShare();
@@ -5499,9 +5701,12 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
           const captureOpts = startCalls[0].args[1] as Record<string, unknown>;
           expect(captureOpts.audio).toBe(false);
 
-          // No audio_share_start should be called on non-Windows
+          const monitorCalls = tauriInvokeCalls.filter(c => c.cmd === 'get_default_audio_monitor_fast');
+          expect(monitorCalls).toHaveLength(1);
+
           const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
-          expect(audioStartCalls).toHaveLength(0);
+          expect(audioStartCalls).toHaveLength(1);
+          expect(audioStartCalls[0].args).toEqual({ sourceId: 'alsa_output.test.monitor' });
 
           mod.disconnect();
           vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
@@ -6051,6 +6256,84 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
   it('setDenoiseEnabled(false) bypasses the processor but keeps the mic path alive on Windows', async () => {
     vi.stubGlobal('navigator', {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', true);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { mediaStreamTrack, track } = await driveToConnectedWithMst(mod);
+
+    await mod.setDenoiseEnabled(false);
+
+    expect(track.stopProcessor).toHaveBeenCalledTimes(1);
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === false)).toBe(true);
+
+    mod.disconnect();
+  });
+
+  it('attaches the JS mic processor on macOS when denoiseEnabled=true', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', true);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { track, mediaStreamTrack } = await driveToConnectedWithMst(mod);
+
+    expect(track.setProcessor).toHaveBeenCalledTimes(1);
+    expect(track.setAudioContext).toHaveBeenCalledTimes(1);
+    expect(track.getProcessor()).toBeTruthy();
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+
+    mod.disconnect();
+  });
+
+  it('does not attach the JS mic processor on macOS when denoiseEnabled=false and gain is default', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', false);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { track, mediaStreamTrack } = await driveToConnectedWithMst(mod);
+
+    expect(track.setProcessor).not.toHaveBeenCalled();
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(false);
+
+    mod.disconnect();
+  });
+
+  it('setDenoiseEnabled(true) attaches the processor on the active mic track on macOS', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+      mediaDevices: createMockMediaDevices(),
+    });
+    mockSettingsStorage.set('wavis_denoise_enabled', false);
+
+    const cbs = createMockCallbacks();
+    const mod = new LiveKitModule(cbs);
+    const { mediaStreamTrack, track } = await driveToConnectedWithMst(mod);
+
+    await mod.setDenoiseEnabled(true);
+
+    expect(track.setProcessor).toHaveBeenCalledTimes(1);
+    expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
+    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+
+    mod.disconnect();
+  });
+
+  it('setDenoiseEnabled(false) bypasses the processor but keeps the mic path alive on macOS', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
       mediaDevices: createMockMediaDevices(),
     });
     mockSettingsStorage.set('wavis_denoise_enabled', true);

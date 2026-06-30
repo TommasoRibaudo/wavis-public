@@ -32,6 +32,7 @@ export interface ChannelVolumePrefs {
   master: number;
   participants: Record<string, number>;
   streams?: Record<string, number>;
+  streamMutes?: Record<string, boolean>;
 }
 
 export type WindowsSharePathPreference = 'browser' | 'native';
@@ -86,7 +87,7 @@ export const DEFAULT_VOLUME = 70;
 export const DEFAULT_PASSTHROUGH_VOLUME = 20;
 export const DEFAULT_MUTE_HOTKEY = 'Ctrl+Shift+M';
 export const DEFAULT_WATCH_ALL_HOTKEY = 'CmdOrCtrl+Shift+W';
-export const DEFAULT_FOCUS_MAIN_HOTKEY = 'CmdOrCtrl+Shift+Home';
+export const DEFAULT_FOCUS_MAIN_HOTKEY = 'CmdOrCtrl+Shift+H';
 export const DEFAULT_WINDOWS_SHARE_PATH: WindowsSharePathPreference = 'browser';
 export const DEFAULT_SCREEN_SHARE_CODEC: ScreenShareCodecOverride = 'auto';
 

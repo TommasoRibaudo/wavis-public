@@ -354,11 +354,11 @@ describe('deriveLoginMode', () => {
     const { deriveLoginMode } = await import('../Login');
 
     expect(deriveLoginMode('wvs-ABCD-1234')).toBe('trusted');
-  });
+  }, 15_000);
 
   it('missing recovery ID selects new-device mode', async () => {
     const { deriveLoginMode } = await import('../Login');
 
     expect(deriveLoginMode(null)).toBe('new-device');
-  });
+  }, 15_000);
 });

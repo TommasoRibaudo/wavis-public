@@ -251,6 +251,9 @@ vi.mock('../notification-sounds', () => ({
   playNotificationSound: vi.fn(async (name: string) => {
     playNotificationSoundCalls.push(name);
   }),
+  updateCachedNotificationVolume: vi.fn(),
+  updateCachedSoundVolumes: vi.fn(),
+  prewarmAudioContext: vi.fn(),
 }));
 
 // ─── Mock Tauri APIs ───────────────────────────────────────────────
@@ -309,8 +312,11 @@ import {
   detachScreenShareAudio,
   startCustomShare,
   getState,
+  isShareEnabled,
   persistStreamVolume,
   getPersistedStreamVolume,
+  persistStreamMuted,
+  getPersistedStreamMuted,
 } from '../voice-room';
 import type { VoiceRoomState } from '../voice-room';
 import * as settingsStore from '@features/settings/settings-store';
@@ -397,6 +403,73 @@ describe('VoiceRoom screen share audio delegation', () => {
       { id: 'alice', vol: 100 },
       { id: 'bob', vol: 0 },
     ]);
+
+    leaveRoom();
+  });
+
+  it('keeps LiveKit-inferred audio-only state across legacy share_state without shareType', async () => {
+    resetAll();
+    await driveToActive();
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    lastLkModule!.callbacks.onAudioOnlySharerAdded('peer-2');
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    messageHandler!({
+      type: 'share_state',
+      participantIds: ['peer-2'],
+      activeShares: [{ participantId: 'peer-2' }],
+    });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')).toMatchObject({
+      isSharing: true,
+      shareType: undefined,
+    });
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    messageHandler!({
+      type: 'share_state',
+      participantIds: ['peer-2'],
+      activeShares: [{ participantId: 'peer-2', shareType: 'screen_audio' }],
+    });
+    await tick();
+
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(false);
+
+    leaveRoom();
+  });
+
+  it('keeps LiveKit-inferred audio-only state when share_started arrives without shareType', async () => {
+    resetAll();
+    await driveToActive();
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+
+    // Simulate lkModule inferring audio-only from TrackSubscribed before share_started arrives
+    lastLkModule!.callbacks.onAudioOnlySharerAdded('peer-2');
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    // share_started arrives without shareType (older sender client)
+    messageHandler!({ type: 'share_started', participantId: 'peer-2' });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')).toMatchObject({
+      isSharing: true,
+      shareType: undefined,
+    });
+    // Inferred audio-only state must be preserved
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+
+    // An explicit non-audio-only type should still clear it
+    messageHandler!({ type: 'share_started', participantId: 'peer-2', shareType: 'screen_audio' });
+    await tick();
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(false);
 
     leaveRoom();
   });
@@ -1073,8 +1146,15 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual([]);
   });
 
-  it('plays join when the local user is assigned into a sub-room', async () => {
+  it('keeps self connecting after room assignment and plays join when local media connects', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({
+      type: 'media_token',
+      sfuUrl: 'wss://sfu',
+      token: 'tok',
+    });
+    await tick();
 
     messageHandler!({
       type: 'sub_room_state',
@@ -1085,6 +1165,13 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     });
     await tick();
 
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(false);
+    expect(playNotificationSoundCalls).toEqual([]);
+
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
@@ -1098,6 +1185,10 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: [] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1123,6 +1214,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
     playNotificationSoundCalls = [];
 
     messageHandler!({
@@ -1136,6 +1232,33 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
+  it('does not play remote join until the remote participant is media-connected', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(false);
+    expect(playNotificationSoundCalls).toEqual([]);
+
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    expect(playNotificationSoundCalls).toEqual(['join']);
+  });
+
   it('plays leave when another user leaves the local user current room', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
 
@@ -1145,6 +1268,10 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1167,6 +1294,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
         { subRoomId: 'room-2', roomNumber: 2, isDefault: false, participantIds: ['peer-2'] },
       ],
     });
+    await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
     await tick();
     playNotificationSoundCalls = [];
 
@@ -1194,6 +1326,11 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
     playNotificationSoundCalls = [];
 
     messageHandler!({
@@ -1215,6 +1352,78 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
     expect(playNotificationSoundCalls).toEqual(['join']);
   });
 
+  it('does not replay remote join for duplicate signaling snapshots after media readiness', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    await tick();
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+    expect(playNotificationSoundCalls).toEqual(['join', 'join']);
+    playNotificationSoundCalls = [];
+
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    messageHandler!({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'room-1',
+      source: 'explicit',
+    });
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+  });
+
+  it('media reconnect marks participants connecting and restores readiness without replaying join', async () => {
+    await driveToActive('ch-sounds', 'room-sounds');
+
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
+    messageHandler!({
+      type: 'sub_room_state',
+      rooms: [
+        { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer', 'peer-2'] },
+      ],
+    });
+    await tick();
+    lastLkModule!.callbacks.onMediaConnected();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    playNotificationSoundCalls = [];
+
+    lastLkModule!.callbacks.onMediaReconnecting?.();
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(false);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(false);
+
+    lastLkModule!.callbacks.onMediaReconnected?.();
+    lastLkModule!.callbacks.onRemoteParticipantConnected?.('peer-2');
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'self-peer')?.mediaConnected).toBe(true);
+    expect(getState().participants.find((p) => p.id === 'peer-2')?.mediaConnected).toBe(true);
+    expect(playNotificationSoundCalls).toEqual([]);
+  });
+
   it('plays leave sound for explicit whole-session leave', async () => {
     await driveToActive('ch-sounds', 'room-sounds');
 
@@ -1225,12 +1434,15 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
       ],
     });
     await tick();
+    messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+    await tick();
     playNotificationSoundCalls = [];
 
     leaveRoom();
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(sentMessages).toContainEqual({ type: 'leave' });
+    expect(lastLkModule!.disconnectCalls).toBe(1);
   });
 
   it('keeps the room connected until the background leave timeout elapses', async () => {
@@ -2652,6 +2864,59 @@ describe('Edge case unit tests', () => {
       leaveRoom();
     });
 
+    it('terminal media disconnect requests a fresh media token once', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      const module = lastLkModule!;
+      sentMessages = [];
+
+      module.callbacks.onMediaDisconnected();
+      await tick();
+      await tick();
+
+      expect(latestState!.mediaState).toBe('disconnected');
+      expect(module.disconnectCalls).toBe(1);
+      expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+
+      leaveRoom();
+    });
+
+    it('LiveKit reconnect success restores active voice state and share availability', async () => {
+      resetAll();
+      await driveToActive();
+      await assignSelfToSubRoom();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      statusChangeHandler!('disconnected');
+      await tick();
+      expect(latestState!.machineState).toBe('reconnecting');
+
+      lastLkModule!.callbacks.onMediaReconnected?.();
+      await tick();
+
+      expect(latestState!.machineState).toBe('active');
+      expect(latestState!.mediaState).toBe('connected');
+      expect(isShareEnabled(
+        latestState!.sharePermission,
+        latestState!.selfIsHost,
+        latestState!.machineState,
+        latestState!.mediaState,
+        latestState!.joinedSubRoomId,
+      )).toBe(true);
+
+      leaveRoom();
+    });
+
     it('media failure preserves signaling — participants and chat still work', async () => {
       resetAll();
       await driveToActive();
@@ -3068,6 +3333,44 @@ describe('stream volume persistence', () => {
     await driveToActive(); // peer-2 has userId u2
 
     expect(getPersistedStreamVolume('peer-2')).toBe(55);
+    leaveRoom();
+  });
+
+  it('persistStreamMuted stores mute separately from the slider volume', async () => {
+    await driveToActive();
+
+    persistStreamVolume('peer-2', 65);
+    persistStreamMuted('peer-2', true);
+
+    expect(getPersistedStreamVolume('peer-2')).toBe(65);
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamMuted returns saved mute loaded from channel prefs on join', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 55 },
+      streamMutes: { u2: true },
+    });
+
+    await driveToActive();
+
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
+    leaveRoom();
+  });
+
+  it('getPersistedStreamMuted treats legacy saved volume 0 as muted', async () => {
+    vi.mocked(settingsStore.getChannelVolumes).mockResolvedValueOnce({
+      master: 70,
+      participants: {},
+      streams: { u2: 0 },
+    });
+
+    await driveToActive();
+
+    expect(getPersistedStreamMuted('peer-2')).toBe(true);
     leaveRoom();
   });
 });

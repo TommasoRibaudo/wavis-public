@@ -103,11 +103,17 @@ function mockErrorResponse(
 
 describe('apiFetch — server error message surfacing', () => {
   beforeEach(() => {
+    tauriFetchMock.mockReset();
+    getServerUrlMock.mockReset();
+    getAccessTokenMock.mockReset();
+    isTokenExpiredMock.mockReset();
+    getInsecureTlsMock.mockReset();
+    refreshTokensMock.mockReset();
     getServerUrlMock.mockResolvedValue('http://localhost:8080');
     getAccessTokenMock.mockResolvedValue('test-token');
     isTokenExpiredMock.mockResolvedValue(false);
     getInsecureTlsMock.mockResolvedValue(false);
-    refreshTokensMock.mockResolvedValue(false);
+    refreshTokensMock.mockResolvedValue({ status: 'network_error', message: 'offline' });
   });
 
   it('surfaces the server error field for a 400 Unknown error', async () => {
@@ -238,6 +244,49 @@ describe('apiFetch — server error message surfacing', () => {
       body: '{}',
     });
     expect(result).toEqual({ issue_url: 'https://github.com/test/issues/1' });
+  });
+
+  it('does not send the request when an expired token cannot be refreshed', async () => {
+    isTokenExpiredMock.mockResolvedValue(true);
+    refreshTokensMock.mockResolvedValue({ status: 'unauthorized' });
+
+    await expect(apiFetch('/channels/channel-1/invites')).rejects.toMatchObject({
+      message: 'Session expired',
+      status: 401,
+      kind: 'Unauthorized',
+    });
+
+    expect(refreshTokensMock).toHaveBeenCalledTimes(1);
+    expect(tauriFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a 401 response when refresh is unauthorized', async () => {
+    tauriFetchMock.mockResolvedValue(
+      mockErrorResponse(401, JSON.stringify({ error: 'authentication failed' })),
+    );
+    refreshTokensMock.mockResolvedValue({ status: 'unauthorized' });
+
+    await expect(apiFetch('/channels/channel-1/invites')).rejects.toMatchObject({
+      message: 'Session expired',
+      status: 401,
+      kind: 'Unauthorized',
+    });
+
+    expect(refreshTokensMock).toHaveBeenCalledTimes(1);
+    expect(tauriFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays a 401 response once after refresh succeeds', async () => {
+    tauriFetchMock
+      .mockResolvedValueOnce(mockErrorResponse(401, JSON.stringify({ error: 'authentication failed' })))
+      .mockResolvedValueOnce(mockOkResponse(JSON.stringify({ ok: true })));
+    refreshTokensMock.mockResolvedValue({ status: 'success' });
+
+    const result = await apiFetch<{ ok: boolean }>('/channels/channel-1/invites');
+
+    expect(result).toEqual({ ok: true });
+    expect(refreshTokensMock).toHaveBeenCalledTimes(1);
+    expect(tauriFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('sends string request bodies to Tauri as UTF-8 bytes', async () => {

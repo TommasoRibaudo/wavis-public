@@ -415,7 +415,7 @@ mod tests {
                         SignalingMessage::SelfUndeafen |
                         SignalingMessage::ParticipantDeafened(_) |
                         SignalingMessage::ParticipantUndeafened(_) |
-                        SignalingMessage::StartShare |
+                        SignalingMessage::StartShare(_) |
                         SignalingMessage::ShareStarted(_) |
                         SignalingMessage::StopShare(_) |
                         SignalingMessage::ShareStopped(_) |
@@ -429,6 +429,7 @@ mod tests {
                         SignalingMessage::LeaveSubRoom(_) |
                         SignalingMessage::SetPassthrough(_) |
                         SignalingMessage::ClearPassthrough(_) |
+                        SignalingMessage::SetPassthroughEnabled(_) |
                         SignalingMessage::SetPassthroughVolume(_) |
                         SignalingMessage::SetPassthroughFilter(_) |
                         SignalingMessage::SubRoomState(_) |

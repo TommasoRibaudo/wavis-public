@@ -14,6 +14,7 @@ import {
   isTokenExpired,
   refreshTokens,
 } from '@features/auth/auth';
+import type { RefreshResult } from '@features/auth/auth';
 
 // Error Classification
 
@@ -66,6 +67,21 @@ function rateLimitedMessage(headers: Headers): string {
   return `too many requests — try again in ${secs} second${secs === 1 ? '' : 's'}`;
 }
 
+function refreshSucceeded(result: RefreshResult): boolean {
+  return result.status === 'success';
+}
+
+/**
+ * Signal to AuthGate that the session is definitively dead (refresh returned
+ * a non-transient error). AuthGate listens for this event and navigates to
+ * /login immediately, bypassing the scheduled-refresh wait.
+ */
+function emitAuthExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('wavis:auth-expired'));
+  }
+}
+
 async function doFetch(
   endpoint: string,
   init: RequestInit,
@@ -106,8 +122,11 @@ export async function apiFetch<T = unknown>(
 
   // Pre-request refresh if token expired
   if (await isTokenExpired()) {
-    const ok = await refreshTokens();
-    if (!ok) throw new ApiError(401, 'Session expired', 'Unauthorized');
+    const result = await refreshTokens();
+    if (!refreshSucceeded(result)) {
+      emitAuthExpired();
+      throw new ApiError(401, 'Session expired', 'Unauthorized');
+    }
   }
 
   const insecure = await getInsecureTls();
@@ -132,7 +151,10 @@ export async function apiFetch<T = unknown>(
   // 401 retry: single refresh + replay
   if (res.status === 401) {
     const refreshed = await refreshTokens();
-    if (!refreshed) throw new ApiError(401, 'Session expired', 'Unauthorized');
+    if (!refreshSucceeded(refreshed)) {
+      emitAuthExpired();
+      throw new ApiError(401, 'Session expired', 'Unauthorized');
+    }
 
     try {
       const headers = await makeHeaders();

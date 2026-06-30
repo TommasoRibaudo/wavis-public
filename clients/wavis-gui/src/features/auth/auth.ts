@@ -202,15 +202,18 @@ export async function getRefreshToken(): Promise<string | null> {
 }
 
 export async function storeRecoveryId(id: string): Promise<void> {
-  await invoke('store_token', { key: 'wavis_recovery_id', value: id });
+  const store = await getStore();
+  await store.set('recovery_id', id);
 }
 
 export async function getStoredRecoveryId(): Promise<string | null> {
-  return invoke<string | null>('get_token', { key: 'wavis_recovery_id' });
+  const store = await getStore();
+  return (await store.get<string>('recovery_id')) ?? null;
 }
 
 export async function deleteStoredRecoveryId(): Promise<void> {
-  await invoke('delete_token', { key: 'wavis_recovery_id' });
+  const store = await getStore();
+  await store.delete('recovery_id');
 }
 
 export async function setInsecureTls(value: boolean): Promise<void> {
@@ -297,7 +300,7 @@ export async function registerUser(
   onLog(makeLogEntry('Device registered: ' + body.device_id, 'success'));
 
   await storeRecoveryId(body.recovery_id);
-  onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
+  onLog(makeLogEntry('Recovery ID stored locally', 'info'));
 
   notifyTokenRefreshedCallbacks();
   return { success: true, recovery_id: body.recovery_id };
@@ -385,7 +388,7 @@ export async function recoverAccount(
 
   if (rememberRecoveryId) {
     await storeRecoveryId(trimmedRecoveryId);
-    onLog(makeLogEntry('Recovery ID stored in keychain', 'info'));
+    onLog(makeLogEntry('Recovery ID stored locally', 'info'));
   } else {
     await deleteStoredRecoveryId();
     onLog(makeLogEntry('Recovery ID not stored on this device', 'info'));
@@ -807,6 +810,6 @@ export async function resetAuth(): Promise<void> {
   try {
     await deleteStoredRecoveryId();
   } catch (err) {
-    console.error(LOG_PREFIX, 'Failed to delete recovery ID from keychain:', err);
+    console.error(LOG_PREFIX, 'Failed to delete recovery ID from local store:', err);
   }
 }

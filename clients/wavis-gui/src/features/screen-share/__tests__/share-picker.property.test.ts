@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { defaultWithAudioForMode, filterSourcesByMode, pickInitialMode } from '../SharePicker';
+import { defaultWithAudioForMode, filterSourcesByMode, pickInitialMode, pickInitialVideoMode } from '../SharePicker';
 import type {
   ShareMode,
   ShareSource,
@@ -105,6 +105,17 @@ describe('SharePicker initial mode selection', () => {
     expect(
       pickInitialMode(sources, { videoOccupied: true, audioOccupied: false }),
     ).toBe('audio_only');
+  });
+
+  it('video-only source changes never initialize to audio_only', () => {
+    const sources: ShareSource[] = [
+      { id: 'audio-1', name: 'System Audio', source_type: 'system_audio', thumbnail: null, app_name: null },
+      { id: 'window-1', name: 'Game', source_type: 'window', thumbnail: null, app_name: null },
+    ];
+
+    expect(
+      pickInitialVideoMode(sources, { videoOccupied: false, audioOccupied: false }),
+    ).toBe('window');
   });
 
   it('disables companion audio defaults when the audio slot is already occupied', () => {

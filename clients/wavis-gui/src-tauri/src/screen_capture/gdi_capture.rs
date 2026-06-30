@@ -1,7 +1,7 @@
-//! GDI polling capture backend for Windows game cursor compatibility.
+//! GDI polling capture backend for Windows capture fallback and game cursor compatibility.
 //!
-//! Uses `PrintWindow(PW_RENDERFULLCONTENT)` to capture window content without
-//! creating a WGC `GraphicsCaptureSession`. WGC sessions unconditionally disable
+//! Uses `PrintWindow(PW_RENDERFULLCONTENT)` for windows and `BitBlt` for monitors
+//! without creating a WGC `GraphicsCaptureSession`. WGC sessions unconditionally disable
 //! DWM Multi-Plane Overlay (MPO) on session creation, breaking the software cursor
 //! rendered by OpenGL/SDL2 games (Project Zomboid, Battle Brothers). This backend
 //! never creates a WGC session, leaving MPO intact and preserving in-game cursors.
@@ -16,22 +16,25 @@ use tauri::AppHandle;
 
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-    GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    HBITMAP, HDC, HGDIOBJ,
+    BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HMONITOR, MONITORINFO, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS, PW_CLIENTONLY};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetClientRect, GetCursorInfo, GetIconInfo,
-    HICON, ICONINFO, IsIconic, PW_RENDERFULLCONTENT,
+    DrawIconEx, GetClientRect, GetCursorInfo, GetIconInfo, IsIconic, CURSORINFO, CURSOR_SHOWING,
+    DI_NORMAL, HICON, ICONINFO, PW_RENDERFULLCONTENT,
 };
 
-/// HWND is a raw-pointer newtype in the windows crate and does not auto-derive Send.
-/// Window handles in Windows are safe to pass between threads for the operations
-/// used here (PrintWindow, GetClientRect, IsIconic, ClientToScreen).
-struct SendHwnd(HWND);
-unsafe impl Send for SendHwnd {}
+/// Windows handle newtypes do not auto-derive Send. These handles are safe to
+/// pass between threads for the read-only capture operations used here.
+enum SendCaptureTarget {
+    Window(HWND),
+    Monitor(HMONITOR),
+}
+unsafe impl Send for SendCaptureTarget {}
 
+use super::win_capture::SharedWindowsCaptureDiagnostics;
 use super::{CaptureError, CapturedFrame, ScreenCapture};
 
 const LOG: &str = "[wavis:gdi-capture]";
@@ -45,10 +48,16 @@ pub struct GdiCapture {
 }
 
 pub struct GdiCaptureConfig {
-    pub hwnd: HWND,
+    pub target: GdiCaptureTarget,
     #[allow(dead_code)]
     pub app_handle: AppHandle,
     pub target_fps: u32,
+    pub diagnostics: SharedWindowsCaptureDiagnostics,
+}
+
+pub enum GdiCaptureTarget {
+    Window(HWND),
+    Monitor(HMONITOR),
 }
 
 struct GdiResources {
@@ -83,7 +92,12 @@ unsafe fn alloc_gdi_resources(w: u32, h: u32) -> Option<GdiResources> {
         let _ = DeleteDC(mem_dc);
         return None;
     }
-    Some(GdiResources { mem_dc, bitmap, width: w, height: h })
+    Some(GdiResources {
+        mem_dc,
+        bitmap,
+        width: w,
+        height: h,
+    })
 }
 
 unsafe fn free_gdi_resources(r: GdiResources) {
@@ -152,27 +166,58 @@ pub(crate) fn compute_cursor_draw_pos(
     (x, y)
 }
 
+fn monitor_rect_dimensions(rect: RECT) -> Option<(i32, i32, u32, u32)> {
+    let width = rect.right.checked_sub(rect.left)?;
+    let height = rect.bottom.checked_sub(rect.top)?;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some((rect.left, rect.top, width as u32, height as u32))
+}
+
+fn capture_dimensions(target: &SendCaptureTarget) -> Option<(i32, i32, u32, u32)> {
+    unsafe {
+        match target {
+            SendCaptureTarget::Window(hwnd) => {
+                let mut rect: RECT = mem::zeroed();
+                GetClientRect(*hwnd, &mut rect).ok()?;
+                monitor_rect_dimensions(rect)
+            }
+            SendCaptureTarget::Monitor(monitor) => {
+                let mut info = MONITORINFO {
+                    cbSize: mem::size_of::<MONITORINFO>() as u32,
+                    ..mem::zeroed()
+                };
+                if !GetMonitorInfoW(*monitor, &mut info).as_bool() {
+                    return None;
+                }
+                monitor_rect_dimensions(info.rcMonitor)
+            }
+        }
+    }
+}
+
 fn capture_loop(
-    hwnd: SendHwnd,
+    target: SendCaptureTarget,
     stop_flag: Arc<AtomicBool>,
     frame_callback: FrameCallback,
     target_fps: u32,
+    diagnostics: SharedWindowsCaptureDiagnostics,
 ) {
-    let hwnd = hwnd.0;
+    let started_at = Instant::now();
+    if let Ok(mut diag) = diagnostics.lock() {
+        diag.startup_stage = "gdi_thread_started".to_string();
+    }
     let frame_interval = Duration::from_millis(1000 / target_fps.max(1) as u64);
     let mut next_frame_at = Instant::now() + frame_interval;
 
     // Initial allocation — get client rect to determine dimensions.
-    let (init_w, init_h) = unsafe {
-        let mut rect: RECT = mem::zeroed();
-        if GetClientRect(hwnd, &mut rect).is_err() {
-            log::error!("{LOG} initial GetClientRect failed for {hwnd:?}");
+    let (_, _, init_w, init_h) = match capture_dimensions(&target) {
+        Some(dimensions) => dimensions,
+        None => {
+            log::error!("{LOG} failed to resolve initial capture dimensions");
             return;
         }
-        (
-            (rect.right - rect.left).max(0) as u32,
-            (rect.bottom - rect.top).max(0) as u32,
-        )
     };
 
     let mut resources = match unsafe { alloc_gdi_resources(init_w.max(1), init_h.max(1)) } {
@@ -182,6 +227,11 @@ fn capture_loop(
             return;
         }
     };
+    if let Ok(mut diag) = diagnostics.lock() {
+        diag.item_width = init_w;
+        diag.item_height = init_h;
+        diag.startup_stage = "gdi_resources_ready".to_string();
+    }
 
     let mut frame_count: u64 = 0;
     let mut consecutive_zero_frames: u32 = 0;
@@ -191,20 +241,20 @@ fn capture_loop(
     while !stop_flag.load(Ordering::Relaxed) {
         unsafe {
             // Skip minimized windows — no pixels to capture.
-            if IsIconic(hwnd).as_bool() {
+            if matches!(&target, SendCaptureTarget::Window(hwnd) if IsIconic(*hwnd).as_bool()) {
                 thread::sleep(Duration::from_millis(16));
                 next_frame_at = Instant::now() + frame_interval;
                 continue;
             }
 
             // Get current client area size; abort if the window was destroyed.
-            let mut rect: RECT = mem::zeroed();
-            if GetClientRect(hwnd, &mut rect).is_err() {
-                log::info!("{LOG} GetClientRect failed — window likely closed");
-                break;
-            }
-            let w = (rect.right - rect.left).max(0) as u32;
-            let h = (rect.bottom - rect.top).max(0) as u32;
+            let (source_x, source_y, w, h) = match capture_dimensions(&target) {
+                Some(dimensions) => dimensions,
+                None => {
+                    log::info!("{LOG} capture dimensions unavailable; source likely closed");
+                    break;
+                }
+            };
             if w == 0 || h == 0 {
                 thread::sleep(Duration::from_millis(16));
                 next_frame_at = Instant::now() + frame_interval;
@@ -213,7 +263,11 @@ fn capture_loop(
 
             // Reallocate if dimensions changed (e.g. window resize).
             if w != resources.width || h != resources.height {
-                log::info!("{LOG} window resized to {}x{}, reallocating GDI resources", w, h);
+                log::info!(
+                    "{LOG} window resized to {}x{}, reallocating GDI resources",
+                    w,
+                    h
+                );
                 let old = mem::replace(&mut resources, {
                     match alloc_gdi_resources(w, h) {
                         Some(r) => r,
@@ -230,12 +284,33 @@ fn capture_loop(
             let old_obj = SelectObject(resources.mem_dc, HGDIOBJ(resources.bitmap.0));
             // PW_CLIENTONLY is PRINT_WINDOW_FLAGS(1); PW_RENDERFULLCONTENT is u32(2) in a
             // different module — combine via the inner value.
-            let _ = PrintWindow(
-                hwnd,
-                resources.mem_dc,
-                PRINT_WINDOW_FLAGS(PW_CLIENTONLY.0 | PW_RENDERFULLCONTENT),
-            );
-            composite_cursor(resources.mem_dc, hwnd);
+            match &target {
+                SendCaptureTarget::Window(hwnd) => {
+                    let _ = PrintWindow(
+                        *hwnd,
+                        resources.mem_dc,
+                        PRINT_WINDOW_FLAGS(PW_CLIENTONLY.0 | PW_RENDERFULLCONTENT),
+                    );
+                    composite_cursor(resources.mem_dc, *hwnd);
+                }
+                SendCaptureTarget::Monitor(_) => {
+                    let screen_dc = GetDC(HWND::default());
+                    if !screen_dc.is_invalid() {
+                        let _ = BitBlt(
+                            resources.mem_dc,
+                            0,
+                            0,
+                            w as i32,
+                            h as i32,
+                            screen_dc,
+                            source_x,
+                            source_y,
+                            SRCCOPY,
+                        );
+                        ReleaseDC(HWND::default(), screen_dc);
+                    }
+                }
+            }
             // Deselect before GetDIBits — bitmap must not be selected when reading.
             SelectObject(resources.mem_dc, old_obj);
 
@@ -294,8 +369,8 @@ fn capture_loop(
                         .is_some_and(|t| Instant::now().duration_since(t) > Duration::from_secs(2))
                 {
                     log::warn!(
-                        "{LOG} PrintWindow has produced all-zero frames for >2s on {hwnd:?} — \
-                         window may be exclusive-fullscreen or DWM-excluded"
+                        "{LOG} polling capture has produced all-zero frames for >2s; \
+                         source may be unavailable or DWM-excluded"
                     );
                     zero_warned = true;
                 }
@@ -316,21 +391,50 @@ fn capture_loop(
 
             let non_zero = data.iter().filter(|&&b| b != 0).count();
             if frame_count == 0 {
-                log::info!("{LOG} first frame: {}x{}, non_zero_bytes={}", w, h, non_zero);
+                log::info!(
+                    "{LOG} first frame: {}x{}, non_zero_bytes={}",
+                    w,
+                    h,
+                    non_zero
+                );
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.usable_frames = 1;
+                    let latency = started_at.elapsed().as_millis() as u64;
+                    diag.first_raw_frame_latency_ms = Some(latency);
+                    diag.timing.first_raw_frame_latency_ms = Some(latency);
+                    diag.startup_stage = "gdi_first_raw_frame".to_string();
+                }
             } else if frame_count.is_multiple_of(300) {
                 log::info!("{LOG} frame #{} {}x{}", frame_count, w, h);
+                if let Ok(mut diag) = diagnostics.lock() {
+                    diag.usable_frames += 1;
+                }
+            } else if let Ok(mut diag) = diagnostics.lock() {
+                diag.usable_frames += 1;
             }
             // DPI: PrintWindow uses the window's DPI context; GetClientRect returns physical
             // pixels on a per-monitor-V2-aware process (Tauri default). No scaling needed —
             // CapturedFrame dimensions match feed_video_frame and JPEG encode expectations.
-            crate::debug_eprintln!("{} frame #{} {}x{} non_zero={}", LOG, frame_count, w, h, non_zero);
+            crate::debug_eprintln!(
+                "{} frame #{} {}x{} non_zero={}",
+                LOG,
+                frame_count,
+                w,
+                h,
+                non_zero
+            );
 
             let timestamp_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            let captured = CapturedFrame { width: w, height: h, data, timestamp_ms };
+            let captured = CapturedFrame {
+                width: w,
+                height: h,
+                data,
+                timestamp_ms,
+            };
 
             if let Ok(guard) = frame_callback.lock() {
                 if let Some(ref cb) = *guard {
@@ -356,7 +460,16 @@ fn capture_loop(
 
 impl GdiCapture {
     pub fn start(config: GdiCaptureConfig) -> Result<Self, CaptureError> {
-        log::info!("{LOG} start() for {hwnd:?}, target_fps={fps}", hwnd = config.hwnd, fps = config.target_fps);
+        let target = match config.target {
+            GdiCaptureTarget::Window(hwnd) => {
+                log::info!("{LOG} start() backend=gdi_poll source_kind=window target={hwnd:?}");
+                SendCaptureTarget::Window(hwnd)
+            }
+            GdiCaptureTarget::Monitor(monitor) => {
+                log::info!("{LOG} start() backend=gdi_poll source_kind=screen target={monitor:?}");
+                SendCaptureTarget::Monitor(monitor)
+            }
+        };
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let frame_callback: FrameCallback = Arc::new(Mutex::new(None));
@@ -367,13 +480,13 @@ impl GdiCapture {
             capture_thread: Mutex::new(None),
         };
 
-        let hwnd = SendHwnd(config.hwnd);
         let target_fps = config.target_fps;
+        let diagnostics = config.diagnostics;
 
         let handle = thread::Builder::new()
             .name("gdi-capture".into())
             .spawn(move || {
-                capture_loop(hwnd, stop_flag, frame_callback, target_fps);
+                capture_loop(target, stop_flag, frame_callback, target_fps, diagnostics);
             })
             .map_err(|e| {
                 CaptureError::CaptureStartFailed(format!("failed to spawn GDI capture thread: {e}"))
@@ -427,7 +540,8 @@ impl Drop for GdiCapture {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_cursor_draw_pos;
+    use super::{compute_cursor_draw_pos, monitor_rect_dimensions};
+    use windows::Win32::Foundation::RECT;
 
     #[test]
     fn at_origin_zero_hotspot() {
@@ -450,6 +564,35 @@ mod tests {
     #[test]
     fn window_offset_and_hotspot() {
         // Window origin (100,200), cursor at (150,250), hotspot (5,3)
-        assert_eq!(compute_cursor_draw_pos((100, 200), (150, 250), (5, 3)), (45, 47));
+        assert_eq!(
+            compute_cursor_draw_pos((100, 200), (150, 250), (5, 3)),
+            (45, 47)
+        );
+    }
+
+    #[test]
+    fn monitor_rect_preserves_virtual_desktop_offset() {
+        assert_eq!(
+            monitor_rect_dimensions(RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080
+            }),
+            Some((-1920, 0, 1920, 1080)),
+        );
+    }
+
+    #[test]
+    fn monitor_rect_rejects_empty_dimensions() {
+        assert_eq!(
+            monitor_rect_dimensions(RECT {
+                left: 10,
+                top: 20,
+                right: 10,
+                bottom: 20
+            }),
+            None,
+        );
     }
 }

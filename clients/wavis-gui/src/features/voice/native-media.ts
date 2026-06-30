@@ -11,9 +11,18 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
 import type { CameraQuality } from './camera-types';
-import { getDenoiseEnabled, inputVolumeToGain } from '@features/settings/settings-store';
+import {
+  getAudioInputDevice,
+  getAudioOutputDevice,
+  getDenoiseEnabled,
+  inputVolumeToGain,
+  setStoreValue,
+  STORE_KEYS,
+} from '@features/settings/settings-store';
 
 const LOG = '[wavis:native-media]';
+type RemoteShareType = 'screen_audio' | 'window' | 'audio_only' | 'browser';
+type AudioDeviceKind = 'input' | 'output';
 
 /* ─── Tauri Event Payload Types ─────────────────────────────────── */
 
@@ -26,6 +35,10 @@ interface ScreenShareAvailablePayload {
 }
 
 interface ScreenShareEndedPayload {
+  identity: string;
+}
+
+interface ScreenShareAudioPayload {
   identity: string;
 }
 
@@ -126,6 +139,8 @@ export class NativeMediaModule {
   private unlistenFrame: UnlistenFn | null = null;
   private unlistenAvailable: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
+  private unlistenAudioAvailable: UnlistenFn | null = null;
+  private unlistenAudioEnded: UnlistenFn | null = null;
   private unlistenCameraAvailable: UnlistenFn | null = null;
   private unlistenCameraEnded: UnlistenFn | null = null;
   private disposed = false;
@@ -133,10 +148,32 @@ export class NativeMediaModule {
   private activeCameras = new Map<string, ActiveCameraEntry>();
   private localCamera: ActiveCameraEntry | null = null;
   private localCameraTrack: MediaStreamTrack | null = null;
+  private currentScreenShareQuality: 'low' | 'high' | 'max' = 'high';
+  private remoteShareTypes = new Map<string, RemoteShareType | undefined>();
+  private audioOnlySharers = new Set<string>();
+  private inferredAudioOnlySharers = new Set<string>();
 
   constructor(callbacks: MediaCallbacks) {
     this.callbacks = callbacks;
     console.log(LOG, 'created (native Rust path)');
+  }
+
+  private async applySavedAudioDevice(deviceId: string | null, kind: AudioDeviceKind): Promise<void> {
+    if (!deviceId) return;
+
+    try {
+      await invoke('set_audio_device', { deviceId, kind });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(LOG, `saved ${kind} device unavailable; falling back to system default:`, reason);
+      this.callbacks.onSystemEvent?.(
+        `${kind} device unavailable, using system default`,
+      );
+      await setStoreValue(
+        kind === 'input' ? STORE_KEYS.audioInputDevice : STORE_KEYS.audioOutputDevice,
+        '',
+      ).catch(() => {});
+    }
   }
 
   /** Connect to LiveKit SFU via the Rust-side RealLiveKitConnection. */
@@ -226,7 +263,21 @@ export class NativeMediaModule {
       this.handleScreenShareEnded(event.payload.identity);
     });
 
-    // 5. Subscribe to remote camera availability events. The Rust native
+    // 5. Subscribe to remote screen-share audio availability events. The Rust
+    // native path can receive ScreenshareAudio without any video frames, so
+    // this is the Linux/WebKit equivalent of LiveKitModule's audio-only
+    // publication inference.
+    this.unlistenAudioAvailable = await listen<ScreenShareAudioPayload>('screen_share_audio_available', (event) => {
+      if (this.disposed) return;
+      this.handleScreenShareAudioAvailable(event.payload.identity);
+    });
+
+    this.unlistenAudioEnded = await listen<ScreenShareAudioPayload>('screen_share_audio_ended', (event) => {
+      if (this.disposed) return;
+      this.handleScreenShareAudioEnded(event.payload.identity);
+    });
+
+    // 6. Subscribe to remote camera availability events. The Rust native
     // LiveKit path decodes camera frames, and this module paints them into a
     // canvas-backed MediaStreamTrack so the existing VideoTile UI can render.
     this.unlistenCameraAvailable = await listen<CameraAvailablePayload>('camera_available', (event) => {
@@ -239,9 +290,15 @@ export class NativeMediaModule {
       this.handleCameraEnded(event.payload.identity);
     });
 
-    // 6. Tell Rust to connect
+    // 7. Tell Rust which persisted devices to open before it starts CPAL streams.
     try {
       const denoiseEnabled = await getDenoiseEnabled();
+      const [inputDeviceId, outputDeviceId] = await Promise.all([
+        getAudioInputDevice().catch(() => null),
+        getAudioOutputDevice().catch(() => null),
+      ]);
+      await this.applySavedAudioDevice(inputDeviceId, 'input');
+      await this.applySavedAudioDevice(outputDeviceId, 'output');
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
     } catch (err) {
       this.callbacks.onMediaFailed(
@@ -260,6 +317,8 @@ export class NativeMediaModule {
     if (this.unlistenFrame) { this.unlistenFrame(); this.unlistenFrame = null; }
     if (this.unlistenAvailable) { this.unlistenAvailable(); this.unlistenAvailable = null; }
     if (this.unlistenEnded) { this.unlistenEnded(); this.unlistenEnded = null; }
+    if (this.unlistenAudioAvailable) { this.unlistenAudioAvailable(); this.unlistenAudioAvailable = null; }
+    if (this.unlistenAudioEnded) { this.unlistenAudioEnded(); this.unlistenAudioEnded = null; }
     if (this.unlistenCameraAvailable) { this.unlistenCameraAvailable(); this.unlistenCameraAvailable = null; }
     if (this.unlistenCameraEnded) { this.unlistenCameraEnded(); this.unlistenCameraEnded = null; }
 
@@ -324,6 +383,47 @@ export class NativeMediaModule {
     invoke('media_detach_screen_share_audio', { id: participantIdentity }).catch(() => {});
   }
 
+  /** Keep native Linux audio-only shares in sync with signaling metadata. */
+  setRemoteShareType(participantIdentity: string, shareType?: RemoteShareType): void {
+    this.applyRemoteShareType(participantIdentity, shareType, false);
+  }
+
+  private applyRemoteShareType(
+    participantIdentity: string,
+    shareType: RemoteShareType | undefined,
+    inferred: boolean,
+  ): void {
+    if (inferred) {
+      this.inferredAudioOnlySharers.add(participantIdentity);
+    } else {
+      this.inferredAudioOnlySharers.delete(participantIdentity);
+    }
+    this.remoteShareTypes.set(participantIdentity, shareType);
+    if (shareType === 'audio_only') {
+      if (!this.audioOnlySharers.has(participantIdentity)) {
+        this.audioOnlySharers.add(participantIdentity);
+        this.callbacks.onAudioOnlySharerAdded?.(participantIdentity);
+      }
+      this.attachScreenShareAudio(participantIdentity);
+      return;
+    }
+
+    if (this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+      this.detachScreenShareAudio(participantIdentity);
+    }
+  }
+
+  /** Remove stale remote share metadata when signaling says the share ended. */
+  clearRemoteShareType(participantIdentity: string): void {
+    this.remoteShareTypes.delete(participantIdentity);
+    this.inferredAudioOnlySharers.delete(participantIdentity);
+    if (this.audioOnlySharers.delete(participantIdentity)) {
+      this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
+      this.detachScreenShareAudio(participantIdentity);
+    }
+  }
+
   /** Set master volume (0–100). */
   setMasterVolume(volume: number): void {
     invoke('media_set_master_volume', {
@@ -340,6 +440,7 @@ export class NativeMediaModule {
     // Ok(true) → started, Ok(false) → user cancelled, Err(msg) → reject
     console.log(LOG, 'screen_share_start: invoking IPC command');
     try {
+      await invoke('media_set_screen_share_quality', { quality: this.currentScreenShareQuality });
       const result = await invoke<boolean>('screen_share_start');
       console.log(LOG, 'screen_share_start: IPC returned', result);
       return result;
@@ -361,6 +462,7 @@ export class NativeMediaModule {
    * at runtime without restarting the capture.
    */
   async setScreenShareQuality(quality: 'low' | 'high' | 'max'): Promise<void> {
+    this.currentScreenShareQuality = quality;
     try {
       await invoke('media_set_screen_share_quality', { quality });
       console.log(LOG, `screen share quality set: ${quality}`);
@@ -501,6 +603,11 @@ export class NativeMediaModule {
   private handleScreenShareAvailable(identity: string): void {
     if (this.activeShares.has(identity)) return;
 
+    if (this.inferredAudioOnlySharers.has(identity)) {
+      this.inferredAudioOnlySharers.delete(identity);
+      this.setRemoteShareType(identity, undefined);
+    }
+
     const entry: ActiveShareEntry = {
       stream: null,
       canvas: null,
@@ -510,6 +617,24 @@ export class NativeMediaModule {
 
     console.log(LOG, `screen share available (native viewer path): ${identity}`);
     this.callbacks.onScreenShareSubscribed(identity, null as unknown as MediaStream);
+  }
+
+  private handleScreenShareAudioAvailable(identity: string): void {
+    if (this.activeShares.has(identity)) {
+      return;
+    }
+    if (this.remoteShareTypes.get(identity) !== 'audio_only') {
+      this.applyRemoteShareType(identity, 'audio_only', true);
+    }
+  }
+
+  private handleScreenShareAudioEnded(identity: string): void {
+    if (
+      this.inferredAudioOnlySharers.has(identity) ||
+      this.remoteShareTypes.get(identity) === 'audio_only'
+    ) {
+      this.clearRemoteShareType(identity);
+    }
   }
 
   /** Handle screen_share_ended event — clean up and notify. */

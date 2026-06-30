@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { getState, leaveRoom } from '@features/voice/voice-room';
 import {
   checkForUpdate,
   installUpdateAndRelaunch,
@@ -13,13 +12,16 @@ type PromptState =
   | { kind: 'installing'; update: Update; progress: UpdateProgress }
   | { kind: 'error'; message: string };
 
-function isVoiceRoomActive(): boolean {
+async function leaveActiveVoiceRoom(): Promise<void> {
+  const { getState, leaveRoom } = await import('@features/voice/voice-room');
   const state = getState();
-  return (
+  const isActive =
     state.machineState === 'active' ||
     state.mediaState === 'connecting' ||
-    state.mediaState === 'connected'
-  );
+    state.mediaState === 'connected';
+  if (isActive) {
+    leaveRoom();
+  }
 }
 
 function progressLabel(progress: UpdateProgress): string {
@@ -62,9 +64,6 @@ export default function AppUpdatePrompt() {
 
   const install = () => {
     if (!update) return;
-    if (isVoiceRoomActive()) {
-      leaveRoom();
-    }
 
     setPromptState({
       kind: 'installing',
@@ -72,9 +71,12 @@ export default function AppUpdatePrompt() {
       progress: { downloadedBytes: 0, totalBytes: null },
     });
 
-    void installUpdateAndRelaunch(update, (progress) => {
-      setPromptState({ kind: 'installing', update, progress });
-    }).catch((err) => {
+    void (async () => {
+      await leaveActiveVoiceRoom();
+      await installUpdateAndRelaunch(update, (progress) => {
+        setPromptState({ kind: 'installing', update, progress });
+      });
+    })().catch((err) => {
       setPromptState({
         kind: 'error',
         message: err instanceof Error ? err.message : String(err),

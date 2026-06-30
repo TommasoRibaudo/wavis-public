@@ -24,8 +24,7 @@ use super::super::audio_capture_state::{
 use super::macos_routing::{
     bare_sck_fallback_result, plan_virtual_device_teardown, select_default_path,
     select_macos_audio_share_decision, MacAudioShareDecision, MacosAudioCapturePath,
-    VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot,
-    VirtualDeviceTeardownTrigger,
+    VirtualDeviceTeardownAction, VirtualDeviceTeardownSnapshot, VirtualDeviceTeardownTrigger,
 };
 use super::macos_virtual_device::{
     cleanup_stale_multi_output_devices, create_multi_output_device, destroy_multi_output_device,
@@ -824,7 +823,6 @@ fn sck_process_audio_buffer(
         }
     }
 }
-
 
 // ── enumerate_wavis_pids ──────────────────────────────────────────────────
 
@@ -1934,7 +1932,11 @@ fn audio_share_start_macos(
         );
     }
 
-    let selected_path = select_default_path(version, tap_result.is_some(), virtual_device_result.is_some());
+    let selected_path = select_default_path(
+        version,
+        tap_result.is_some(),
+        virtual_device_result.is_some(),
+    );
     let (decision, selected_result) =
         select_macos_audio_share_decision(tap_result, virtual_device_result);
     match decision {

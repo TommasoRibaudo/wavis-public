@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { getStoreValue, setStoreValue, STORE_KEYS } from '@features/settings/settings-store';
-import BugReportFlow from './BugReportFlow';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -12,6 +11,11 @@ const BUTTON_HEIGHT = 40;
 const EXPANDED_WIDTH = 140;
 const DRAG_THRESHOLD = 4;
 export const TITLE_BAR_HEIGHT = 32; // h-8, keeps button out of the OS drag region
+
+type BugReportFlowComponent = ComponentType<{
+  onClose: () => void;
+  preScreenshot?: Uint8Array | null;
+}>;
 
 /* ─── Snap Logic (exported for testing) ─────────────────────────── */
 
@@ -85,13 +89,95 @@ export function getHoverLabelPositionClass(expandLeft: boolean): string {
 
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
-export default function BugReportButton() {
-  const [position, setPosition] = useState<{ x: number; y: number }>({ x: -1, y: -1 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+function useBugReportLauncher({ captureScreenshot = true }: { captureScreenshot?: boolean } = {}) {
   const [showFlow, setShowFlow] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [preScreenshot, setPreScreenshot] = useState<Uint8Array | null>(null);
+  const [FlowComponent, setFlowComponent] = useState<BugReportFlowComponent | null>(null);
+
+  const handleClick = useCallback(async () => {
+    if (isCapturing) return;
+
+    // If the flow is already open, dismiss it so the user can re-click to
+    // start a fresh report with a new screenshot.
+    if (showFlow) {
+      setShowFlow(false);
+      setPreScreenshot(null);
+      setFlowComponent(null);
+      return;
+    }
+
+    // Capture the screenshot NOW, before the panel renders, so the panel
+    // itself doesn't appear in the screenshot. Secondary video windows can
+    // have platform-specific native capture failures, so callers may opt out.
+    setIsCapturing(true);
+    let screenshot: Uint8Array | null = null;
+    if (captureScreenshot) {
+      try {
+        const bytes = await invoke<number[]>('capture_window_screenshot');
+        screenshot = new Uint8Array(bytes);
+      } catch (err) {
+        console.warn('[bug-report] capture_window_screenshot failed:', err);
+      }
+    }
+    try {
+      const { default: BugReportFlow } = await import('./BugReportFlow');
+      setPreScreenshot(screenshot);
+      setFlowComponent(() => BugReportFlow);
+      setShowFlow(true);
+    } catch (err) {
+      console.warn('[bug-report] failed to load bug report flow:', err);
+    } finally {
+      setIsCapturing(false);
+    }
+  }, [captureScreenshot, isCapturing, showFlow]);
+
+  const flow = showFlow && FlowComponent ? (
+    <FlowComponent
+      preScreenshot={preScreenshot}
+      onClose={() => {
+        setShowFlow(false);
+        setPreScreenshot(null);
+        setFlowComponent(null);
+      }}
+    />
+  ) : null;
+
+  return { flow, handleClick, isCapturing };
+}
+
+export function FixedBugReportButton({
+  captureScreenshot = true,
+  className = '',
+}: {
+  captureScreenshot?: boolean;
+  className?: string;
+}) {
+  const { flow, handleClick, isCapturing } = useBugReportLauncher({ captureScreenshot });
+
+  return (
+    <>
+      <button
+        aria-label="Report Bug"
+        title={isCapturing ? 'Capturing...' : 'Report Bug'}
+        onClick={handleClick}
+        className={`inline-flex items-center justify-center w-8 h-8 shrink-0 font-mono text-xs
+          text-wavis-text-secondary hover:bg-wavis-panel hover:text-wavis-accent transition-colors ${className}`}
+        style={{ appRegion: 'no-drag' } as React.CSSProperties}
+        data-no-drag
+      >
+        [!]
+      </button>
+      {flow}
+    </>
+  );
+}
+
+export default function BugReportButton() {
+  const { flow, handleClick: launchBugReport, isCapturing } = useBugReportLauncher();
+  const [position, setPosition] = useState<{ x: number; y: number }>({ x: -1, y: -1 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
   const [isChromeless, setIsChromeless] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -200,30 +286,9 @@ export default function BugReportButton() {
   }, [position]);
 
   const handleClick = useCallback(async () => {
-    if (isDragging || isCapturing) return;
-
-    // If the flow is already open, dismiss it so the user can re-click to
-    // start a fresh report with a new screenshot.
-    if (showFlow) {
-      setShowFlow(false);
-      setPreScreenshot(null);
-      return;
-    }
-
-    // Capture the screenshot NOW, before the panel renders, so the panel
-    // itself doesn't appear in the screenshot.
-    setIsCapturing(true);
-    let screenshot: Uint8Array | null = null;
-    try {
-      const bytes = await invoke<number[]>('capture_window_screenshot');
-      screenshot = new Uint8Array(bytes);
-    } catch (err) {
-      console.warn('[bug-report] capture_window_screenshot failed:', err);
-    }
-    setPreScreenshot(screenshot);
-    setIsCapturing(false);
-    setShowFlow(true);
-  }, [isDragging, isCapturing, showFlow]);
+    if (isDragging) return;
+    await launchBugReport();
+  }, [isDragging, launchBugReport]);
 
   // Don't render in chromeless windows
   if (isChromeless) return null;
@@ -267,12 +332,7 @@ export default function BugReportButton() {
         )}
       </button>
 
-      {showFlow && (
-        <BugReportFlow
-          preScreenshot={preScreenshot}
-          onClose={() => { setShowFlow(false); setPreScreenshot(null); }}
-        />
-      )}
+      {flow}
     </>
   );
 }

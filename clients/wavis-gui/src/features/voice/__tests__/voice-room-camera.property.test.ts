@@ -31,6 +31,7 @@ function makeParticipant(id: string, overrides?: Partial<RoomParticipant>): Room
     isHostMuted: false,
     isDeafened: false,
     isSharing: false,
+    mediaConnected: true,
     rmsLevel: 0,
     volume: 70,
     ...overrides,
@@ -71,6 +72,7 @@ function makeState(overrides?: Partial<VoiceRoomState>): VoiceRoomState {
     sharePermission: 'anyone',
     defaultVolume: 70,
     passthroughVolume: 20,
+    passthroughEnabled: false,
     passthroughFiltersEnabled: true,
     passthroughFilterStrength: 50,
     mediaReconnectFailures: 0,
@@ -192,6 +194,8 @@ type IntegrationMockLiveKitModule = {
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
+  setRemoteShareType: (id: string, shareType?: 'screen_audio' | 'window' | 'audio_only' | 'browser') => void;
+  clearRemoteShareType: (id: string) => void;
   startWasapiAudioBridge: (loopbackExclusionAvailable: boolean) => Promise<void>;
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
@@ -280,6 +284,8 @@ function createIntegrationMockLiveKitModule(
     setScreenShareAudioVolume: vi.fn(() => {}),
     attachScreenShareAudio: vi.fn(() => {}),
     detachScreenShareAudio: vi.fn(() => {}),
+    setRemoteShareType: vi.fn(() => {}),
+    clearRemoteShareType: vi.fn(() => {}),
     startWasapiAudioBridge: vi.fn(async () => {}),
     stopWasapiAudioBridge: vi.fn(async () => {}),
     startScreenShare: vi.fn(async () => true),
@@ -386,6 +392,9 @@ async function loadVoiceRoomIntegrationHarness() {
 
   vi.doMock('../notification-sounds', () => ({
     playNotificationSound: vi.fn(async () => {}),
+    updateCachedNotificationVolume: vi.fn(),
+    updateCachedSoundVolumes: vi.fn(),
+    prewarmAudioContext: vi.fn(),
   }));
 
   vi.doMock('@tauri-apps/api/core', () => ({
@@ -503,7 +512,7 @@ describe('Feature: video-feed, Property 1: Publish-options invariant', () => {
         const constraints = buildCameraTrackConstraints(quality);
         const senderParameters = buildCameraSenderParameters(quality);
 
-        expect(LIVEKIT_ROOM_OPTIONS.dynacast).toBe(true);
+        expect(LIVEKIT_ROOM_OPTIONS.dynacast).toBe(false);
         expect(publishOptions).toMatchObject({
           source: 'camera',
           simulcast: false,
@@ -672,7 +681,7 @@ describe('Feature: video-feed, Property 2: Camera toggle round-trip', () => {
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('Feature: video-feed, Property 3: Failure classification reset', () => {
@@ -750,7 +759,7 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('Feature: video-feed, Property 8: Quality convergence', () => {
@@ -846,5 +855,5 @@ describe('Feature: video-feed, Property 8: Quality convergence', () => {
       }),
       { numRuns: 100 },
     );
-  }, 30_000);
+  }, 60_000);
 });

@@ -14,10 +14,7 @@ const channels: Channel[] = [
 
 describe('resolveInitialRedirect', () => {
   it('shows the channel list when there is no saved channel', () => {
-    expect(resolveInitialRedirect(null, channels)).toEqual({
-      kind: 'list',
-      clearStaleLastChannel: false,
-    });
+    expect(resolveInitialRedirect(null, channels)).toEqual({ kind: 'list' });
   });
 
   it('redirects to the saved channel when it is still accessible', () => {
@@ -29,15 +26,12 @@ describe('resolveInitialRedirect', () => {
     ).toEqual({ kind: 'room', channel: channels[0] });
   });
 
-  it('shows the channel list and clears stale state when saved channel is inaccessible', () => {
+  it('shows the channel list when saved channel is not in the current list', () => {
     expect(
       resolveInitialRedirect(
         { id: 'channel-old-account', name: 'old account channel', role: 'member' },
         channels,
       ),
-    ).toEqual({
-      kind: 'list',
-      clearStaleLastChannel: true,
-    });
+    ).toEqual({ kind: 'list' });
   });
 });

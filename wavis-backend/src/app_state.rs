@@ -152,6 +152,10 @@ pub struct AppState {
     pub github_bug_report_repo: String,
     /// LLM client for bug report analysis (server-side, developer-provided API key).
     pub llm_client: Arc<dyn LlmClient>,
+    /// Separate rate limiter for LLM-powered endpoints (5/day per IP by default).
+    pub llm_rate_limiter: Arc<BugReportRateLimiter>,
+    /// Bearer token for admin bug report management endpoints. None = disabled.
+    pub admin_token: Option<String>,
     /// Argon2id configuration for phrase hashing.
     pub phrase_config: Arc<phrase::PhraseConfig>,
     /// AES-256-GCM encryption key for phrase_salt and phrase_verifier at-rest encryption.
@@ -291,6 +295,21 @@ impl AppState {
             github_client,
             github_bug_report_repo,
             llm_client,
+            llm_rate_limiter: Arc::new(BugReportRateLimiter::new(BugReportRateLimiterConfig {
+                max_requests: std::env::var("LLM_RATE_LIMIT_MAX")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5),
+                window: std::time::Duration::from_secs(
+                    std::env::var("LLM_RATE_LIMIT_WINDOW_SECS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(86400),
+                ),
+            })),
+            admin_token: std::env::var("ADMIN_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
             refresh_token_pepper,
             refresh_token_pepper_previous,
             active_room_map: Arc::new(RwLock::new(HashMap::new())),

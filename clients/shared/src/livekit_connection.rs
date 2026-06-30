@@ -69,6 +69,12 @@ pub struct RealLiveKitConnection {
     /// The callback MUST NOT block — it is invoked on a background task.
     #[allow(clippy::type_complexity)]
     audio_cb: Arc<Mutex<Option<Box<dyn Fn(&str, &[f32]) + Send + 'static>>>>,
+    /// Callback for when a remote screen-share audio track is subscribed.
+    #[allow(clippy::type_complexity)]
+    screen_share_audio_available_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
+    /// Callback for when a remote screen-share audio track is unsubscribed.
+    #[allow(clippy::type_complexity)]
+    screen_share_audio_ended_cb: Arc<Mutex<Option<Box<dyn Fn(&str) + Send + 'static>>>>,
     /// Background task handle for the room event listener loop.
     event_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Background task that pushes mic PCM into the NativeAudioSource.
@@ -163,6 +169,8 @@ impl RealLiveKitConnection {
             published_track: Arc::new(Mutex::new(None)),
             mic_enabled: Arc::new(AtomicBool::new(false)),
             audio_cb: Arc::new(Mutex::new(None)),
+            screen_share_audio_available_cb: Arc::new(Mutex::new(None)),
+            screen_share_audio_ended_cb: Arc::new(Mutex::new(None)),
             event_task: Arc::new(Mutex::new(None)),
             capture_task: Arc::new(Mutex::new(None)),
             closing: Arc::new(AtomicBool::new(false)),
@@ -306,6 +314,8 @@ impl LiveKitConnection for RealLiveKitConnection {
 
         // Clone Arcs for the background event task.
         let audio_cb = Arc::clone(&self.audio_cb);
+        let screen_share_audio_available_cb = Arc::clone(&self.screen_share_audio_available_cb);
+        let screen_share_audio_ended_cb = Arc::clone(&self.screen_share_audio_ended_cb);
         let video_frame_cb = Arc::clone(&self.video.video_frame_cb);
         let video_track_ended_cb = Arc::clone(&self.video.video_track_ended_cb);
         let camera_frame_cb = Arc::clone(&self.video.camera_frame_cb);
@@ -369,6 +379,13 @@ impl LiveKitConnection for RealLiveKitConnection {
                             publication.sid(),
                             publication.name(),
                         );
+                        if source == TrackSource::ScreenshareAudio {
+                            if let Some(cb) =
+                                screen_share_audio_available_cb.lock().unwrap().as_ref()
+                            {
+                                cb(&participant_id);
+                            }
+                        }
                         let audio_cb = Arc::clone(&audio_cb);
                         let closing2 = Arc::clone(&closing);
                         #[cfg(feature = "real-backends")]
@@ -461,6 +478,25 @@ impl LiveKitConnection for RealLiveKitConnection {
                             }
                         } else if let Some(cb) = video_track_ended_cb.lock().unwrap().as_ref() {
                             cb(&participant_id);
+                        }
+                    }
+                    livekit::RoomEvent::TrackUnsubscribed {
+                        track: RemoteTrack::Audio(_),
+                        publication,
+                        participant,
+                        ..
+                    } => {
+                        let participant_id = participant.identity().to_string();
+                        let source = publication.source();
+                        log::info!(
+                            "livekit_audio: audio track unsubscribed from {participant_id}, source={source:?}"
+                        );
+                        if source == TrackSource::ScreenshareAudio {
+                            if let Some(cb) =
+                                screen_share_audio_ended_cb.lock().unwrap().as_ref()
+                            {
+                                cb(&participant_id);
+                            }
                         }
                     }
                     livekit::RoomEvent::ParticipantDisconnected(participant) => {
@@ -630,6 +666,14 @@ impl LiveKitConnection for RealLiveKitConnection {
 
     fn on_camera_track_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
         *self.video.camera_track_ended_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_screen_share_audio_available(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.screen_share_audio_available_cb.lock().unwrap() = Some(cb);
+    }
+
+    fn on_screen_share_audio_ended(&self, cb: Box<dyn Fn(&str) + Send + 'static>) {
+        *self.screen_share_audio_ended_cb.lock().unwrap() = Some(cb);
     }
 
     // Task 4.3

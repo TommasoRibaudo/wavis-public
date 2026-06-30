@@ -661,9 +661,12 @@ pub async fn list_bans(
 
     // 2. Query banned members, ordered by banned_at DESC
     let rows = sqlx::query(
-        "SELECT user_id, banned_at FROM channel_memberships \
-         WHERE channel_id = $1 AND banned_at IS NOT NULL \
-         ORDER BY banned_at DESC",
+        "SELECT cm.user_id, cm.banned_at, \
+                COALESCE(u.username, '') AS display_name \
+         FROM channel_memberships cm \
+         LEFT JOIN users u ON u.user_id = cm.user_id \
+         WHERE cm.channel_id = $1 AND cm.banned_at IS NOT NULL \
+         ORDER BY cm.banned_at DESC",
     )
     .bind(channel_id)
     .fetch_all(pool)
@@ -675,6 +678,7 @@ pub async fn list_bans(
         .map(|row| BannedMemberInfo {
             user_id: row.get("user_id"),
             banned_at: row.get("banned_at"),
+            display_name: row.get("display_name"),
         })
         .collect())
 }

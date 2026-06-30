@@ -4,14 +4,17 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { startReceiving, stopReceiving } from './screen-share-viewer';
 import type { ShareQuality } from '@features/voice/voice-room';
-import { useShareTransitionOverlay } from './share-transition';
+import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
 import { useShareReconnect } from './useShareReconnect';
 import { useAutoHide } from '@shared/hooks/useAutoHide';
 import { useFullscreen } from '@shared/hooks/useFullscreen';
 import StreamHoverBar from '@shared/StreamHoverBar';
 import type { MixerParticipant } from '@shared/ParticipantMixer';
+import FullscreenButton from '@shared/FullscreenButton';
+import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 import ShareSwitchingOverlay from './ShareSwitchingOverlay';
+import ShareLoadingOverlay from './ShareLoadingOverlay';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 
@@ -28,6 +31,7 @@ interface ShareWindowParams {
   isOwner: boolean;
   canvasFallback?: boolean;
   initialVolume?: number;
+  initialMuted?: boolean;
 }
 
 interface PolledScreenShareFrame {
@@ -68,7 +72,7 @@ export default function ScreenSharePage() {
   const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [volume, setVolume] = useState(initialVolume);
-  const [muted, setMuted] = useState(initialVolume === 0);
+  const [muted, setMuted] = useState(shareParams?.initialMuted ?? (initialVolume === 0));
   const [quality, setQuality] = useState<ShareQuality>('high');
   const [sharingAudio, setSharingAudio] = useState(false);
   const [userState, setUserState] = useState<ShareUserState>({
@@ -78,7 +82,7 @@ export default function ScreenSharePage() {
   const [voiceParticipants, setVoiceParticipants] = useState<MixerParticipant[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [debugInfo, setDebugInfo] = useState('init');
-  const { isSwitching, markFrameRendered } = useShareTransitionOverlay({
+  const { isSwitching, hasRenderedFrame, markFrameRendered } = useShareTransitionOverlay({
     hasSurface: Boolean(stream) || Boolean(shareParams?.canvasFallback),
     hasError: Boolean(error),
   });
@@ -324,10 +328,10 @@ export default function ScreenSharePage() {
 
   useEffect(() => {
     if (!p) return;
-    const unlisten = listen<{ participantId: string; volume: number }>('screen-share:restore-volume', (event) => {
+    const unlisten = listen<{ participantId: string; volume: number; muted: boolean }>('screen-share:restore-volume', (event) => {
       if (event.payload.participantId !== p.participantId) return;
       setVolume(event.payload.volume);
-      setMuted(event.payload.volume === 0);
+      setMuted(event.payload.muted);
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [p]);
@@ -466,9 +470,7 @@ export default function ScreenSharePage() {
     if (!p) return;
     setMuted((prev) => {
       const nextMuted = !prev;
-      // Use local-audio so the gain is set without writing 0 into shareVolumes.
-      // This lets Watch All re-open at the slider's actual position (not muted).
-      emit('screen-share:local-audio', { participantId: p.participantId, volume: nextMuted ? 0 : volume });
+      emit('screen-share:mute-change', { participantId: p.participantId, muted: nextMuted });
       return nextMuted;
     });
   }, [p, volume]);
@@ -617,6 +619,8 @@ export default function ScreenSharePage() {
           </span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
+          <FixedBugReportButton captureScreenshot={false} />
+          <FullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
           <button
             onClick={handleClose}
             className="inline-flex items-center justify-center w-8 h-8 hover:bg-wavis-danger hover:text-wavis-text-contrast text-wavis-danger shrink-0 transition-colors"
@@ -685,6 +689,7 @@ export default function ScreenSharePage() {
           </div>
         )}
         {isSwitching && <ShareSwitchingOverlay displayName={p.username} />}
+        {shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && <ShareLoadingOverlay />}
 
         {/* Zoom overlay */}
         {zoom > 1 && (
@@ -726,8 +731,6 @@ export default function ScreenSharePage() {
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
           onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={toggleFullscreen}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (

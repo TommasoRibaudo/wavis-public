@@ -2,6 +2,35 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn start_share_accepts_legacy_and_typed_payloads() {
+    assert_eq!(
+        parse(r#"{"type":"start_share"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload::default()),
+    );
+    assert_eq!(
+        parse(r#"{"type":"start_share","shareType":"audio_only"}"#).unwrap(),
+        SignalingMessage::StartShare(StartSharePayload {
+            share_type: Some(WireShareType::AudioOnly),
+        }),
+    );
+    assert!(parse(r#"{"type":"start_share","shareType":"unexpected"}"#).is_err());
+}
+
+#[test]
+fn share_state_serializes_typed_metadata_and_legacy_ids() {
+    let json = to_json(&SignalingMessage::ShareState(ShareStatePayload {
+        participant_ids: vec!["peer-1".to_string()],
+        active_shares: vec![ActiveSharePayload {
+            participant_id: "peer-1".to_string(),
+            share_type: Some(WireShareType::Window),
+        }],
+    }))
+    .unwrap();
+    assert!(json.contains(r#""participantIds":["peer-1"]"#));
+    assert!(json.contains(r#""activeShares":[{"participantId":"peer-1","shareType":"window"}]"#));
+}
+
+#[test]
 fn chat_payloads_serialize_optional_user_id_as_user_id() {
     let chat = SignalingMessage::ChatMessage(ChatMessagePayload {
         participant_id: "peer-1".to_string(),
@@ -147,6 +176,15 @@ fn test_set_passthrough_volume_round_trip() {
 }
 
 #[test]
+fn test_set_passthrough_enabled_round_trip() {
+    let msg =
+        SignalingMessage::SetPassthroughEnabled(SetPassthroughEnabledPayload { enabled: true });
+    let json = to_json(&msg).unwrap();
+    assert_eq!(json, r#"{"type":"set_passthrough_enabled","enabled":true}"#);
+    assert_eq!(parse(&json).unwrap(), msg);
+}
+
+#[test]
 fn test_set_passthrough_filter_round_trip() {
     let msg = SignalingMessage::SetPassthroughFilter(SetPassthroughFilterPayload {
         enabled: true,
@@ -166,6 +204,7 @@ fn test_sub_room_state_passthrough_volume_round_trip() {
     let msg = SignalingMessage::SubRoomState(SubRoomStatePayload {
         rooms: vec![],
         passthrough: None,
+        passthrough_enabled: true,
         passthrough_volume_percent: 42,
         passthrough_filters_enabled: true,
         passthrough_filter_strength: 50,
@@ -194,6 +233,7 @@ fn test_sub_room_state_passthrough_volume_default_on_absent_field() {
     match parsed {
         SignalingMessage::SubRoomState(p) => {
             assert_eq!(p.passthrough_volume_percent, 20);
+            assert!(!p.passthrough_enabled);
             assert!(p.passthrough_filters_enabled);
             assert_eq!(p.passthrough_filter_strength, 50);
         }
@@ -239,6 +279,7 @@ fn test_sub_room_state_round_trip() {
             target_sub_room_id: "sub-room-2".to_string(),
             label: "1 - 2".to_string(),
         }),
+        passthrough_enabled: true,
         passthrough_volume_percent: 20,
         passthrough_filters_enabled: true,
         passthrough_filter_strength: 50,
@@ -431,7 +472,7 @@ proptest! {
                            "create_room", "room_created",
                            "auth", "auth_success", "auth_failed",
                            "join_voice", "create_sub_room", "join_sub_room", "leave_sub_room",
-                           "set_passthrough", "clear_passthrough", "set_passthrough_volume",
+                           "set_passthrough", "clear_passthrough", "set_passthrough_enabled", "set_passthrough_volume",
                            "set_passthrough_filter",
                            "sub_room_state", "sub_room_created", "sub_room_joined",
                            "sub_room_left", "sub_room_deleted",

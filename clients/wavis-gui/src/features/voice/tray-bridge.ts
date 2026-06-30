@@ -13,23 +13,26 @@ import { emit, listen } from '@tauri-apps/api/event';
 // ─── Types ─────────────────────────────────────────────────────────
 
 /** Actions the Rust tray menu can send to the frontend. */
-export type TrayAction = 'toggle-mute' | 'leave' | 'show';
+export type TrayAction = 'toggle-mute' | 'toggle-deafen' | 'leave' | 'show';
 
 /** State the frontend sends to Rust to update tray menu items. */
 export interface TrayStateUpdate {
   inVoiceSession: boolean;
   isMuted: boolean;
+  isDeafened: boolean;
 }
 
 /** Enable/disable state for tray menu items. */
 export interface TrayMenuState {
   muteEnabled: boolean;
+  deafenEnabled: boolean;
   leaveEnabled: boolean;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────
 
 const LOG = '[wavis:tray]';
+const DEBUG_TRAY = import.meta.env.VITE_DEBUG_TRAY === 'true';
 const TRAY_EVENT = 'tray-event';
 const TRAY_STATE_UPDATE_EVENT = 'tray-state-update';
 
@@ -42,6 +45,7 @@ const TRAY_STATE_UPDATE_EVENT = 'tray-state-update';
 export function computeTrayMenuState(update: TrayStateUpdate): TrayMenuState {
   return {
     muteEnabled: update.inVoiceSession,
+    deafenEnabled: update.inVoiceSession,
     leaveEnabled: update.inVoiceSession,
   };
 }
@@ -52,6 +56,14 @@ export function computeTrayMenuState(update: TrayStateUpdate): TrayMenuState {
  */
 export function muteMenuLabel(isMuted: boolean): string {
   return isMuted ? 'Unmute' : 'Mute';
+}
+
+/**
+ * Return the label for the deafen menu item based on current deafen state.
+ * "Undeafen" when deafened, "Deafen" when not deafened.
+ */
+export function deafenMenuLabel(isDeafened: boolean): string {
+  return isDeafened ? 'Undeafen' : 'Deafen';
 }
 
 /**
@@ -72,7 +84,7 @@ export function listenTrayEvents(handler: (action: TrayAction) => void): () => v
   let unlisten: (() => void) | null = null;
 
   listen<{ action: TrayAction }>(TRAY_EVENT, (event) => {
-    console.log(LOG, 'received tray action:', event.payload.action);
+    if (DEBUG_TRAY) console.log(LOG, 'received tray action:', event.payload.action);
     handler(event.payload.action);
   })
     .then((fn) => {
