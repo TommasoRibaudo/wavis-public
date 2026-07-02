@@ -17,9 +17,6 @@
 name: Updater Manifest
 
 on:
-  push:
-    tags:
-      - "desktop-v*"
   workflow_dispatch:
     inputs:
       tag:
