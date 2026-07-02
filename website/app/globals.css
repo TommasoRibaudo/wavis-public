@@ -137,6 +137,36 @@
   }
 }
 
+.wavis-stream-preview {
+  position: relative;
+  background:
+    linear-gradient(rgba(30, 30, 46, 0.12), rgba(30, 30, 46, 0.12)),
+    url("/screen-share-demo.gif"),
+    linear-gradient(135deg, rgba(137, 180, 250, 0.24), rgba(203, 166, 247, 0.18));
+  background-position: center;
+  background-size: cover;
+}
+
+.wavis-stream-preview::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(205, 214, 244, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(205, 214, 244, 0.06) 1px, transparent 1px);
+  background-size: 14px 10px;
+  animation: wavis-stream-pan 2.4s linear infinite;
+}
+
+@keyframes wavis-stream-pan {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 28px 20px, 28px 20px;
+  }
+}
+
 /* Respect users who ask for less motion: freeze the waveform and caret. */
 @media (prefers-reduced-motion: reduce) {
   *,

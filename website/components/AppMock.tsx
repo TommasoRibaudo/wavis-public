@@ -147,7 +147,10 @@ export function AppMock() {
                 <Waveform bars={4} height={12} />
                 screen share
               </div>
-              <div className="h-8 border border-border bg-surface/60" />
+              <div
+                className="wavis-stream-preview h-8 overflow-hidden border border-border bg-surface/60"
+                aria-hidden="true"
+              />
             </div>
           </div>
 
