@@ -52,13 +52,7 @@ export function WaveDivider() {
   return (
     <div
       aria-hidden="true"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 16,
-        padding: "0 24px",
-        opacity: 0.5,
-      }}
+      className="mx-auto flex w-full max-w-5xl items-center gap-4 px-6 opacity-50"
     >
       <span style={{ flex: 1, height: 1, background: "var(--color-border)" }} />
       <Waveform bars={9} height={14} color="var(--color-muted)" />

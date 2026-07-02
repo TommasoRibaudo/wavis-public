@@ -34,7 +34,7 @@ const FEATURES: Feature[] = [
 
 export function Features() {
   return (
-    <section className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-24">
+    <section className="mx-auto w-full max-w-5xl px-6 pb-20 pt-8 sm:pb-24 sm:pt-10">
       <div className="mb-10">
         <p className="mb-2 text-xs uppercase tracking-widest text-muted">
           what it is

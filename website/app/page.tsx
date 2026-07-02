@@ -18,14 +18,22 @@ export default function Home() {
       </a>
       <main>
         <Hero />
-        <WaveDivider />
-        <Features />
-        <WaveDivider />
-        <Downloads />
-        <WaveDivider />
-        <OpenSource />
-        <WaveDivider />
-        <MailingList />
+        <section className="bg-panel/35">
+          <WaveDivider />
+          <Features />
+        </section>
+        <section className="bg-bg">
+          <WaveDivider />
+          <Downloads />
+        </section>
+        <section className="bg-crust/30">
+          <WaveDivider />
+          <OpenSource />
+        </section>
+        <section className="bg-panel/35">
+          <WaveDivider />
+          <MailingList />
+        </section>
       </main>
       <Footer />
     </ReleaseProvider>

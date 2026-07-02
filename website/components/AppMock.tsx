@@ -1,4 +1,3 @@
-import { HeroCommand } from "./HeroCommand";
 import { Waveform } from "./Waveform";
 
 // A functional mock of the Wavis window — the page's main product signal.
@@ -6,23 +5,12 @@ import { Waveform } from "./Waveform";
 // <img> can replace it later without shifting the layout.
 
 const CHAT = [
-  { time: "09:41:08", user: "alex", color: "text-blue", text: "joining from desktop" },
-  { time: "09:41:22", user: "mira", color: "text-purple", text: "audio is clear" },
   { time: "09:42:05", user: "sam", color: "text-warn", text: "starting screen share" },
-  { divider: "planning room" },
-  { time: "09:42:18", user: "alex", color: "text-blue", text: "watch-all is open" },
-  { time: "09:43:10", user: "mira", color: "text-purple", text: "let's split into breakout rooms" },
   {
-    time: "09:44:03",
-    user: "sam",
+    time: "09:43:10",
+    user: "mira",
     color: "text-purple",
-    text: "sharing app window + system audio",
-  },
-  {
-    time: "09:45:31",
-    user: "nora",
-    color: "text-accent",
-    text: "moved to Room 2",
+    text: "let's split into breakout rooms",
   },
 ];
 
@@ -113,25 +101,14 @@ export function AppMock() {
           </div>
 
           <div className="space-y-1.5 overflow-hidden p-3">
-            {CHAT.map((item, index) =>
-              "divider" in item ? (
-                <div key={`${item.divider}-${index}`} className="flex items-center gap-2 text-muted">
-                  <span className="h-px flex-1 bg-muted" />
-                  <span>{item.divider}</span>
-                  <span className="h-px flex-1 bg-muted" />
-                </div>
-              ) : (
-                <p key={`${item.time}-${item.user}`} className="truncate text-text">
-                  <span className="text-muted">[{item.time}] </span>
-                  <span className={item.color}>{item.user}</span>
-                  <span>: </span>
-                  <span>{item.text}</span>
-                </p>
-              ),
-            )}
-            <div className="mt-1 hidden rounded border border-border bg-crust px-2 py-1 sm:block">
-              <HeroCommand />
-            </div>
+            {CHAT.map((item) => (
+              <p key={`${item.time}-${item.user}`} className="truncate text-text">
+                <span className="text-muted">[{item.time}] </span>
+                <span className={item.color}>{item.user}</span>
+                <span>: </span>
+                <span>{item.text}</span>
+              </p>
+            ))}
           </div>
 
           <div className="border-t border-border px-3 py-1.5">

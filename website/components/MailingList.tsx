@@ -52,9 +52,9 @@ export function MailingList() {
   return (
     <section
       id="updates"
-      className="mx-auto w-full max-w-5xl scroll-mt-8 px-6 py-20 sm:py-24"
+      className="mx-auto w-full max-w-5xl scroll-mt-8 px-6 pb-20 pt-8 sm:pb-24 sm:pt-10"
     >
-      <div className="rounded-md border border-border bg-panel p-8 sm:p-10">
+      <div className="rounded-md border border-border bg-bg p-8 shadow-2xl shadow-black/15 sm:p-10">
         <p className="mb-2 text-xs uppercase tracking-widest text-muted">
           mailing list
         </p>
