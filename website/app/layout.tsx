@@ -11,12 +11,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://wavis.app";
+const SITE_TITLE = "Wavis";
 const DESCRIPTION =
   "Wavis is a native desktop app for invite-only voice rooms with low-latency audio, screen sharing, and few, obvious controls. No browser required.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: "Wavis: native voice rooms for small private groups",
+  title: SITE_TITLE,
   description: DESCRIPTION,
   applicationName: "Wavis",
   keywords: [
@@ -38,7 +39,7 @@ export const metadata: Metadata = {
     type: "website",
     url: SITE_URL,
     siteName: "Wavis",
-    title: "Wavis: native voice rooms for small private groups",
+    title: SITE_TITLE,
     description: DESCRIPTION,
     images: [
       {
@@ -51,7 +52,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    title: "Wavis: native voice rooms for small private groups",
+    title: SITE_TITLE,
     description: DESCRIPTION,
     images: ["/og.png"],
   },

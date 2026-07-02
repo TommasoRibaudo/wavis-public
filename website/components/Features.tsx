@@ -8,26 +8,26 @@ interface Feature {
 const FEATURES: Feature[] = [
   {
     marker: "#",
-    title: "Invite-only rooms",
-    body: "Rooms are private and capped at six people. You share a code; nobody wanders in.",
+    title: "Lightweight native app",
+    body: "Fast startup, small footprint, and no browser tab sitting between you and the room.",
     accent: "var(--color-accent)",
   },
   {
-    marker: "▸",
-    title: "Native desktop app",
-    body: "A real app for macOS, Windows, and Linux. No tab, no browser, lower latency.",
+    marker: "◉",
+    title: "Camera and sharp screen sharing",
+    body: "Turn on camera when it helps, or share a high-quality stream with controls that stay obvious.",
     accent: "var(--color-blue)",
   },
   {
-    marker: "◉",
-    title: "Voice, camera, and screen sharing",
-    body: "Talk, turn on your camera, or share a screen. Watch one stream or all of them at once.",
+    marker: "▮",
+    title: "Audio-only sharing",
+    body: "Share system audio without showing your screen when the conversation only needs sound.",
     accent: "var(--color-purple)",
   },
   {
     marker: "/",
-    title: "Controls that match what you do",
-    body: "Mute, share, join, leave. Every control maps to one action and says what it does.",
+    title: "Open source and self-deployable",
+    body: "Read the code, audit the server, or run your own Wavis stack for private groups.",
     accent: "var(--color-warn)",
   },
 ];
@@ -40,7 +40,7 @@ export function Features() {
           what it is
         </p>
         <h2 className="text-2xl font-bold sm:text-3xl">
-          Small rooms, explicit controls
+          Lightweight, native, and yours to run
         </h2>
       </div>
 

@@ -25,7 +25,7 @@ const LABELS: Record<Platform, string> = {
 
 // Hero primary CTA. Targets the visitor's OS once detected; before that (and
 // with JS off) it points at the download section so it is never a dead end.
-export function PrimaryDownloadButton() {
+export function PrimaryDownloadButton({ showMeta = true }: { showMeta?: boolean }) {
   const { urls, platform, version } = useRelease();
   const href = platform ? urls[platform] : "#download";
   const label = platform ? `Download for ${LABELS[platform]}` : "Download Wavis";
@@ -40,9 +40,11 @@ export function PrimaryDownloadButton() {
         <span aria-hidden="true">▸</span>
         {label}
       </a>
-      <span className="text-xs text-muted" aria-live="polite">
-        {version ? `${version} · ` : ""}macOS · Windows · Linux
-      </span>
+      {showMeta && (
+        <span className="text-xs text-muted" aria-live="polite">
+          {version ? `${version} · ` : ""}macOS · Windows · Linux
+        </span>
+      )}
     </div>
   );
 }

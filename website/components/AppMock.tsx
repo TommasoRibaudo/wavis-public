@@ -74,7 +74,9 @@ export function AppMock() {
               <span className="text-danger">◉</span>
             </div>
             <div>
-              <span className="block border border-muted px-1.5 py-0.5 text-center text-text">/watch-all</span>
+              <span className="block border border-accent bg-accent/10 px-2 py-1 text-center text-[1.08em] font-bold text-accent shadow-[0_0_14px_rgba(166,227,161,0.16)]">
+                /watch-all
+              </span>
             </div>
           </div>
 
@@ -89,7 +91,9 @@ export function AppMock() {
               <span className="border border-muted px-1 py-0.5 text-center text-text">/deafen</span>
             </div>
             <span className="block border border-muted px-1 py-0.5 text-center text-text">/camera-on</span>
-            <span className="block border border-purple px-1 py-0.5 text-center text-purple">/share</span>
+            <span className="block border border-purple bg-purple/10 px-2 py-1 text-center text-[1.08em] font-bold text-purple shadow-[0_0_14px_rgba(203,166,247,0.18)]">
+              /share-screen
+            </span>
             <span className="block border border-muted px-1 py-0.5 text-center text-text">/settings</span>
           </div>
         </aside>
