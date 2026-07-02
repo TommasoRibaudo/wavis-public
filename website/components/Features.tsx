@@ -44,7 +44,7 @@ export function Features() {
         </h2>
       </div>
 
-      <ul className="grid gap-px overflow-hidden rounded-md border border-border bg-border shadow-2xl shadow-black/25 sm:grid-cols-2">
+      <ul className="grid gap-px overflow-hidden rounded-md border border-muted/40 bg-border shadow-[0_0_0_1px_rgba(205,214,244,0.05),0_16px_48px_rgba(205,214,244,0.06)] sm:grid-cols-2">
         {FEATURES.map((f) => (
           <li
             key={f.title}
