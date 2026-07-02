@@ -25,6 +25,8 @@ mod audio_capture;
 mod taskbar_toolbar;
 #[cfg(target_os = "linux")]
 mod external_share_helper;
+#[cfg(target_os = "linux")]
+mod linux_mic;
 #[cfg(not(target_os = "linux"))]
 mod external_share_helper {
     pub struct ExternalShareHelperState;
