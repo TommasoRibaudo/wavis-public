@@ -161,13 +161,13 @@ workflows:
         - ~/.cargo/registry
         - ~/.cargo/git
         - target
-#    triggering:
-#      events:
-#        - tag
-#      tag_patterns:
-#        - pattern: "desktop-v*"
-#          include: true
-#      cancel_previous_builds: true
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: "desktop-v*"
+          include: true
+      cancel_previous_builds: true
     environment:
       groups:
         - desktop-release
@@ -284,13 +284,13 @@ workflows:
         - ~/.cargo/registry
         - ~/.cargo/git
         - target
-#    triggering:
-#      events:
-#        - tag
-#      tag_patterns:
-#        - pattern: "desktop-v*"
-#          include: true
-#      cancel_previous_builds: true
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: "desktop-v*"
+          include: true
+      cancel_previous_builds: true
     environment:
       groups:
         - desktop-release
