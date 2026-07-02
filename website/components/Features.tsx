@@ -44,12 +44,25 @@ export function Features() {
         </h2>
       </div>
 
-      <ul className="grid gap-px overflow-hidden rounded-md border border-border bg-border sm:grid-cols-2">
+      <ul className="grid gap-px overflow-hidden rounded-md border border-border bg-border shadow-2xl shadow-black/25 sm:grid-cols-2">
         {FEATURES.map((f) => (
-          <li key={f.title} className="bg-bg p-6">
+          <li
+            key={f.title}
+            className="relative bg-panel p-6 pl-7 transition-colors hover:bg-surface/40"
+          >
             <span
               aria-hidden="true"
-              className="text-lg font-bold"
+              className="absolute inset-x-0 top-0 h-0.5"
+              style={{ background: f.accent }}
+            />
+            <span
+              aria-hidden="true"
+              className="absolute bottom-0 left-0 top-0 w-0.5"
+              style={{ background: f.accent }}
+            />
+            <span
+              aria-hidden="true"
+              className="inline-flex h-8 min-w-8 items-center justify-center rounded-sm border bg-panel px-2 text-lg font-bold shadow-[0_0_18px_rgba(0,0,0,0.25)]"
               style={{ color: f.accent }}
             >
               {f.marker}
