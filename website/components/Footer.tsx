@@ -23,6 +23,8 @@ export function Footer() {
             <a
               key={l.label}
               href={l.href}
+              target={l.href.startsWith("https://github.com/") ? "_blank" : undefined}
+              rel={l.href.startsWith("https://github.com/") ? "noreferrer" : undefined}
               className="text-muted underline-offset-4 hover:text-text hover:underline"
             >
               {l.label}

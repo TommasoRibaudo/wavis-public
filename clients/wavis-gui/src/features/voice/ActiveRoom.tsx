@@ -117,6 +117,7 @@ import { participantNameVisualState } from './active-room-participant-row';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
 import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
+import { chatLinkTarget } from './chat-links';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function voiceIcon(p: RoomParticipant, isDeafened?: boolean): { char: string; color: string; strikethrough?: boolean; transform?: string } {
@@ -199,6 +200,7 @@ function renderChatText(text: string): ReactNode[] {
       <a
         key={`link-${index}-${hrefText}`}
         href={href}
+        target={chatLinkTarget(href)}
         className="text-wavis-accent underline underline-offset-2 break-words hover:opacity-80"
         onClick={(event) => {
           event.preventDefault();

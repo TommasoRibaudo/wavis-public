@@ -19,6 +19,8 @@ export function OpenSource() {
         <div className="mt-6 flex flex-wrap gap-3">
           <a
             href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
             className="rounded-md border border-border px-4 py-2 text-sm transition-colors hover:border-blue hover:text-blue"
             style={{ touchAction: "manipulation" }}
           >
@@ -26,6 +28,8 @@ export function OpenSource() {
           </a>
           <a
             href={RELEASES_URL}
+            target="_blank"
+            rel="noreferrer"
             className="rounded-md border border-border px-4 py-2 text-sm transition-colors hover:border-accent hover:text-accent"
             style={{ touchAction: "manipulation" }}
           >
@@ -33,6 +37,8 @@ export function OpenSource() {
           </a>
           <a
             href={LICENSE_URL}
+            target="_blank"
+            rel="noreferrer"
             className="rounded-md border border-border px-4 py-2 text-sm transition-colors hover:border-purple hover:text-purple"
             style={{ touchAction: "manipulation" }}
           >

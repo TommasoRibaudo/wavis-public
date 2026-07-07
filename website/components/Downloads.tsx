@@ -106,6 +106,8 @@ export function Downloads() {
         Looking for a specific build or older version? Browse{" "}
         <a
           href={RELEASES_URL}
+          target="_blank"
+          rel="noreferrer"
           className="text-blue underline underline-offset-4 hover:text-accent"
         >
           all releases on GitHub

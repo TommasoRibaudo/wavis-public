@@ -5,7 +5,7 @@ import { Waveform } from "./Waveform";
 
 export function Hero() {
   return (
-    <header className="mx-auto w-full max-w-6xl px-6 pb-16 pt-12 sm:pt-16">
+    <header className="mx-auto w-full max-w-7xl px-6 pb-16 pt-12 sm:pt-16">
       <nav className="mb-14 flex items-center justify-between">
         <span className="flex items-center gap-2 text-lg font-bold">
           <Waveform bars={4} height={16} />
@@ -13,13 +13,15 @@ export function Hero() {
         </span>
         <a
           href={GITHUB_URL}
+          target="_blank"
+          rel="noreferrer"
           className="text-sm text-muted underline-offset-4 hover:text-text hover:underline"
         >
           github
         </a>
       </nav>
 
-      <div className="grid items-center gap-12 lg:grid-cols-[0.95fr_1.15fr]">
+      <div className="grid items-center gap-12 lg:grid-cols-[0.88fr_1.25fr]">
         <div>
           <p className="mb-4 text-xs uppercase tracking-[0.18em] text-muted">
             native desktop · open source
@@ -36,6 +38,8 @@ export function Hero() {
             <PrimaryDownloadButton showMeta={false} />
             <a
               href={GITHUB_URL}
+              target="_blank"
+              rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-md border border-border px-5 py-2.5 transition-colors hover:border-blue hover:text-blue"
               style={{ touchAction: "manipulation" }}
             >
@@ -53,7 +57,7 @@ export function Hero() {
           </div>
         </div>
 
-        <div className="lg:pl-4">
+        <div className="min-w-0 lg:pl-4">
           <AppMock />
         </div>
       </div>
