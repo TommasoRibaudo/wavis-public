@@ -3038,7 +3038,7 @@ describe('Screen share and device selection', () => {
         { identity: 'alice' },
       );
 
-      // Subscribe alice's sys-audio track (audio-only share — auto-attaches immediately)
+      // Subscribe alice's sys-audio track, then simulate the user opting in to listen.
       emitRoomEvent(
         'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'ssa-alice' } },
