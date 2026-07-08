@@ -914,6 +914,11 @@ export default function ActiveRoom() {
       return next;
     });
     persistStreamMuted(participantId, muted);
+    if (muted) {
+      detachScreenShareAudio(participantId);
+    } else {
+      attachScreenShareAudio(participantId);
+    }
     setScreenShareAudioVolume(participantId, muted ? 0 : restoredVolume);
     emit('watch-all:restore-volume', { participantId, volume: restoredVolume, muted });
     emit('screen-share:restore-volume', { participantId, volume: restoredVolume, muted });
@@ -935,6 +940,11 @@ export default function ActiveRoom() {
       next.set(participantId, muted);
       return next;
     });
+    if (muted) {
+      detachScreenShareAudio(participantId);
+    } else {
+      attachScreenShareAudio(participantId);
+    }
     setScreenShareAudioVolume(participantId, muted ? 0 : volume);
     persistStreamVolume(participantId, volume);
     persistStreamMuted(participantId, muted);
@@ -1358,7 +1368,7 @@ export default function ActiveRoom() {
 
   // Watch All: sync audio-only sharer additions/removals
   useEffect(() => {
-    if (!roomState || !watchAllOpen || !watchAllReadyRef.current) return;
+    if (!roomState) return;
     const curr = roomState.audioOnlySharers;
     const prev = prevAudioOnlySharersRef.current;
     for (const identity of curr) {
@@ -1374,11 +1384,17 @@ export default function ActiveRoom() {
         next.set(identity, true);
         return next;
       });
-      void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
+      detachScreenShareAudio(identity);
+      setScreenShareAudioVolume(identity, 0);
+      if (watchAllOpen && watchAllReadyRef.current) {
+        void emit('watch-all:audio-share-added', { participantId: identity, displayName: participant.displayName, color: participant.color, volume: vol, muted: true });
+      }
     }
     for (const identity of prev) {
       if (curr.has(identity)) continue;
-      void emit('watch-all:audio-share-removed', { participantId: identity });
+      if (watchAllOpen && watchAllReadyRef.current) {
+        void emit('watch-all:audio-share-removed', { participantId: identity });
+      }
     }
     prevAudioOnlySharersRef.current = new Set(curr);
   }, [getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);

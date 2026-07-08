@@ -5641,7 +5641,9 @@ export class LiveKitModule {
           track: screenShareAudioTrack as RemoteTrack,
           participant,
         });
-        this.syncScreenShareAudioPolicy(participant.identity);
+        if (this.shouldPlayScreenShareAudio(participant.identity)) {
+          this.syncScreenShareAudioPolicy(participant.identity);
+        }
       }
     }
 
@@ -5670,6 +5672,13 @@ export class LiveKitModule {
     } else if (!isAudioOnly && this.audioOnlySharers.delete(participantIdentity)) {
       this.callbacks.onAudioOnlySharerRemoved?.(participantIdentity);
     }
+    if (isAudioOnly && !this.screenShareAudioViewerOwners.has(participantIdentity)) {
+      const publication = this.screenShareAudioPublications.get(participantIdentity);
+      if (publication && typeof publication.setSubscribed === 'function') {
+        publication.setSubscribed(false);
+      }
+      return;
+    }
     this.syncScreenShareAudioPolicy(participantIdentity);
   }
 
@@ -5683,8 +5692,7 @@ export class LiveKitModule {
   }
 
   private shouldPlayScreenShareAudio(participantIdentity: string): boolean {
-    return this.screenShareAudioViewerOwners.has(participantIdentity)
-      || this.remoteShareTypes.get(participantIdentity) === 'audio_only';
+    return this.screenShareAudioViewerOwners.has(participantIdentity);
   }
 
   private syncScreenShareAudioPolicy(participantIdentity: string): void {

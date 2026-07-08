@@ -243,7 +243,7 @@ describe('Property 2: Preservation — NativeMediaModule audio IPC baseline', ()
     expect(invoke).toHaveBeenCalledWith('media_set_mic_enabled', { enabled: false });
   });
 
-  it('setRemoteShareType(audio_only) marks native audio-only shares and enables share audio', () => {
+  it('setRemoteShareType(audio_only) marks native audio-only shares without enabling share audio', () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
 
     mod_.setRemoteShareType('peer-a', 'audio_only');
@@ -251,7 +251,7 @@ describe('Property 2: Preservation — NativeMediaModule audio IPC baseline', ()
 
     expect(callbacks.onAudioOnlySharerAdded).toHaveBeenCalledTimes(1);
     expect(callbacks.onAudioOnlySharerAdded).toHaveBeenCalledWith('peer-a');
-    expect(invoke).toHaveBeenCalledWith('media_attach_screen_share_audio', { id: 'peer-a' });
+    expect(invoke).not.toHaveBeenCalledWith('media_attach_screen_share_audio', { id: 'peer-a' });
   });
 
   it('setRemoteShareType(non-audio) removes native audio-only shares and disables share audio', () => {
