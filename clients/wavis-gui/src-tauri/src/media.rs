@@ -8,6 +8,8 @@
 use serde::Serialize;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "linux")]
+use std::process::{Child, Command, Stdio};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "linux")]
@@ -20,10 +22,6 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     time::Duration,
-};
-#[cfg(target_os = "linux")]
-use std::{
-    process::{Child, Command, Stdio},
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::{Builder, Runtime};
@@ -1029,14 +1027,11 @@ fn wait_for_first_pollable_frame(
                     || diag.timing.first_raw_to_pollable_frame_ms.is_some()
                     || diag.first_raw_frame_latency_ms.is_some()
                     || diag.first_buffered_jpeg_latency_ms.is_some()
-                    || diag
-                        .startup_step_timings
-                        .iter()
-                        .any(|timing| {
-                            timing.stage == "first_frame_arrived"
-                                || timing.stage == "first_buffered_jpeg"
-                                || timing.stage == "first_pollable_frame_written"
-                        })
+                    || diag.startup_step_timings.iter().any(|timing| {
+                        timing.stage == "first_frame_arrived"
+                            || timing.stage == "first_buffered_jpeg"
+                            || timing.stage == "first_pollable_frame_written"
+                    })
             })
             .unwrap_or(false);
         if first_frame_processing_started && first_frame_processing_started_at.is_none() {
@@ -1147,6 +1142,8 @@ pub struct MediaState {
     #[cfg(target_os = "linux")]
     linux_mic_handle: Mutex<Option<crate::linux_mic::LinuxMicHandle>>,
     #[cfg(target_os = "linux")]
+    linux_playback_handle: Mutex<Option<crate::linux_mic::LinuxPlaybackHandle>>,
+    #[cfg(target_os = "linux")]
     remote_screen_share_stream_port: u16,
     #[cfg(target_os = "linux")]
     native_screen_share_viewers: Arc<Mutex<std::collections::HashMap<String, std::process::Child>>>,
@@ -1254,6 +1251,8 @@ impl MediaState {
             #[cfg(target_os = "linux")]
             linux_mic_handle: Mutex::new(None),
             #[cfg(target_os = "linux")]
+            linux_playback_handle: Mutex::new(None),
+            #[cfg(target_os = "linux")]
             remote_screen_share_stream_port,
             #[cfg(target_os = "linux")]
             native_screen_share_viewers: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1314,6 +1313,11 @@ impl MediaState {
                     handle.stop();
                 }
             }
+            if let Ok(mut guard) = self.linux_playback_handle.lock() {
+                if let Some(handle) = guard.take() {
+                    handle.stop();
+                }
+            }
         }
 
         self.audio
@@ -1339,11 +1343,21 @@ impl MediaState {
             }
         }
 
+        #[cfg(not(target_os = "linux"))]
         self.audio
             .play_remote(AudioTrack {
                 id: "native-playback".to_string(),
             })
             .map_err(|err| format!("failed to start output device: {err}"))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let handle = crate::linux_mic::start_linux_playback(self.audio.playback_buffer.clone())
+                .map_err(|err| format!("failed to start output device: {err}"))?;
+            if let Ok(mut guard) = self.linux_playback_handle.lock() {
+                *guard = Some(handle);
+            }
+        }
 
         let mut capture_guard = self
             .capture_buffer
@@ -1905,6 +1919,11 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
     #[cfg(target_os = "linux")]
     {
         if let Ok(mut guard) = state.linux_mic_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.stop();
+            }
+        }
+        if let Ok(mut guard) = state.linux_playback_handle.lock() {
             if let Some(handle) = guard.take() {
                 handle.stop();
             }
@@ -3790,9 +3809,10 @@ pub fn screen_share_start() -> Result<bool, String> {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_capture_routing_tests {
     use super::{
-        is_windows_capture_setup_error, parse_windows_source_kind, select_windows_capture_backend,
-        rgba_to_i420, wait_for_first_pollable_frame, windows_bridge_transport_fps, LatestFrame,
-        windows_i420_stream_frame_header, LatestI420Frame, WindowsCaptureBackend, WindowsSourceKind,
+        is_windows_capture_setup_error, parse_windows_source_kind, rgba_to_i420,
+        select_windows_capture_backend, wait_for_first_pollable_frame,
+        windows_bridge_transport_fps, windows_i420_stream_frame_header, LatestFrame,
+        LatestI420Frame, WindowsCaptureBackend, WindowsSourceKind,
     };
     use crate::screen_capture::frame_processor::ScreenShareConfig;
     use crate::screen_capture::win_capture::WindowsNativeCaptureDiagnostics;
@@ -3838,7 +3858,10 @@ mod windows_capture_routing_tests {
         assert_eq!(u32::from_le_bytes(header[0..4].try_into().unwrap()), 4);
         assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 2);
         assert_eq!(u64::from_le_bytes(header[8..16].try_into().unwrap()), 9);
-        assert_eq!(u64::from_le_bytes(header[16..24].try_into().unwrap()), 123_456);
+        assert_eq!(
+            u64::from_le_bytes(header[16..24].try_into().unwrap()),
+            123_456
+        );
         assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 12);
     }
 
@@ -3957,16 +3980,23 @@ mod windows_capture_routing_tests {
     #[test]
     fn startup_setup_error_classification_ignores_nonfatal_configuration_errors() {
         assert!(is_windows_capture_setup_error("capture_item_create_error"));
-        assert!(is_windows_capture_setup_error("capture_session_create_error"));
-        assert!(!is_windows_capture_setup_error("cursor_border_config_error"));
-        assert!(!is_windows_capture_setup_error("closed_handler_register_error"));
-        assert!(!is_windows_capture_setup_error("first_pollable_frame_timeout"));
+        assert!(is_windows_capture_setup_error(
+            "capture_session_create_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "cursor_border_config_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "closed_handler_register_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "first_pollable_frame_timeout"
+        ));
     }
 
     #[test]
     fn cursor_border_unsupported_error_does_not_become_primary_first_error() {
-        let mut diagnostics =
-            WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+        let mut diagnostics = WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
 
         diagnostics.record_nonfatal_startup_error(
             "cursor_border_config_error",
