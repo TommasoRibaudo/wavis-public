@@ -2588,7 +2588,7 @@ describe('Screen share and device selection', () => {
       mod.disconnect();
     });
 
-    it('infers legacy ScreenShareAudio without video as audio-only and autoplays it', async () => {
+    it('infers legacy ScreenShareAudio without video as audio-only without autoplaying it', async () => {
       resetAll();
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
@@ -2603,8 +2603,8 @@ describe('Screen share and device selection', () => {
       );
 
       const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
-      expect(setSubscribed).toHaveBeenCalledWith(true);
-      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(setSubscribed).toHaveBeenCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
       expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
 
       mod.disconnect();
@@ -2626,14 +2626,14 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
-      expect(setSubscribed).toHaveBeenCalledWith(true);
-      expect(audioElementMap.has('alice:screen-share')).toBe(true);
+      expect(setSubscribed).toHaveBeenCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
       expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
 
       mod.disconnect();
     });
 
-    it('autoplays confirmed audio-only shares and detaches autoplay when promoted to video', async () => {
+    it('keeps confirmed audio-only shares detached until the user unmutes', async () => {
       resetAll();
       const cbs = createMockCallbacks();
       const mod = new LiveKitModule(cbs);
@@ -2649,12 +2649,17 @@ describe('Screen share and device selection', () => {
       );
 
       const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      expect(setSubscribed).toHaveBeenLastCalledWith(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+
+      mod.attachScreenShareAudio('alice');
+
+      expect(setSubscribed).toHaveBeenLastCalledWith(true);
       expect(audioElementMap.has('alice:screen-share')).toBe(true);
 
       mod.setRemoteShareType('alice', 'screen_audio');
 
-      expect(setSubscribed).toHaveBeenLastCalledWith(false);
-      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+      expect(audioElementMap.has('alice:screen-share')).toBe(true);
 
       mod.disconnect();
     });

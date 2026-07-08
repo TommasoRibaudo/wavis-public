@@ -5683,8 +5683,7 @@ export class LiveKitModule {
   }
 
   private shouldPlayScreenShareAudio(participantIdentity: string): boolean {
-    return this.screenShareAudioViewerOwners.has(participantIdentity)
-      || this.remoteShareTypes.get(participantIdentity) === 'audio_only';
+    return this.screenShareAudioViewerOwners.has(participantIdentity);
   }
 
   private syncScreenShareAudioPolicy(participantIdentity: string): void {
