@@ -1,6 +1,14 @@
 "use client";
 
-import { useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
 
 // A functional mock of the Wavis window — the page's main product signal.
 // Built as one component with a fixed aspect-ratio frame, so a real screenshot
@@ -24,6 +32,18 @@ const LOGS = [
 ];
 
 type ActivePanel = "main" | "watchAll";
+type DragPosition = { x: number; y: number };
+
+function isDesktopDragPointer() {
+  return (
+    window.matchMedia("(pointer: fine)").matches &&
+    window.matchMedia("(min-width: 1024px)").matches
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
 
 function handlePanelKeyDown(
   event: KeyboardEvent<HTMLDivElement>,
@@ -34,11 +54,111 @@ function handlePanelKeyDown(
   focusPanel();
 }
 
+function useDesktopPanelDrag(
+  containerRef: RefObject<HTMLDivElement | null>,
+  focusPanel: () => void,
+) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const positionRef = useRef<DragPosition>({ x: 0, y: 0 });
+  const cleanupDragRef = useRef<(() => void) | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const [position, setPosition] = useState<DragPosition>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      cleanupDragRef.current?.();
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  function applyDragPosition(next: DragPosition) {
+    positionRef.current = next;
+    if (rafRef.current !== null) return;
+
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      panelRef.current?.style.setProperty("--drag-x", `${positionRef.current.x}px`);
+      panelRef.current?.style.setProperty("--drag-y", `${positionRef.current.y}px`);
+    });
+  }
+
+  function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !isDesktopDragPointer()) return;
+
+    const container = containerRef.current;
+    const panel = panelRef.current;
+    if (!container || !panel) return;
+
+    focusPanel();
+    event.preventDefault();
+    panel.setPointerCapture?.(event.pointerId);
+
+    const start = positionRef.current;
+    const startPointer = { x: event.clientX, y: event.clientY };
+    const boundsElement = container.closest("header") ?? container;
+    const containerRect = boundsElement.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const bounds = {
+      minX: start.x + containerRect.left - panelRect.left,
+      maxX: start.x + containerRect.right - panelRect.right,
+      minY: start.y + containerRect.top - panelRect.top,
+      maxY: start.y + containerRect.bottom - panelRect.bottom,
+    };
+    const previousCursor = document.documentElement.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.documentElement.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+    setIsDragging(true);
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      applyDragPosition({
+        x: clamp(start.x + moveEvent.clientX - startPointer.x, bounds.minX, bounds.maxX),
+        y: clamp(start.y + moveEvent.clientY - startPointer.y, bounds.minY, bounds.maxY),
+      });
+    }
+
+    function stopDragging() {
+      cleanupDragRef.current?.();
+      cleanupDragRef.current = null;
+      document.documentElement.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      setIsDragging(false);
+      setPosition(positionRef.current);
+    }
+
+    cleanupDragRef.current = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+  }
+
+  return {
+    isDragging,
+    onPointerDown,
+    panelRef,
+    panelStyle: {
+      "--drag-x": `${position.x}px`,
+      "--drag-y": `${position.y}px`,
+    } as CSSProperties,
+  };
+}
+
 export function AppMock() {
   const [activePanel, setActivePanel] = useState<ActivePanel>("watchAll");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mainDrag = useDesktopPanelDrag(containerRef, () => setActivePanel("main"));
+  const watchAllDrag = useDesktopPanelDrag(containerRef, () => setActivePanel("watchAll"));
 
   return (
     <div
+      ref={containerRef}
       className="relative isolate mx-auto w-full max-w-[840px] overflow-visible pb-[clamp(44px,7vw,76px)]"
       role="group"
       aria-label="The Wavis app preview: a private room window in front of a Watch All screen sharing panel."
@@ -46,10 +166,12 @@ export function AppMock() {
       <WatchAllMock
         isActive={activePanel === "watchAll"}
         onFocus={() => setActivePanel("watchAll")}
+        drag={watchAllDrag}
       />
       <MainAppWindow
         isActive={activePanel === "main"}
         onFocus={() => setActivePanel("main")}
+        drag={mainDrag}
       />
     </div>
   );
@@ -58,23 +180,28 @@ export function AppMock() {
 function MainAppWindow({
   isActive,
   onFocus,
+  drag,
 }: {
   isActive: boolean;
   onFocus: () => void;
+  drag: ReturnType<typeof useDesktopPanelDrag>;
 }) {
   return (
     <div
-      className={`relative w-full overflow-hidden rounded-lg border bg-panel shadow-2xl transition-[border-color,box-shadow,transform] duration-200 ${
+      ref={drag.panelRef}
+      style={drag.panelStyle}
+      className={`wavis-main-panel relative w-full overflow-hidden rounded-lg border bg-panel shadow-2xl transition-[border-color,box-shadow,transform] duration-200 lg:cursor-grab ${
         isActive
           ? "z-30 border-blue/70 shadow-black/65"
           : "z-20 border-blue/40 shadow-black/45"
-      }`}
+      } ${drag.isDragging ? "lg:cursor-grabbing lg:transition-none lg:will-change-transform" : ""}`}
       role="button"
       tabIndex={0}
       aria-pressed={isActive}
       aria-label="Focus the main Wavis app preview"
       onClick={onFocus}
       onKeyDown={(event) => handlePanelKeyDown(event, onFocus)}
+      onPointerDown={drag.onPointerDown}
     >
       {/* Title bar */}
       <div className="flex items-center justify-between border-b border-border bg-panel px-3 py-2">
@@ -110,7 +237,7 @@ function MainAppWindow({
 
           <div className="border-b border-border p-2">
             <div className="mb-1.5 flex items-center justify-between text-muted">
-              <span>[-] ROOM 1 (2)</span>
+              <span>[-] ROOM 1 (4)</span>
               <span className="border border-border px-1.5 py-0.5">””</span>
             </div>
             <div className="mb-1 flex items-center justify-between text-purple">
@@ -205,39 +332,42 @@ function MainAppWindow({
 function WatchAllMock({
   isActive,
   onFocus,
+  drag,
 }: {
   isActive: boolean;
   onFocus: () => void;
+  drag: ReturnType<typeof useDesktopPanelDrag>;
 }) {
   const streams = [
+    { name: "alex", tone: "text-purple" },
     { name: "sam", tone: "text-blue" },
-    { name: "mira", tone: "text-purple" },
-    { name: "nora", tone: "text-accent" },
-    { name: "alex", tone: "text-warn" },
   ];
 
   return (
     <div
-      className={`absolute bottom-0 -right-3 w-[54%] min-w-[188px] max-w-[360px] translate-x-[25px] -translate-y-[5%] overflow-hidden rounded-lg border bg-crust shadow-2xl transition-[border-color,box-shadow,transform] duration-200 sm:-right-4 sm:w-[52%] sm:-translate-y-[6%] lg:-right-5 lg:w-[48%] lg:-translate-y-[8%] ${
+      ref={drag.panelRef}
+      style={drag.panelStyle}
+      className={`wavis-watch-panel absolute bottom-0 -right-3 w-[52%] min-w-[180px] max-w-[330px] overflow-hidden rounded-lg border bg-crust shadow-2xl transition-[border-color,box-shadow,transform] duration-200 sm:-right-4 sm:w-[48%] lg:-right-5 lg:w-[44%] lg:cursor-grab ${
         isActive
           ? "z-40 border-blue/70 shadow-black/65"
           : "z-10 border-blue/40 shadow-black/45"
-      }`}
+      } ${drag.isDragging ? "lg:cursor-grabbing lg:transition-none lg:will-change-transform" : ""}`}
       role="button"
       tabIndex={0}
       aria-pressed={isActive}
       aria-label="Focus the Watch All preview panel"
       onClick={onFocus}
       onKeyDown={(event) => handlePanelKeyDown(event, onFocus)}
+      onPointerDown={drag.onPointerDown}
     >
       <div className="flex items-center justify-between border-b border-border bg-panel/95 px-2.5 py-1.5 text-[8px] text-muted sm:text-[9px]">
         <span>
           <span className="text-accent">&gt;</span> watch all
         </span>
-        <span className="text-blue">4 streams</span>
+        <span className="text-blue">2 streams</span>
       </div>
 
-      <div className="grid aspect-[1.35/1] grid-cols-2 gap-1.5 bg-bg p-2">
+      <div className="grid aspect-[1.05/1] grid-rows-2 gap-1.5 bg-bg p-1.5 sm:p-2">
         {streams.map((stream, index) => (
           <div
             key={stream.name}

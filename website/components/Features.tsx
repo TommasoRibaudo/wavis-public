@@ -9,25 +9,25 @@ const FEATURES: Feature[] = [
   {
     marker: "#",
     title: "Lightweight native app",
-    body: "Fast startup, small footprint, and no browser tab sitting between you and the room.",
+    body: "Fast startup, fast performance.",
     accent: "var(--color-accent)",
   },
   {
     marker: "◉",
     title: "Camera and sharp screen sharing",
-    body: "Turn on camera when it helps, or share a high-quality stream with controls that stay obvious.",
+    body: "Share a high-quality, up to 1440p@60fps, stream.",
     accent: "var(--color-blue)",
   },
   {
     marker: "▮",
     title: "Audio-only sharing",
-    body: "Share system audio without showing your screen when the conversation only needs sound.",
+    body: "Stream audio to your friends.",
     accent: "var(--color-purple)",
   },
   {
     marker: "/",
     title: "Open source and self-deployable",
-    body: "Read the code, audit the server, or run your own Wavis stack for private groups.",
+    body: "We have published everything as an open-source project, including this website and the aws infrastructure setup.",
     accent: "var(--color-warn)",
   },
 ];

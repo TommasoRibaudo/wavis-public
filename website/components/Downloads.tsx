@@ -1,6 +1,7 @@
 "use client";
 
-import { RELEASES_URL } from "../lib/config";
+import { useState } from "react";
+import { GITHUB_URL, RELEASES_URL } from "../lib/config";
 import type { Platform } from "../lib/os";
 import { useRelease } from "./ReleaseProvider";
 
@@ -12,48 +13,85 @@ interface PlatformMeta {
 }
 
 const PLATFORMS: PlatformMeta[] = [
-  { id: "mac", label: "macOS", note: "Apple Silicon · .dmg", command: "/download macos" },
-  { id: "windows", label: "Windows", note: "64-bit · installer", command: "/download windows" },
-  { id: "linux", label: "Linux", note: "x86-64 · AppImage", command: "/download linux" },
+  {
+    id: "mac",
+    label: "macOS",
+    note: "Apple Silicon \u00b7 .dmg",
+    command: "/download macos",
+  },
+  {
+    id: "windows",
+    label: "Windows",
+    note: "64-bit \u00b7 installer",
+    command: "/download windows",
+  },
+  {
+    id: "linux",
+    label: "Linux",
+    note: "x86-64 \u00b7 AppImage",
+    command: "/download linux",
+  },
 ];
 
-const LABELS: Record<Platform, string> = {
-  mac: "macOS",
-  windows: "Windows",
-  linux: "Linux",
-};
-
-// Hero primary CTA. Targets the visitor's OS once detected; before that (and
-// with JS off) it points at the download section so it is never a dead end.
-export function PrimaryDownloadButton({ showMeta = true }: { showMeta?: boolean }) {
-  const { urls, platform, version } = useRelease();
-  const href = platform ? urls[platform] : "#download";
-  const label = platform ? `Download for ${LABELS[platform]}` : "Download Wavis";
-
+function DownloadAccessPanel({ onDismiss }: { onDismiss: () => void }) {
   return (
-    <div className="flex flex-col items-start gap-1.5">
-      <a
-        href={href}
-        className="inline-flex items-center gap-2 rounded-md border border-accent bg-accent px-5 py-2.5 font-bold text-bg transition-colors hover:bg-transparent hover:text-accent"
-        style={{ touchAction: "manipulation" }}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-crust/80 px-4 py-8"
+      onClick={onDismiss}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="download-access-title"
+        className="w-full max-w-2xl rounded-md border border-blue bg-panel p-5 text-sm shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
       >
-        <span aria-hidden="true">▸</span>
-        {label}
-      </a>
-      {showMeta && (
-        <span className="text-xs text-muted" aria-live="polite">
-          {version ? `${version} · ` : ""}macOS · Windows · Linux
-        </span>
-      )}
+        <div className="flex items-start justify-between gap-4">
+          <p id="download-access-title" className="font-bold text-blue">
+            Before you connect Wavis
+          </p>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-sm border border-border px-2 py-0.5 text-xs text-muted transition-colors hover:border-blue hover:text-blue"
+          >
+            Close
+          </button>
+        </div>
+        <p className="mt-3 text-muted">
+          The app needs a join link to connect to a room.{" "}
+          <a
+            href="#updates"
+            className="text-blue underline underline-offset-4 hover:text-accent"
+          >
+            Get early access
+          </a>{" "}
+          to receive one, or self-host your own server — see{" "}
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue underline underline-offset-4 hover:text-accent"
+          >
+            the repo
+          </a>{" "}
+          for setup instructions.
+        </p>
+      </div>
     </div>
   );
 }
 
 // Download section: one always-clickable link per platform, with the visitor's
 // OS highlighted. Links resolve to the real latest-release asset, falling back
-// to the releases page.
+// to the releases page when JavaScript is disabled.
 export function Downloads() {
   const { urls, platform, version } = useRelease();
+  const [showAccessPanel, setShowAccessPanel] = useState(false);
+
+  function handleDownloadClick() {
+    setShowAccessPanel(true);
+  }
 
   return (
     <section
@@ -62,14 +100,24 @@ export function Downloads() {
     >
       <div className="mb-10">
         <p className="mb-2 text-xs uppercase tracking-widest text-muted">
-          downloads
+          download
         </p>
         <h2 className="text-2xl font-bold sm:text-3xl">Get Wavis</h2>
         <p className="mt-2 max-w-xl text-muted">
-          Built and signed for each platform, published to GitHub Releases.
-          {version ? ` Latest build ${version}.` : ""}
+          You&rsquo;ll need an invite link to connect.{" "}
+          <a href="#updates" className="text-blue underline hover:text-accent">
+            Get early access
+          </a>{" "}
+          below, or self-host your own server. Once you have a link, grab the
+          app below.
         </p>
       </div>
+
+      {showAccessPanel && (
+        <DownloadAccessPanel
+          onDismiss={() => setShowAccessPanel(false)}
+        />
+      )}
 
       <ul className="grid gap-3 sm:grid-cols-3">
         {PLATFORMS.map((p) => {
@@ -78,6 +126,7 @@ export function Downloads() {
             <li key={p.id}>
               <a
                 href={urls[p.id]}
+                onClick={handleDownloadClick}
                 className={
                   "group flex h-full flex-col gap-3 rounded-md border p-5 transition-colors " +
                   (detected

@@ -42,7 +42,9 @@ export function MailingList() {
         );
       }
       setStatus("done");
-      setMessage("You’re on the list. We’ll email you when new builds are ready.");
+      setMessage(
+        "You’re on the waitlist. We’ll email you a invite link when your spot opens up.",
+      );
     } catch {
       setStatus("error");
       setMessage("That didn’t go through. Try again in a moment.");
@@ -56,11 +58,12 @@ export function MailingList() {
     >
       <div className="rounded-md border border-border bg-bg p-8 shadow-2xl shadow-black/15 sm:p-10">
         <p className="mb-2 text-xs uppercase tracking-widest text-muted">
-          mailing list
+          beta waitlist
         </p>
-        <h2 className="text-2xl font-bold sm:text-3xl">Get release updates</h2>
+        <h2 className="text-2xl font-bold sm:text-3xl">Get early access</h2>
         <p className="mt-3 max-w-xl text-muted">
-          Occasional notes when new Wavis builds are ready. No other email.
+          Join the waitlist and we&rsquo;ll email you a invite link when your spot
+          in the beta opens up. Free during beta. No other emails will be sent.
         </p>
 
         {status === "done" ? (
@@ -104,7 +107,7 @@ export function MailingList() {
                 className="inline-flex items-center justify-center gap-2 rounded-md border border-accent bg-accent px-5 py-2.5 font-bold text-bg transition-colors hover:bg-transparent hover:text-accent disabled:opacity-60"
                 style={{ touchAction: "manipulation" }}
               >
-                {status === "submitting" ? "subscribing…" : "/subscribe"}
+                {status === "submitting" ? "joining…" : "/join-waitlist"}
               </button>
             </div>
             {status === "error" && (

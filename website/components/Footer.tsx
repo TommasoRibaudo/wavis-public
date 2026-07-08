@@ -5,7 +5,7 @@ const LINKS = [
   { label: "GitHub", href: GITHUB_URL },
   { label: "Releases", href: RELEASES_URL },
   { label: "License", href: LICENSE_URL },
-  { label: "Mailing list", href: "#updates" },
+  { label: "Beta waitlist", href: "#updates" },
 ];
 
 export function Footer() {

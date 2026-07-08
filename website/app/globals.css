@@ -158,6 +158,38 @@
   animation: wavis-stream-pan 2.4s linear infinite;
 }
 
+.wavis-main-panel {
+  transform: translate3d(var(--drag-x, 0px), var(--drag-y, 0px), 0);
+}
+
+.wavis-watch-panel {
+  transform: translate3d(
+    calc(25px + var(--drag-x, 0px)),
+    calc(-5% + var(--drag-y, 0px) + 20px),
+    0
+  );
+}
+
+@media (min-width: 640px) {
+  .wavis-watch-panel {
+    transform: translate3d(
+      calc(25px + var(--drag-x, 0px)),
+      calc(-6% + var(--drag-y, 0px) + 20px),
+      0
+    );
+  }
+}
+
+@media (min-width: 1024px) {
+  .wavis-watch-panel {
+    transform: translate3d(
+      calc(25px + var(--drag-x, 0px)),
+      calc(-8% + var(--drag-y, 0px) + 20px),
+      0
+    );
+  }
+}
+
 @keyframes wavis-stream-pan {
   from {
     background-position: 0 0, 0 0;
