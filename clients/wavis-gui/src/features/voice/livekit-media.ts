@@ -3034,6 +3034,14 @@ export class LiveKitModule {
     // but the local user should not keep hearing room or share audio.
     this.cleanupAllParticipantAudio();
 
+    // 4g. Clean up WASAPI audio bridge before room.disconnect() so the track can
+    //     be unpublished cleanly and cannot keep publishing after room teardown.
+    //     Runs ahead of the screen-share teardown below so that a slow or
+    //     failing stopScreenShare()/stopNativeCapture() call cannot delay or
+    //     block closing this dedicated AudioContext. Not awaited, matching the
+    //     other fire-and-forget teardown calls in this method (see note below).
+    this.stopWasapiAudioBridge().catch(() => {});
+
     // 4d. Clean up native capture bridge (Windows custom share)
     if (this.nativeCapturePollInterval !== null) {
       clearTimeout(this.nativeCapturePollInterval);
@@ -3060,12 +3068,15 @@ export class LiveKitModule {
     this.nativeBridgeReportBaseline = null;
     const hadNativeCapturePublication = this.nativeCapturePublication !== null;
     if (hadNativeCapturePublication) {
-      // Delegate to stopNativeCapture so unpublishTrack is called before
+      // Delegate to stopNativeCapture so unpublishTrack is requested before
       // room.disconnect() runs; it eagerly nulls nativeCapturePublication.
-      await this.stopNativeCapture().catch(() => {});
+      // Not awaited: disconnect() is a synchronous, fire-and-forget void method
+      // used throughout the codebase, and local resource teardown further
+      // below must not be gated behind this network round-trip completing.
+      this.stopNativeCapture().catch(() => {});
     }
     if (!hadNativeCapturePublication) {
-      await this.stopScreenShare().catch(() => {});
+      this.stopScreenShare().catch(() => {});
     }
     if (this.nativeCaptureCanvas) {
       this.nativeCaptureCanvas.remove();
@@ -3079,14 +3090,10 @@ export class LiveKitModule {
     // 4f. Clear local mic monitor
     this.stopLocalMicMonitor();
 
-    // 4g. Clean up WASAPI audio bridge before room.disconnect() so the track can
-    //     be unpublished cleanly and cannot keep publishing after room teardown.
-    await this.stopWasapiAudioBridge().catch(() => {});
-
     // 4g2. Clean up native mic bridge. Tauri listener is unregistered synchronously
     //      inside NativeMicBridge.stop() before the first await.
     if (this.nativeMicBridge) {
-      await this.nativeMicBridge.stop().catch(() => {});
+      this.nativeMicBridge.stop().catch(() => {});
       this.nativeMicBridge = null;
       this.callbacks.onNativeMicBridgeState?.(false);
     }
@@ -3107,7 +3114,10 @@ export class LiveKitModule {
       for (const entry of this.listeners) {
         room.off(entry.event, entry.handler);
       }
-      await Promise.resolve(room.disconnect());
+      // Not awaited: room.disconnect() is a network round-trip. Local resource
+      // teardown below (AudioContext, gain nodes, mic/camera tracks) must happen
+      // immediately and must not be gated behind that round-trip completing.
+      Promise.resolve(room.disconnect()).catch(() => {});
     }
 
     // 6. Clear listeners registry

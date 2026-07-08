@@ -595,10 +595,15 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
 }
 
 function applyEffectiveParticipantVolumes(): void {
-  if (!lkModule) return;
-  for (const participant of state.participants) {
-    applyEffectiveParticipantVolume(participant);
+  if (lkModule) {
+    for (const participant of state.participants) {
+      applyEffectiveParticipantVolume(participant);
+    }
   }
+  // Runs after volumes are pushed to the still-live connection above —
+  // reconcileLocalMicWithRoomMembership() defers the actual teardown here
+  // rather than nulling lkModule out from under this function.
+  flushPendingMediaDisconnectForNoRoom();
 }
 
 function selfParticipant(): RoomParticipant | undefined {
@@ -703,7 +708,10 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
     }
     setLocalMicPublishing(false);
     detachAllScreenShareAudioPlayback();
-    disconnectMediaForNoSubRoom();
+    // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
+    // caller has finished applying effective participant volumes on the
+    // still-live connection — disconnecting here would null it out first.
+    pendingMediaDisconnectForNoRoom = true;
     return;
   }
 
@@ -1672,6 +1680,7 @@ let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: 
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 let suppressMediaDisconnectedReconnect = false;
+let pendingMediaDisconnectForNoRoom = false;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
 /** Volume before deafen, restored on undeafen. */
@@ -1949,6 +1958,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
     if (state.cameraPublication === 'published' || state.cameraIntent) {
       void getCameraMediaModule()?.unpublishCamera().catch(() => {});
     }
+    void lkModule.stopScreenShare().catch(() => {});
     suppressMediaDisconnectedReconnect = true;
     try {
       lkModule.disconnect();
@@ -2175,11 +2185,23 @@ function flushBufferedMediaTokenIfReady(): void {
   }
 }
 
+function flushPendingMediaDisconnectForNoRoom(): void {
+  if (!pendingMediaDisconnectForNoRoom) return;
+  pendingMediaDisconnectForNoRoom = false;
+  disconnectMediaForNoSubRoom();
+}
+
 function disconnectMediaForNoSubRoom(): void {
   if (!bufferedMediaToken && latestMediaToken) {
     bufferedMediaToken = latestMediaToken;
   }
   if (lkModule) {
+    // Stop any local screen share still publishing on this connection immediately.
+    // stopLocalShareAfterLeavingSubRoom() may have already kicked off its own
+    // fire-and-forget stopShare(), but that call reaches lkModule.stopScreenShare()
+    // only after several awaited native-capture invokes — well after this
+    // synchronous disconnect nulls lkModule below.
+    void lkModule.stopScreenShare().catch(() => {});
     suppressMediaDisconnectedReconnect = true;
     try {
       lkModule.disconnect();
