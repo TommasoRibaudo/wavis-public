@@ -1190,6 +1190,7 @@ export class LiveKitModule {
   private audioContext: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private participantGains: Map<string, GainNode> = new Map();
+  private participantSources: Map<string, MediaStreamAudioSourceNode> = new Map();
   private participantPassthrough = new Set<string>();
   private participantFilters: Map<string, { highShelf: BiquadFilterNode; lowPass: BiquadFilterNode }> = new Map();
   private passthroughFilterSettings: PassthroughFilterSettings = { enabled: true, strength: 50 };
@@ -3007,8 +3008,15 @@ export class LiveKitModule {
     // 1. Idempotent guard
     if (this.disposed) return;
 
-    // 2. Mark as disposed
+    // 2. Mark as disposed before detaching event handlers so reconnect logic
+    // ignores any SDK events fired during local unpublish.
     this.disposed = true;
+
+    void this.disconnectOrdered();
+  }
+
+  private async disconnectOrdered(): Promise<void> {
+    const room = this.room;
 
     // 3. Cancel pending rAF
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
@@ -3021,6 +3029,18 @@ export class LiveKitModule {
 
     // 4c. Clear screen share stats polling
     this.stopScreenShareStatsPolling();
+
+    // Stop remote playback immediately. Network/SFU cleanup below can await,
+    // but the local user should not keep hearing room or share audio.
+    this.cleanupAllParticipantAudio();
+
+    // 4g. Clean up WASAPI audio bridge before room.disconnect() so the track can
+    //     be unpublished cleanly and cannot keep publishing after room teardown.
+    //     Runs ahead of the screen-share teardown below so that a slow or
+    //     failing stopScreenShare()/stopNativeCapture() call cannot delay or
+    //     block closing this dedicated AudioContext. Not awaited, matching the
+    //     other fire-and-forget teardown calls in this method (see note below).
+    this.stopWasapiAudioBridge().catch(() => {});
 
     // 4d. Clean up native capture bridge (Windows custom share)
     if (this.nativeCapturePollInterval !== null) {
@@ -3046,10 +3066,17 @@ export class LiveKitModule {
     this.releaseNativeCaptureDecodedCache();
     this.nativeBridgeCadenceStats = null;
     this.nativeBridgeReportBaseline = null;
-    if (this.nativeCapturePublication) {
-      // Delegate to stopNativeCapture so unpublishTrack is called before
+    const hadNativeCapturePublication = this.nativeCapturePublication !== null;
+    if (hadNativeCapturePublication) {
+      // Delegate to stopNativeCapture so unpublishTrack is requested before
       // room.disconnect() runs; it eagerly nulls nativeCapturePublication.
+      // Not awaited: disconnect() is a synchronous, fire-and-forget void method
+      // used throughout the codebase, and local resource teardown further
+      // below must not be gated behind this network round-trip completing.
       this.stopNativeCapture().catch(() => {});
+    }
+    if (!hadNativeCapturePublication) {
+      this.stopScreenShare().catch(() => {});
     }
     if (this.nativeCaptureCanvas) {
       this.nativeCaptureCanvas.remove();
@@ -3062,12 +3089,6 @@ export class LiveKitModule {
 
     // 4f. Clear local mic monitor
     this.stopLocalMicMonitor();
-
-    // 4g. Clean up WASAPI audio bridge (unlisten Tauri events, disconnect worklet/dest nodes,
-    //     close AudioContext). Must happen before room.disconnect() so the track can be
-    //     unpublished cleanly. Fire-and-forget is safe: Tauri listeners are unregistered
-    //     synchronously inside stopWasapiAudioBridge before the first await.
-    this.stopWasapiAudioBridge().catch(() => {});
 
     // 4g2. Clean up native mic bridge. Tauri listener is unregistered synchronously
     //      inside NativeMicBridge.stop() before the first await.
@@ -3089,23 +3110,24 @@ export class LiveKitModule {
     this.localCameraPublication = null;
 
     // 5. Room cleanup (null-safe — room may never have been assigned)
-    if (this.room !== null) {
+    if (room !== null) {
       for (const entry of this.listeners) {
-        this.room.off(entry.event, entry.handler);
+        room.off(entry.event, entry.handler);
       }
-      this.room.disconnect();
+      // Not awaited: room.disconnect() is a network round-trip. Local resource
+      // teardown below (AudioContext, gain nodes, mic/camera tracks) must happen
+      // immediately and must not be gated behind that round-trip completing.
+      Promise.resolve(room.disconnect()).catch(() => {});
     }
 
     // 6. Clear listeners registry
     this.listeners = [];
 
-    // 7. Clean up audio elements
-    for (const el of this.audioElementMap.values()) {
-      el.pause();
-      el.srcObject = null;
-      el.remove();
-    }
-    this.audioElementMap.clear();
+    // 7. Clean up all remote playback graph nodes again in case anything was
+    // added during local unpublish. This must disconnect the
+    // MediaStreamAudioSourceNode as well as the gain node; otherwise detached
+    // screen-share/audio-only streams can keep feeding the Web Audio graph.
+    this.cleanupAllParticipantAudio();
 
     // 8. Clear screen share entries and remove dummy video elements
     for (const entry of this.screenShareElements.values()) {
@@ -3124,29 +3146,6 @@ export class LiveKitModule {
     this.screenShareAudioViewerOwners.clear();
     this.remoteShareTypes.clear();
     this.audioOnlySharers.clear();
-
-    // 8c. Clean up any attached screen share audio elements
-    for (const key of this.audioElementMap.keys()) {
-      if (key.endsWith(':screen-share')) {
-        const el = this.audioElementMap.get(key);
-        if (el) { el.pause(); el.srcObject = null; el.remove(); }
-        this.audioElementMap.delete(key);
-        const gain = this.participantGains.get(key);
-        if (gain) { gain.disconnect(); this.participantGains.delete(key); }
-      }
-    }
-
-    // 9. Disconnect participant gain nodes
-    for (const filters of this.participantFilters.values()) {
-      filters.highShelf.disconnect();
-      filters.lowPass.disconnect();
-    }
-    this.participantFilters.clear();
-    this.participantPassthrough.clear();
-    for (const gain of this.participantGains.values()) {
-      gain.disconnect();
-    }
-    this.participantGains.clear();
 
     // 10. Disconnect master gain
     if (this.masterGain) this.masterGain.disconnect();
@@ -3597,8 +3596,8 @@ export class LiveKitModule {
     if (usesRustScreenShareAudio()) {
       await this.stopLinuxScreenShareAudio();
     }
-    // Guard: disconnect() may have run while awaiting audio teardown above.
-    if (this.disposed || !this.room) return;
+    // Guard: disconnect() may have nulled the room while awaiting audio teardown above.
+    if (!this.room) return;
     await this.room.localParticipant.setScreenShareEnabled(false);
   }
 
@@ -5363,6 +5362,7 @@ export class LiveKitModule {
     gain.gain.setValueAtTime(perceptualGain(desiredVol), ctx.currentTime);
     source.connect(analyser);
     gain.connect(this.masterGain!);
+    this.participantSources.set(identity, source);
     this.participantGains.set(identity, gain);
     this.analyserMap.set(identity, analyser);
     this.updateParticipantFilterGraph(identity);
@@ -5545,6 +5545,12 @@ export class LiveKitModule {
       this.audioElementMap.delete(identity);
     }
 
+    const source = this.participantSources.get(identity);
+    if (source) {
+      source.disconnect();
+      this.participantSources.delete(identity);
+    }
+
     const gain = this.participantGains.get(identity);
     if (gain) {
       gain.disconnect();
@@ -5563,6 +5569,18 @@ export class LiveKitModule {
     if (this.analyserMap.size === 0 && this.analyserInterval !== null) {
       clearInterval(this.analyserInterval);
       this.analyserInterval = null;
+    }
+  }
+
+  private cleanupAllParticipantAudio(): void {
+    const identities = new Set([
+      ...this.audioElementMap.keys(),
+      ...this.participantSources.keys(),
+      ...this.participantGains.keys(),
+      ...this.participantFilters.keys(),
+    ]);
+    for (const identity of identities) {
+      this.cleanupParticipantAudio(identity);
     }
   }
 
@@ -5780,6 +5798,7 @@ export class LiveKitModule {
     gain.gain.setValueAtTime(perceptualGain(desiredVol), ctx.currentTime);
     source.connect(gain);
     gain.connect(this.masterGain!);
+    this.participantSources.set(audioKey, source);
     this.participantGains.set(audioKey, gain);
 
     console.log(LOG, `[mac-share-audio] attached screen share audio — identity=${participantIdentity} trackReadyState=${entry.track.mediaStreamTrack.readyState} trackMuted=${entry.track.isMuted} gainValue=${gain.gain.value.toFixed(3)} masterGainValue=${this.masterGain?.gain.value.toFixed(3) ?? 'null'} audioCtxState=${this.audioContext?.state ?? 'null'}`);

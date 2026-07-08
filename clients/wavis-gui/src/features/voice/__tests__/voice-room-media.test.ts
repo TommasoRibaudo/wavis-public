@@ -779,7 +779,6 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
     messageHandler!({ type: 'sub_room_left', participantId: 'self-peer', subRoomId: 'room-1' });
     await tick();
-    lastLkModule!.setMicEnabledCalls = [];
 
     messageHandler!({
       type: 'sub_room_state',
@@ -787,6 +786,12 @@ describe('VoiceRoom room-based effective volume isolation', () => {
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
       ],
     });
+    await tick();
+
+    // Leaving all sub-rooms fully disconnects media; rejoining reconnects on a
+    // fresh LiveKitModule instance, so mic publishing is applied only once that
+    // new connection reports itself connected.
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
 
     expect(lastLkModule!.setMicEnabledCalls).toEqual([true]);
@@ -873,17 +878,22 @@ describe('VoiceRoom room-based effective volume isolation', () => {
 
     expect(getState().joinedSubRoomId).toBeNull();
     expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(true);
-    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    // No LiveKit connection exists while outside all sub-rooms, so muting here
+    // touches nothing on the (disconnected) module.
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([]);
     expect(sentMessages.slice(sentBefore).filter((m) => String(m.type).startsWith('self_'))).toEqual([]);
     expect(getState().events.slice(eventsBefore).filter((e) => ['muted', 'unmuted'].includes(e.type))).toEqual([]);
 
-    lastLkModule!.setMicEnabledCalls = [];
     messageHandler!({
       type: 'sub_room_state',
       rooms: [
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
       ],
     });
+    await tick();
+    // Rejoining reconnects on a fresh LiveKitModule instance; mic publishing is
+    // applied once that new connection reports itself connected.
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
 
     expect(getState().joinedSubRoomId).toBe('room-1');
@@ -913,17 +923,22 @@ describe('VoiceRoom room-based effective volume isolation', () => {
 
     expect(getState().joinedSubRoomId).toBeNull();
     expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
-    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    // No LiveKit connection exists while outside all sub-rooms, so unmuting
+    // here touches nothing on the (disconnected) module.
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([]);
     expect(sentMessages.slice(sentBefore).filter((m) => String(m.type).startsWith('self_'))).toEqual([]);
     expect(getState().events.slice(eventsBefore).filter((e) => ['muted', 'unmuted'].includes(e.type))).toEqual([]);
 
-    lastLkModule!.setMicEnabledCalls = [];
     messageHandler!({
       type: 'sub_room_state',
       rooms: [
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
       ],
     });
+    await tick();
+    // Rejoining reconnects on a fresh LiveKitModule instance; mic publishing is
+    // applied once that new connection reports itself connected.
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
 
     expect(getState().joinedSubRoomId).toBe('room-1');
@@ -956,7 +971,9 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     expect(getState().isDeafened).toBe(false);
     expect(getState().joinedSubRoomId).toBeNull();
     expect(getState().participants.find((p) => p.id === 'self-peer')?.isMuted).toBe(false);
-    expect(lastLkModule!.setMicEnabledCalls).toEqual([false, false]);
+    // No LiveKit connection exists while outside all sub-rooms, so deafening/
+    // undeafening here touches nothing on the (disconnected) module.
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([]);
     expect(sentMessages.slice(sentBefore).filter((m) => String(m.type).startsWith('self_'))).toEqual([]);
     expect(getState().events.slice(eventsBefore).filter((e) => ['deafen', 'undeafen'].includes(e.type))).toEqual([]);
   });
@@ -1007,16 +1024,21 @@ describe('VoiceRoom room-based effective volume isolation', () => {
       isMuted: true,
       isDeafened: true,
     });
-    expect(lastLkModule!.setMicEnabledCalls).toEqual([false]);
+    // No LiveKit connection exists while outside all sub-rooms, so deafening
+    // here touches nothing on the (disconnected) module.
+    expect(lastLkModule!.setMicEnabledCalls).toEqual([]);
     expect(sentMessages.slice(sentBefore).filter((m) => String(m.type).startsWith('self_'))).toEqual([]);
 
-    lastLkModule!.setMicEnabledCalls = [];
     messageHandler!({
       type: 'sub_room_state',
       rooms: [
         { subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: ['self-peer'] },
       ],
     });
+    await tick();
+    // Rejoining reconnects on a fresh LiveKitModule instance; mic publishing is
+    // applied once that new connection reports itself connected.
+    lastLkModule!.callbacks.onMediaConnected();
     await tick();
 
     expect(getState().joinedSubRoomId).toBe('room-1');
