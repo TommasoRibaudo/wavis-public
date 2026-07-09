@@ -4092,10 +4092,20 @@ export class LiveKitModule {
 
   refreshRemoteScreenShare(participantIdentity: string): void {
     const participant = this.room?.remoteParticipants.get(participantIdentity);
-    if (!participant) return;
+    if (!participant) {
+      if (DEBUG_SHARE_TRACK_SUB) {
+        console.log(LOG, `refreshRemoteScreenShare: no LiveKit remoteParticipant for identity ${participantIdentity} — retry will silently no-op`);
+      }
+      return;
+    }
 
     const publication = participant.getTrackPublication(Track.Source.ScreenShare);
-    if (!publication || publication.kind !== Track.Kind.Video) return;
+    if (!publication || publication.kind !== Track.Kind.Video) {
+      if (DEBUG_SHARE_TRACK_SUB) {
+        console.log(LOG, `refreshRemoteScreenShare: no screen-share video publication for ${participantIdentity}`);
+      }
+      return;
+    }
 
     publication.setSubscribed?.(true);
     publication.setEnabled?.(true);

@@ -156,6 +156,17 @@ pub fn sign_livekit_token(
         .map_err(|e| SfuError::TokenError(format!("LiveKit token signing failed: {e}")))
 }
 
+/// Identity to present to LiveKit: prefer the durable user_id (stable across
+/// reconnects) and fall back to the ephemeral peer_id for anonymous ad-hoc
+/// rooms with no authenticated user. Without this, a silent WS reconnect that
+/// reissues a new peer_id can leave the LiveKit session on its old identity
+/// while signaling moves to the new one, splitting the two planes' view of
+/// who's who (e.g. screen-share tracks publish under an identity no viewer
+/// looks up).
+pub fn livekit_identity<'a>(peer_id: &'a str, user_id: Option<&'a str>) -> &'a str {
+    user_id.unwrap_or(peer_id)
+}
+
 #[allow(dead_code)] // will be used when backend validates incoming client tokens
 /// Validate a MediaToken JWT and return its claims.
 ///
@@ -422,6 +433,16 @@ mod tests {
         assert_eq!(claims.permissions, vec!["publish", "subscribe"]);
         assert_eq!(claims.aud, SFU_AUDIENCE);
         assert_eq!(claims.iss, DEFAULT_JWT_ISSUER);
+    }
+
+    #[test]
+    fn livekit_identity_prefers_user_id_over_peer_id() {
+        assert_eq!(livekit_identity("peer-1", Some("user-abc")), "user-abc");
+    }
+
+    #[test]
+    fn livekit_identity_falls_back_to_peer_id_when_no_user_id() {
+        assert_eq!(livekit_identity("peer-1", None), "peer-1");
     }
 
     #[test]

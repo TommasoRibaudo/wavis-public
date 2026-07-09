@@ -765,7 +765,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
       isSpeaking: false,
       rmsLevel: 0,
     });
-    expect(lastLkModule!.setParticipantVolumeCalls.slice(volumeCallsBefore)).toContainEqual({ id: 'peer-2', vol: 0 });
+    expect(lastLkModule!.setParticipantVolumeCalls.slice(volumeCallsBefore)).toContainEqual({ id: 'u2', vol: 0 });
     expect(sentMessages.some((m) => String(m.type).startsWith('self_'))).toBe(false);
     expect(getState().events.some((e) => ['muted', 'unmuted', 'deafen', 'undeafen'].includes(e.type))).toBe(false);
   });
@@ -1089,7 +1089,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
 
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
-    expect(newCalls).toContainEqual({ id: 'peer-2', vol: 0 });
+    expect(newCalls).toContainEqual({ id: 'u2', vol: 0 });
     expect(getState().participants.find((p) => p.id === 'peer-2')?.volume).toBe(70);
   });
 
@@ -1112,7 +1112,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
 
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
-    expect(newCalls).toContainEqual({ id: 'peer-2', vol: 0 });
+    expect(newCalls).toContainEqual({ id: 'u2', vol: 0 });
     expect(getState().joinedSubRoomId).toBeNull();
   });
 
@@ -1141,7 +1141,7 @@ describe('VoiceRoom room-based effective volume isolation', () => {
     await tick();
 
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
-    expect(newCalls).toContainEqual({ id: 'peer-2', vol: 14 });
+    expect(newCalls).toContainEqual({ id: 'u2', vol: 14 });
     expect(getState().participants.find((p) => p.id === 'peer-2')?.volume).toBe(70);
     expect(getState().passthrough).toEqual({
       sourceSubRoomId: 'room-1',
@@ -1716,9 +1716,11 @@ describe('VoiceRoom participant_joined volume re-application', () => {
     });
     await tick();
 
-    // Without a synchronized sub-room assignment yet, the participant is effectively muted
+    // Without a synchronized sub-room assignment yet, the participant is effectively muted.
+    // The LiveKit identity used here is the stable userId ('u2'), not the ephemeral
+    // peer_id ('peer-new') — that's the whole point of the rejoin-under-new-peer_id case.
     const newCalls = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
-    expect(newCalls).toContainEqual({ id: 'peer-new', vol: 0 });
+    expect(newCalls).toContainEqual({ id: 'u2', vol: 0 });
     expect(getState().participants.find((p) => p.id === 'peer-new')?.volume).toBe(44);
 
     // Once the participant is assigned into the same sub-room, their saved volume is restored
@@ -1731,7 +1733,7 @@ describe('VoiceRoom participant_joined volume re-application', () => {
     await tick();
 
     const callsAfterRoomJoin = lastLkModule!.setParticipantVolumeCalls.slice(callsBefore);
-    expect(callsAfterRoomJoin).toContainEqual({ id: 'peer-new', vol: 44 });
+    expect(callsAfterRoomJoin).toContainEqual({ id: 'u2', vol: 44 });
 
     leaveRoom();
   });
