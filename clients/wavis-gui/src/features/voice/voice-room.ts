@@ -104,28 +104,30 @@ function parseRemoteShareType(value: unknown): RemoteShareType | undefined {
 
 function updateRemoteShareType(participantId: string, shareType?: RemoteShareType): void {
   if (lkModule && 'setRemoteShareType' in lkModule) {
-    (lkModule as LiveKitModule).setRemoteShareType(participantId, shareType);
+    (lkModule as LiveKitModule).setRemoteShareType(liveKitIdentityFor(participantId), shareType);
   }
 }
 
 function refreshRemoteScreenShare(participantId: string): void {
   if (lkModule && 'refreshRemoteScreenShare' in lkModule) {
     (lkModule as LiveKitModule & { refreshRemoteScreenShare(participantId: string): void })
-      .refreshRemoteScreenShare(participantId);
+      .refreshRemoteScreenShare(liveKitIdentityFor(participantId));
   }
 }
 
 /**
- * Schedule up to three retry attempts (at 1s, 3s, 6s) to call
+ * Schedule retry attempts (at 1s, 3s, 6s, 12s, 24s) to call
  * refreshRemoteScreenShare for a participant whose share just started.
  * Handles the race where TrackSubscribed fires after share_started arrives,
  * or where the SFU treats a republish as a track resume and never fires
- * TrackPublished/TrackSubscribed at all.
+ * TrackPublished/TrackSubscribed at all. The 12s/24s long tail covers slower
+ * recoveries (e.g. a delayed signaling/media identity realignment) beyond the
+ * original 6s cap.
  */
 function scheduleRefreshRetries(participantId: string): void {
   const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
   refreshRetryGenerations.set(participantId, generation);
-  const delays = [1000, 3000, 6000];
+  const delays = [1000, 3000, 6000, 12000, 24000];
   for (const delay of delays) {
     setTimeout(() => {
       if (refreshRetryGenerations.get(participantId) !== generation) return;
@@ -139,7 +141,7 @@ function scheduleRefreshRetries(participantId: string): void {
 
 function clearRemoteShareType(participantId: string): void {
   if (lkModule && 'clearRemoteShareType' in lkModule) {
-    (lkModule as LiveKitModule).clearRemoteShareType(participantId);
+    (lkModule as LiveKitModule).clearRemoteShareType(liveKitIdentityFor(participantId));
   }
 }
 
@@ -416,6 +418,43 @@ function makeShareSessionId(): string {
   return `share-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Decode the `sub` (LiveKit participant identity) claim from a media JWT without verifying it. */
+function decodeMediaTokenIdentity(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded));
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Translate a signaling participantId to the LiveKit identity used for that
+ * participant's media session. When the backend has a durable user_id for
+ * them (authenticated channel voice), LiveKit identity == userId, stable
+ * across reconnects; otherwise it falls back to the participantId itself
+ * (anonymous ad-hoc rooms, where identity == peer_id as before).
+ */
+function liveKitIdentityFor(participantId: string): string {
+  return state.participants.find((p) => p.id === participantId)?.userId ?? participantId;
+}
+
+/**
+ * Reverse of liveKitIdentityFor: translate a LiveKit identity received from
+ * livekit-media.ts back to the signaling participantId it corresponds to.
+ * Falls back to treating the identity as the participantId itself, which is
+ * correct for anonymous rooms and degrades gracefully during the brief race
+ * before a remote participant's userId is known (scheduleRefreshRetries
+ * covers that window for screen-share).
+ */
+function participantIdForLiveKitIdentity(identity: string): string {
+  return state.participants.find((p) => p.userId === identity)?.id ?? identity;
+}
+
 /** Resolve the local user's display name for event log messages. */
 function selfName(): string {
   const self = state.participants.find((p) => p.id === state.selfParticipantId);
@@ -579,8 +618,9 @@ export function mergeParticipantsWithVolume(
 
 function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
   if (!lkModule || participant.id === state.selfParticipantId) return;
+  const identity = liveKitIdentityFor(participant.id);
   lkModule.setParticipantVolume(
-    participant.id,
+    identity,
     computeEffectiveParticipantVolume(
       participant.volume,
       participant.id,
@@ -591,7 +631,7 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
       state.passthroughVolume / 100,
     ),
   );
-  lkModule.setParticipantPassthrough(participant.id, isPassthroughParticipant(participant.id));
+  lkModule.setParticipantPassthrough(identity, isPassthroughParticipant(participant.id));
 }
 
 function applyEffectiveParticipantVolumes(): void {
@@ -1677,6 +1717,10 @@ async function resumePendingWasapiCapture(): Promise<void> {
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let latestMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | null = null;
+// LiveKit identity (JWT `sub`) that `lkModule` is currently connected/connecting with.
+// Used to detect the ephemeral-peer_id drift that happens when a silent WS reconnect
+// issues a new signaling participantId while the LiveKit session survives on its old identity.
+let connectedMediaIdentity: string | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 let suppressMediaDisconnectedReconnect = false;
@@ -2025,7 +2069,7 @@ function rebuildVideoTiles(): void {
   // Keep server-side subscriptions in sync with the visibility filter so cameras outside
   // the joined sub-room don't keep streaming bytes (TrackSubscribed force-enables every
   // camera publication; without this, hidden cameras would burn bandwidth indefinitely).
-  module?.applyRemoteCameraVisibility(visibleIds);
+  module?.applyRemoteCameraVisibility(new Set([...visibleIds].map(liveKitIdentityFor)));
   syncRoomPanelTab();
 }
 
@@ -2711,6 +2755,7 @@ function scheduleColdStartRetry(): void {
 }
 
 function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string }): void {
+  connectedMediaIdentity = decodeMediaTokenIdentity(token);
   // Tear down previous instance if any
   if (lkModule) {
     suppressMediaDisconnectedReconnect = true;
@@ -2821,7 +2866,8 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
     },
     onAudioLevels: (levels) => {
       for (const [identity, data] of levels) {
-        const p = state.participants.find((pp) => pp.id === identity);
+        const participantId = participantIdForLiveKitIdentity(identity);
+        const p = state.participants.find((pp) => pp.id === participantId);
         if (p) {
           p.rmsLevel = data.rmsLevel;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
@@ -2835,8 +2881,9 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       updateSelfRms(level);
     },
     onActiveSpeakers: (speakerIdentities) => {
+      const speakerParticipantIds = speakerIdentities.map(participantIdForLiveKitIdentity);
       for (const p of state.participants) {
-        const isSpeaker = speakerIdentities.includes(p.id);
+        const isSpeaker = speakerParticipantIds.includes(p.id);
         if (isSpeaker && !p.isMuted) {
           // Boost the smoothed RMS in the tracker so the debounce logic
           // converges to speaking within 1–2 frames instead of fighting
@@ -2860,28 +2907,39 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       notify();
     },
     onRemoteParticipantConnected: (identity) => {
-      const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(identity);
-      markParticipantMediaConnected(identity, true, { playJoinSound: !suppressJoinSound });
+      const participantId = participantIdForLiveKitIdentity(identity);
+      const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(participantId);
+      markParticipantMediaConnected(participantId, true, { playJoinSound: !suppressJoinSound });
       notify();
     },
     onRemoteParticipantDisconnected: (identity) => {
-      markParticipantMediaConnected(identity, false, { playJoinSound: false });
+      markParticipantMediaConnected(participantIdForLiveKitIdentity(identity), false, { playJoinSound: false });
       notify();
     },
     onScreenShareSubscribed: (identity, stream) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       state.screenShareStreams = new Map(state.screenShareStreams);
-      state.screenShareStreams.set(identity, stream);
+      state.screenShareStreams.set(participantId, stream);
       // Mark participant as sharing (handles late joiners where TrackSubscribed
       // arrives before share_state signaling message)
-      const p = state.participants.find((pp) => pp.id === identity);
-      if (p && !p.isSharing) {
-        p.isSharing = true;
+      const p = state.participants.find((pp) => pp.id === participantId);
+      if (p) {
+        if (!p.isSharing) {
+          p.isSharing = true;
+        }
+      } else {
+        // The LiveKit identity publishing this track has no matching signaling
+        // participant — a sign of the ephemeral peer_id/LiveKit identity drift
+        // (see media_token identity mismatch handling above). The stream is stored
+        // under an id no one in the UI looks up, so the share icon stays grey.
+        console.warn(LOG, `screen share stream subscribed for unknown identity: ${identity}`);
       }
       notify();
     },
     onScreenShareUnsubscribed: (identity) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       state.screenShareStreams = new Map(state.screenShareStreams);
-      state.screenShareStreams.delete(identity);
+      state.screenShareStreams.delete(participantId);
       // Clear receiver stats when no remote shares remain
       if (state.screenShareStreams.size === 0) {
         state.videoReceiveStats = null;
@@ -2890,9 +2948,9 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       // a temporary track unsubscription (e.g. LiveKit media reconnect) doesn't
       // leave the icon stuck in "waiting for stream" forever when TrackSubscribed
       // doesn't re-fire (SFU treat-as-resume edge case).
-      const unsub = state.participants.find((pp) => pp.id === identity);
-      if (unsub?.isSharing && identity !== state.selfParticipantId) {
-        scheduleRefreshRetries(identity);
+      const unsub = state.participants.find((pp) => pp.id === participantId);
+      if (unsub?.isSharing && participantId !== state.selfParticipantId) {
+        scheduleRefreshRetries(participantId);
       }
       notify();
     },
@@ -2909,10 +2967,11 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       localStopShareSent = false;
     },
     onParticipantMuteChanged: (identity, isMuted) => {
-      const p = state.participants.find((pp) => pp.id === identity);
+      const participantId = participantIdForLiveKitIdentity(identity);
+      const p = state.participants.find((pp) => pp.id === participantId);
       if (!p) return;
 
-      if (identity === state.selfParticipantId) {
+      if (participantId === state.selfParticipantId) {
         if (state.joinedSubRoomId === null) {
           clearSelfAudioActivity(p);
           if (!isMuted) {
@@ -2934,7 +2993,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
             timestamp: timestamp(),
             type: isMuted ? 'muted' : 'unmuted',
             message: isMuted ? 'mic muted (system)' : 'mic unmuted (system)',
-            participantId: identity,
+            participantId,
           });
           notify();
         }
@@ -2947,12 +3006,13 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
         notify();
       }
     },
-    onRemoteCameraPublished: (participantId) => {
+    onRemoteCameraPublished: (identity) => {
       if (DEBUG_VIDEO_FEED) {
-        console.log(LOG, '[video-feed] remote camera published', participantId);
+        console.log(LOG, '[video-feed] remote camera published', identity);
       }
     },
-    onRemoteCameraReady: (participantId, track) => {
+    onRemoteCameraReady: (identity, track) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       remoteCameraTilesById = {
         ...remoteCameraTilesById,
         [participantId]: {
@@ -2964,7 +3024,8 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       rebuildVideoTiles();
       notify();
     },
-    onRemoteCameraMutedChanged: (participantId, muted) => {
+    onRemoteCameraMutedChanged: (identity, muted) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       const current = remoteCameraTilesById[participantId];
       if (!current) {
         return;
@@ -2979,7 +3040,8 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       rebuildVideoTiles();
       notify();
     },
-    onRemoteCameraUnpublished: (participantId) => {
+    onRemoteCameraUnpublished: (identity) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       if (!(participantId in remoteCameraTilesById)) {
         return;
       }
@@ -3018,16 +3080,17 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       notify();
     },
     onAudioOnlySharerAdded: (identity) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       state.audioOnlySharers = new Set(state.audioOnlySharers);
-      state.audioOnlySharers.add(identity);
+      state.audioOnlySharers.add(participantId);
       // Silence immediately so the gain node is created at 0 before any audio
       // plays. The viewer un-mutes by clicking the music icon to restore volume.
-      setScreenShareAudioVolume(identity, 0);
+      setScreenShareAudioVolume(participantId, 0);
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
       state.audioOnlySharers = new Set(state.audioOnlySharers);
-      state.audioOnlySharers.delete(identity);
+      state.audioOnlySharers.delete(participantIdForLiveKitIdentity(identity));
       notify();
     },
   };
@@ -4088,14 +4151,29 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      // Media already connected — this is a proactive refresh from the backend.
-      // LiveKit SDK handles its own reconnection internally; tearing down and
-      // rebuilding the Room would cause a visible audio/screenshare hiccup.
+      // Media already connected — normally this is just a proactive refresh from the
+      // backend and LiveKit's own reconnection handles it without a visible hiccup.
+      // But if a silent WS drop reissued us a new signaling identity while the LiveKit
+      // session survived under its old one (see media_token identity mismatch below),
+      // the new token's identity will differ from what we're actually connected as —
+      // in that case we must force a reconnect or the sharer/viewer identities split
+      // permanently and screen-share tracks publish under an identity nobody is
+      // looking for.
       if (
         state.mediaState === 'connected'
         || state.mediaState === 'connecting'
         || state.mediaState === 'reconnecting'
       ) {
+        const newIdentity = decodeMediaTokenIdentity(token);
+        if (newIdentity && connectedMediaIdentity && newIdentity !== connectedMediaIdentity) {
+          console.log(LOG, `media_token identity mismatch (connected as ${connectedMediaIdentity}, token is for ${newIdentity}) — forcing media reconnect`);
+          appendEvent({
+            id: makeEventId(), timestamp: timestamp(),
+            type: 'system', message: 'media identity changed — reconnecting media session',
+          });
+          connectMedia(sfuUrl, token, iceConfig);
+          break;
+        }
         console.log(LOG, `media_token received while media ${state.mediaState} — ignoring (no reconnect needed)`);
         break;
       }
@@ -5376,7 +5454,7 @@ export function setParticipantVolume(participantId: string, volume: number): voi
     applyEffectiveParticipantVolume(p);
   } else if (lkModule) {
     lkModule.setParticipantVolume(
-      participantId,
+      liveKitIdentityFor(participantId),
       computeEffectiveParticipantVolume(
         clamped,
         participantId,
@@ -5414,7 +5492,7 @@ export function setMasterVolume(volume: number): void {
 export function setScreenShareAudioVolume(participantId: string, volume: number): void {
   const clamped = Math.max(0, Math.min(100, Math.round(volume)));
   if (lkModule && 'setScreenShareAudioVolume' in lkModule) {
-    (lkModule as LiveKitModule).setScreenShareAudioVolume(participantId, clamped);
+    (lkModule as LiveKitModule).setScreenShareAudioVolume(liveKitIdentityFor(participantId), clamped);
   }
 }
 
@@ -5591,14 +5669,14 @@ export function updateSelfRms(level: number): void {
 export function attachScreenShareAudio(participantId: string): void {
   if (state.joinedSubRoomId === null) return;
   if (lkModule && 'attachScreenShareAudio' in lkModule) {
-    (lkModule as LiveKitModule).attachScreenShareAudio(participantId);
+    (lkModule as LiveKitModule).attachScreenShareAudio(liveKitIdentityFor(participantId));
   }
 }
 
 /** Detach screen share audio when user closes the viewer. */
 export function detachScreenShareAudio(participantId: string): void {
   if (lkModule && 'detachScreenShareAudio' in lkModule) {
-    (lkModule as LiveKitModule).detachScreenShareAudio(participantId);
+    (lkModule as LiveKitModule).detachScreenShareAudio(liveKitIdentityFor(participantId));
   }
 }
 

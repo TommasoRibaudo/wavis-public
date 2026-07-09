@@ -23,7 +23,7 @@
 //! `domain::sfu_relay`, `domain::sfu_bridge`, `domain::jwt`, and Postgres.
 
 use crate::app_state::ActiveRoomMap;
-use crate::auth::jwt::{sign_livekit_token, sign_media_token};
+use crate::auth::jwt::{livekit_identity, sign_livekit_token, sign_media_token};
 use crate::channel::channel_models::ChannelRole;
 use crate::state::{
     InMemoryRoomState, PassthroughPair, RoomInfo, SubRoomInfo, SubRoomMembershipSource,
@@ -418,13 +418,16 @@ async fn evict_stale_session(
         "evicting stale session for same user on rejoin"
     );
 
-    // 1. Best-effort SFU removal.
+    // 1. Best-effort SFU removal. The stale entry was found by matching
+    // user_id, so its LiveKit identity (once stable-identity tokens are in
+    // use) is user_id_str, not the old ephemeral stale_peer_id — target the
+    // removal at the identity LiveKit actually knows the session by.
     let sfu_handle = room_state
         .get_room_info(room_id)
         .and_then(|info| info.sfu_handle);
     if let Some(ref handle) = sfu_handle
         && let Err(e) = sfu_room_manager
-            .remove_participant(handle, &stale_peer_id)
+            .remove_participant(handle, &user_id_str)
             .await
     {
         warn!(
@@ -1077,6 +1080,10 @@ pub async fn join_voice(
     // 5. Join user to room — replicate handle_sfu_join logic without
     //    first-joiner-is-Host and without invite validation.
 
+    // Stable identity for this user, reused for LiveKit registration/token
+    // issuance and for evicting a stale session under the same identity.
+    let user_id_str = user_id.to_string();
+
     // 5a. Evict stale session for the same user (ghost duplicate prevention).
     // Must happen before capacity check so the freed slot is available.
     let (evicted_peer_id, eviction_signals, eviction_sub_room_expiry) =
@@ -1092,7 +1099,10 @@ pub async fn join_voice(
         .ok_or_else(|| VoiceJoinError::InternalError("room missing SFU handle".to_string()))?;
 
     // Register participant with SFU.
-    if let Err(e) = sfu_room_manager.add_participant(&sfu_handle, peer_id).await {
+    if let Err(e) = sfu_room_manager
+        .add_participant(&sfu_handle, livekit_identity(peer_id, Some(&user_id_str)))
+        .await
+    {
         // Rollback if room was newly created.
         if created {
             rollback_room(room_state, active_room_map, &room_id, &channel_id).await;
@@ -1123,7 +1133,7 @@ pub async fn join_voice(
     let new_participant = ParticipantInfo {
         participant_id: peer_id.to_string(),
         display_name: display_name.to_string(),
-        user_id: Some(user_id.to_string()),
+        user_id: Some(user_id_str.clone()),
         profile_color: profile_color.map(|s| s.to_string()),
         is_muted: false,
         is_host_muted: false,
@@ -1151,7 +1161,7 @@ pub async fn join_voice(
             ttl_secs,
         } => sign_livekit_token(
             &room_id,
-            peer_id,
+            livekit_identity(peer_id, Some(&user_id_str)),
             display_name,
             api_key,
             api_secret,
