@@ -52,16 +52,10 @@ pub fn audio_share_stop(
     platform::stop(state, audio_capture)
 }
 
-/// Check whether the WavisAudioTap HAL driver is installed.
-/// Returns true if the .driver bundle is present in /Library/Audio/Plug-Ins/HAL/.
-/// Always returns true on non-macOS platforms.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-pub fn check_audio_driver() -> bool {
-    platform::macos_driver_install::is_driver_installed()
-}
-
-#[cfg(not(target_os = "macos"))]
+/// Whether to show the driver-install prompt before screen-share audio.
+/// Always true: the prompt is intentionally suppressed on every platform.
+/// Actual capture still probes for a virtual loopback device independently
+/// via detect_virtual_audio_device() in macos.rs.
 #[tauri::command]
 pub fn check_audio_driver() -> bool {
     true

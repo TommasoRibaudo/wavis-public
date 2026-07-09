@@ -50,6 +50,9 @@ let audioCtxConstructorCalls: number;
 /** Tracks AudioContext.createMediaStreamSource() calls. */
 let createMediaStreamSourceCalls: number;
 
+/** Tracks MediaStreamAudioSourceNode.disconnect() calls. */
+let mediaStreamSourceDisconnectCalls: number;
+
 /** Tracks AudioContext.createGain() calls. */
 let createGainCalls: number;
 
@@ -243,7 +246,7 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
     createMediaStreamSourceCalls++;
     return {
       connect: vi.fn(),
-      disconnect: vi.fn(),
+      disconnect: vi.fn(() => { mediaStreamSourceDisconnectCalls++; }),
     };
   });
   this.createMediaStreamDestination = vi.fn(() => ({
@@ -629,6 +632,7 @@ function resetAll() {
   audioCtxCloseCalls = 0;
   audioCtxConstructorCalls = 0;
   createMediaStreamSourceCalls = 0;
+  mediaStreamSourceDisconnectCalls = 0;
   createGainCalls = 0;
   gainDisconnectCalls = 0;
   createdGains = [];
@@ -3021,6 +3025,42 @@ describe('Screen share and device selection', () => {
       expect(participantGains.has('alice:screen-share')).toBe(false);
 
       mod.disconnect();
+    });
+
+    it('disconnect cleans attached screen share audio Web Audio source nodes', async () => {
+      resetAll();
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await driveToConnected(mod);
+
+      emitRoomEvent(
+        'trackSubscribed',
+        { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } },
+        { source: 'screen_share_audio' },
+        { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
+      );
+      mod.attachScreenShareAudio('alice');
+
+      const audioElementMap = (mod as unknown as {
+        audioElementMap: Map<string, { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }>;
+      }).audioElementMap;
+      const participantSources = (mod as unknown as { participantSources: Map<string, unknown> }).participantSources;
+      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> }).participantGains;
+      const audioEl = audioElementMap.get('alice:screen-share');
+
+      expect(participantSources.has('alice:screen-share')).toBe(true);
+
+      mod.disconnect();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(audioElementMap.has('alice:screen-share')).toBe(false);
+      expect(participantSources.has('alice:screen-share')).toBe(false);
+      expect(participantGains.has('alice:screen-share')).toBe(false);
+      expect(audioEl?.pause).toHaveBeenCalled();
+      expect(audioEl?.remove).toHaveBeenCalled();
+      expect(mediaStreamSourceDisconnectCalls).toBeGreaterThan(0);
+      expect(gainDisconnectCalls).toBeGreaterThan(0);
     });
 
     it('mic gain node and sys-audio gain node are independent (mute parity)', async () => {
