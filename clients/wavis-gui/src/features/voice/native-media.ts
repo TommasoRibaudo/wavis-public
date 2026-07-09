@@ -404,7 +404,6 @@ export class NativeMediaModule {
         this.audioOnlySharers.add(participantIdentity);
         this.callbacks.onAudioOnlySharerAdded?.(participantIdentity);
       }
-      this.attachScreenShareAudio(participantIdentity);
       return;
     }
 

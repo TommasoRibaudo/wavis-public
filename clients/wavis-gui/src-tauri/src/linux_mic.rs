@@ -1,8 +1,8 @@
-//! Linux microphone capture via PulseAudio pa_simple.
+//! Linux audio I/O via PulseAudio pa_simple.
 //!
 //! Replaces CPAL/ALSA mic capture on Linux to avoid the bundled libasound.so.2
 //! issue in AppImage builds where snd_pcm_open("default") returns ENXIO.
-//! The pa_simple API is already proven to work in AppImage via screen audio capture.
+//! Speaker playback uses the same path for the same reason.
 
 use psimple::Simple;
 use pulse::def::BufferAttr;
@@ -30,6 +30,18 @@ impl LinuxMicHandle {
     }
 }
 
+pub(crate) struct LinuxPlaybackHandle {
+    stop_flag: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl LinuxPlaybackHandle {
+    pub(crate) fn stop(self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        let _ = self.thread.join();
+    }
+}
+
 pub(crate) fn start_linux_mic_capture(
     capture_buffer: AudioBuffer,
     input_gain: Arc<Mutex<f32>>,
@@ -45,12 +57,26 @@ pub(crate) fn start_linux_mic_capture(
     Ok(LinuxMicHandle { stop_flag, thread })
 }
 
-fn mic_capture_loop(
-    stop_flag: &AtomicBool,
-    capture_buffer: &AudioBuffer,
-    input_gain: &Mutex<f32>,
-) {
-    let spec = Spec { format: Format::S16le, channels: 1, rate: SAMPLE_RATE };
+pub(crate) fn start_linux_playback(
+    playback_buffer: AudioBuffer,
+) -> Result<LinuxPlaybackHandle, String> {
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_thread = Arc::clone(&stop_flag);
+
+    let thread = std::thread::Builder::new()
+        .name("pa-speaker-playback".into())
+        .spawn(move || playback_loop(&stop_flag_thread, &playback_buffer))
+        .map_err(|e| format!("failed to spawn pa_simple playback thread: {e}"))?;
+
+    Ok(LinuxPlaybackHandle { stop_flag, thread })
+}
+
+fn mic_capture_loop(stop_flag: &AtomicBool, capture_buffer: &AudioBuffer, input_gain: &Mutex<f32>) {
+    let spec = Spec {
+        format: Format::S16le,
+        channels: 1,
+        rate: SAMPLE_RATE,
+    };
     assert!(spec.is_valid());
 
     let buffer_attr = BufferAttr {
@@ -133,4 +159,96 @@ fn mic_capture_loop(
     }
 
     log::info!("[linux_mic] mic capture stopped");
+}
+
+fn playback_loop(stop_flag: &AtomicBool, playback_buffer: &AudioBuffer) {
+    let spec = Spec {
+        format: Format::S16le,
+        channels: 1,
+        rate: SAMPLE_RATE,
+    };
+    assert!(spec.is_valid());
+
+    let buffer_attr = BufferAttr {
+        maxlength: FRAME_BYTES * 4,
+        tlength: FRAME_BYTES * 2,
+        prebuf: 0,
+        minreq: FRAME_BYTES,
+        fragsize: u32::MAX,
+    };
+
+    let simple = {
+        let mut last_err = None;
+        let mut opened = None;
+        for attempt in 1..=PA_OPEN_ATTEMPTS {
+            match Simple::new(
+                None,
+                "wavis-speaker",
+                Direction::Playback,
+                None, // default PA sink — PipeWire routes to current output
+                "speaker-playback",
+                &spec,
+                None,
+                Some(&buffer_attr),
+            ) {
+                Ok(s) => {
+                    opened = Some(s);
+                    break;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[linux_mic] pa_simple playback open attempt {attempt}/{PA_OPEN_ATTEMPTS}: {e}"
+                    );
+                    last_err = Some(format!("{e}"));
+                    if attempt < PA_OPEN_ATTEMPTS {
+                        std::thread::sleep(PA_OPEN_BACKOFF);
+                    }
+                }
+            }
+        }
+        match opened {
+            Some(s) => s,
+            None => {
+                log::error!(
+                    "[linux_mic] pa_simple playback open failed: {}",
+                    last_err.unwrap_or_default()
+                );
+                return;
+            }
+        }
+    };
+
+    log::info!("[linux_mic] speaker playback started (default PA sink, 48kHz mono S16le)");
+
+    let mut f32_buf = vec![0.0f32; FRAME_SAMPLES];
+    let mut i16_buf = vec![0i16; FRAME_SAMPLES];
+
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let read = playback_buffer.read(&mut f32_buf);
+        if read < f32_buf.len() {
+            f32_buf[read..].fill(0.0);
+        }
+
+        for (dst, &sample) in i16_buf.iter_mut().zip(f32_buf.iter()) {
+            *dst = (sample.clamp(-0.98, 0.98) * 32767.0) as i16;
+        }
+
+        let byte_buf = unsafe {
+            std::slice::from_raw_parts(
+                i16_buf.as_ptr() as *const u8,
+                FRAME_SAMPLES * std::mem::size_of::<i16>(),
+            )
+        };
+
+        if let Err(e) = simple.write(byte_buf) {
+            log::error!("[linux_mic] pa_simple playback write error: {e}");
+            break;
+        }
+    }
+
+    log::info!("[linux_mic] speaker playback stopped");
 }

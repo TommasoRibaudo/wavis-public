@@ -595,10 +595,15 @@ function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
 }
 
 function applyEffectiveParticipantVolumes(): void {
-  if (!lkModule) return;
-  for (const participant of state.participants) {
-    applyEffectiveParticipantVolume(participant);
+  if (lkModule) {
+    for (const participant of state.participants) {
+      applyEffectiveParticipantVolume(participant);
+    }
   }
+  // Runs after volumes are pushed to the still-live connection above —
+  // reconcileLocalMicWithRoomMembership() defers the actual teardown here
+  // rather than nulling lkModule out from under this function.
+  flushPendingMediaDisconnectForNoRoom();
 }
 
 function selfParticipant(): RoomParticipant | undefined {
@@ -659,6 +664,30 @@ function setLocalMicPublishing(enabled: boolean): void {
   lkModule?.setMicEnabled(enabled);
 }
 
+function detachAllScreenShareAudioPlayback(): void {
+  if (!lkModule || !('detachScreenShareAudio' in lkModule)) return;
+  const detach = (lkModule as { detachScreenShareAudio(participantIdentity: string): void }).detachScreenShareAudio.bind(lkModule);
+  const participantIds = new Set<string>();
+  for (const participant of state.participants) {
+    if (participant.id !== state.selfParticipantId) {
+      participantIds.add(participant.id);
+    }
+  }
+  for (const participantId of state.screenShareStreams.keys()) {
+    if (participantId !== state.selfParticipantId) {
+      participantIds.add(participantId);
+    }
+  }
+  for (const participantId of state.audioOnlySharers) {
+    if (participantId !== state.selfParticipantId) {
+      participantIds.add(participantId);
+    }
+  }
+  for (const participantId of participantIds) {
+    detach(participantId);
+  }
+}
+
 function shouldPublishLocalMic(self: RoomParticipant | undefined): boolean {
   return (
     state.joinedSubRoomId !== null
@@ -678,6 +707,11 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
       clearSelfAudioActivity(self);
     }
     setLocalMicPublishing(false);
+    detachAllScreenShareAudioPlayback();
+    // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
+    // caller has finished applying effective participant volumes on the
+    // still-live connection — disconnecting here would null it out first.
+    pendingMediaDisconnectForNoRoom = true;
     return;
   }
 
@@ -1641,10 +1675,12 @@ async function resumePendingWasapiCapture(): Promise<void> {
 }
 
 let bufferedMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
+let latestMediaToken: { sfuUrl: string; token: string; iceConfig?: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } } | null = null;
 let bufferedIceConfig: { stunUrls: string[]; turnUrls: string[]; turnUsername?: string; turnCredential?: string } | null = null;
 let desiredSubRoomIntent: string | null | undefined = undefined;
 let lastReconnectMediaTime = 0;
 let suppressMediaDisconnectedReconnect = false;
+let pendingMediaDisconnectForNoRoom = false;
 /** Currently registered hotkey string (null when no hotkey is active). */
 let registeredHotkey: string | null = null;
 /** Volume before deafen, restored on undeafen. */
@@ -1883,13 +1919,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   let sentStopShare = false;
 
   if (state.activeVideoShare || state.activeAudioShare) {
-    if (lkModule && lkModule instanceof LiveKitModule) {
-      lkModule.stopWasapiAudioBridge().catch(() => { });
-    }
     if (state.activeVideoShare) {
-      if (lkModule && lkModule instanceof LiveKitModule) {
-        lkModule.stopNativeCapture().catch(() => { });
-      }
       invoke('screen_share_stop').catch(() => { });
       if (state.activeVideoShare.withAudio) invoke('audio_share_stop').catch(() => { });
     }
@@ -1940,6 +1970,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   resetCameraRuntimeState();
 
   bufferedMediaToken = null;
+  latestMediaToken = null;
   bufferedIceConfig = null;
   externalShareHelperActive = false;
   reusePatchGuardCheckedForSession = false;
@@ -2151,6 +2182,51 @@ function flushBufferedMediaTokenIfReady(): void {
     const { sfuUrl, token, iceConfig } = bufferedMediaToken;
     bufferedMediaToken = null;
     connectMedia(sfuUrl, token, iceConfig);
+  }
+}
+
+function flushPendingMediaDisconnectForNoRoom(): void {
+  if (!pendingMediaDisconnectForNoRoom) return;
+  pendingMediaDisconnectForNoRoom = false;
+  disconnectMediaForNoSubRoom();
+}
+
+function disconnectMediaForNoSubRoom(): void {
+  if (!bufferedMediaToken && latestMediaToken) {
+    bufferedMediaToken = latestMediaToken;
+  }
+  if (lkModule) {
+    // Stop any local screen share still publishing on this connection immediately.
+    // stopLocalShareAfterLeavingSubRoom() may have already kicked off its own
+    // fire-and-forget stopShare(), but that call reaches lkModule.stopScreenShare()
+    // only after several awaited native-capture invokes — well after this
+    // synchronous disconnect nulls lkModule below.
+    void lkModule.stopScreenShare().catch(() => {});
+    suppressMediaDisconnectedReconnect = true;
+    try {
+      lkModule.disconnect();
+    } finally {
+      suppressMediaDisconnectedReconnect = false;
+    }
+    lkModule = null;
+  }
+  state.mediaState = 'disconnected';
+  state.mediaError = null;
+  state.nativeMicBridgeActive = false;
+  state.noiseSuppressionActive = false;
+  state.shareQualityInfo = null;
+  state.shareStats = null;
+  state.videoReceiveStats = null;
+  state.screenShareStreams = new Map();
+  mediaConnectedParticipantIds.clear();
+  markAllParticipantsMediaConnecting();
+  remoteCameraTilesById = {};
+  rebuildVideoTiles();
+  stopPeriodicMediaRetry();
+  setActiveLiveKitModule(null);
+  if (registeredHotkey) {
+    unregisterMuteHotkey(registeredHotkey).catch(() => {});
+    registeredHotkey = null;
   }
 }
 
@@ -4005,8 +4081,10 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
+      latestMediaToken = { sfuUrl, token, iceConfig };
+
       if (state.machineState !== 'active' || state.joinedSubRoomId === null) {
-        bufferedMediaToken = { sfuUrl, token, iceConfig };
+        bufferedMediaToken = latestMediaToken;
         break;
       }
 
@@ -4135,6 +4213,9 @@ export function initSession(
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
   desiredSubRoomIntent = undefined;
+  bufferedMediaToken = null;
+  latestMediaToken = null;
+  bufferedIceConfig = null;
 
   // Push initial state to the component
   notify();
@@ -5508,6 +5589,7 @@ export function updateSelfRms(level: number): void {
 
 /** Attach deferred screen share audio when user opens the viewer. */
 export function attachScreenShareAudio(participantId: string): void {
+  if (state.joinedSubRoomId === null) return;
   if (lkModule && 'attachScreenShareAudio' in lkModule) {
     (lkModule as LiveKitModule).attachScreenShareAudio(participantId);
   }
