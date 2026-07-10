@@ -63,6 +63,9 @@ export interface VideoTileViewModel {
 
 export interface VideoTileSnapshot {
   participantId: string;
+  /** LiveKit identity the Rust side keys native camera frames by. Newer
+   *  backends use the durable userId, which differs from participantId. */
+  liveKitIdentity?: string;
   displayName: string;
   color: string;
   hasTrack: boolean;

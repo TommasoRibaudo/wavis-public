@@ -132,8 +132,12 @@ function refreshRemoteScreenShare(participantId: string): void {
  * frames forever.
  */
 function hasLiveScreenShareStream(participantId: string): boolean {
+  if (!state.screenShareStreams.has(participantId)) return false;
   const stream = state.screenShareStreams.get(participantId);
-  return !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live');
+  // The native path (Linux) stores null — pixels render outside WebKit, so a
+  // present entry is healthy by definition.
+  if (!stream) return true;
+  return stream.getVideoTracks().some((t) => t.readyState === 'live');
 }
 
 function scheduleRefreshRetries(participantId: string): void {
@@ -143,15 +147,15 @@ function scheduleRefreshRetries(participantId: string): void {
   for (const delay of delays) {
     setTimeout(() => {
       if (refreshRetryGenerations.get(participantId) !== generation) return;
-      const existing = state.screenShareStreams.get(participantId);
-      if (existing) {
-        // Only a stream whose video track is still live counts as healthy.
-        // When the SFU treats a republish as a track resume it never re-fires
-        // TrackSubscribed, so the map can hold the previous share's stream
-        // with an ended video track — the share icon lights up but the viewer
-        // window waits for frames forever. Drop the dead entry and fall
-        // through to the refresh so a fresh subscription replaces it.
-        if (existing.getVideoTracks().some((t) => t.readyState === 'live')) return;
+      if (state.screenShareStreams.has(participantId)) {
+        // Only a healthy entry skips the refresh. When the SFU treats a
+        // republish as a track resume it never re-fires TrackSubscribed, so
+        // the map can hold the previous share's stream with an ended video
+        // track — the share icon lights up but the viewer window waits for
+        // frames forever. Drop such a dead entry and fall through to the
+        // refresh so a fresh subscription replaces it. (Native-path entries
+        // are null and always count as healthy — see hasLiveScreenShareStream.)
+        if (hasLiveScreenShareStream(participantId)) return;
         console.warn(LOG, `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`);
         state.screenShareStreams = new Map(state.screenShareStreams);
         state.screenShareStreams.delete(participantId);
@@ -481,6 +485,15 @@ function liveKitIdentityFor(participantId: string): string {
   if (userId && knownLiveKitIdentities.has(userId)) return userId;
   if (knownLiveKitIdentities.has(participantId)) return participantId;
   return userId ?? participantId;
+}
+
+/**
+ * Public wrapper of liveKitIdentityFor for callers outside this module
+ * (e.g. ActiveRoom's native share viewer invokes and watch-all tile payloads,
+ * whose Rust side keys frames by LiveKit identity, not signaling id).
+ */
+export function liveKitIdentityForParticipant(participantId: string): string {
+  return liveKitIdentityFor(participantId);
 }
 
 /**
