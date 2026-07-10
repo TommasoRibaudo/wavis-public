@@ -37,6 +37,31 @@ function sameBinaryFile(before: UpdateBinaryInfo | null, after: UpdateBinaryInfo
   );
 }
 
+export async function leaveActiveVoiceRoomForUpdate(): Promise<void> {
+  const { getState, leaveRoom } = await import('@features/voice/voice-room');
+  const state = getState();
+  const isActive =
+    state.machineState === 'active' ||
+    state.mediaState === 'connecting' ||
+    state.mediaState === 'connected';
+  if (isActive) {
+    leaveRoom();
+  }
+}
+
+export function updateProgressPercent(progress: UpdateProgress): number | null {
+  if (!progress.totalBytes) return null;
+  return Math.min(
+    100,
+    Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
+  );
+}
+
+export function updateProgressLabel(progress: UpdateProgress): string {
+  const percent = updateProgressPercent(progress);
+  return percent === null ? 'Downloading update...' : `Downloading update... ${percent}%`;
+}
+
 async function getUpdateInstallContext(): Promise<UpdateInstallContext | null> {
   try {
     return await invoke<UpdateInstallContext>('get_update_install_context');
