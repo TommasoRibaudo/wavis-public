@@ -48,6 +48,9 @@ const AUTO_RETRY_DELAY_MS = 1500;
 
 interface ShareTileState {
   participantId: string;
+  /** LiveKit identity the Rust side keys native share frames by. Newer
+   *  backends use the durable userId, which differs from participantId. */
+  liveKitIdentity?: string;
   displayName: string;
   color: string;
   kind: 'live' | 'test';
@@ -95,6 +98,7 @@ function parseHashParams(): WatchAllParams | null {
 
 interface ShareTileProps {
   participantId: string;
+  liveKitIdentity?: string;
   displayName: string;
   color: string;
   kind: 'live' | 'test';
@@ -112,6 +116,7 @@ interface ShareTileProps {
 
 const ShareTile = memo(function ShareTile({
   participantId,
+  liveKitIdentity,
   displayName,
   color,
   kind,
@@ -319,10 +324,13 @@ const ShareTile = memo(function ShareTile({
     if (!canvasFallback || isDiagnosticTest) return;
     let cancelled = false;
     setMjpegUrl(null);
+    // Native frame events and polling commands are keyed by LiveKit identity,
+    // which on newer backends differs from the signaling participantId.
+    const nativeIdentity = liveKitIdentity ?? participantId;
 
     const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
       if (cancelled) return Promise.resolve(false);
-      if (payload.identity && payload.identity !== participantId) return Promise.resolve(false);
+      if (payload.identity && payload.identity !== nativeIdentity) return Promise.resolve(false);
 
       const canvas = canvasRef.current;
       if (!canvas) return Promise.resolve(false);
@@ -359,7 +367,7 @@ const ShareTile = memo(function ShareTile({
       if (cancelled || mjpegActive) return;
       try {
         const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
-          identity: participantId,
+          identity: nativeIdentity,
           lastSeq,
         });
         if (frame && !cancelled) {
@@ -376,7 +384,7 @@ const ShareTile = memo(function ShareTile({
     };
     pollFrameId = requestAnimationFrame(pollLatestFrame);
 
-    invoke<string>('media_get_screen_share_stream_url', { identity: participantId })
+    invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
       .then((url) => {
         if (cancelled) return;
         mjpegActive = true;
@@ -391,7 +399,7 @@ const ShareTile = memo(function ShareTile({
       });
 
     const unlistenLinux = listen<{ identity: string; frame: string }>(
-      `ss-frame:${participantId}`,
+      `ss-frame:${nativeIdentity}`,
       (event) => { void handleFrame(event.payload); },
     );
     // Also listen for the generic event names (cross-platform compat)
@@ -415,7 +423,7 @@ const ShareTile = memo(function ShareTile({
       unlistenGenericLinux.then((fn) => fn());
       unlistenGenericWin.then((fn) => fn());
     };
-  }, [canvasFallback, isDiagnosticTest, participantId]);
+  }, [canvasFallback, isDiagnosticTest, participantId, liveKitIdentity]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -782,11 +790,11 @@ export default function WatchAllPage() {
     // ActiveRoom waits for watch-all:ready before emitting share-added events,
     // avoiding the race where events fire before listeners are registered.
     const setup = async () => {
-      const unlistenAdded = await listen<{ participantId: string; displayName: string; color: string; canvasFallback: boolean }>(
+      const unlistenAdded = await listen<{ participantId: string; liveKitIdentity?: string; displayName: string; color: string; canvasFallback: boolean }>(
         'watch-all:share-added',
         (event) => {
           console.log('[wavis:watch-all] share-added received:', event.payload.participantId, event.payload.displayName);
-          const { participantId, displayName, color, canvasFallback } = event.payload;
+          const { participantId, liveKitIdentity, displayName, color, canvasFallback } = event.payload;
           setTiles((prev) => {
             if (prev.some((t) => t.participantId === participantId)) return prev;
             const restored = pendingRestoreVolumesRef.current.get(participantId);
@@ -795,6 +803,7 @@ export default function WatchAllPage() {
             }
             const baseTile = {
               participantId,
+              liveKitIdentity,
               displayName,
               color,
               kind: 'live' as const,
@@ -1228,6 +1237,7 @@ export default function WatchAllPage() {
                 >
                   <ShareTile
                     participantId={tile.participantId}
+                    liveKitIdentity={tile.liveKitIdentity}
                     displayName={tile.displayName}
                     color={tile.color}
                     kind={tile.kind}

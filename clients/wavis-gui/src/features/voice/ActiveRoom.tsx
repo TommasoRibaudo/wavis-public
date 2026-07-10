@@ -58,6 +58,7 @@ import {
   buildRoomEventDisplayItems,
   resolveChatMessageDisplayColor,
   preserveVideoShareSelectionForSourceChange,
+  liveKitIdentityForParticipant,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
@@ -246,6 +247,7 @@ interface ShareViewerWindow {
 function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
   return {
     participantId: tile.participantId,
+    liveKitIdentity: liveKitIdentityForParticipant(tile.participantId),
     displayName: tile.displayName,
     color: tile.color,
     hasTrack: tile.track !== null,
@@ -257,6 +259,7 @@ function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
 
 function areVideoTileSnapshotsEqual(a: VideoTileSnapshot, b: VideoTileSnapshot): boolean {
   return a.participantId === b.participantId
+    && a.liveKitIdentity === b.liveKitIdentity
     && a.displayName === b.displayName
     && a.color === b.color
     && a.hasTrack === b.hasTrack
@@ -790,7 +793,10 @@ export default function ActiveRoom() {
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
   const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
-  const nativeShareViewersRef = useRef<Set<string>>(new Set());
+  /** participantId → LiveKit identity used when the native viewer was opened,
+   *  so close targets the same Rust-side frame key even if the mapping
+   *  changes while the viewer is open. */
+  const nativeShareViewersRef = useRef<Map<string, string>>(new Map());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -1054,6 +1060,7 @@ export default function ActiveRoom() {
     }
     emit('watch-all:share-added', {
       participantId,
+      liveKitIdentity: liveKitIdentityForParticipant(participantId),
       displayName: participant.displayName,
       color: participant.color,
       canvasFallback: stream === null,
@@ -1326,6 +1333,7 @@ export default function ActiveRoom() {
         if (participant) {
           emit('watch-all:share-added', {
             participantId: pid,
+            liveKitIdentity: liveKitIdentityForParticipant(pid),
             displayName: participant.displayName,
             color: participant.color,
             canvasFallback: stream === null,
@@ -1551,6 +1559,7 @@ export default function ActiveRoom() {
     const isSelf = participantId === roomState?.selfParticipantId;
     const params = {
       participantId,
+      liveKitIdentity: liveKitIdentityForParticipant(participantId),
       username: participant.displayName,
       userColor: participant.color,
       isOwner: isSelf,
@@ -1563,12 +1572,15 @@ export default function ActiveRoom() {
 
     try {
       if (stream === null) {
+        // The Rust side keys share frames by LiveKit identity (the durable
+        // userId on new backends), not by the signaling participantId.
+        const nativeIdentity = liveKitIdentityForParticipant(participantId);
         await invoke('media_open_native_screen_share_viewer', {
-          identity: participantId,
+          identity: nativeIdentity,
           title: `${participant.displayName} — screen share`,
         });
 
-        nativeShareViewersRef.current.add(participantId);
+        nativeShareViewersRef.current.set(participantId, nativeIdentity);
         attachScreenShareAudio(participantId);
         applySavedScreenShareAudio(participantId);
         setWatchingShareIds((prev) => new Set(prev).add(participantId));
@@ -1642,8 +1654,10 @@ export default function ActiveRoom() {
     if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
       detachScreenShareAudio(participantId);
     }
-    if (nativeShareViewersRef.current.delete(participantId)) {
-      invoke('media_close_native_screen_share_viewer', { identity: participantId }).catch(() => {});
+    const openedNativeIdentity = nativeShareViewersRef.current.get(participantId);
+    if (openedNativeIdentity !== undefined) {
+      nativeShareViewersRef.current.delete(participantId);
+      invoke('media_close_native_screen_share_viewer', { identity: openedNativeIdentity }).catch(() => {});
     }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
@@ -1665,9 +1679,9 @@ export default function ActiveRoom() {
     closeVideoPopoutWindow();
     closeWatchAllWindow(); // close Watch All window first
     stopAllSending();
-    for (const pid of nativeShareViewersRef.current) {
+    for (const [pid, nativeIdentity] of nativeShareViewersRef.current) {
       detachScreenShareAudio(pid);
-      invoke('media_close_native_screen_share_viewer', { identity: pid }).catch(() => {});
+      invoke('media_close_native_screen_share_viewer', { identity: nativeIdentity }).catch(() => {});
     }
     nativeShareViewersRef.current.clear();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
@@ -1854,6 +1868,7 @@ export default function ActiveRoom() {
           if (participant) {
             emit('watch-all:share-added', {
               participantId: pid,
+              liveKitIdentity: liveKitIdentityForParticipant(pid),
               displayName: participant.displayName,
               color: participant.color,
               canvasFallback: stream === null,

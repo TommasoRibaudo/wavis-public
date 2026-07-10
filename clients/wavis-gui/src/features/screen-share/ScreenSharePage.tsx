@@ -26,6 +26,10 @@ const ZOOM_STEP = 0.15;
 
 interface ShareWindowParams {
   participantId: string;
+  /** LiveKit identity the Rust side keys native share frames by. Newer
+   *  backends use the durable userId here, which differs from the signaling
+   *  participantId; older payloads omit it (identity == participantId). */
+  liveKitIdentity?: string;
   username: string;
   userColor: string;
   isOwner: boolean;
@@ -115,6 +119,10 @@ export default function ScreenSharePage() {
     if (!p) return;
     let cancelled = false;
 
+    // Native frame events and polling commands are keyed by LiveKit identity,
+    // which on newer backends differs from the signaling participantId.
+    const nativeIdentity = p.liveKitIdentity ?? p.participantId;
+
     if (p.canvasFallback) {
       setMjpegUrl(null);
       // Canvas fallback: listen for screen-share-frame Tauri events directly
@@ -128,8 +136,8 @@ export default function ScreenSharePage() {
       setDebugInfo('canvas-fallback: listening');
       const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
         if (cancelled) return Promise.resolve(false);
-        // If identity is present (Linux path), filter by participant
-        if (payload.identity && payload.identity !== p.participantId) return Promise.resolve(false);
+        // If identity is present (Linux path), filter by LiveKit identity
+        if (payload.identity && payload.identity !== nativeIdentity) return Promise.resolve(false);
 
         frameCount++;
         if (frameCount <= 3 || frameCount % 30 === 0) {
@@ -168,7 +176,7 @@ export default function ScreenSharePage() {
         if (cancelled || mjpegActive) return;
         try {
           const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
-            identity: p.participantId,
+            identity: nativeIdentity,
             lastSeq,
           });
           if (frame && !cancelled) {
@@ -185,7 +193,7 @@ export default function ScreenSharePage() {
       };
       pollFrameId = requestAnimationFrame(pollLatestFrame);
 
-      invoke<string>('media_get_screen_share_stream_url', { identity: p.participantId })
+      invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
         .then((url) => {
           if (cancelled) return;
           mjpegActive = true;

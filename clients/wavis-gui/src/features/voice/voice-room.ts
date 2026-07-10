@@ -124,6 +124,22 @@ function refreshRemoteScreenShare(participantId: string): void {
  * recoveries (e.g. a delayed signaling/media identity realignment) beyond the
  * original 6s cap.
  */
+/**
+ * True when we hold a screen-share stream for the participant whose video
+ * track is still live. A stale entry with an ended track (SFU treated a
+ * republish as a resume, so TrackSubscribed never re-fired) must not count
+ * as healthy — it lights the share icon while the viewer window waits for
+ * frames forever.
+ */
+function hasLiveScreenShareStream(participantId: string): boolean {
+  if (!state.screenShareStreams.has(participantId)) return false;
+  const stream = state.screenShareStreams.get(participantId);
+  // The native path (Linux) stores null — pixels render outside WebKit, so a
+  // present entry is healthy by definition.
+  if (!stream) return true;
+  return stream.getVideoTracks().some((t) => t.readyState === 'live');
+}
+
 function scheduleRefreshRetries(participantId: string): void {
   const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
   refreshRetryGenerations.set(participantId, generation);
@@ -131,7 +147,20 @@ function scheduleRefreshRetries(participantId: string): void {
   for (const delay of delays) {
     setTimeout(() => {
       if (refreshRetryGenerations.get(participantId) !== generation) return;
-      if (state.screenShareStreams.has(participantId)) return;
+      if (state.screenShareStreams.has(participantId)) {
+        // Only a healthy entry skips the refresh. When the SFU treats a
+        // republish as a track resume it never re-fires TrackSubscribed, so
+        // the map can hold the previous share's stream with an ended video
+        // track — the share icon lights up but the viewer window waits for
+        // frames forever. Drop such a dead entry and fall through to the
+        // refresh so a fresh subscription replaces it. (Native-path entries
+        // are null and always count as healthy — see hasLiveScreenShareStream.)
+        if (hasLiveScreenShareStream(participantId)) return;
+        console.warn(LOG, `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`);
+        state.screenShareStreams = new Map(state.screenShareStreams);
+        state.screenShareStreams.delete(participantId);
+        notify();
+      }
       const p = state.participants.find((pp) => pp.id === participantId);
       if (!p?.isSharing) return;
       refreshRemoteScreenShare(participantId);
@@ -433,14 +462,38 @@ function decodeMediaTokenIdentity(token: string): string | null {
 }
 
 /**
+ * LiveKit identities observed on the live media connection, recorded raw
+ * (untranslated) from onRemoteParticipantConnected. Which identity scheme a
+ * participant's media session uses depends on the backend version: newer
+ * backends sign LiveKit tokens with the durable user_id, older ones with the
+ * ephemeral peer_id. This set lets liveKitIdentityFor pick whichever form the
+ * media plane is actually using, so a new client stays correct against an
+ * old backend and vice versa.
+ */
+const knownLiveKitIdentities = new Set<string>();
+
+/**
  * Translate a signaling participantId to the LiveKit identity used for that
- * participant's media session. When the backend has a durable user_id for
- * them (authenticated channel voice), LiveKit identity == userId, stable
- * across reconnects; otherwise it falls back to the participantId itself
- * (anonymous ad-hoc rooms, where identity == peer_id as before).
+ * participant's media session. Prefers whichever candidate (durable userId
+ * or the participantId itself) has actually been observed on the media
+ * connection; when neither has connected yet, defaults to userId (the
+ * stable-identity scheme) and finally the participantId (anonymous ad-hoc
+ * rooms, where identity == peer_id as before).
  */
 function liveKitIdentityFor(participantId: string): string {
-  return state.participants.find((p) => p.id === participantId)?.userId ?? participantId;
+  const userId = state.participants.find((p) => p.id === participantId)?.userId;
+  if (userId && knownLiveKitIdentities.has(userId)) return userId;
+  if (knownLiveKitIdentities.has(participantId)) return participantId;
+  return userId ?? participantId;
+}
+
+/**
+ * Public wrapper of liveKitIdentityFor for callers outside this module
+ * (e.g. ActiveRoom's native share viewer invokes and watch-all tile payloads,
+ * whose Rust side keys frames by LiveKit identity, not signaling id).
+ */
+export function liveKitIdentityForParticipant(participantId: string): string {
+  return liveKitIdentityFor(participantId);
 }
 
 /**
@@ -453,6 +506,26 @@ function liveKitIdentityFor(participantId: string): string {
  */
 function participantIdForLiveKitIdentity(identity: string): string {
   return state.participants.find((p) => p.userId === identity)?.id ?? identity;
+}
+
+/** Last time an unknown-identity warning was logged, per identity. */
+const unknownIdentityWarnAt = new Map<string, number>();
+
+/**
+ * Warn (at most once per identity per 10s — audio levels arrive at ~20Hz and
+ * would otherwise flood the diagnostics buffer) that a media-plane identity
+ * could not be matched to any signaling participant, including a snapshot of
+ * the participant list so a bug report shows exactly which ids/userIds the
+ * client knew at that moment.
+ */
+function warnUnknownIdentity(identity: string): void {
+  const now = Date.now();
+  if ((unknownIdentityWarnAt.get(identity) ?? 0) > now - 10_000) return;
+  unknownIdentityWarnAt.set(identity, now);
+  const snapshot = state.participants
+    .map((p) => `${p.id}→${p.userId ?? '(no userId)'}`)
+    .join(', ');
+  console.warn(LOG, `audio level for unknown identity: ${identity} — participants: [${snapshot}]`);
 }
 
 /** Resolve the local user's display name for event log messages. */
@@ -2263,6 +2336,7 @@ function disconnectMediaForNoSubRoom(): void {
   state.videoReceiveStats = null;
   state.screenShareStreams = new Map();
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   markAllParticipantsMediaConnecting();
   remoteCameraTilesById = {};
   rebuildVideoTiles();
@@ -2773,6 +2847,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
   state.noiseSuppressionActive = false;
   markAllParticipantsMediaConnecting();
   suppressReconnectJoinForParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   // Pre-warm the notification-sounds AudioContext before the join sound fires.
   // Without this, the AudioContext is created lazily inside an async callback
   // where the browser may refuse to resume it (no active user gesture).
@@ -2872,7 +2947,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
           p.rmsLevel = data.rmsLevel;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
         } else {
-          console.warn(LOG, `audio level for unknown identity: ${identity}`);
+          warnUnknownIdentity(identity);
         }
       }
       notify();
@@ -2907,12 +2982,14 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       notify();
     },
     onRemoteParticipantConnected: (identity) => {
+      knownLiveKitIdentities.add(identity);
       const participantId = participantIdForLiveKitIdentity(identity);
       const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(participantId);
       markParticipantMediaConnected(participantId, true, { playJoinSound: !suppressJoinSound });
       notify();
     },
     onRemoteParticipantDisconnected: (identity) => {
+      knownLiveKitIdentities.delete(identity);
       markParticipantMediaConnected(participantIdForLiveKitIdentity(identity), false, { playJoinSound: false });
       notify();
     },
@@ -4048,7 +4125,7 @@ function dispatchMessage(raw: unknown): void {
             // the stream isn't available yet. share_state doesn't schedule
             // retries (only share_started does), so viewers who join mid-share
             // and whose TrackSubscribed is delayed get stuck without this.
-            if (!state.screenShareStreams.has(p.id) && p.id !== state.selfParticipantId) {
+            if (!hasLiveScreenShareStream(p.id) && p.id !== state.selfParticipantId) {
               scheduleRefreshRetries(p.id);
             }
           }
@@ -4287,6 +4364,7 @@ export function initSession(
   };
   resetCameraRuntimeState();
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   suppressReconnectJoinForParticipantIds.clear();
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
@@ -4498,6 +4576,7 @@ export function leaveRoom(): void {
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   suppressReconnectJoinForParticipantIds.clear();
   remoteCameraTilesById = {};
   roomPanelHadAnyVideoActive = false;

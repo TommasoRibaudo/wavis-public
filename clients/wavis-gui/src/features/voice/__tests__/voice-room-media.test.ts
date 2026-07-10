@@ -2756,6 +2756,62 @@ describe('Edge case unit tests', () => {
 
       leaveRoom();
     });
+
+    it('share_started retry drops a stale stream whose video track has ended', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      // Stream left over from a previous share: its video track already ended,
+      // but the SFU treated the republish as a resume so no fresh
+      // TrackSubscribed ever replaced it (icon lit, viewer window loads forever).
+      const deadStream = {
+        getVideoTracks: () => [{ readyState: 'ended' }],
+      } as unknown as MediaStream;
+      lastLkModule!.callbacks.onScreenShareSubscribed('u2', deadStream);
+      await tick();
+      expect(latestState!.screenShareStreams.get('peer-2')).toBe(deadStream);
+
+      vi.useFakeTimers();
+      try {
+        messageHandler!({ type: 'share_started', participantId: 'peer-2', shareType: 'screen_audio' });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(latestState!.screenShareStreams.has('peer-2')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      leaveRoom();
+    });
+
+    it('share_started retry leaves a live stream untouched', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      const liveStream = {
+        getVideoTracks: () => [{ readyState: 'live' }],
+      } as unknown as MediaStream;
+      lastLkModule!.callbacks.onScreenShareSubscribed('u2', liveStream);
+      await tick();
+
+      vi.useFakeTimers();
+      try {
+        messageHandler!({ type: 'share_started', participantId: 'peer-2', shareType: 'screen_audio' });
+        await vi.advanceTimersByTimeAsync(24_000);
+
+        expect(latestState!.screenShareStreams.get('peer-2')).toBe(liveStream);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      leaveRoom();
+    });
   });
 
   // ─── 11.3: Audio and device edge cases ──────────────────────────
