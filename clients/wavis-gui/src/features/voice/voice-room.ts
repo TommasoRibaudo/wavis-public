@@ -1388,6 +1388,10 @@ let cameraToggleChain: Promise<void> = Promise.resolve();
 type MediaModule = LiveKitModule | NativeMediaModule;
 
 let lkModule: MediaModule | null = null;
+// Settled promise of the most recent session-end media teardown. Awaited
+// (bounded) by the updater so the installer never kills the process while the
+// mic capture device is still open — see waitForMediaTeardown().
+let lastMediaTeardown: Promise<void> = Promise.resolve();
 let reusePatchGuardCheckedForSession = false;
 let reusePatchGuardPassedForSession = false;
 interface PendingWasapiResume {
@@ -2082,6 +2086,11 @@ function cleanupPublishedMediaForSessionEnd(): void {
     } finally {
       suppressMediaDisconnectedReconnect = false;
     }
+    // Retain the teardown promise so waitForMediaTeardown() (the updater path)
+    // can wait for the mic capture device to actually be released. The `in`
+    // guard keeps NativeMediaModule and test doubles working without it.
+    lastMediaTeardown =
+      'waitForTeardown' in lkModule ? lkModule.waitForTeardown().catch(() => {}) : Promise.resolve();
     lkModule = null;
   }
   resetCameraRuntimeState();
@@ -2096,6 +2105,25 @@ function cleanupPublishedMediaForSessionEnd(): void {
   stopColdStartRetry();
   stopPeriodicMediaRetry();
   setActiveLiveKitModule(null);
+}
+
+/**
+ * Wait for the most recent session-end media teardown to release its capture
+ * devices, bounded by `timeoutMs`. The auto-updater awaits this after
+ * leaveRoom(): installing an update kills the process, and killing it while
+ * the mic capture is still open can wedge Bluetooth/USB headsets until they
+ * are reconnected (issue #230).
+ */
+export async function waitForMediaTeardown(timeoutMs = 2000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  try {
+    await Promise.race([lastMediaTeardown, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {

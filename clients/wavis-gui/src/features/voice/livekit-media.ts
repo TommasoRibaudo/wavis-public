@@ -1212,6 +1212,8 @@ export class LiveKitModule {
   private rafId: number | null = null;
   private statsInterval: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  private teardownComplete: Promise<void> | null = null;
+  private roomDisconnectSettled: Promise<void> | null = null;
   private gestureListener: (() => void) | null = null;
   private listeners: Array<{ event: RoomEvent; handler: (...args: unknown[]) => void }> = [];
   private callbacks: MediaCallbacks;
@@ -3012,7 +3014,21 @@ export class LiveKitModule {
     // ignores any SDK events fired during local unpublish.
     this.disposed = true;
 
-    void this.disconnectOrdered();
+    this.teardownComplete = this.disconnectOrdered().catch((err) => {
+      console.warn(LOG, 'disconnect teardown failed:', err instanceof Error ? err.message : String(err));
+    });
+  }
+
+  /**
+   * Resolves once local teardown has settled, including the room.disconnect()
+   * call that stops the mic capture track. The updater awaits this (bounded)
+   * so the installer cannot kill the process while the capture device is
+   * still open — a mid-capture kill can leave Bluetooth/USB headsets wedged
+   * until they are reconnected (issue #230).
+   */
+  async waitForTeardown(): Promise<void> {
+    await this.teardownComplete;
+    await this.roomDisconnectSettled;
   }
 
   private async disconnectOrdered(): Promise<void> {
@@ -3117,7 +3133,11 @@ export class LiveKitModule {
       // Not awaited: room.disconnect() is a network round-trip. Local resource
       // teardown below (AudioContext, gain nodes, mic/camera tracks) must happen
       // immediately and must not be gated behind that round-trip completing.
-      Promise.resolve(room.disconnect()).catch(() => {});
+      // The settled promise is retained so waitForTeardown() callers (the
+      // updater) can still wait for the mic capture track to be stopped.
+      this.roomDisconnectSettled = Promise.resolve(room.disconnect())
+        .then(() => undefined)
+        .catch(() => {});
     }
 
     // 6. Clear listeners registry

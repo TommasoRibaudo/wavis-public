@@ -38,7 +38,7 @@ function sameBinaryFile(before: UpdateBinaryInfo | null, after: UpdateBinaryInfo
 }
 
 export async function leaveActiveVoiceRoomForUpdate(): Promise<void> {
-  const { getState, leaveRoom } = await import('@features/voice/voice-room');
+  const { getState, leaveRoom, waitForMediaTeardown } = await import('@features/voice/voice-room');
   const state = getState();
   const isActive =
     state.machineState === 'active' ||
@@ -46,6 +46,11 @@ export async function leaveActiveVoiceRoomForUpdate(): Promise<void> {
     state.mediaState === 'connected';
   if (isActive) {
     leaveRoom();
+    // leaveRoom() releases media asynchronously. Wait (bounded) for the mic
+    // capture device to actually close before the install starts: the
+    // installer kills this process, and killing it mid-capture can wedge
+    // Bluetooth/USB headsets until they are reconnected (issue #230).
+    await waitForMediaTeardown();
   }
 }
 
