@@ -90,6 +90,11 @@ import {
   type RemoteCameraTileRuntimeState,
 } from './video-tile-model';
 import { lookupLinuxCapability, type LinuxCapabilityRow } from './linux-capability-matrix';
+import {
+  buildUnknownLinuxCapabilityRow,
+  normalizeLinuxCompositor,
+  normalizeLinuxDesktopEnv,
+} from './linux-capability-normalize';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
   playNotificationSound,
@@ -1137,41 +1142,6 @@ interface LinuxCaptureFallbackPayload {
   from: string;
   to: string;
   reason: string;
-}
-
-function normalizeLinuxDesktopEnv(desktopEnv: string): string {
-  const tokens = desktopEnv
-    .split(':')
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token.length > 0);
-
-  for (const token of tokens) {
-    if (token.includes('gnome')) return 'gnome';
-    if (token.includes('kde') || token.includes('plasma')) return 'kde';
-    if (token.includes('sway')) return 'sway';
-    if (token.includes('xfce')) return 'xfce';
-  }
-
-  return tokens[0] ?? 'unknown';
-}
-
-function normalizeLinuxCompositor(sessionType: string): 'wayland' | 'x11' | null {
-  const normalized = sessionType.trim().toLowerCase();
-  if (normalized === 'wayland' || normalized === 'x11') {
-    return normalized;
-  }
-  return null;
-}
-
-function buildUnknownLinuxCapabilityRow(reason: string): LinuxCapabilityRow {
-  return {
-    desktopEnv: 'unknown',
-    compositor: 'x11',
-    videoCapture: 'unsupported',
-    audioCapture: 'unsupported',
-    combinedStatus: 'degraded',
-    userMessage: reason,
-  };
 }
 
 async function resolveLinuxCapabilityRow(): Promise<LinuxCapabilityRow> {
