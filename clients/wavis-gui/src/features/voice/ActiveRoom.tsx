@@ -1,7 +1,7 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { LoadingBars } from '@shared/LoadingBars';
-import { useBlocker, useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
 import type { Channel } from '@features/channels/channels';
 import { ChannelSwitcherPanel } from '@features/channels/ChannelSwitcherPanel';
@@ -68,13 +68,7 @@ import type { EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
 import { openExternalUrl } from '@shared/shell-bridge';
-import {
-  closeMainWindow,
-  onFocusMainWindow,
-  onMainWindowClosing,
-  setCurrentWindowSize,
-  showMainWindow,
-} from '@shared/window-bridge';
+import { setCurrentWindowSize } from '@shared/window-bridge';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import {
   closeNativeScreenShareViewer,
@@ -131,38 +125,24 @@ import {
   stopSendingForWindow,
   resendStream,
 } from '@features/screen-share/screen-share-viewer';
-import {
-  getWatchAllHotkey,
-  getFocusMainHotkey,
-  setLastChannel,
-  clearLastChannel,
-} from '@features/settings/settings-store';
+import { setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
-const NOT_AUTHORIZED_REJECTION_PREFIX = 'Unable to join voice.';
-import {
-  registerWatchAllHotkey,
-  unregisterWatchAllHotkey,
-  registerFocusMainHotkey,
-  unregisterFocusMainHotkey,
-} from '@shared/hotkey-bridge';
 import { useHotkeys } from '@shared/useHotkeys';
 import { useTrayIntegration } from './useTrayIntegration';
+import { useRoomNavigationGuard } from './useRoomNavigationGuard';
+import { useRoomNotifications } from './useRoomNotifications';
+import { useTransientChatError } from './useTransientChatError';
+import { useCliFocusShortcut } from './useCliFocusShortcut';
+import { useMainWindowLifecycle } from './useMainWindowLifecycle';
+import { useRoomHotkeys } from './useRoomHotkeys';
+import { useAutoScrollAnchor } from '@shared/hooks/useAutoScrollAnchor';
 import { useDebug } from '@shared/debug-context';
-import {
-  connectionModeBadgeText,
-  toastMessageForEvent,
-  toastColorForEvent,
-  eventToToggleKey,
-  shouldBlockRoomNavigation,
-  shouldPreventRoomNavigationGesture,
-} from '@shared/helpers';
+import { connectionModeBadgeText } from '@shared/helpers';
 import { isShareEnabled, shareButtonLabel, appendSystemEvent } from './voice-room';
-import { isNotificationEnabled } from '@features/settings/settings-store';
 import { navigateCliHistory, pushCliHistory, resetCliHistoryNavigation } from './cli-history';
 import { Toaster, toast } from 'sonner';
-import { sendWavisNotification } from '@shared/notification-bridge';
 import Settings from '@features/settings/Settings';
 import { useAudioDriverInstall } from '@features/screen-share/useAudioDriverInstall';
 import { AudioDriverInstallPrompt } from '@features/screen-share/AudioDriverInstallPrompt';
@@ -492,35 +472,11 @@ export default function ActiveRoom() {
   const [, setLeaving] = useState(false);
   const [cliInput, setCliInput] = useState('');
   const [chatInput, setChatInput] = useState('');
-  const logEndRef = useRef<HTMLDivElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  // Event log + chat auto-scroll anchors
+  const logEndRef = useAutoScrollAnchor<HTMLDivElement>(roomState?.events.length);
+  const chatEndRef = useAutoScrollAnchor<HTMLDivElement>(roomState?.chatMessages.length);
   const cliInputRef = useRef<HTMLInputElement>(null);
-  const pendingCliFocus = useRef(false);
-
-  // Focus whichever CLI input is currently visible in the DOM.
-  // Both mobile and desktop layouts may render logPanel simultaneously (same JSX const,
-  // same cliInputRef). When the mobile logPanel mounts it captures cliInputRef.current,
-  // but in desktop mode that element lives inside an md:hidden (display:none) container
-  // and browsers silently ignore focus() on hidden elements. offsetParent === null when
-  // an element or any ancestor has display:none, so we use it as a visibility guard and
-  // fall back to a data-attribute DOM query to find the actually-visible input.
-  function focusCliInput() {
-    const el = cliInputRef.current;
-    if (el && el.offsetParent !== null) {
-      el.focus();
-      return;
-    }
-    const inputs = document.querySelectorAll<HTMLInputElement>('[data-cli-input]');
-    for (const input of inputs) {
-      if (input.offsetParent !== null) {
-        input.focus();
-        return;
-      }
-    }
-  }
   const initRef = useRef(false);
-  const allowNavigationRef = useRef(false);
-  const skipUnmountLeaveRef = useRef(false);
   const chatThrottledRef = useRef(false);
   const [cliFocused, setCliFocused] = useState(false);
   const cliHistoryRef = useRef<string[]>([]);
@@ -529,11 +485,6 @@ export default function ActiveRoom() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [channelSwitcherOpen, setChannelSwitcherOpen] = useState(false);
-
-  // Transient chat error display (auto-dismiss after 5s)
-  const [chatError, setChatError] = useState<string | null>(null);
-  const chatErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevChatErrorRef = useRef<string | null>(null);
 
   // Left column collapsible sections
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
@@ -555,37 +506,16 @@ export default function ActiveRoom() {
   type GroupedPanelTab = 'chat' | 'log' | 'video';
   const [groupedPanelTab, setGroupedPanelTab] = useState<GroupedPanelTab>('chat');
 
-  const blocker = useBlocker(({ currentLocation, nextLocation }) =>
-    shouldBlockRoomNavigation(
-      currentLocation.pathname,
-      nextLocation.pathname,
-      allowNavigationRef.current,
-    ),
-  );
+  const { navigateAwayFromRoom, allowNavigationRef, skipUnmountLeaveRef } = useRoomNavigationGuard({
+    channelId,
+    error: roomState?.error,
+    rejectionReason: roomState?.rejectionReason,
+  });
 
-  const navigateAwayFromRoom = useCallback(
-    (target: string, leaveMode: 'none' | 'immediate' = 'none') => {
-      allowNavigationRef.current = true;
-      // skipUnmountLeaveRef stays false so the unmount cleanup calls leaveRoom().
-      // We do NOT call leaveRoom() here: calling it before navigate() causes
-      // notify() to re-render ActiveRoom in idle state before the route changes,
-      // making the lower leave button flash on screen for one frame.
-      skipUnmountLeaveRef.current = false;
-      navigate(
-        target,
-        leaveMode === 'immediate' ? { state: { skipAutoRedirect: true } } : undefined,
-      );
-    },
-    [navigate],
-  );
+  const { resetNotificationCursor } = useRoomNotifications(roomState?.events);
 
-  // Guard: no channelId → redirect home
-  useEffect(() => {
-    if (!channelId) {
-      allowNavigationRef.current = true;
-      navigate('/');
-    }
-  }, [channelId, navigate]);
+  // Transient chat error display (auto-dismiss after 5s)
+  const chatError = useTransientChatError(roomState?.lastChatError, mobileTab);
 
   useEffect(() => {
     const hasScheduledRemoval =
@@ -600,39 +530,6 @@ export default function ActiveRoom() {
     return () => window.clearInterval(interval);
   }, [roomState?.subRooms]);
 
-  // Keep the room mounted unless the app explicitly allows navigation out.
-  useEffect(() => {
-    if (blocker.state === 'blocked') {
-      blocker.reset();
-    }
-  }, [blocker]);
-
-  // Suppress hardware/browser back gestures before they trigger navigation.
-  useEffect(() => {
-    const onMouseNavigation = (event: MouseEvent) => {
-      if (!shouldPreventRoomNavigationGesture({ button: event.button })) return;
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    const onKeyNavigation = (event: KeyboardEvent) => {
-      if (!shouldPreventRoomNavigationGesture({ key: event.key, altKey: event.altKey })) return;
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    window.addEventListener('mousedown', onMouseNavigation, true);
-    window.addEventListener('mouseup', onMouseNavigation, true);
-    window.addEventListener('auxclick', onMouseNavigation, true);
-    window.addEventListener('keydown', onKeyNavigation, true);
-    return () => {
-      window.removeEventListener('mousedown', onMouseNavigation, true);
-      window.removeEventListener('mouseup', onMouseNavigation, true);
-      window.removeEventListener('auxclick', onMouseNavigation, true);
-      window.removeEventListener('keydown', onKeyNavigation, true);
-    };
-  }, []);
-
   // Session init + cleanup
   useEffect(() => {
     if (!channelId || initRef.current) return;
@@ -646,60 +543,9 @@ export default function ActiveRoom() {
       }
       skipUnmountLeaveRef.current = false;
       initRef.current = false;
-      prevEventsLenRef.current = 0;
+      resetNotificationCursor();
     };
-  }, [channelId, channelName, channelRole]);
-
-  // Event log auto-scroll
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [roomState?.events.length]);
-
-  // Chat auto-scroll
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [roomState?.chatMessages.length]);
-
-  // Transient chat error: show when chat panel is visible, auto-dismiss after 5s
-  useEffect(() => {
-    const err = roomState?.lastChatError ?? null;
-    if (err === prevChatErrorRef.current) return;
-    prevChatErrorRef.current = err;
-    if (!err) return;
-
-    // On mobile, drop errors when chat tab is not active
-    // On desktop (md+), chat panel is always visible — use matchMedia to detect
-    const isDesktop = window.matchMedia('(min-width: 768px)').matches;
-    if (!isDesktop && mobileTab !== 'chat') {
-      return; // silently drop
-    }
-
-    // Clear any existing timer
-    if (chatErrorTimerRef.current) clearTimeout(chatErrorTimerRef.current);
-
-    setChatError(err);
-    chatErrorTimerRef.current = setTimeout(() => {
-      setChatError(null);
-      chatErrorTimerRef.current = null;
-    }, 5000);
-  }, [roomState?.lastChatError, mobileTab]);
-
-  // Clean up chat error timer on unmount
-  useEffect(() => {
-    return () => {
-      if (chatErrorTimerRef.current) clearTimeout(chatErrorTimerRef.current);
-    };
-  }, []);
-
-  // Clear persisted last channel when the saved channel is no longer safe to auto-join.
-  useEffect(() => {
-    if (
-      roomState?.error === 'You were kicked' ||
-      roomState?.rejectionReason?.startsWith(NOT_AUTHORIZED_REJECTION_PREFIX)
-    ) {
-      void clearLastChannel();
-    }
-  }, [roomState?.error, roomState?.rejectionReason]);
+  }, [channelId, channelName, channelRole, resetNotificationCursor]);
 
   useTrayIntegration({
     roomState,
@@ -709,97 +555,12 @@ export default function ActiveRoom() {
     onToggleDeafen: toggleSelfDeafen,
   });
 
-  // Toast notifications for new room events
-  useEffect(() => {
-    if (!roomState) return;
-    const events = roomState.events;
-    const prevLen = prevEventsLenRef.current;
-    prevEventsLenRef.current = events.length;
-    if (prevLen === 0 || events.length <= prevLen) return;
-    const newEvents = events.slice(prevLen);
-    for (const ev of newEvents) {
-      if (ev.shouldToast === false) continue;
-      const name = ev.message.split(' ')[0] ?? '';
-      const msg = toastMessageForEvent(ev.type, name);
-      if (!msg) continue;
-      const toggleKey = eventToToggleKey(ev.type);
-      if (toggleKey) {
-        isNotificationEnabled(toggleKey).then((enabled) => {
-          if (!enabled) return;
-          toast(msg, {
-            style: {
-              borderLeft: `3px solid ${toastColorForEvent(ev.type)}`,
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.875rem',
-            },
-          });
-        });
-        // Also send native notification (gated by visibility + toggle inside sendWavisNotification)
-        sendWavisNotification(toggleKey, msg);
-      } else {
-        toast(msg, {
-          style: {
-            borderLeft: `3px solid ${toastColorForEvent(ev.type)}`,
-            fontFamily: 'var(--font-mono)',
-            fontSize: '0.875rem',
-          },
-        });
-      }
-    }
-  }, [roomState?.events.length]);
-
-  // Global `/` shortcut: focus CLI input from anywhere (unless chat is focused)
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== '/') return;
-      // Don't steal focus when the bug report modal is open.
-      if (document.querySelector('[data-bug-report-modal]')) return;
-      const active = document.activeElement;
-      // If typing in the chat input and it's empty, redirect `/` to the CLI input.
-      // If the chat input already has text, let the user type normally.
-      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
-        // Already on a CLI input → let the user type normally.
-        // Use the data attribute rather than cliInputRef.current because both
-        // layouts render logPanel; the ref may point to the hidden one.
-        if (!active.hasAttribute('data-cli-input') && (active as HTMLInputElement).value === '') {
-          e.preventDefault();
-          (active as HTMLElement).blur();
-          pendingCliFocus.current = true;
-          setCliInput('/');
-          setMobileTab('log');
-          // Fallback: direct focus after React commit + paint
-          requestAnimationFrame(() => focusCliInput());
-        }
-        return;
-      }
-      e.preventDefault();
-      pendingCliFocus.current = true;
-      setCliInput('/');
-      // In mobile/tabbed layout the CLI input lives in the log tab —
-      // switch to it first so the input is rendered and visible.
-      setMobileTab('log');
-      // Fallback: direct focus after React commit + paint.
-      // Covers the edge case where cliInput was already '/' (no state
-      // change → useEffect doesn't re-fire), and also races the effect
-      // to whichever lands first in Tauri's webview.
-      requestAnimationFrame(() => focusCliInput());
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
-
-  // Drive CLI focus from React's commit phase.
-  // Two paths ensure focus lands reliably in Tauri's webview:
-  // 1. This effect fires when cliInput changes (covers the normal case).
-  // 2. The keydown handler also schedules a rAF + microtask focus as a
-  //    fallback — covers the case where setCliInput('/') is a no-op
-  //    (value already '/') so this effect never re-runs.
-  useEffect(() => {
-    if (pendingCliFocus.current) {
-      pendingCliFocus.current = false;
-      focusCliInput();
-    }
-  }, [cliInput]);
+  useCliFocusShortcut({
+    cliInputRef,
+    cliInput,
+    setCliInput,
+    onActivate: () => setMobileTab('log'),
+  });
 
   // Watch All window state
   const watchAllWindowRef = useRef<ChildWindowHandle | null>(null);
@@ -810,8 +571,6 @@ export default function ActiveRoom() {
   const videoPopoutReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [videoPopoutOpen, setVideoPopoutOpen] = useState(false);
   const videoPopoutReadyRef = useRef(false);
-  const watchAllHotkeyRef = useRef<string | null>(null);
-  const focusMainHotkeyRef = useRef<string | null>(null);
   const toggleWatchAllRef = useRef<() => void>(() => {});
   const groupedPanelVideoActivityKey = roomState
     ? Object.entries(roomState.videoTilesById)
@@ -872,8 +631,6 @@ export default function ActiveRoom() {
   // Set to true when the user explicitly skips driver install so handleStartShare bypasses the check once.
   const skipDriverCheckRef = useRef(false);
   const wasSelfSharingRef = useRef(false);
-  // Toast notification tracking
-  const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
   const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
   /** participantId → LiveKit identity used when the native viewer was opened,
@@ -1605,34 +1362,11 @@ export default function ActiveRoom() {
 
   // When the main window is actually closing (not minimized to tray),
   // tear down the voice session and close all child windows so nothing
-  // is orphaned. The Rust on_window_event handler emits this event.
-  useEffect(() => {
-    return onMainWindowClosing(() => {
-      closeAllShareWindows();
-      leaveRoom();
-      // Give the JS event loop a tick so room.disconnect() can flush its
-      // WebSocket Leave signal to the LiveKit SFU before the webview is
-      // destroyed. The Rust side uses prevent_close() until this resolves.
-      void closeMainWindow().catch(() => {});
-    });
-  }, []);
-
-  // Child windows (watch-all, screen-share) emit this to restore and focus the
-  // main window. The main window restores itself — more reliable than calling
-  // unminimize/setFocus on another window from a child webview.
-  useEffect(() => {
-    console.log('[wavis:focus-main] registering focus-main-window listener');
-    return onFocusMainWindow(() => {
-      console.log('[wavis:focus-main] event received — calling show_main_window');
-      void showMainWindow()
-        .then(() => {
-          console.log('[wavis:focus-main] show_main_window done');
-        })
-        .catch((e) => {
-          console.error('[wavis:focus-main] error:', e);
-        });
-    });
-  }, []);
+  // is orphaned.
+  useMainWindowLifecycle(() => {
+    closeAllShareWindows();
+    leaveRoom();
+  });
 
   /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
   const openShareWindow = async (
@@ -2054,48 +1788,10 @@ export default function ActiveRoom() {
   // Keep ref in sync so hotkey callback never captures a stale closure
   toggleWatchAllRef.current = toggleWatchAllWindow;
 
-  // Register Watch All hotkey when media connects
-  useEffect(() => {
-    if (roomState?.mediaState !== 'connected') return;
-
-    let cancelled = false;
-    getWatchAllHotkey().then((hotkey) => {
-      if (cancelled) return;
-      watchAllHotkeyRef.current = hotkey;
-      registerWatchAllHotkey(hotkey, () => toggleWatchAllRef.current());
-    });
-
-    return () => {
-      cancelled = true;
-      if (watchAllHotkeyRef.current) {
-        unregisterWatchAllHotkey(watchAllHotkeyRef.current);
-        watchAllHotkeyRef.current = null;
-      }
-    };
-  }, [roomState?.mediaState]);
-
-  // Register Focus Main hotkey when media connects
-  useEffect(() => {
-    if (roomState?.mediaState !== 'connected') return;
-
-    let cancelled = false;
-    getFocusMainHotkey().then((hotkey) => {
-      if (cancelled) return;
-      focusMainHotkeyRef.current = hotkey;
-      registerFocusMainHotkey(hotkey, () => {
-        console.log('[wavis:focus-main] hotkey fired');
-        void showMainWindow().catch((e) => console.error('[wavis:focus-main] hotkey error:', e));
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      if (focusMainHotkeyRef.current) {
-        unregisterFocusMainHotkey(focusMainHotkeyRef.current);
-        focusMainHotkeyRef.current = null;
-      }
-    };
-  }, [roomState?.mediaState]);
+  useRoomHotkeys({
+    mediaConnected: roomState?.mediaState === 'connected',
+    onToggleWatchAll: () => toggleWatchAllRef.current(),
+  });
 
   // Platform check: Linux uses standalone window (PostMessage works fine there).
   const isLinuxPlatform = typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent);
@@ -2344,14 +2040,6 @@ export default function ActiveRoom() {
     }
     wasSelfSharingRef.current = isSelfSharing;
   }, [roomState?.participants, roomState?.selfParticipantId]);
-
-  // Self-kick navigation
-  useEffect(() => {
-    if (roomState?.error === 'You were kicked') {
-      const timer = setTimeout(() => navigateAwayFromRoom(`/channel/${channelId}`), 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [roomState?.error, channelId, navigateAwayFromRoom]);
 
   // Close Watch All and any share pop-outs when the room session fully ends.
   // This covers disconnect/error paths that transition to idle without going
