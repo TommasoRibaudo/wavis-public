@@ -11,10 +11,10 @@ import {
 import {
   buildVideoTilesById,
   computeRoomPanelTab,
-  screenShareActiveInRoom,
   type RoomParticipant,
   type VoiceRoomState,
 } from '../voice-room';
+import { screenShareActiveInRoom } from '../share-slot-policy';
 import { colorFor } from '../chat-display-model';
 
 function makeParticipant(id: string, overrides?: Partial<RoomParticipant>): RoomParticipant {

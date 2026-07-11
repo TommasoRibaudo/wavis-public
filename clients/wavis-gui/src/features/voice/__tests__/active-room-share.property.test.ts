@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import type { ShareMode } from '@features/screen-share/share-types';
 import type { VoiceRoomState } from '../voice-room';
 import { shareIndicatorForType } from '@shared/helpers';
-import { isAnyShareActive, canStartShare } from '../voice-room';
+import { isAnyShareActive, canStartShare } from '../share-slot-policy';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
 

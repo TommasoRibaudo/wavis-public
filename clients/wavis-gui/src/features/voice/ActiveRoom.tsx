@@ -54,14 +54,16 @@ import {
   getPersistedStreamVolume,
   persistStreamMuted,
   getPersistedStreamMuted,
-  activeShareType,
-  computeStopRoute,
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
-  preserveVideoShareSelectionForSourceChange,
   liveKitIdentityForParticipant,
 } from './voice-room';
+import {
+  activeShareType,
+  computeStopRoute,
+  preserveVideoShareSelectionForSourceChange,
+} from './share-slot-policy';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';

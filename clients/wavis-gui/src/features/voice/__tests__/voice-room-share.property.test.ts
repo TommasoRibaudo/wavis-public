@@ -14,7 +14,7 @@ import {
   computeStopRoute,
   isShareButtonDisabled,
   preserveVideoShareSelectionForSourceChange,
-} from '../voice-room';
+} from '../share-slot-policy';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
 
@@ -1054,7 +1054,7 @@ describe('Property 26: Echo warning visibility on SystemAudio sources', () => {
 // Feature: cross-platform-share-picker, Property 24: Inline badge visibility matches fallback share state
 // **Validates: Requirements 8.2**
 
-import { isFallbackBadgeVisible } from '../voice-room';
+import { isFallbackBadgeVisible } from '../share-slot-policy';
 
 describe('Property 24: Inline badge visibility matches fallback share state', () => {
   it('visible iff activeShareType === null && selfSharing === true', () => {
@@ -1099,7 +1099,7 @@ describe('Property 24: Inline badge visibility matches fallback share state', ()
 // Feature: cross-platform-share-picker, Task 16.2: leaveRoom fallback cleanup
 // **Validates: Requirements 7.1, 8.3**
 
-import { computeLeaveShareCleanup } from '../voice-room';
+import { computeLeaveShareCleanup } from '../share-slot-policy';
 
 describe('leaveRoom share cleanup routing', () => {
   it('custom share active → cleanup is custom', () => {
