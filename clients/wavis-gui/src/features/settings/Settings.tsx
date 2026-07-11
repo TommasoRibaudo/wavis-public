@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion, getTauriVersion } from '@tauri-apps/api/app';
+import type { Update } from '@tauri-apps/plugin-updater';
 import { resetAuth, logout, getServerUrl, getDeviceId, getUsername, updateUsername, getAccessToken, INSECURE_TLS_ALLOWED } from '@features/auth/auth';
 import { PROFILE_COLORS } from '@shared/colors';
 import { getProfileColor, setProfileColor, getStoreValue, setStoreValue, STORE_KEYS, getDefaultVolume, DEFAULT_VOLUME, getMinimizeToTray, setMinimizeToTray, getNotificationToggles, setNotificationToggle, getMuteHotkey, setMuteHotkey, DEFAULT_MUTE_HOTKEY, getWatchAllHotkey, setWatchAllHotkey, DEFAULT_WATCH_ALL_HOTKEY, getFocusMainHotkey, setFocusMainHotkey, DEFAULT_FOCUS_MAIN_HOTKEY, getDenoiseEnabled, setDenoiseEnabled, getNotificationVolume, setNotificationVolume, getSoundVolumes, setSoundVolumes, getInputVolume, setInputVolume, getVideoInputDevice, setVideoInputDevice } from './settings-store';
@@ -13,6 +14,14 @@ import { updateSessionProfileColor, updateSessionUsername, getState as getVoiceR
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { setAudioDevice, setAudioInputVolume, setMediaDenoiseEnabled } from '@features/voice/audio-devices';
 import type { NotificationToggles } from './settings-store';
+import {
+  checkForUpdate,
+  installUpdateAndRelaunch,
+  leaveActiveVoiceRoomForUpdate,
+  type UpdateProgress,
+  updateProgressLabel,
+  updateProgressPercent,
+} from '@shared/update-service';
 import { redactToken } from '@shared/helpers';
 import { useDebug } from '@shared/debug-context';
 import { formatHotkeyCombination, unregisterMuteHotkey, unregisterWatchAllHotkey, unregisterFocusMainHotkey, registerFocusMainHotkey, isHotkeyRegistered } from '@shared/hotkey-bridge';
@@ -38,6 +47,14 @@ type DenoiseStatus = {
   tone: 'active' | 'saved' | 'degraded' | 'disabled';
   message: string;
 };
+
+type SettingsUpdateState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'none' }
+  | { kind: 'available'; update: Update }
+  | { kind: 'installing'; update: Update; progress: UpdateProgress }
+  | { kind: 'error'; message: string };
 
 export function describeDenoiseStatus(params: {
   denoiseEnabled: boolean;
@@ -147,6 +164,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [tauriVersion, setTauriVersion] = useState<string>('—');
   const [osPlatform, setOsPlatform] = useState<string>('—');
   const [webviewVersion, setWebviewVersion] = useState<string>('—');
+  const [settingsUpdateState, setSettingsUpdateState] = useState<SettingsUpdateState>({ kind: 'idle' });
   const [minimizeToTray, setMinimizeToTrayState] = useState(false);
   const [notifyToggles, setNotifyToggles] = useState<NotificationToggles>({
     participantJoined: true,
@@ -192,6 +210,13 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     userAgent: navigator.userAgent,
     noiseSuppressionActive: getVoiceRoomState().noiseSuppressionActive,
   });
+  const availableSettingsUpdate =
+    settingsUpdateState.kind === 'available' ? settingsUpdateState.update : null;
+  const settingsUpdateProgress =
+    settingsUpdateState.kind === 'installing' ? settingsUpdateState.progress : null;
+  const settingsUpdatePercent =
+    settingsUpdateProgress ? updateProgressPercent(settingsUpdateProgress) : null;
+
   useEffect(() => {
     getServerUrl().then(setServerUrl);
     getDeviceId().then(setDeviceId);
@@ -265,6 +290,42 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     await invoke('media_set_denoise_enabled', { enabled: checked });
     await setMediaDenoiseEnabled(checked);
   }, []);
+
+  const handleCheckForUpdate = useCallback(() => {
+    setSettingsUpdateState({ kind: 'checking' });
+    void checkForUpdate().then((result) => {
+      if (result.kind === 'available') {
+        setSettingsUpdateState({ kind: 'available', update: result.update });
+      } else if (result.kind === 'none') {
+        setSettingsUpdateState({ kind: 'none' });
+      } else {
+        setSettingsUpdateState({ kind: 'error', message: result.message });
+      }
+    });
+  }, []);
+
+  const handleInstallSettingsUpdate = useCallback(() => {
+    if (!availableSettingsUpdate) return;
+    const update = availableSettingsUpdate;
+
+    setSettingsUpdateState({
+      kind: 'installing',
+      update,
+      progress: { downloadedBytes: 0, totalBytes: null },
+    });
+
+    void (async () => {
+      await leaveActiveVoiceRoomForUpdate();
+      await installUpdateAndRelaunch(update, (progress) => {
+        setSettingsUpdateState({ kind: 'installing', update, progress });
+      });
+    })().catch((err) => {
+      setSettingsUpdateState({
+        kind: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, [availableSettingsUpdate]);
 
   const handleUsernameSave = useCallback(async () => {
     const trimmed = username.trim();
@@ -1151,6 +1212,51 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               <div>
                 <span className="text-wavis-text-secondary">tauri: </span>
                 <span>{tauriVersion}</span>
+              </div>
+              <div className="pt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCheckForUpdate}
+                    disabled={settingsUpdateState.kind === 'checking' || settingsUpdateState.kind === 'installing'}
+                    className="border border-wavis-accent px-3 py-1 text-xs text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-wavis-accent"
+                  >
+                    {settingsUpdateState.kind === 'checking' ? 'checking...' : '/check-update'}
+                  </button>
+                  {availableSettingsUpdate && (
+                    <button
+                      type="button"
+                      onClick={handleInstallSettingsUpdate}
+                      className="border border-wavis-accent px-3 py-1 text-xs text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
+                    >
+                      /install-update
+                    </button>
+                  )}
+                </div>
+                {settingsUpdateState.kind === 'none' && (
+                  <p className="text-xs text-wavis-text-secondary">Wavis is up to date.</p>
+                )}
+                {settingsUpdateState.kind === 'available' && (
+                  <p className="text-xs text-wavis-accent">Wavis {settingsUpdateState.update.version} is available.</p>
+                )}
+                {settingsUpdateState.kind === 'installing' && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-wavis-text-secondary">
+                      {updateProgressLabel(settingsUpdateState.progress)}
+                    </p>
+                    {settingsUpdatePercent !== null && (
+                      <div className="h-1 overflow-hidden bg-wavis-text-secondary/20">
+                        <div
+                          className="h-full bg-wavis-accent transition-all duration-300"
+                          style={{ width: `${settingsUpdatePercent}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {settingsUpdateState.kind === 'error' && (
+                  <p className="text-xs text-wavis-danger break-all">{settingsUpdateState.message}</p>
+                )}
               </div>
             </div>
           </div>

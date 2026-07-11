@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc dde64c58d025a54c41953f178ab5d4234dfb0b439960d174262915dff46d3db5 # shrinks to message = SfuColdStarting(SfuColdStartingPayload { estimated_wait_secs: 0 })
+cc f141839bb0635c33195d987fc29ce06260d3f64774750990e8a7eacb647983b9 # shrinks to message = RequestViewerToken(RequestViewerTokenPayload { window_id: "" })

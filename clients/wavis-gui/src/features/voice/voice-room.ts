@@ -52,10 +52,11 @@ import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge'
 import { playNotificationSound, prewarmAudioContext, updateCachedNotificationVolume, updateCachedSoundVolumes } from './notification-sounds';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const LOG = '[wavis:voice-room]';
 const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
+const DEBUG_VIEWER_CONNECTION = import.meta.env.VITE_DEBUG_VIEWER_CONNECTION === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
 const windowsWgcFailedSourceKinds = new Set<'screen' | 'window'>();
@@ -124,6 +125,22 @@ function refreshRemoteScreenShare(participantId: string): void {
  * recoveries (e.g. a delayed signaling/media identity realignment) beyond the
  * original 6s cap.
  */
+/**
+ * True when we hold a screen-share stream for the participant whose video
+ * track is still live. A stale entry with an ended track (SFU treated a
+ * republish as a resume, so TrackSubscribed never re-fired) must not count
+ * as healthy — it lights the share icon while the viewer window waits for
+ * frames forever.
+ */
+function hasLiveScreenShareStream(participantId: string): boolean {
+  if (!state.screenShareStreams.has(participantId)) return false;
+  const stream = state.screenShareStreams.get(participantId);
+  // The native path (Linux) stores null — pixels render outside WebKit, so a
+  // present entry is healthy by definition.
+  if (!stream) return true;
+  return stream.getVideoTracks().some((t) => t.readyState === 'live');
+}
+
 function scheduleRefreshRetries(participantId: string): void {
   const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
   refreshRetryGenerations.set(participantId, generation);
@@ -131,7 +148,20 @@ function scheduleRefreshRetries(participantId: string): void {
   for (const delay of delays) {
     setTimeout(() => {
       if (refreshRetryGenerations.get(participantId) !== generation) return;
-      if (state.screenShareStreams.has(participantId)) return;
+      if (state.screenShareStreams.has(participantId)) {
+        // Only a healthy entry skips the refresh. When the SFU treats a
+        // republish as a track resume it never re-fires TrackSubscribed, so
+        // the map can hold the previous share's stream with an ended video
+        // track — the share icon lights up but the viewer window waits for
+        // frames forever. Drop such a dead entry and fall through to the
+        // refresh so a fresh subscription replaces it. (Native-path entries
+        // are null and always count as healthy — see hasLiveScreenShareStream.)
+        if (hasLiveScreenShareStream(participantId)) return;
+        console.warn(LOG, `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`);
+        state.screenShareStreams = new Map(state.screenShareStreams);
+        state.screenShareStreams.delete(participantId);
+        notify();
+      }
       const p = state.participants.find((pp) => pp.id === participantId);
       if (!p?.isSharing) return;
       refreshRemoteScreenShare(participantId);
@@ -433,14 +463,38 @@ function decodeMediaTokenIdentity(token: string): string | null {
 }
 
 /**
+ * LiveKit identities observed on the live media connection, recorded raw
+ * (untranslated) from onRemoteParticipantConnected. Which identity scheme a
+ * participant's media session uses depends on the backend version: newer
+ * backends sign LiveKit tokens with the durable user_id, older ones with the
+ * ephemeral peer_id. This set lets liveKitIdentityFor pick whichever form the
+ * media plane is actually using, so a new client stays correct against an
+ * old backend and vice versa.
+ */
+const knownLiveKitIdentities = new Set<string>();
+
+/**
  * Translate a signaling participantId to the LiveKit identity used for that
- * participant's media session. When the backend has a durable user_id for
- * them (authenticated channel voice), LiveKit identity == userId, stable
- * across reconnects; otherwise it falls back to the participantId itself
- * (anonymous ad-hoc rooms, where identity == peer_id as before).
+ * participant's media session. Prefers whichever candidate (durable userId
+ * or the participantId itself) has actually been observed on the media
+ * connection; when neither has connected yet, defaults to userId (the
+ * stable-identity scheme) and finally the participantId (anonymous ad-hoc
+ * rooms, where identity == peer_id as before).
  */
 function liveKitIdentityFor(participantId: string): string {
-  return state.participants.find((p) => p.id === participantId)?.userId ?? participantId;
+  const userId = state.participants.find((p) => p.id === participantId)?.userId;
+  if (userId && knownLiveKitIdentities.has(userId)) return userId;
+  if (knownLiveKitIdentities.has(participantId)) return participantId;
+  return userId ?? participantId;
+}
+
+/**
+ * Public wrapper of liveKitIdentityFor for callers outside this module
+ * (e.g. ActiveRoom's native share viewer invokes and watch-all tile payloads,
+ * whose Rust side keys frames by LiveKit identity, not signaling id).
+ */
+export function liveKitIdentityForParticipant(participantId: string): string {
+  return liveKitIdentityFor(participantId);
 }
 
 /**
@@ -453,6 +507,26 @@ function liveKitIdentityFor(participantId: string): string {
  */
 function participantIdForLiveKitIdentity(identity: string): string {
   return state.participants.find((p) => p.userId === identity)?.id ?? identity;
+}
+
+/** Last time an unknown-identity warning was logged, per identity. */
+const unknownIdentityWarnAt = new Map<string, number>();
+
+/**
+ * Warn (at most once per identity per 10s — audio levels arrive at ~20Hz and
+ * would otherwise flood the diagnostics buffer) that a media-plane identity
+ * could not be matched to any signaling participant, including a snapshot of
+ * the participant list so a bug report shows exactly which ids/userIds the
+ * client knew at that moment.
+ */
+function warnUnknownIdentity(identity: string): void {
+  const now = Date.now();
+  if ((unknownIdentityWarnAt.get(identity) ?? 0) > now - 10_000) return;
+  unknownIdentityWarnAt.set(identity, now);
+  const snapshot = state.participants
+    .map((p) => `${p.id}→${p.userId ?? '(no userId)'}`)
+    .join(', ');
+  console.warn(LOG, `audio level for unknown identity: ${identity} — participants: [${snapshot}]`);
 }
 
 /** Resolve the local user's display name for event log messages. */
@@ -1315,6 +1389,10 @@ let cameraToggleChain: Promise<void> = Promise.resolve();
 type MediaModule = LiveKitModule | NativeMediaModule;
 
 let lkModule: MediaModule | null = null;
+// Settled promise of the most recent session-end media teardown. Awaited
+// (bounded) by the updater so the installer never kills the process while the
+// mic capture device is still open — see waitForMediaTeardown().
+let lastMediaTeardown: Promise<void> = Promise.resolve();
 let reusePatchGuardCheckedForSession = false;
 let reusePatchGuardPassedForSession = false;
 interface PendingWasapiResume {
@@ -1789,6 +1867,9 @@ let unlistenExternalShareStopped: UnlistenFn | null = null;
 let unlistenExternalShareError: UnlistenFn | null = null;
 let unlistenLinuxCaptureFallback: UnlistenFn | null = null;
 let unlistenViewerJoined: UnlistenFn | null = null;
+let unlistenViewerTokenRequest: UnlistenFn | null = null;
+/** Broker correlation for viewer-token requests: windowId → windowLabel. */
+const pendingViewerTokenRequests = new Map<string, string>();
 
 export function setPendingSharePickerData(data: PendingSharePickerData | null): void {
   pendingSharePickerData = data;
@@ -2009,6 +2090,11 @@ function cleanupPublishedMediaForSessionEnd(): void {
     } finally {
       suppressMediaDisconnectedReconnect = false;
     }
+    // Retain the teardown promise so waitForMediaTeardown() (the updater path)
+    // can wait for the mic capture device to actually be released. The `in`
+    // guard keeps NativeMediaModule and test doubles working without it.
+    lastMediaTeardown =
+      'waitForTeardown' in lkModule ? lkModule.waitForTeardown().catch(() => {}) : Promise.resolve();
     lkModule = null;
   }
   resetCameraRuntimeState();
@@ -2016,6 +2102,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   bufferedMediaToken = null;
   latestMediaToken = null;
   bufferedIceConfig = null;
+  pendingViewerTokenRequests.clear();
   externalShareHelperActive = false;
   reusePatchGuardCheckedForSession = false;
   reusePatchGuardPassedForSession = false;
@@ -2023,6 +2110,25 @@ function cleanupPublishedMediaForSessionEnd(): void {
   stopColdStartRetry();
   stopPeriodicMediaRetry();
   setActiveLiveKitModule(null);
+}
+
+/**
+ * Wait for the most recent session-end media teardown to release its capture
+ * devices, bounded by `timeoutMs`. The auto-updater awaits this after
+ * leaveRoom(): installing an update kills the process, and killing it while
+ * the mic capture is still open can wedge Bluetooth/USB headsets until they
+ * are reconnected (issue #230).
+ */
+export async function waitForMediaTeardown(timeoutMs = 2000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  try {
+    await Promise.race([lastMediaTeardown, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {
@@ -2263,6 +2369,7 @@ function disconnectMediaForNoSubRoom(): void {
   state.videoReceiveStats = null;
   state.screenShareStreams = new Map();
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   markAllParticipantsMediaConnecting();
   remoteCameraTilesById = {};
   rebuildVideoTiles();
@@ -2773,6 +2880,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
   state.noiseSuppressionActive = false;
   markAllParticipantsMediaConnecting();
   suppressReconnectJoinForParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   // Pre-warm the notification-sounds AudioContext before the join sound fires.
   // Without this, the AudioContext is created lazily inside an async callback
   // where the browser may refuse to resume it (no active user gesture).
@@ -2872,7 +2980,7 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
           p.rmsLevel = data.rmsLevel;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
         } else {
-          console.warn(LOG, `audio level for unknown identity: ${identity}`);
+          warnUnknownIdentity(identity);
         }
       }
       notify();
@@ -2907,12 +3015,14 @@ function connectMedia(sfuUrl: string, token: string, iceConfig?: { stunUrls: str
       notify();
     },
     onRemoteParticipantConnected: (identity) => {
+      knownLiveKitIdentities.add(identity);
       const participantId = participantIdForLiveKitIdentity(identity);
       const suppressJoinSound = suppressReconnectJoinForParticipantIds.delete(participantId);
       markParticipantMediaConnected(participantId, true, { playJoinSound: !suppressJoinSound });
       notify();
     },
     onRemoteParticipantDisconnected: (identity) => {
+      knownLiveKitIdentities.delete(identity);
       markParticipantMediaConnected(participantIdForLiveKitIdentity(identity), false, { playJoinSound: false });
       notify();
     },
@@ -4048,7 +4158,7 @@ function dispatchMessage(raw: unknown): void {
             // the stream isn't available yet. share_state doesn't schedule
             // retries (only share_started does), so viewers who join mid-share
             // and whose TrackSubscribed is delayed get stuck without this.
-            if (!state.screenShareStreams.has(p.id) && p.id !== state.selfParticipantId) {
+            if (!hasLiveScreenShareStream(p.id) && p.id !== state.selfParticipantId) {
               scheduleRefreshRetries(p.id);
             }
           }
@@ -4199,6 +4309,28 @@ function dispatchMessage(raw: unknown): void {
       break;
     }
 
+    case 'viewer_token': {
+      const windowId = msg.windowId as string;
+      const windowLabel = pendingViewerTokenRequests.get(windowId);
+      if (!windowLabel) {
+        if (DEBUG_VIEWER_CONNECTION) {
+          console.log(LOG, `viewer_token for unknown windowId ${windowId} — ignoring`);
+        }
+        break;
+      }
+      pendingViewerTokenRequests.delete(windowId);
+      if (DEBUG_VIEWER_CONNECTION) {
+        console.log(LOG, `viewer_token relayed to ${windowLabel} (windowId ${windowId})`);
+      }
+      void emitTo(windowLabel, 'viewer-token:response', {
+        windowId,
+        token: msg.token as string,
+        sfuUrl: msg.sfuUrl as string,
+        identity: msg.identity as string,
+      });
+      break;
+    }
+
     case 'chat_message': {
       const participant = state.participants.find(
         (p) => p.id === (msg.participantId as string)
@@ -4287,6 +4419,7 @@ export function initSession(
   };
   resetCameraRuntimeState();
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   suppressReconnectJoinForParticipantIds.clear();
   localSessionJoined = false;
   localDisconnectSoundPlayed = false;
@@ -4294,6 +4427,7 @@ export function initSession(
   bufferedMediaToken = null;
   latestMediaToken = null;
   bufferedIceConfig = null;
+  pendingViewerTokenRequests.clear();
 
   // Push initial state to the component
   notify();
@@ -4311,6 +4445,24 @@ export function initSession(
       }
     }).then((unlisten) => {
       unlistenViewerJoined = unlisten;
+    });
+  }
+
+  // Broker viewer-token requests from child viewer windows: forward to the
+  // signaling server over this window's WS and relay the response back to the
+  // requesting window (children have no WS of their own).
+  if (!unlistenViewerTokenRequest) {
+    listen<{ windowId: string; windowLabel: string }>('viewer-token:request', ({ payload }) => {
+      if (!payload?.windowId || !payload?.windowLabel) return;
+      pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
+      if (DEBUG_VIEWER_CONNECTION) {
+        console.log(LOG, `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`);
+      }
+      if (client) {
+        client.send({ type: 'request_viewer_token', windowId: payload.windowId });
+      }
+    }).then((unlisten) => {
+      unlistenViewerTokenRequest = unlisten;
     });
   }
 
@@ -4498,6 +4650,7 @@ export function leaveRoom(): void {
   // Reset state to defaults (fresh arrays to avoid mutating DEFAULT_STATE)
   state = { ...DEFAULT_STATE, events: [], chatMessages: [], participants: [], screenShareStreams: new Map() };
   mediaConnectedParticipantIds.clear();
+  knownLiveKitIdentities.clear();
   suppressReconnectJoinForParticipantIds.clear();
   remoteCameraTilesById = {};
   roomPanelHadAnyVideoActive = false;
@@ -4525,6 +4678,11 @@ export function leaveRoom(): void {
     unlistenViewerJoined();
     unlistenViewerJoined = null;
   }
+  if (unlistenViewerTokenRequest) {
+    unlistenViewerTokenRequest();
+    unlistenViewerTokenRequest = null;
+  }
+  pendingViewerTokenRequests.clear();
 
   // Notify before clearing callback (so component gets the idle state)
   notify();

@@ -30,6 +30,7 @@ use crate::voice::sfu_bridge::SfuHealth;
 use crate::voice::sfu_relay::{
     OutboundSignal, ParticipantRole, SignalTarget, determine_room_type, handle_create_room,
     handle_kick, handle_mute, handle_sfu_ice, handle_sfu_join, handle_sfu_offer, handle_unmute,
+    handle_viewer_token_request,
 };
 use crate::voice::turn_cred::{build_ice_config_payload, generate_turn_credentials};
 use crate::voice::voice_orchestrator;
@@ -1200,6 +1201,98 @@ pub(crate) async fn dispatch_message(
                         sender_id,
                         &SignalingMessage::Error(ErrorPayload {
                             message: "invite code not found".to_string(),
+                        }),
+                    );
+                }
+            }
+            DispatchOutcome::Continue
+        }
+        SignalingMessage::RequestViewerToken(ref payload) => {
+            // Session is guaranteed Some here (pre-join gate already handled above)
+            let session_ref = ctx.session.as_ref().unwrap();
+            let requester_id = session_ref.participant_id.as_str();
+
+            // Action rate limit: token minting is security-sensitive (one
+            // request per viewer-window (re)connect is the expected cadence).
+            if !ctx.rate_limiter.action_allow() {
+                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit (viewer token)");
+                ctx.app_state
+                    .abuse_metrics
+                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+                ctx.app_state.connections.send_to(
+                    requester_id,
+                    &SignalingMessage::Error(ErrorPayload {
+                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+                    }),
+                );
+                return DispatchOutcome::Continue;
+            }
+
+            // The requester must be a live member of a room; the room comes
+            // from the session mapping, never from the payload.
+            let room_id = match ctx.app_state.room_state.get_room_for_peer(requester_id) {
+                Some(r) => r,
+                None => {
+                    ctx.app_state.connections.send_to(
+                        requester_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "not in a room".to_string(),
+                        }),
+                    );
+                    return DispatchOutcome::Continue;
+                }
+            };
+
+            // Build token mode (same logic as Join/CreateRoom SFU paths)
+            let token_mode = if ctx.app_state.sfu_signaling_proxy.is_none() {
+                match (
+                    &ctx.sfu_config.livekit_api_key,
+                    &ctx.sfu_config.livekit_api_secret,
+                ) {
+                    (Some(key), Some(secret)) => crate::voice::sfu_relay::TokenMode::LiveKit {
+                        api_key: key.as_str(),
+                        api_secret: secret.as_str(),
+                        ttl_secs: crate::auth::jwt::LIVEKIT_TOKEN_TTL_SECS,
+                    },
+                    _ => crate::voice::sfu_relay::TokenMode::Custom {
+                        jwt_secret: &ctx.sfu_config.jwt_secret,
+                        issuer: &ctx.sfu_config.jwt_issuer,
+                        ttl_secs: ctx.sfu_config.token_ttl_secs,
+                    },
+                }
+            } else {
+                crate::voice::sfu_relay::TokenMode::Custom {
+                    jwt_secret: &ctx.sfu_config.jwt_secret,
+                    issuer: &ctx.sfu_config.jwt_issuer,
+                    ttl_secs: ctx.sfu_config.token_ttl_secs,
+                }
+            };
+
+            match handle_viewer_token_request(
+                ctx.app_state.room_state.as_ref(),
+                &room_id,
+                requester_id,
+                session_ref.user_id.as_deref(),
+                &payload.window_id,
+                &token_mode,
+                &ctx.app_state.sfu_url,
+            )
+            .await
+            {
+                Ok(signals) => {
+                    dispatch_signals(
+                        signals,
+                        &room_id,
+                        ctx.app_state.room_state.as_ref(),
+                        ctx.app_state.connections.as_ref(),
+                    );
+                }
+                Err(e) => {
+                    warn!(peer_id = %ctx.peer_id, error = %e, "viewer token request rejected");
+                    ctx.app_state.connections.send_to(
+                        requester_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: format!("viewer token request failed: {e}"),
                         }),
                     );
                 }
@@ -3289,6 +3382,8 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::ParticipantLeft(_)
         | SignalingMessage::RoomState(_)
         | SignalingMessage::MediaToken(_)
+        | SignalingMessage::RequestViewerToken(_)
+        | SignalingMessage::ViewerToken(_)
         | SignalingMessage::KickParticipant(_)
         | SignalingMessage::MuteParticipant(_)
         | SignalingMessage::UnmuteParticipant(_)

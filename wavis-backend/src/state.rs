@@ -121,6 +121,10 @@ pub struct PassthroughPair {
     pub target_sub_room_id: String,
 }
 
+/// Maximum hidden viewer identities a single peer may hold at once
+/// (watch-all + several pop-outs is the legitimate ceiling).
+pub const MAX_VIEWER_IDENTITIES_PER_PEER: usize = 8;
+
 /// Room metadata stored alongside the peer list.
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
@@ -145,6 +149,10 @@ pub struct RoomInfo {
     /// Optional synchronized sub-room state for channel-based voice sessions.
     /// Legacy direct rooms keep this as `None`.
     pub sub_room_state: Option<SubRoomState>,
+    /// Hidden viewer identities issued per peer (screen-share viewer windows).
+    /// Maps peer_id → set of LiveKit viewer identities so kick/leave can
+    /// best-effort remove them from the SFU. Never counted toward capacity.
+    pub viewer_identities: HashMap<String, HashSet<String>>,
 }
 
 impl RoomInfo {
@@ -162,6 +170,7 @@ impl RoomInfo {
             active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
+            viewer_identities: HashMap::new(),
         }
     }
 
@@ -179,6 +188,7 @@ impl RoomInfo {
             active_share_types: HashMap::new(),
             share_permission: SharePermission::default(),
             sub_room_state: None,
+            viewer_identities: HashMap::new(),
         }
     }
 
@@ -214,6 +224,33 @@ impl RoomInfo {
     /// Mark a participant as having lost SFU media connection.
     pub fn mark_media_disconnected(&mut self, peer_id: &str) {
         self.media_connected.remove(peer_id);
+    }
+
+    /// Record a viewer identity issued for a peer's viewer window.
+    ///
+    /// An identity re-issued for the same window instance (same `-vw-{windowId}`
+    /// suffix) replaces the previous entry instead of counting twice. Returns
+    /// `false` when the peer already holds `MAX_VIEWER_IDENTITIES_PER_PEER`
+    /// distinct identities — the caller must reject the request.
+    pub fn record_viewer_identity(&mut self, peer_id: &str, identity: &str) -> bool {
+        let entries = self.viewer_identities.entry(peer_id.to_string()).or_default();
+        if let Some(suffix) = identity.rfind("-vw-").map(|i| &identity[i..]) {
+            entries.retain(|existing| !existing.ends_with(suffix));
+        }
+        if entries.len() >= MAX_VIEWER_IDENTITIES_PER_PEER {
+            return false;
+        }
+        entries.insert(identity.to_string());
+        true
+    }
+
+    /// Remove and return all viewer identities issued for a peer.
+    /// Called on kick/leave so the SFU-side hidden viewers can be removed.
+    pub fn take_viewer_identities(&mut self, peer_id: &str) -> Vec<String> {
+        self.viewer_identities
+            .remove(peer_id)
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default()
     }
 
     /// Returns peer IDs that need a preemptive token refresh:

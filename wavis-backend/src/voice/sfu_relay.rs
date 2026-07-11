@@ -25,7 +25,7 @@
 
 use std::time::Instant;
 
-use crate::auth::jwt::{sign_livekit_token, sign_media_token};
+use crate::auth::jwt::{livekit_identity, sign_livekit_token, sign_livekit_viewer_token, sign_media_token};
 use crate::channel::invite::InviteStore;
 use crate::voice::sfu_bridge::{SfuError, SfuRoomManager};
 
@@ -61,7 +61,7 @@ use crate::state::{InMemoryRoomState, RoomInfo, RoomType};
 use shared::signaling::{
     MediaTokenPayload, ParticipantInfo, ParticipantJoinedPayload, ParticipantKickedPayload,
     ParticipantLeftPayload, ParticipantMutedPayload, ParticipantUnmutedPayload, RoomStatePayload,
-    SignalingMessage,
+    SignalingMessage, ViewerTokenPayload,
 };
 
 pub type PeerId = String;
@@ -291,6 +291,98 @@ pub async fn handle_sfu_join(
     Ok(signals)
 }
 
+/// Handle a request for a subscribe-only hidden viewer token.
+///
+/// Issued to a live, non-revoked participant of an SFU room so their child
+/// viewer windows (screen-share pop-outs, Watch All) can connect directly to
+/// LiveKit. The viewer identity is derived from the requester's session
+/// identity — never from client-supplied data beyond the opaque `window_id`
+/// correlation suffix. Viewers are never added to the participant list, so
+/// capacity enforcement and token refresh are unaffected.
+pub async fn handle_viewer_token_request(
+    state: &InMemoryRoomState,
+    room_id: &str,
+    peer_id: &str,
+    user_id: Option<&str>,
+    window_id: &str,
+    token_mode: &TokenMode<'_>,
+    sfu_url: &str,
+) -> Result<Vec<OutboundSignal>, SfuError> {
+    // Validate the window id: it becomes part of a LiveKit identity, so it
+    // must satisfy the same charset rules (plus a tighter length bound).
+    if window_id.is_empty()
+        || window_id.len() > shared::signaling::validation::MAX_VIEWER_WINDOW_ID_LEN
+        || !window_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(SfuError::InvalidInput(
+            "window_id must be 1–32 chars of ASCII alphanumeric, hyphens, underscores".to_string(),
+        ));
+    }
+
+    // Viewer tokens only exist for SFU rooms with a live SFU handle.
+    let is_sfu_room = state
+        .get_room_info(room_id)
+        .map(|info| info.room_type == RoomType::Sfu && info.sfu_handle.is_some())
+        .unwrap_or(false);
+    if !is_sfu_room {
+        return Err(SfuError::ParticipantError(
+            "viewer tokens are only available in SFU rooms".to_string(),
+        ));
+    }
+
+    // Same revocation guard as token issuance on join (Req 4.2): a kicked
+    // participant must not be able to keep minting viewer tokens.
+    let ttl_window = std::time::Duration::from_secs(match token_mode {
+        TokenMode::Custom { ttl_secs, .. } => *ttl_secs,
+        TokenMode::LiveKit { ttl_secs, .. } => *ttl_secs,
+    });
+    if state.is_participant_revoked(room_id, peer_id, ttl_window) {
+        return Err(SfuError::TokenError("participant revoked".to_string()));
+    }
+
+    let identity = format!("{}-vw-{}", livekit_identity(peer_id, user_id), window_id);
+    crate::voice::livekit_bridge::LiveKitSfuBridge::validate_identifier(
+        &identity,
+        "viewer_identity",
+    )?;
+
+    let token = match token_mode {
+        TokenMode::LiveKit {
+            api_key,
+            api_secret,
+            ttl_secs,
+        } => sign_livekit_viewer_token(room_id, &identity, api_key, api_secret, *ttl_secs)?,
+        TokenMode::Custom { .. } => {
+            return Err(SfuError::TokenError(
+                "viewer tokens require LiveKit mode".to_string(),
+            ));
+        }
+    };
+
+    // Track the identity for kick/leave cleanup and cap issuance per peer.
+    let mut recorded = false;
+    state.update_room_info(room_id, |info| {
+        recorded = info.record_viewer_identity(peer_id, &identity);
+    });
+    if !recorded {
+        return Err(SfuError::ParticipantError(
+            "too many viewer windows".to_string(),
+        ));
+    }
+
+    Ok(vec![OutboundSignal::to_peer(
+        peer_id,
+        SignalingMessage::ViewerToken(ViewerTokenPayload {
+            window_id: window_id.to_string(),
+            token,
+            sfu_url: sfu_url.to_string(),
+            identity,
+        }),
+    )])
+}
+
 /// Handle a participant leaving an SFU room.
 ///
 /// Steps:
@@ -308,9 +400,19 @@ pub async fn handle_sfu_leave(
         .get_room_info(room_id)
         .and_then(|info| info.sfu_handle);
 
+    // Reclaim any hidden viewer identities this peer was issued so their
+    // viewer windows are disconnected from the SFU along with the peer.
+    let mut viewer_ids: Vec<String> = Vec::new();
+    state.update_room_info(room_id, |info| {
+        viewer_ids = info.take_viewer_identities(peer_id);
+    });
+
     if let Some(ref handle) = sfu_handle {
         // Best-effort: log errors but continue with state cleanup
         let _ = bridge.remove_participant(handle, peer_id).await;
+        for viewer_id in &viewer_ids {
+            let _ = bridge.remove_participant(handle, viewer_id).await;
+        }
     }
 
     // Clean up share state before peer removal (peer must still be in participants)
@@ -413,6 +515,18 @@ pub async fn handle_kick(
             error = %e,
             "SFU remove_participant failed during kick (best-effort, continuing)"
         );
+    }
+
+    // Reclaim the target's hidden viewer identities so their viewer windows
+    // are disconnected from the SFU too (kick must not leave watchers alive).
+    let mut viewer_ids: Vec<String> = Vec::new();
+    state.update_room_info(room_id, |info| {
+        viewer_ids = info.take_viewer_identities(target_id);
+    });
+    if let Some(ref handle) = sfu_handle {
+        for viewer_id in &viewer_ids {
+            let _ = bridge.remove_participant(handle, viewer_id).await;
+        }
     }
 
     // Remove from state (Req 4.1)
@@ -757,6 +871,319 @@ mod tests {
             issuer: crate::auth::jwt::DEFAULT_JWT_ISSUER,
             ttl_secs: crate::auth::jwt::TOKEN_TTL_SECS,
         }
+    }
+
+    fn livekit_token_mode() -> TokenMode<'static> {
+        TokenMode::LiveKit {
+            api_key: "test-api-key",
+            api_secret: "test-api-secret-long-enough",
+            ttl_secs: 600,
+        }
+    }
+
+    /// Join `peer_id` into an SFU room using LiveKit token mode.
+    async fn join_livekit_room(bridge: &MockSfuBridge, state: &InMemoryRoomState, peer_id: &str) {
+        handle_sfu_join(
+            bridge,
+            state,
+            "room-1",
+            peer_id,
+            peer_id,
+            None,
+            &livekit_token_mode(),
+            "wss://sfu.test",
+            4,
+            &InviteStore::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    // --- Viewer token tests ---
+
+    #[tokio::test]
+    async fn viewer_token_happy_path_targets_requester_with_derived_identity() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+
+        let signals = handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-1",
+            Some("user-1"),
+            "w8f3a2b1c",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].target, SignalTarget::Peer("peer-1".to_string()));
+        match &signals[0].msg {
+            SignalingMessage::ViewerToken(p) => {
+                assert_eq!(p.window_id, "w8f3a2b1c");
+                assert_eq!(p.identity, "user-1-vw-w8f3a2b1c");
+                assert_eq!(p.sfu_url, "wss://sfu.test");
+                assert!(!p.token.is_empty());
+            }
+            other => panic!("expected ViewerToken, got {other:?}"),
+        }
+
+        // Identity is tracked for later cleanup.
+        let info = state.get_room_info("room-1").unwrap();
+        assert!(
+            info.viewer_identities["peer-1"].contains("user-1-vw-w8f3a2b1c"),
+            "issued viewer identity must be tracked"
+        );
+    }
+
+    #[tokio::test]
+    async fn viewer_token_falls_back_to_peer_id_without_user_id() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+
+        let signals = handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-1",
+            None,
+            "w1",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await
+        .unwrap();
+        match &signals[0].msg {
+            SignalingMessage::ViewerToken(p) => assert_eq!(p.identity, "peer-1-vw-w1"),
+            other => panic!("expected ViewerToken, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn viewer_token_rejected_for_revoked_peer() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+        join_livekit_room(&bridge, &state, "peer-2").await;
+
+        // peer-2 leaves — enters the revoked set.
+        handle_sfu_leave(&bridge, &state, "room-1", "peer-2")
+            .await
+            .unwrap();
+
+        let result = handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-2",
+            None,
+            "w1",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await;
+        assert!(result.is_err(), "revoked peer must not get a viewer token");
+    }
+
+    #[tokio::test]
+    async fn viewer_token_rejected_for_p2p_room() {
+        let state = make_state();
+        state.create_room("p2p-room".to_string(), RoomInfo::new_p2p());
+
+        let result = handle_viewer_token_request(
+            &state,
+            "p2p-room",
+            "peer-1",
+            None,
+            "w1",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await;
+        assert!(result.is_err(), "P2P rooms must not issue viewer tokens");
+    }
+
+    #[tokio::test]
+    async fn viewer_token_rejects_invalid_window_ids() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+
+        for bad in ["", "w::1", "w 1", "w#1", &"x".repeat(33)] {
+            let result = handle_viewer_token_request(
+                &state,
+                "room-1",
+                "peer-1",
+                None,
+                bad,
+                &livekit_token_mode(),
+                "wss://sfu.test",
+            )
+            .await;
+            assert!(result.is_err(), "window_id {bad:?} must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn viewer_token_rejected_in_custom_token_mode() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        let secret = test_secret();
+        handle_sfu_join(
+            &bridge,
+            &state,
+            "room-1",
+            "peer-1",
+            "Alice",
+            None,
+            &custom_token_mode(&secret),
+            "sfu://localhost",
+            4,
+            &InviteStore::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-1",
+            None,
+            "w1",
+            &custom_token_mode(&secret),
+            "sfu://localhost",
+        )
+        .await;
+        assert!(result.is_err(), "viewer tokens require LiveKit mode");
+    }
+
+    #[tokio::test]
+    async fn viewer_token_issuance_is_capped_but_same_window_replaces() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+
+        for i in 0..crate::state::MAX_VIEWER_IDENTITIES_PER_PEER {
+            handle_viewer_token_request(
+                &state,
+                "room-1",
+                "peer-1",
+                None,
+                &format!("w{i}"),
+                &livekit_token_mode(),
+                "wss://sfu.test",
+            )
+            .await
+            .unwrap_or_else(|e| panic!("request {i} should succeed: {e:?}"));
+        }
+
+        // A 9th distinct window is rejected...
+        let over_cap = handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-1",
+            None,
+            "w-extra",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await;
+        assert!(over_cap.is_err(), "over-cap request must be rejected");
+
+        // ...but re-requesting for an existing window (reconnect) still works.
+        handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-1",
+            None,
+            "w0",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await
+        .expect("same-window re-request must replace, not count twice");
+    }
+
+    #[tokio::test]
+    async fn leave_removes_tracked_viewer_identities_from_sfu() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+
+        for w in ["w1", "w2"] {
+            handle_viewer_token_request(
+                &state,
+                "room-1",
+                "peer-1",
+                Some("user-1"),
+                w,
+                &livekit_token_mode(),
+                "wss://sfu.test",
+            )
+            .await
+            .unwrap();
+        }
+
+        handle_sfu_leave(&bridge, &state, "room-1", "peer-1")
+            .await
+            .unwrap();
+
+        let calls = bridge.get_calls();
+        for viewer_id in ["user-1-vw-w1", "user-1-vw-w2"] {
+            assert!(
+                calls.iter().any(|c| matches!(
+                    c,
+                    MockSfuCall::RemoveParticipant { participant_id, .. }
+                        if participant_id == viewer_id
+                )),
+                "leave must remove viewer identity {viewer_id} from the SFU"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn kick_removes_tracked_viewer_identities_from_sfu() {
+        let bridge = MockSfuBridge::new();
+        let state = make_state();
+        join_livekit_room(&bridge, &state, "peer-1").await;
+        join_livekit_room(&bridge, &state, "peer-2").await;
+
+        handle_viewer_token_request(
+            &state,
+            "room-1",
+            "peer-2",
+            Some("user-2"),
+            "w1",
+            &livekit_token_mode(),
+            "wss://sfu.test",
+        )
+        .await
+        .unwrap();
+
+        handle_kick(
+            &bridge,
+            &state,
+            "room-1",
+            "peer-1",
+            ParticipantRole::Host,
+            "peer-2",
+        )
+        .await
+        .unwrap();
+
+        let calls = bridge.get_calls();
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                MockSfuCall::RemoveParticipant { participant_id, .. }
+                    if participant_id == "user-2-vw-w1"
+            )),
+            "kick must remove the target's viewer identities from the SFU"
+        );
     }
 
     // --- Unit tests ---

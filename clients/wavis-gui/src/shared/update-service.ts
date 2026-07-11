@@ -37,6 +37,36 @@ function sameBinaryFile(before: UpdateBinaryInfo | null, after: UpdateBinaryInfo
   );
 }
 
+export async function leaveActiveVoiceRoomForUpdate(): Promise<void> {
+  const { getState, leaveRoom, waitForMediaTeardown } = await import('@features/voice/voice-room');
+  const state = getState();
+  const isActive =
+    state.machineState === 'active' ||
+    state.mediaState === 'connecting' ||
+    state.mediaState === 'connected';
+  if (isActive) {
+    leaveRoom();
+    // leaveRoom() releases media asynchronously. Wait (bounded) for the mic
+    // capture device to actually close before the install starts: the
+    // installer kills this process, and killing it mid-capture can wedge
+    // Bluetooth/USB headsets until they are reconnected (issue #230).
+    await waitForMediaTeardown();
+  }
+}
+
+export function updateProgressPercent(progress: UpdateProgress): number | null {
+  if (!progress.totalBytes) return null;
+  return Math.min(
+    100,
+    Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
+  );
+}
+
+export function updateProgressLabel(progress: UpdateProgress): string {
+  const percent = updateProgressPercent(progress);
+  return percent === null ? 'Downloading update...' : `Downloading update... ${percent}%`;
+}
+
 async function getUpdateInstallContext(): Promise<UpdateInstallContext | null> {
   try {
     return await invoke<UpdateInstallContext>('get_update_install_context');

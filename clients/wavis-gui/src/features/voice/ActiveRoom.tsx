@@ -58,6 +58,7 @@ import {
   buildRoomEventDisplayItems,
   resolveChatMessageDisplayColor,
   preserveVideoShareSelectionForSourceChange,
+  liveKitIdentityForParticipant,
 } from './voice-room';
 import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
@@ -69,12 +70,10 @@ import { open } from '@tauri-apps/plugin-shell';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { startSending, stopSending, stopSendingForWindow, stopAllSending, resendStream } from '@features/screen-share/screen-share-viewer';
+import { startSending, stopSending, stopSendingForWindow, resendStream } from '@features/screen-share/screen-share-viewer';
 import { getWatchAllHotkey, getFocusMainHotkey, setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
-const DEBUG_SHARE_VIEW = import.meta.env.VITE_DEBUG_SCREEN_SHARE_VIEW === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
-const LOG_SS = '[wavis:active-room:screen-share]';
 const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 const NOT_AUTHORIZED_REJECTION_PREFIX = 'Unable to join voice.';
 import { registerWatchAllHotkey, unregisterWatchAllHotkey, registerFocusMainHotkey, unregisterFocusMainHotkey } from '@shared/hotkey-bridge';
@@ -246,6 +245,7 @@ interface ShareViewerWindow {
 function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
   return {
     participantId: tile.participantId,
+    liveKitIdentity: liveKitIdentityForParticipant(tile.participantId),
     displayName: tile.displayName,
     color: tile.color,
     hasTrack: tile.track !== null,
@@ -257,6 +257,7 @@ function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
 
 function areVideoTileSnapshotsEqual(a: VideoTileSnapshot, b: VideoTileSnapshot): boolean {
   return a.participantId === b.participantId
+    && a.liveKitIdentity === b.liveKitIdentity
     && a.displayName === b.displayName
     && a.color === b.color
     && a.hasTrack === b.hasTrack
@@ -790,7 +791,10 @@ export default function ActiveRoom() {
   const prevEventsLenRef = useRef(0);
   // Refs to the screen share OS windows (keyed by participantId)
   const shareWindowsRef = useRef<Map<string, ShareViewerWindow>>(new Map());
-  const nativeShareViewersRef = useRef<Set<string>>(new Set());
+  /** participantId → LiveKit identity used when the native viewer was opened,
+   *  so close targets the same Rust-side frame key even if the mapping
+   *  changes while the viewer is open. */
+  const nativeShareViewersRef = useRef<Map<string, string>>(new Map());
   const selfSharingRef = useRef(false);
   const handleStartShareRef = useRef<() => void | Promise<void>>(() => {});
   const stopShareActionRef = useRef<() => void>(() => {});
@@ -839,9 +843,6 @@ export default function ActiveRoom() {
     }
   }, [watchingShareIds, roomState?.participants]);
 
-  // Re-send stream through loopback bridge when the underlying MediaStream
-  // changes for an already-open viewer window (e.g. after LiveKit adaptive
-  // stream pause→resume re-emits onScreenShareSubscribed with a fresh stream).
   useEffect(() => {
     shareVolumesRef.current = shareVolumes;
   }, [shareVolumes]);
@@ -850,6 +851,11 @@ export default function ActiveRoom() {
     shareMutedRef.current = shareMuted;
   }, [shareMuted]);
 
+  // Re-attach share audio when the underlying MediaStream changes for an
+  // already-open viewer window (e.g. after LiveKit adaptive stream
+  // pause→resume re-emits onScreenShareSubscribed with a fresh stream).
+  // Video no longer flows through this window — pop-out windows hold their
+  // own direct LiveKit subscription and recover on their own.
   const prevStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   useEffect(() => {
     if (!roomState) return;
@@ -857,8 +863,6 @@ export default function ActiveRoom() {
       const current = roomState.screenShareStreams.get(id) ?? null;
       const prev = prevStreamsRef.current.get(id) ?? null;
       if (current && current !== prev) {
-        console.log(LOG_SS, `resendStream(${id}, screen-share-${id}) — stream: ${current?.id}, prevStream: ${prev?.id ?? 'none'}, active: ${current?.active}, ts: ${Date.now()}`);
-        resendStream(id, `screen-share-${id}`, current);
         attachScreenShareAudio(id);
         const volume =
           watchAllVolumesRef.current.get(id) ??
@@ -1048,12 +1052,9 @@ export default function ActiveRoom() {
     const stream = scope.streams.get(participantId) ?? null;
     const participant = scope.participants.find((p) => p.id === participantId);
     if (!participant) return;
-    if (stream) {
-      if (DEBUG_SHARE_VIEW) console.log(LOG_SS, `startSending(${participantId}, 'watch-all') — stream: ${stream?.id}, active: ${stream?.active}`);
-      startSending(participantId, 'watch-all', stream);
-    }
     emit('watch-all:share-added', {
       participantId,
+      liveKitIdentity: liveKitIdentityForParticipant(participantId),
       displayName: participant.displayName,
       color: participant.color,
       canvasFallback: stream === null,
@@ -1075,7 +1076,6 @@ export default function ActiveRoom() {
     // The map entry marks which pop-out currently owns this participant.
     // If another close path already removed it, skip duplicate cleanup.
     if (!shareWindowsRef.current.delete(participantId)) return;
-    stopSending(participantId, `screen-share-${participantId}`);
     // Skip detach when Watch All will take the stream back: detaching triggers
     // setSubscribed(false/true) which can race TrackUnsubscribed/TrackSubscribed
     // unpredictably. Keeping the gain node alive lets reAddStreamToWatchAll
@@ -1098,7 +1098,6 @@ export default function ActiveRoom() {
       // Gate on delete — if closeShareWindow already handled this pid,
       // delete() returns false and we skip to avoid double-add.
       if (!shareWindowsRef.current.delete(pid)) return;
-      stopSending(pid, `screen-share-${pid}`);
       if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
         detachScreenShareAudio(pid);
       }
@@ -1274,24 +1273,6 @@ export default function ActiveRoom() {
     return () => { unlisten.then((fn) => fn?.()); };
   }, [syncScreenShareMuted, syncScreenShareVolume]);
 
-  useEffect(() => {
-    const unlisten = listen<{ participantId: string }>('watch-all:request-resend', (event) => {
-      const pid = event.payload.participantId;
-      if (!watchAllWindowRef.current) return;
-      if (shareWindowsRef.current.has(pid)) return;
-      const rs = roomStateRef.current;
-      const scope = getWatchAllScope(rs);
-      if (!scope.streams.has(pid)) return;
-      const stream = scope.streams.get(pid) ?? null;
-      if (!stream) return;
-      if (DEBUG_SHARE_VIEW) console.log(LOG_SS, `watch-all resend requested for ${pid} â€” stream: ${stream.id}, active: ${stream.active}`);
-      resendStream(pid, 'watch-all', stream).catch((err) => {
-        console.warn('[wavis:active-room] watch-all resend failed:', err);
-      });
-    });
-    return () => { unlisten.then((fn) => fn?.()); };
-  }, []);
-
   // Dynamic share tracking for Watch All window
   const prevWatchAllStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   const prevAudioOnlySharersRef = useRef<Set<string>>(new Set());
@@ -1315,17 +1296,14 @@ export default function ActiveRoom() {
     for (const [pid, stream] of currentStreams) {
       if (!prevStreams.has(pid)) {
         // Skip participants that have an individual pop-out window open —
-        // their stream is already being sent to the pop-out window.
+        // their stream is already shown in the pop-out window.
         if (shareWindowsRef.current.has(pid)) continue;
         // New participant started sharing
-        if (stream) {
-          if (DEBUG_SHARE_VIEW) console.log(LOG_SS, `startSending(${pid}, 'watch-all') — stream: ${stream?.id}, active: ${stream?.active}`);
-          startSending(pid, 'watch-all', stream);
-        }
         const participant = scope.participants.find((p) => p.id === pid);
         if (participant) {
           emit('watch-all:share-added', {
             participantId: pid,
+            liveKitIdentity: liveKitIdentityForParticipant(pid),
             displayName: participant.displayName,
             color: participant.color,
             canvasFallback: stream === null,
@@ -1338,8 +1316,6 @@ export default function ActiveRoom() {
         if (shareWindowsRef.current.has(pid)) continue;
         const prevStream = prevStreams.get(pid) ?? null;
         if (stream && stream !== prevStream) {
-          console.log(LOG_SS, `resendStream(${pid}, 'watch-all') — stream: ${stream?.id}, prevStream: ${prevStream?.id ?? 'none'}, active: ${stream?.active}, ts: ${Date.now()}`);
-          resendStream(pid, 'watch-all', stream);
           // Only re-attach audio if the viewer already owns this stream's audio.
           // A stream reference change can fire before viewer-ready resolves (e.g.
           // the SFU delivers the track muted then unmutes it within the same
@@ -1357,7 +1333,6 @@ export default function ActiveRoom() {
     for (const pid of prevStreams.keys()) {
       if (!currentStreams.has(pid)) {
         detachScreenShareAudio(pid);
-        stopSending(pid, 'watch-all');
         watchAllAttachedAudioRef.current.delete(pid);
         emit('watch-all:share-removed', { participantId: pid });
       }
@@ -1551,6 +1526,7 @@ export default function ActiveRoom() {
     const isSelf = participantId === roomState?.selfParticipantId;
     const params = {
       participantId,
+      liveKitIdentity: liveKitIdentityForParticipant(participantId),
       username: participant.displayName,
       userColor: participant.color,
       isOwner: isSelf,
@@ -1563,12 +1539,15 @@ export default function ActiveRoom() {
 
     try {
       if (stream === null) {
+        // The Rust side keys share frames by LiveKit identity (the durable
+        // userId on new backends), not by the signaling participantId.
+        const nativeIdentity = liveKitIdentityForParticipant(participantId);
         await invoke('media_open_native_screen_share_viewer', {
-          identity: participantId,
+          identity: nativeIdentity,
           title: `${participant.displayName} — screen share`,
         });
 
-        nativeShareViewersRef.current.add(participantId);
+        nativeShareViewersRef.current.set(participantId, nativeIdentity);
         attachScreenShareAudio(participantId);
         applySavedScreenShareAudio(participantId);
         setWatchingShareIds((prev) => new Set(prev).add(participantId));
@@ -1593,15 +1572,8 @@ export default function ActiveRoom() {
         center: true,
       });
 
-      win.once('tauri://created', () => {
-        // Primary path: pipe MediaStream through loopback bridge
-        // Fallback path (stream is null): child window listens for
-        // screen_share_frame events directly — no bridge needed
-        if (stream) {
-          startSending(participantId, windowLabel, stream);
-        }
-      });
-
+      // The pop-out subscribes to the share directly via its own LiveKit
+      // viewer connection (see viewer-connection.ts) — no loopback bridge.
       win.once('tauri://error', (e) => {
         console.error('[wavis:active-room] screen share window error:', e);
         setWatchingShareIds((prev) => {
@@ -1626,7 +1598,6 @@ export default function ActiveRoom() {
       // closeShareWindow handles detach when the pop-out is actually closed.
       if (watchAllWindowRef.current && watchAllReadyRef.current) {
         watchAllAttachedAudioRef.current.delete(participantId);
-        stopSending(participantId, 'watch-all');
         prevWatchAllStreamsRef.current.delete(participantId);
         emit('watch-all:share-removed', { participantId });
       }
@@ -1636,14 +1607,15 @@ export default function ActiveRoom() {
     }
   };
 
-  /** Close a specific screen share OS window and clean up the bridge. */
+  /** Close a specific screen share OS window and clean up audio routing. */
   const closeShareWindow = (participantId: string) => {
-    stopSending(participantId, `screen-share-${participantId}`);
     if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
       detachScreenShareAudio(participantId);
     }
-    if (nativeShareViewersRef.current.delete(participantId)) {
-      invoke('media_close_native_screen_share_viewer', { identity: participantId }).catch(() => {});
+    const openedNativeIdentity = nativeShareViewersRef.current.get(participantId);
+    if (openedNativeIdentity !== undefined) {
+      nativeShareViewersRef.current.delete(participantId);
+      invoke('media_close_native_screen_share_viewer', { identity: openedNativeIdentity }).catch(() => {});
     }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
@@ -1662,12 +1634,11 @@ export default function ActiveRoom() {
 
   /** Close all share windows. */
   const closeAllShareWindows = () => {
-    closeVideoPopoutWindow();
+    closeVideoPopoutWindow(); // tears down the camera-popout bridge senders
     closeWatchAllWindow(); // close Watch All window first
-    stopAllSending();
-    for (const pid of nativeShareViewersRef.current) {
+    for (const [pid, nativeIdentity] of nativeShareViewersRef.current) {
       detachScreenShareAudio(pid);
-      invoke('media_close_native_screen_share_viewer', { identity: pid }).catch(() => {});
+      invoke('media_close_native_screen_share_viewer', { identity: nativeIdentity }).catch(() => {});
     }
     nativeShareViewersRef.current.clear();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
@@ -1815,7 +1786,6 @@ export default function ActiveRoom() {
     // We close the windows but don't detach audio (WatchAll doesn't handle
     // per-stream audio — the main window's audio attachment is independent).
     for (const [pid, shareWindow] of [...shareWindowsRef.current.entries()]) {
-      stopSending(pid, `screen-share-${pid}`);
       detachScreenShareAudio(pid);
       shareWindow.window.close().catch(() => { });
     }
@@ -1847,13 +1817,11 @@ export default function ActiveRoom() {
         const scope = getWatchAllScope(rs);
         console.log('[wavis:active-room] watch-all:ready: screenShareStreams size =', scope.streams.size);
         for (const [pid, stream] of scope.streams) {
-          if (stream) {
-            startSending(pid, 'watch-all', stream);
-          }
           const participant = scope.participants.find((p) => p.id === pid);
           if (participant) {
             emit('watch-all:share-added', {
               participantId: pid,
+              liveKitIdentity: liveKitIdentityForParticipant(pid),
               displayName: participant.displayName,
               color: participant.color,
               canvasFallback: stream === null,
@@ -1911,7 +1879,7 @@ export default function ActiveRoom() {
     }
   };
 
-  /** Close the Watch All window and clean up bridge senders. */
+  /** Close the Watch All window and clean up audio routing. */
   const closeWatchAllWindow = () => {
     if (!watchAllWindowRef.current) return; // idempotent
     // Clean up the ready listener to avoid leaks
@@ -1924,7 +1892,6 @@ export default function ActiveRoom() {
       detachScreenShareAudio(participantId);
     }
     watchAllAttachedAudioRef.current.clear();
-    stopSendingForWindow('watch-all');
     watchAllWindowRef.current.close().catch(() => { });
     watchAllWindowRef.current = null;
     setWatchAllOpen(false);

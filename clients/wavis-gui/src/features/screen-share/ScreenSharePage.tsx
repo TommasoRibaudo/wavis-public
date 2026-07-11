@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { startReceiving, stopReceiving } from './screen-share-viewer';
+import { ViewerRoomConnection } from './viewer-connection';
 import type { ShareQuality } from '@features/voice/voice-room';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
@@ -26,6 +26,10 @@ const ZOOM_STEP = 0.15;
 
 interface ShareWindowParams {
   participantId: string;
+  /** LiveKit identity the Rust side keys native share frames by. Newer
+   *  backends use the durable userId here, which differs from the signaling
+   *  participantId; older payloads omit it (identity == participantId). */
+  liveKitIdentity?: string;
   username: string;
   userColor: string;
   isOwner: boolean;
@@ -108,12 +112,49 @@ export default function ScreenSharePage() {
     },
   });
 
-  /* ── Receive stream from main window via WebRTC bridge (primary) or
+  /* ── Direct LiveKit viewer connection (one Room per pop-out window) ── */
+
+  const connRef = useRef<ViewerRoomConnection | null>(null);
+  const connectionErrorCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!p || p.canvasFallback) return;
+    const conn = new ViewerRoomConnection({
+      windowLabel: `screen-share-${p.participantId}`,
+      onConnectionError: () => {
+        connectionErrorCountRef.current += 1;
+        setDebugInfo(`viewer: connect failed (attempt ${connectionErrorCountRef.current}) — retrying`);
+        // Surface the error UI only after sustained failure; the connection
+        // keeps retrying with backoff either way.
+        if (connectionErrorCountRef.current >= 3) {
+          setError('connection failed');
+        }
+      },
+    });
+    connRef.current = conn;
+    return () => {
+      conn.dispose();
+      connRef.current = null;
+    };
+  }, [p]);
+
+  // Dead video track: the subscriber transport is broken — rebuild the viewer
+  // Room, then bump retryCount so the watch effect re-registers cleanly.
+  const handleDeadTrack = useCallback(() => {
+    connRef.current?.forceReconnect();
+    triggerReconnect();
+  }, [triggerReconnect]);
+
+  /* ── Receive stream via direct LiveKit subscription (primary) or
        listen for screen_share_frame events directly (canvas fallback) ── */
 
   useEffect(() => {
     if (!p) return;
     let cancelled = false;
+
+    // Native frame events and polling commands are keyed by LiveKit identity,
+    // which on newer backends differs from the signaling participantId.
+    const nativeIdentity = p.liveKitIdentity ?? p.participantId;
 
     if (p.canvasFallback) {
       setMjpegUrl(null);
@@ -128,8 +169,8 @@ export default function ScreenSharePage() {
       setDebugInfo('canvas-fallback: listening');
       const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
         if (cancelled) return Promise.resolve(false);
-        // If identity is present (Linux path), filter by participant
-        if (payload.identity && payload.identity !== p.participantId) return Promise.resolve(false);
+        // If identity is present (Linux path), filter by LiveKit identity
+        if (payload.identity && payload.identity !== nativeIdentity) return Promise.resolve(false);
 
         frameCount++;
         if (frameCount <= 3 || frameCount % 30 === 0) {
@@ -168,7 +209,7 @@ export default function ScreenSharePage() {
         if (cancelled || mjpegActive) return;
         try {
           const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
-            identity: p.participantId,
+            identity: nativeIdentity,
             lastSeq,
           });
           if (frame && !cancelled) {
@@ -185,7 +226,7 @@ export default function ScreenSharePage() {
       };
       pollFrameId = requestAnimationFrame(pollLatestFrame);
 
-      invoke<string>('media_get_screen_share_stream_url', { identity: p.participantId })
+      invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
         .then((url) => {
           if (cancelled) return;
           mjpegActive = true;
@@ -225,63 +266,62 @@ export default function ScreenSharePage() {
       };
     }
 
-    // Primary path: receive stream via WebRTC loopback bridge
-    setDebugInfo('bridge: connecting...');
-    startReceiving(p.participantId, `screen-share-${p.participantId}`, () => {
-      if (!cancelled) {
-        console.warn('[wavis:screen-share] bridge connection failed, triggering reconnect');
-        triggerReconnect();
+    // Primary path: subscribe to the sharer's ScreenShare track over this
+    // window's own LiveKit viewer connection (no loopback bridge, no re-encode).
+    const conn = connRef.current;
+    if (!conn) return;
+    setDebugInfo('viewer: connecting...');
+
+    let debugCleanup: (() => void) | null = null;
+    const unwatch = conn.watch(nativeIdentity, (s) => {
+      if (cancelled) return;
+      debugCleanup?.();
+      debugCleanup = null;
+
+      if (!s) {
+        setDebugInfo('viewer: stream ended — waiting for restart');
+        setStream(null);
+        return;
       }
-    })
-      .then((s) => {
-        if (!cancelled) {
-          void emitTo('main', 'screen-share-viewer:ready', {
-            participantId: p.participantId,
-            windowLabel: `screen-share-${p.participantId}`,
-          });
-          void emit('viewer-subscribed', { targetId: p.participantId });
-          const tracks = s.getVideoTracks();
-          const vt = tracks[0];
-          const updateDebug = () => {
-            if (cancelled || !vt) return;
-            setDebugInfo(
-              `bridge: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`,
-            );
-          };
-          updateDebug();
-          // Poll track state every second to detect muted→unmuted transitions
-          const pollId = setInterval(updateDebug, 1000);
-          // Also listen for unmute event
-          if (vt) {
-            vt.addEventListener('unmute', updateDebug);
-            vt.addEventListener('mute', updateDebug);
-          }
-          // Store cleanup in a ref-accessible way via the cancelled flag
-          const origCancel = () => {
-            clearInterval(pollId);
-            if (vt) {
-              vt.removeEventListener('unmute', updateDebug);
-              vt.removeEventListener('mute', updateDebug);
-            }
-          };
-          // Attach to the stream so the cleanup effect can find it
-          (s as unknown as Record<string, unknown>).__debugCleanup = origCancel;
-          setStream(s);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          const msg = err instanceof Error ? err.message : 'Failed to receive stream';
-          setDebugInfo(`bridge: error — ${msg}`);
-          setError(msg);
-        }
+
+      connectionErrorCountRef.current = 0;
+      setError(null);
+      void emitTo('main', 'screen-share-viewer:ready', {
+        participantId: p.participantId,
+        windowLabel: `screen-share-${p.participantId}`,
       });
+      void emit('viewer-subscribed', { targetId: p.participantId });
+
+      const vt = s.getVideoTracks()[0];
+      const updateDebug = () => {
+        if (cancelled || !vt) return;
+        setDebugInfo(
+          `viewer: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`,
+        );
+      };
+      updateDebug();
+      // Poll track state every second to detect muted→unmuted transitions
+      const pollId = setInterval(updateDebug, 1000);
+      if (vt) {
+        vt.addEventListener('unmute', updateDebug);
+        vt.addEventListener('mute', updateDebug);
+      }
+      debugCleanup = () => {
+        clearInterval(pollId);
+        if (vt) {
+          vt.removeEventListener('unmute', updateDebug);
+          vt.removeEventListener('mute', updateDebug);
+        }
+      };
+      setStream(s);
+    });
 
     return () => {
       cancelled = true;
-      stopReceiving();
+      debugCleanup?.();
+      unwatch();
     };
-  }, [p, retryCount, triggerReconnect]); // retryCount increments trigger a fresh bridge connection
+  }, [p, retryCount]); // retryCount increments re-register the watch
 
   // Attach stream to video element
   useEffect(() => {
@@ -295,7 +335,7 @@ export default function ScreenSharePage() {
     videoRef,
     stream,
     onFrameDetected: markFrameRendered,
-    onDeadTrack: triggerReconnect,
+    onDeadTrack: handleDeadTrack,
     onReattach: markFrameRendered,
   });
 

@@ -146,6 +146,11 @@ pub enum SignalingMessage {
     RoomState(RoomStatePayload),
     /// Server -> client SFU token and endpoint for media-plane access.
     MediaToken(MediaTokenPayload),
+    /// Client -> server request for a subscribe-only hidden viewer token
+    /// used by child viewer windows to connect directly to the SFU.
+    RequestViewerToken(RequestViewerTokenPayload),
+    /// Server -> requester response carrying the viewer token.
+    ViewerToken(ViewerTokenPayload),
     // Action messages (client → server)
     /// Client -> server moderation request to remove a participant.
     KickParticipant(KickParticipantPayload),
@@ -548,6 +553,33 @@ pub struct MediaTokenPayload {
     /// SFU base URL the client should connect to for media transport.
     #[serde(rename = "sfuUrl")]
     pub sfu_url: String,
+}
+
+/// Client requests a subscribe-only hidden viewer token for a child viewer
+/// window. The `window_id` is a client-generated correlation token; the
+/// server derives the viewer identity from the requester's session, never
+/// from the payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RequestViewerTokenPayload {
+    /// Client-generated per-window-instance correlation id
+    /// (charset `[A-Za-z0-9_-]`, max 32 chars).
+    #[serde(rename = "windowId")]
+    pub window_id: String,
+}
+
+/// Server response to `RequestViewerToken`, sent to the requester only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ViewerTokenPayload {
+    /// Echo of the request's window id for client-side correlation.
+    #[serde(rename = "windowId")]
+    pub window_id: String,
+    /// Subscribe-only, hidden LiveKit token for the requester's room.
+    pub token: String,
+    /// SFU base URL the viewer window should connect to.
+    #[serde(rename = "sfuUrl")]
+    pub sfu_url: String,
+    /// Full viewer identity the token was issued for.
+    pub identity: String,
 }
 
 // --- Action message payloads (client → server) ---

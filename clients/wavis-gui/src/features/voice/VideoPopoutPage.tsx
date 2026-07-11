@@ -123,7 +123,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
       const command = tile.isSelf ? 'media_poll_local_camera_frame' : 'media_poll_camera_frame';
       const args = tile.isSelf
         ? { lastSeq }
-        : { identity: tile.participantId, lastSeq };
+        : { identity: tile.liveKitIdentity ?? tile.participantId, lastSeq };
       invoke<PolledCameraFrame | null>(command, args)
         .then((payload) => {
           if (!payload || stopped) return;
@@ -145,7 +145,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
       stopped = true;
       clearInterval(id);
     };
-  }, [nativeFallbackActive, shouldReceive, tile.isSelf, tile.participantId]);
+  }, [nativeFallbackActive, shouldReceive, tile.isSelf, tile.participantId, tile.liveKitIdentity]);
 
   const showVideo = shouldReceive && stream && !receiverError;
   const showNativeFallback = shouldReceive && nativeFallbackActive;
