@@ -40,17 +40,9 @@ const RULES = [
 ];
 
 // file (repo-relative, forward slashes) -> pattern source -> allowed count.
-// Every entry needs a reason and a removal intent.
-const BASELINE = {
-  // ws_dispatch.rs Auth arm performs JWT validation, session-epoch check, and
-  // a direct sqlx query. Known layering leak; extract into the auth domain
-  // layer when ws_dispatch.rs is refactored (tracked hotspot, ~3.7k lines).
-  'wavis-backend/src/ws/ws_dispatch.rs': {
-    'sqlx::': 1,
-    'jwt::validate_[a-z_]*\\(': 1,
-    'auth::check_session_epoch\\(': 1,
-  },
-};
+// Every entry needs a reason and a removal intent. Currently empty — the
+// ws_dispatch.rs auth-arm leaks were extracted into auth::authenticate_access_token.
+const BASELINE = {};
 
 function rustFilesUnder(dir) {
   const out = [];

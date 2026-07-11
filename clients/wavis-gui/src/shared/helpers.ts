@@ -6,7 +6,7 @@
 import type { ChannelRole } from '@features/channels/channels';
 import type { ApiErrorKind } from './api';
 import type { ChannelMember } from '@features/channels/channel-detail';
-import type { RoomEventType } from '@features/voice/voice-room';
+import type { RoomEventType } from '@features/voice/chat-display-model';
 import type { NotificationToggles } from '@features/settings/settings-store';
 
 // ─── Auth helpers ──────────────────────────────────────────────────

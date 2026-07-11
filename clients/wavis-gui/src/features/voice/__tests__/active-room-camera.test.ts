@@ -97,7 +97,7 @@ describe('Feature: video-feed — button label (Req 1.7, 1.8)', () => {
 
 /* ─── Panel tab defaults ────────────────────────────────────────── */
 
-import { computeRoomPanelTab } from '../voice-room';
+import { computeRoomPanelTab } from '../video-tile-model';
 
 describe('Feature: video-feed — Logs_Tab is default and resets (Req 3.1, 3.6, 3.8)', () => {
   it('defaults to logs when no video is active', () => {

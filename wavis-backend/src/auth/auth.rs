@@ -103,6 +103,35 @@ pub async fn check_session_epoch(
     }
 }
 
+/// Fully authenticate a bearer access token: JWT signature/claims (with key
+/// rotation), device revocation status, and session epoch against the DB.
+///
+/// The single auth entry point shared by the REST extractor and the WS Auth
+/// arm — transport layers must map any `Err` to the same opaque failure
+/// response (they may log the variant, but never send it to the client).
+///
+/// Returns `(user_id, device_id)` on success.
+pub async fn authenticate_access_token(
+    pool: &sqlx::PgPool,
+    secret: &[u8],
+    previous_secret: Option<&[u8]>,
+    token: &str,
+) -> Result<(Uuid, Uuid), AuthError> {
+    let (user_id, device_id, token_epoch) =
+        crate::auth::jwt::validate_access_token_with_rotation(token, secret, previous_secret)?;
+
+    let device_active = device::is_device_active(pool, device_id)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+    if !device_active {
+        return Err(AuthError::DeviceRevoked);
+    }
+
+    check_session_epoch(pool, &user_id, token_epoch).await?;
+
+    Ok((user_id, device_id))
+}
+
 /// Generate a cryptographically random refresh token (256-bit, base64url-encoded, no padding).
 pub fn generate_refresh_token() -> String {
     let mut bytes = [0u8; 32];

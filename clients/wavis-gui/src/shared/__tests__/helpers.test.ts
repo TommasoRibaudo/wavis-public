@@ -448,7 +448,7 @@ describe('Property 14: Connection mode badge visibility gated by showSecrets', (
 // **Validates: Requirements 8.1, 8.2, 8.5, 8.6**
 
 import { toastMessageForEvent, toastColorForEvent, eventToToggleKey } from '../helpers';
-import type { RoomEventType } from '@features/voice/voice-room';
+import type { RoomEventType } from '@features/voice/chat-display-model';
 
 describe('Property 3: Toast message contains display name and correct verb', () => {
   const toastableEvents: Array<{ type: RoomEventType; verb: string }> = [
