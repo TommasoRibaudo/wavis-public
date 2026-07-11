@@ -72,7 +72,7 @@ jobs:
       screen: ${{ steps.filter.outputs.screen }}
       core: ${{ steps.filter.outputs.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -143,7 +143,7 @@ jobs:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install gitleaks
@@ -167,7 +167,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
@@ -263,7 +263,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -358,7 +358,7 @@ jobs:
       AUTH_JWT_SECRET: ci-auth-secret-at-least-32-bytes!!
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml

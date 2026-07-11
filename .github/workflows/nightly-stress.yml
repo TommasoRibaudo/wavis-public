@@ -19,7 +19,7 @@ jobs:
       SFU_JWT_SECRET: ci-dummy-secret-at-least-32-bytes!!
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
