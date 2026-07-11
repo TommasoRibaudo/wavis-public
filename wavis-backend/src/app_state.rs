@@ -243,6 +243,14 @@ impl AppState {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(50);
 
+        #[cfg(not(windows))]
+        let ec2_controller = std::env::var("LIVEKIT_EC2_INSTANCE_ID")
+            .ok()
+            .map(|id| Arc::new(Ec2InstanceController::new(id)));
+
+        #[cfg(windows)]
+        let ec2_controller = None;
+
         Self {
             room_state: Arc::new(InMemoryRoomState::new()),
             connections: Arc::new(LiveConnections::new()),
@@ -253,9 +261,7 @@ impl AppState {
             sfu_room_manager,
             sfu_signaling_proxy,
             sfu_url,
-            ec2_controller: std::env::var("LIVEKIT_EC2_INSTANCE_ID")
-                .ok()
-                .map(|id| Arc::new(Ec2InstanceController::new(id))),
+            ec2_controller,
             pending_shutdown: Arc::new(AtomicBool::new(false)),
             invite_store,
             join_rate_limiter,

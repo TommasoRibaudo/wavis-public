@@ -5,6 +5,8 @@
 //! JS SDK. The interface mirrors LiveKitModule's shape so voice-room.ts can
 //! swap transparently.
 
+#[cfg(target_os = "windows")]
+use serde::Deserialize;
 use serde::Serialize;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -42,6 +44,19 @@ use crate::screen_capture;
 const LOG: &str = "[wavis:native-media]";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsScreenShareStartSourceRequest {
+    source_id: String,
+    share_session_id: Option<String>,
+    source_kind: Option<String>,
+    capture_backend: Option<String>,
+    compatibility_mode: Option<bool>,
+    previous_backend: Option<String>,
+    retry_reason: Option<String>,
+}
 
 #[cfg(target_os = "windows")]
 fn unix_now_ms() -> u64 {
@@ -2644,13 +2659,7 @@ pub fn screen_share_start_source(
 #[tauri::command]
 #[cfg(target_os = "windows")]
 pub fn screen_share_start_source(
-    source_id: String,
-    share_session_id: Option<String>,
-    source_kind: Option<String>,
-    capture_backend: Option<String>,
-    compatibility_mode: Option<bool>,
-    previous_backend: Option<String>,
-    retry_reason: Option<String>,
+    request: WindowsScreenShareStartSourceRequest,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
@@ -2660,6 +2669,16 @@ pub fn screen_share_start_source(
         WinCapture, WinCaptureConfig, WinCaptureSourceKind, WindowsNativeCaptureDiagnostics,
     };
     use screen_capture::ScreenCapture;
+
+    let WindowsScreenShareStartSourceRequest {
+        source_id,
+        share_session_id,
+        source_kind,
+        capture_backend,
+        compatibility_mode,
+        previous_backend,
+        retry_reason,
+    } = request;
 
     let source_kind = parse_windows_source_kind(source_kind.as_deref())?;
     let capture_backend = select_windows_capture_backend(
@@ -2939,13 +2958,15 @@ pub fn screen_share_start_source(
                 let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
                 if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
                     diag_guard.record_pollable_frame_timing(
-                        cap_downscale_ms,
-                        i420_convert_ms,
-                        0,
-                        0,
-                        0,
-                        i420_write_ms,
-                        raw_to_pollable_frame_ms,
+                        screen_capture::win_capture::PollableFrameTiming {
+                            cap_downscale_ms,
+                            i420_convert_ms,
+                            rgba_to_rgb_ms: 0,
+                            jpeg_encode_ms: 0,
+                            base64_encode_ms: 0,
+                            latest_frame_write_ms: i420_write_ms,
+                            raw_to_pollable_frame_ms,
+                        },
                     );
                 }
                 if let Ok(mut leak_guard) = native_share_leak_session.lock() {
@@ -3069,13 +3090,15 @@ pub fn screen_share_start_source(
             let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
             if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
                 diag_guard.record_pollable_frame_timing(
-                    cap_downscale_ms,
-                    i420_convert_ms,
-                    rgba_to_rgb_ms,
-                    jpeg_encode_ms,
-                    base64_encode_ms,
-                    latest_frame_write_ms,
-                    raw_to_pollable_frame_ms,
+                    screen_capture::win_capture::PollableFrameTiming {
+                        cap_downscale_ms,
+                        i420_convert_ms,
+                        rgba_to_rgb_ms,
+                        jpeg_encode_ms,
+                        base64_encode_ms,
+                        latest_frame_write_ms,
+                        raw_to_pollable_frame_ms,
+                    },
                 );
             }
             let mut first_pollable_elapsed_ms = raw_to_pollable_frame_ms;
@@ -4057,6 +4080,11 @@ mod windows_capture_routing_tests {
         let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
             "wgc", "screen", 1920, 1080,
         )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("first_frame_arrived", "FrameArrived callback", 10);
+            diag.frame_arrived_callbacks = 1;
+        }
         let latest_i420_for_thread = latest_i420_frame.clone();
         let writer = thread::spawn(move || {
             thread::sleep(Duration::from_millis(15));

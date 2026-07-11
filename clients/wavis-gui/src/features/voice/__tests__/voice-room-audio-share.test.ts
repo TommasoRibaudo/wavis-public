@@ -33,7 +33,10 @@ let sentMessages: Array<Record<string, unknown>>;
 let messageHandler: ((msg: unknown) => void) | null;
 
 /** Tracks invoke calls — key is command name, value is array of arg objects. */
-let invokeCalls: Array<{ command: string; args?: Record<string, unknown> }>;
+type MockInvokeArgs = Record<string, unknown> & {
+  request?: Record<string, unknown>;
+};
+let invokeCalls: Array<{ command: string; args?: MockInvokeArgs }>;
 let tauriListeners: Map<string, Set<(event: { payload: unknown }) => void>>;
 
 /** When set, invoke('audio_share_start') will reject with this error. */
@@ -613,11 +616,13 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(invokeCalls.filter((call) => call.command === 'screen_share_start_source')).toEqual([
       {
         command: 'screen_share_start_source',
-        args: expect.objectContaining({
-          sourceId: 'screen-1',
-          sourceKind: 'screen',
-          captureBackend: 'wgc',
-        }),
+        args: {
+          request: expect.objectContaining({
+            sourceId: 'screen-1',
+            sourceKind: 'screen',
+            captureBackend: 'wgc',
+          }),
+        },
       },
     ]);
     expect(invokeCalls).toContainEqual({
@@ -747,10 +752,11 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(
       invokeCalls
         .filter((call) => call.command === 'screen_share_start_source')
-        .map((call) => call.args?.captureBackend),
+        .map((call) => call.args?.request?.captureBackend),
     ).toEqual(['wgc', 'gdi_poll']);
     expect(
-      invokeCalls.filter((call) => call.command === 'screen_share_start_source').at(-1)?.args,
+      invokeCalls.filter((call) => call.command === 'screen_share_start_source').at(-1)?.args
+        ?.request,
     ).toEqual(
       expect.objectContaining({
         previousBackend: 'wgc',
@@ -813,7 +819,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(
       invokeCalls
         .filter((call) => call.command === 'screen_share_start_source')
-        .map((call) => call.args?.captureBackend),
+        .map((call) => call.args?.request?.captureBackend),
     ).toEqual(['wgc', 'wgc', 'wgc']);
   });
 
@@ -839,7 +845,9 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(invokeCalls.filter((call) => call.command === 'screen_share_start_source')).toEqual([
       {
         command: 'screen_share_start_source',
-        args: expect.objectContaining({ sourceKind: 'window', captureBackend: 'gdi_poll' }),
+        args: {
+          request: expect.objectContaining({ sourceKind: 'window', captureBackend: 'gdi_poll' }),
+        },
       },
     ]);
   });
