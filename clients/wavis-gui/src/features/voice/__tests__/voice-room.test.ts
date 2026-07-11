@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   computeSpeaking,
   updateSpeakingTracker,
-  colorFor,
   computeEffectiveParticipantVolume,
   TERMINAL_COLORS,
   RMS_START_THRESHOLD,
@@ -10,6 +9,7 @@ import {
   SPEAKING_DEBOUNCE_FRAMES,
   MAX_EVENTS,
 } from '../voice-room';
+import { colorFor } from '../chat-display-model';
 
 describe('computeSpeaking', () => {
   it('returns true when RMS above start threshold and not currently speaking', () => {
@@ -448,17 +448,16 @@ describe('Property 15: Hotkey not registered when no voice session', () => {
   });
 });
 
+import { sendChatMessage, leaveRoom } from '../voice-room';
 import {
-  sendChatMessage,
   MAX_CHAT_MESSAGES,
-  leaveRoom,
   computeSinceCursor,
   buildChatDisplayItems,
   buildRoomEventDisplayItems,
   shouldPlayChatNotification,
   resolveChatMessageDisplayColor,
-} from '../voice-room';
-import type { ChatMessage, RoomEvent } from '../voice-room';
+} from '../chat-display-model';
+import type { ChatMessage, RoomEvent } from '../chat-display-model';
 
 /* ═══ Ephemeral Room Chat — Client Property Tests ═══════════════════ */
 
@@ -1088,7 +1087,7 @@ describe('Property 5: Client since cursor derivation', () => {
   });
 });
 
-import { mergeHistoryMessages } from '../voice-room';
+import { mergeHistoryMessages } from '../chat-display-model';
 
 /* ═══ Feature: chat-history-persistence, Property 6: Client merge, dedup, and cap ═══ */
 // **Validates: Requirements 3.4, 4.1, 4.3**

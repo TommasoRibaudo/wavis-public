@@ -10,12 +10,12 @@ import {
 } from '../livekit-media';
 import {
   buildVideoTilesById,
-  colorFor,
   computeRoomPanelTab,
   screenShareActiveInRoom,
   type RoomParticipant,
   type VoiceRoomState,
 } from '../voice-room';
+import { colorFor } from '../chat-display-model';
 
 function makeParticipant(id: string, overrides?: Partial<RoomParticipant>): RoomParticipant {
   return {

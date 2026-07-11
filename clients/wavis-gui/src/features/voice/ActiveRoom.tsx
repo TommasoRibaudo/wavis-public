@@ -9,10 +9,15 @@ import type {
   VoiceRoomState,
   VoiceRoomMachineState,
   RoomParticipant,
-  RoomEventType,
-  RoomEvent,
   ShareQuality,
 } from './voice-room';
+import {
+  buildChatDisplayItems,
+  buildRoomEventDisplayItems,
+  resolveChatMessageDisplayColor,
+  type RoomEvent,
+  type RoomEventType,
+} from './chat-display-model';
 import type { MediaState } from './livekit-media';
 import {
   initSession,
@@ -54,9 +59,6 @@ import {
   startFallbackShare,
   startPortalShare,
   setPendingSharePickerData,
-  buildChatDisplayItems,
-  buildRoomEventDisplayItems,
-  resolveChatMessageDisplayColor,
   preserveVideoShareSelectionForSourceChange,
   liveKitIdentityForParticipant,
 } from './voice-room';
