@@ -56,10 +56,10 @@ function parseHashData(): { enumResult: EnumerationResult | null; occupied: Occu
     const data = JSON.parse(raw);
     const result: EnumerationResult | null = data.enumResult
       ? {
-        sources: Array.isArray(data.enumResult.sources) ? data.enumResult.sources : [],
-        warnings: Array.isArray(data.enumResult.warnings) ? data.enumResult.warnings : [],
-        fallback_reason: data.enumResult.fallback_reason ?? null,
-      }
+          sources: Array.isArray(data.enumResult.sources) ? data.enumResult.sources : [],
+          warnings: Array.isArray(data.enumResult.warnings) ? data.enumResult.warnings : [],
+          fallback_reason: data.enumResult.fallback_reason ?? null,
+        }
       : null;
     const occupied: OccupiedSlots = {
       videoOccupied: data.occupied?.videoOccupied ?? false,
@@ -72,10 +72,7 @@ function parseHashData(): { enumResult: EnumerationResult | null; occupied: Occu
 }
 
 /** Filter sources by mode. */
-export function filterSourcesByMode(
-  sources: ShareSource[],
-  mode: ShareMode,
-): ShareSource[] {
+export function filterSourcesByMode(sources: ShareSource[], mode: ShareMode): ShareSource[] {
   const entry = MODES.find((m) => m.key === mode);
   if (!entry) return [];
   return sources.filter((s) => s.source_type === entry.sourceType);
@@ -124,8 +121,8 @@ export function pickInitialMode(sources: ShareSource[], occupied: OccupiedSlots)
   for (const allowPortal of [false, true]) {
     for (const m of MODES) {
       const blocked = m.key === 'audio_only' ? occupied.audioOccupied : occupied.videoOccupied;
-      const hasSource = sources.some((s) =>
-        s.source_type === m.sourceType && (allowPortal || !isPortalSource(s)),
+      const hasSource = sources.some(
+        (s) => s.source_type === m.sourceType && (allowPortal || !isPortalSource(s)),
       );
       if (!blocked && hasSource) {
         return m.key;
@@ -156,7 +153,9 @@ export function hasEchoWarning(warnings: string[]): boolean {
 }
 
 /** Pure helper: should the portal fallback button be visible? */
-export function shouldShowPortalFallback(fallbackReason: EnumerationResult['fallback_reason']): boolean {
+export function shouldShowPortalFallback(
+  fallbackReason: EnumerationResult['fallback_reason'],
+): boolean {
   return fallbackReason === 'portal';
 }
 
@@ -195,7 +194,9 @@ function ModeTab({
             ? 'border-wavis-accent text-wavis-accent'
             : 'border-transparent text-wavis-text-secondary hover:text-wavis-text',
       ].join(' ')}
-      onClick={() => { if (!disabled) onSelect(mode); }}
+      onClick={() => {
+        if (!disabled) onSelect(mode);
+      }}
       onKeyDown={(e) => {
         if (disabled) return;
         if (e.key === 'ArrowRight') {
@@ -209,7 +210,8 @@ function ModeTab({
         }
       }}
     >
-      {label}{disabled ? ' (active)' : ''}
+      {label}
+      {disabled ? ' (active)' : ''}
     </button>
   );
 }
@@ -295,9 +297,7 @@ function SourceItem({
           </div>
         )}
       </div>
-      {selected && (
-        <span className="text-wavis-accent text-sm shrink-0">▸</span>
-      )}
+      {selected && <span className="text-wavis-accent text-sm shrink-0">▸</span>}
     </div>
   );
 }
@@ -311,9 +311,7 @@ export default function SharePicker(props: SharePickerProps) {
   /* ── State ── */
   const [parsed, setParsed] = useState(() => (isInline ? null : parseHashData()));
 
-  const enumResult = isInline
-    ? (props.enumResult ?? null)
-    : (parsed?.enumResult ?? null);
+  const enumResult = isInline ? (props.enumResult ?? null) : (parsed?.enumResult ?? null);
 
   const occupied: OccupiedSlots = isInline
     ? (props.occupied ?? { videoOccupied: false, audioOccupied: false })
@@ -321,16 +319,22 @@ export default function SharePicker(props: SharePickerProps) {
 
   const initPickerSources = withPortalFallbackSources(enumResult);
   const modeScope = props.modeScope ?? 'all';
-  const initialMode = modeScope === 'video_only'
-    ? pickInitialVideoMode(initPickerSources, occupied)
-    : pickInitialMode(initPickerSources, occupied);
+  const initialMode =
+    modeScope === 'video_only'
+      ? pickInitialVideoMode(initPickerSources, occupied)
+      : pickInitialMode(initPickerSources, occupied);
 
   const [activeMode, setActiveMode] = useState<ShareMode>(() =>
     initPickerSources.length > 0 ? initialMode : 'screen_audio',
   );
   const [selectedSource, setSelectedSource] = useState<ShareSource | null>(null);
-  const [withAudio, setWithAudio] = useState<boolean>(() =>
-    props.initialWithAudio ?? defaultWithAudioForMode(initPickerSources.length > 0 ? initialMode : 'screen_audio', occupied),
+  const [withAudio, setWithAudio] = useState<boolean>(
+    () =>
+      props.initialWithAudio ??
+      defaultWithAudioForMode(
+        initPickerSources.length > 0 ? initialMode : 'screen_audio',
+        occupied,
+      ),
   );
   // TODO(persistence): resets on each picker open; follow-up is to persist per-app in settings store keyed by app_name.
   const [compatibilityMode, setCompatibilityMode] = useState(false);
@@ -387,16 +391,31 @@ export default function SharePicker(props: SharePickerProps) {
       if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'fetching thumbnail for', source.id, source.name);
       invoke<string | null>('fetch_source_thumbnail', { sourceId: source.id })
         .then((thumb) => {
-          if (DEBUG_SCREEN_CAPTURE) console.log(LOG, 'thumbnail result for', source.id, thumb ? `${thumb.length} bytes` : 'null');
+          if (DEBUG_SCREEN_CAPTURE)
+            console.log(
+              LOG,
+              'thumbnail result for',
+              source.id,
+              thumb ? `${thumb.length} bytes` : 'null',
+            );
           if (!cancelled) {
-            setThumbnailsLoading((prev) => { const next = new Set(prev); next.delete(source.id); return next; });
+            setThumbnailsLoading((prev) => {
+              const next = new Set(prev);
+              next.delete(source.id);
+              return next;
+            });
             if (thumb) setThumbnails((prev) => ({ ...prev, [source.id]: thumb }));
           }
         })
         .catch((err: unknown) => {
-          if (DEBUG_SCREEN_CAPTURE) console.error(LOG, 'thumbnail fetch failed for', source.id, err);
+          if (DEBUG_SCREEN_CAPTURE)
+            console.error(LOG, 'thumbnail fetch failed for', source.id, err);
           if (!cancelled) {
-            setThumbnailsLoading((prev) => { const next = new Set(prev); next.delete(source.id); return next; });
+            setThumbnailsLoading((prev) => {
+              const next = new Set(prev);
+              next.delete(source.id);
+              return next;
+            });
           }
         });
     }
@@ -417,7 +436,10 @@ export default function SharePicker(props: SharePickerProps) {
   // Disable system audio checkbox when an audio-only share is already occupying the audio device.
   const audioCheckboxDisabled = occupied.audioOccupied || modeScope === 'video_only';
   const canShare = selectedSource !== null;
-  const showFallback = enumResult !== null && shouldShowPortalFallback(enumResult.fallback_reason) && filteredSources.length === 0;
+  const showFallback =
+    enumResult !== null &&
+    shouldShowPortalFallback(enumResult.fallback_reason) &&
+    filteredSources.length === 0;
   const isEmpty = filteredSources.length === 0 && !showFallback;
   const echoWarningActive = hasEchoWarning(warnings);
 
@@ -457,10 +479,13 @@ export default function SharePicker(props: SharePickerProps) {
   );
 
   /* ── Source selection ── */
-  const handleSourceSelect = useCallback((source: ShareSource) => {
-    setSelectedSource(source);
-    activeIndexRef.current = filteredSources.findIndex((s) => s.id === source.id);
-  }, [filteredSources]);
+  const handleSourceSelect = useCallback(
+    (source: ShareSource) => {
+      setSelectedSource(source);
+      activeIndexRef.current = filteredSources.findIndex((s) => s.id === source.id);
+    },
+    [filteredSources],
+  );
 
   /* ── Arrow key navigation in source list ── */
   const handleListKeyDown = useCallback(
@@ -547,10 +572,12 @@ export default function SharePicker(props: SharePickerProps) {
 
   /* ── Picker content (shared between inline and standalone) ── */
   const pickerContent = (
-    <div className={[
-      'flex flex-col bg-wavis-bg font-mono text-wavis-text select-none',
-      isInline ? 'h-full' : 'min-h-screen',
-    ].join(' ')}>
+    <div
+      className={[
+        'flex flex-col bg-wavis-bg font-mono text-wavis-text select-none',
+        isInline ? 'h-full' : 'min-h-screen',
+      ].join(' ')}
+    >
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-wavis-text-secondary">
         <span className="text-sm text-wavis-accent">▲ Share Picker</span>
@@ -599,9 +626,7 @@ export default function SharePicker(props: SharePickerProps) {
           </div>
         ) : showFallback ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
-            <span className="text-sm text-wavis-warn">
-              ⚠ Direct access unavailable
-            </span>
+            <span className="text-sm text-wavis-warn">⚠ Direct access unavailable</span>
             <button
               onClick={handlePortalFallback}
               className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1 focus:outline focus:outline-2 focus:outline-wavis-accent"
@@ -614,9 +639,7 @@ export default function SharePicker(props: SharePickerProps) {
             ref={listboxRef}
             role="listbox"
             aria-label="Available sources"
-            aria-activedescendant={
-              selectedSource ? `source-${selectedSource.id}` : undefined
-            }
+            aria-activedescendant={selectedSource ? `source-${selectedSource.id}` : undefined}
             tabIndex={0}
             onKeyDown={handleListKeyDown}
             className={[
@@ -637,7 +660,13 @@ export default function SharePicker(props: SharePickerProps) {
                   resolvedThumbnail={thumbnails[source.id]}
                   isThumbnailLoading={thumbnailsLoading.has(source.id)}
                   showEchoWarning={echoWarningActive && source.source_type === 'system_audio'}
-                  onThumbnailError={() => setThumbnails((prev) => { const next = { ...prev }; delete next[source.id]; return next; })}
+                  onThumbnailError={() =>
+                    setThumbnails((prev) => {
+                      const next = { ...prev };
+                      delete next[source.id];
+                      return next;
+                    })
+                  }
                 />
               </div>
             ))}
@@ -658,11 +687,7 @@ export default function SharePicker(props: SharePickerProps) {
                 className="accent-wavis-accent focus:outline focus:outline-2 focus:outline-wavis-accent disabled:opacity-40"
               />
               <span
-                className={
-                  audioCheckboxDisabled
-                    ? 'text-wavis-text-secondary'
-                    : 'text-wavis-text'
-                }
+                className={audioCheckboxDisabled ? 'text-wavis-text-secondary' : 'text-wavis-text'}
               >
                 System audio
               </span>
@@ -694,7 +719,8 @@ export default function SharePicker(props: SharePickerProps) {
                   sideOffset={6}
                   className="max-w-72 border border-wavis-text-secondary bg-wavis-panel text-wavis-text shadow-lg"
                 >
-                  Use this for games or apps that show a black screen, missing cursor, or fail to capture with the default method.
+                  Use this for games or apps that show a black screen, missing cursor, or fail to
+                  capture with the default method.
                 </TooltipContent>
               </Tooltip>
             </div>

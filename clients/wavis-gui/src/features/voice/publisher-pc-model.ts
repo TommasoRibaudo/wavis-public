@@ -40,31 +40,39 @@ function nextTrackId(trackKind: PublisherPcTrackKind, publishCount: number): str
 }
 
 function strandedSendersFor(transceivers: PublisherPcTransceiver[]): number {
-  return transceivers.filter((transceiver) =>
-    transceiver.senderTrackId === null
-    && (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
-    && !transceiver.stopped,
+  return transceivers.filter(
+    (transceiver) =>
+      transceiver.senderTrackId === null &&
+      (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv') &&
+      !transceiver.stopped,
   ).length;
 }
 
-function findActiveIndex(transceivers: PublisherPcTransceiver[], trackKind: PublisherPcTrackKind): number {
-  return transceivers.findIndex((transceiver) =>
-    transceiver.slotKind === trackKind
-    && transceiver.senderTrackId !== null
-    && !transceiver.stopped,
+function findActiveIndex(
+  transceivers: PublisherPcTransceiver[],
+  trackKind: PublisherPcTrackKind,
+): number {
+  return transceivers.findIndex(
+    (transceiver) =>
+      transceiver.slotKind === trackKind &&
+      transceiver.senderTrackId !== null &&
+      !transceiver.stopped,
   );
 }
 
-function clearTrack(transceivers: PublisherPcTransceiver[], trackKind: PublisherPcTrackKind): PublisherPcTransceiver[] {
-  return transceivers.map((transceiver) => (
+function clearTrack(
+  transceivers: PublisherPcTransceiver[],
+  trackKind: PublisherPcTrackKind,
+): PublisherPcTransceiver[] {
+  return transceivers.map((transceiver) =>
     transceiver.slotKind === trackKind && !transceiver.stopped
       ? {
           ...transceiver,
           senderTrackId: null,
           direction: 'inactive',
         }
-      : transceiver
-  ));
+      : transceiver,
+  );
 }
 
 export function applyReuse(
@@ -72,11 +80,12 @@ export function applyReuse(
   trackKind: PublisherPcTrackKind,
 ): { transceivers: PublisherPcTransceiver[]; reusedIndex: number | null } {
   const next = transceivers.map(cloneTransceiver);
-  const reusedIndex = next.findIndex((transceiver) =>
-    transceiver.slotKind === trackKind
-    && transceiver.direction === 'inactive'
-    && transceiver.senderTrackId === null
-    && !transceiver.stopped,
+  const reusedIndex = next.findIndex(
+    (transceiver) =>
+      transceiver.slotKind === trackKind &&
+      transceiver.direction === 'inactive' &&
+      transceiver.senderTrackId === null &&
+      !transceiver.stopped,
   );
 
   if (reusedIndex >= 0) {
@@ -113,15 +122,15 @@ export function publisherPcModel(operations: PublisherPcOperation[]): PublisherP
         const activeIndex = findActiveIndex(transceivers, operation.kind);
         if (activeIndex >= 0) {
           publishCount += 1;
-          transceivers = transceivers.map((transceiver, index) => (
+          transceivers = transceivers.map((transceiver, index) =>
             index === activeIndex
               ? {
                   ...transceiver,
                   senderTrackId: nextTrackId(operation.kind, publishCount),
                   direction: 'sendonly',
                 }
-              : cloneTransceiver(transceiver)
-          ));
+              : cloneTransceiver(transceiver),
+          );
           reusedIndex = activeIndex;
           break;
         }
@@ -129,15 +138,15 @@ export function publisherPcModel(operations: PublisherPcOperation[]): PublisherP
         const reuseResult = applyReuse(transceivers, operation.kind);
         publishCount += 1;
         reusedIndex = reuseResult.reusedIndex;
-        transceivers = reuseResult.transceivers.map((transceiver, index) => (
+        transceivers = reuseResult.transceivers.map((transceiver, index) =>
           index === reusedIndex
             ? {
                 ...transceiver,
                 senderTrackId: nextTrackId(operation.kind, publishCount),
                 direction: 'sendonly',
               }
-            : cloneTransceiver(transceiver)
-        ));
+            : cloneTransceiver(transceiver),
+        );
         break;
       }
       case 'unpublish': {
@@ -149,15 +158,15 @@ export function publisherPcModel(operations: PublisherPcOperation[]): PublisherP
         const reuseResult = applyReuse(transceivers, operation.kind);
         publishCount += 1;
         reusedIndex = reuseResult.reusedIndex;
-        transceivers = reuseResult.transceivers.map((transceiver, index) => (
+        transceivers = reuseResult.transceivers.map((transceiver, index) =>
           index === reusedIndex
             ? {
                 ...transceiver,
                 senderTrackId: nextTrackId(operation.kind, publishCount),
                 direction: 'sendonly',
               }
-            : cloneTransceiver(transceiver)
-        ));
+            : cloneTransceiver(transceiver),
+        );
         break;
       }
     }

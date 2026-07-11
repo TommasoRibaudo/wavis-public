@@ -91,7 +91,6 @@ describe('validateServerUrl', () => {
   });
 });
 
-
 /* ═══ Mocked Integration Tests ══════════════════════════════════════
  *
  * Tests below require mocks for Tauri store, keychain IPC, and tauriFetch.
@@ -105,13 +104,7 @@ describe('validateServerUrl', () => {
 let mockStore: Record<string, unknown> = {};
 let mockKeychain: Record<string, string> = {};
 let deleteTokenCalls: Array<{ key: string }> = [];
-let mockFetchBehavior:
-  | 'network_error'
-  | '401'
-  | '400'
-  | '429'
-  | '500'
-  | '200' = '200';
+let mockFetchBehavior: 'network_error' | '401' | '400' | '429' | '500' | '200' = '200';
 let mockRetryAfterHeader: string | null = null;
 
 /* ─── Module Mocks ──────────────────────────────────────────────── */
@@ -173,8 +166,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({
           ok: false,
           status: 429,
           headers: {
-            get: (key: string) =>
-              key === 'Retry-After' ? mockRetryAfterHeader : null,
+            get: (key: string) => (key === 'Retry-After' ? mockRetryAfterHeader : null),
           },
           json: async () => ({}),
         };
@@ -515,10 +507,7 @@ describe('refreshTokens RefreshResult mapping', () => {
     const auth = await import('../auth');
 
     // Call refreshTokens() twice concurrently
-    const [result1, result2] = await Promise.all([
-      auth.refreshTokens(),
-      auth.refreshTokens(),
-    ]);
+    const [result1, result2] = await Promise.all([auth.refreshTokens(), auth.refreshTokens()]);
 
     // Both should get the same result
     expect(result1.status).toBe('success');

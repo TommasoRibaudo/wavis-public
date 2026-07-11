@@ -19,10 +19,7 @@ describe('resolveInitialRedirect', () => {
 
   it('redirects to the saved channel when it is still accessible', () => {
     expect(
-      resolveInitialRedirect(
-        { id: 'channel-current', name: 'old name', role: 'owner' },
-        channels,
-      ),
+      resolveInitialRedirect({ id: 'channel-current', name: 'old name', role: 'owner' }, channels),
     ).toEqual({ kind: 'room', channel: channels[0] });
   });
 

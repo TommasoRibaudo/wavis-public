@@ -68,10 +68,11 @@ export async function analyzeBugReport(
   const body = {
     description,
     context: buildServerContext(context),
-    previous_answers: previousAnswers?.map((qa) => ({
-      question: qa.question,
-      answer: qa.answer,
-    })) ?? null,
+    previous_answers:
+      previousAnswers?.map((qa) => ({
+        question: qa.question,
+        answer: qa.answer,
+      })) ?? null,
   };
 
   // Try authenticated first, fall back to public (anonymous users)

@@ -233,7 +233,10 @@ impl RoomInfo {
     /// `false` when the peer already holds `MAX_VIEWER_IDENTITIES_PER_PEER`
     /// distinct identities — the caller must reject the request.
     pub fn record_viewer_identity(&mut self, peer_id: &str, identity: &str) -> bool {
-        let entries = self.viewer_identities.entry(peer_id.to_string()).or_default();
+        let entries = self
+            .viewer_identities
+            .entry(peer_id.to_string())
+            .or_default();
         if let Some(suffix) = identity.rfind("-vw-").map(|i| &identity[i..]) {
             entries.retain(|existing| !existing.ends_with(suffix));
         }

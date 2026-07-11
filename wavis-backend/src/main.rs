@@ -659,8 +659,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/admin/bug-report/bans/{user_id}",
-            post(diagnostics::admin_routes::ban_user)
-                .delete(diagnostics::admin_routes::unban_user),
+            post(diagnostics::admin_routes::ban_user).delete(diagnostics::admin_routes::unban_user),
         );
 
     if debug_routes_enabled {

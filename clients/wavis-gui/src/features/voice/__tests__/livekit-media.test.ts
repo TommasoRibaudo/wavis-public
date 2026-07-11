@@ -95,10 +95,15 @@ function createMockLocalParticipant() {
       sdkCalls.push({ method: 'setMicrophoneEnabled', args: [enabled, audioOptions] });
       if (micShouldReject) throw new Error(micRejectMsg);
     }),
-    setScreenShareEnabled: vi.fn(async (enabled: boolean, captureOpts?: unknown, publishOpts?: unknown) => {
-      sdkCalls.push({ method: 'setScreenShareEnabled', args: [enabled, captureOpts, publishOpts] });
-      return enabled;
-    }),
+    setScreenShareEnabled: vi.fn(
+      async (enabled: boolean, captureOpts?: unknown, publishOpts?: unknown) => {
+        sdkCalls.push({
+          method: 'setScreenShareEnabled',
+          args: [enabled, captureOpts, publishOpts],
+        });
+        return enabled;
+      },
+    ),
     getTrackPublication: vi.fn((source: string) => {
       for (const publication of trackPublications.values()) {
         if ((publication as { source?: string }).source === source) return publication;
@@ -152,7 +157,11 @@ function createMockRoom() {
     }),
     off: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       const arr = roomEventHandlers.get(event);
-      if (arr) roomEventHandlers.set(event, arr.filter(h => h !== handler));
+      if (arr)
+        roomEventHandlers.set(
+          event,
+          arr.filter((h) => h !== handler),
+        );
       return room;
     }),
     localParticipant: lp,
@@ -172,7 +181,9 @@ function emitRoomEvent(event: string, ...args: unknown[]) {
 }
 
 vi.mock('livekit-client', () => ({
-  Room: vi.fn(function () { return mockRoom; }),
+  Room: vi.fn(function () {
+    return mockRoom;
+  }),
   VideoPreset: vi.fn(function (opts: { width: number; height: number; maxBitrate: number }) {
     return { width: opts.width, height: opts.height, maxBitrate: opts.maxBitrate };
   }),
@@ -198,7 +209,12 @@ vi.mock('livekit-client', () => ({
   },
   Track: {
     Kind: { Audio: 'audio', Video: 'video' },
-    Source: { Microphone: 'microphone', Camera: 'camera', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio' },
+    Source: {
+      Microphone: 'microphone',
+      Camera: 'camera',
+      ScreenShare: 'screen_share',
+      ScreenShareAudio: 'screen_share_audio',
+    },
     StreamState: { Paused: 'paused', Active: 'active' },
   },
   ConnectionQuality: {
@@ -231,7 +247,9 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
         }),
       },
       connect: vi.fn(),
-      disconnect: vi.fn(() => { gainDisconnectCalls++; }),
+      disconnect: vi.fn(() => {
+        gainDisconnectCalls++;
+      }),
     };
     createdGains.push(node);
     return node;
@@ -246,7 +264,9 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
     createMediaStreamSourceCalls++;
     return {
       connect: vi.fn(),
-      disconnect: vi.fn(() => { mediaStreamSourceDisconnectCalls++; }),
+      disconnect: vi.fn(() => {
+        mediaStreamSourceDisconnectCalls++;
+      }),
     };
   });
   this.createMediaStreamDestination = vi.fn(() => ({
@@ -254,14 +274,16 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
     disconnect: vi.fn(),
   }));
   this.audioWorklet = { addModule: vi.fn(async () => {}) };
-  this.close = vi.fn(async () => { audioCtxCloseCalls++; });
+  this.close = vi.fn(async () => {
+    audioCtxCloseCalls++;
+  });
   this.resume = vi.fn(async () => {});
   // Return this explicitly so `new AudioContext()` works
   return this;
 });
 
 // Stub AudioWorkletNode as a proper constructor (must use function, not arrow)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 vi.stubGlobal('AudioWorkletNode', function AudioWorkletNodeMock(this: Record<string, unknown>) {
   this.port = { postMessage: vi.fn(), onmessage: null };
   this.connect = vi.fn();
@@ -279,7 +301,13 @@ vi.stubGlobal('document', {
       return { pause: vi.fn(), remove: vi.fn(), srcObject: null, muted: false, autoplay: false };
     }
     if (tag === 'video') {
-      return { srcObject: null, muted: false, style: { cssText: '' }, play: vi.fn(async () => {}), remove: vi.fn() };
+      return {
+        srcObject: null,
+        muted: false,
+        style: { cssText: '' },
+        play: vi.fn(async () => {}),
+        remove: vi.fn(),
+      };
     }
     return { tagName: tag };
   }),
@@ -314,10 +342,12 @@ describe('macOS share-audio routing', () => {
   });
 
   it('startWasapiAudioBridge(false): macOS does NOT mute masterGain when bare SCK is active', async () => {
-    (mockRoom.localParticipant as Record<string, unknown>).publishTrack = vi.fn(async (track: unknown) => {
-      sdkCalls.push({ method: 'publishTrack', args: [track] });
-      return { track, source: 'screen_share_audio' };
-    });
+    (mockRoom.localParticipant as Record<string, unknown>).publishTrack = vi.fn(
+      async (track: unknown) => {
+        sdkCalls.push({ method: 'publishTrack', args: [track] });
+        return { track, source: 'screen_share_audio' };
+      },
+    );
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -326,11 +356,12 @@ describe('macOS share-audio routing', () => {
 
     const masterGain = createdGains[0];
     expect(masterGain).toBeDefined();
-    const setValueAtTimeSpy = masterGain.gain.setValueAtTime as ReturnType<typeof vi.fn>;
+    const setValueAtTimeSpy = masterGain.gain.setValueAtTime;
     setValueAtTimeSpy.mockClear();
 
-    await (mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> })
-      .startWasapiAudioBridge(false);
+    await (
+      mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> }
+    ).startWasapiAudioBridge(false);
 
     const zeroingCalls = setValueAtTimeSpy.mock.calls.filter((args: unknown[]) => args[0] === 0);
     expect(zeroingCalls).toHaveLength(0);
@@ -465,7 +496,10 @@ describe('macOS share-audio routing', () => {
     expect(bridge.audioContext!.setSinkId).not.toHaveBeenCalled();
     expect(
       warnSpy.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === 'string' && (arg as string).includes('no browser audiooutput matched CoreAudio UID')),
+        args.some(
+          (arg) =>
+            typeof arg === 'string' && arg.includes('no browser audiooutput matched CoreAudio UID'),
+        ),
       ),
     ).toBe(true);
 
@@ -519,7 +553,13 @@ describe('macOS share-audio routing', () => {
     mod.disconnect();
   });
 });
-vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => { cb(); return 1; }));
+vi.stubGlobal(
+  'requestAnimationFrame',
+  vi.fn((cb: () => void) => {
+    cb();
+    return 1;
+  }),
+);
 vi.stubGlobal('cancelAnimationFrame', vi.fn());
 
 const realEnumerateDevicesMock = vi.fn<() => Promise<MediaDeviceInfo[]>>(async () => []);
@@ -557,13 +597,15 @@ function createMockMediaDevices() {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     enumerateDevices: vi.fn(async () => []),
-    getUserMedia: vi.fn(async (): Promise<{
-      getVideoTracks: () => unknown[];
-      getTracks: () => unknown[];
-    }> => ({
-      getVideoTracks: () => [],
-      getTracks: () => [],
-    })),
+    getUserMedia: vi.fn(
+      async (): Promise<{
+        getVideoTracks: () => unknown[];
+        getTracks: () => unknown[];
+      }> => ({
+        getVideoTracks: () => [],
+        getTracks: () => [],
+      }),
+    ),
     getDisplayMedia: vi.fn(async () => createMockDisplayMediaStream()),
   };
 }
@@ -575,7 +617,13 @@ vi.stubGlobal('navigator', {
 
 // ─── Import module under test ──────────────────────────────────────
 
-import { LiveKitModule, buildRtcConfiguration, isForceRelayEnabled, mapPassthroughFilterParams, type MediaCallbacks } from '../livekit-media';
+import {
+  LiveKitModule,
+  buildRtcConfiguration,
+  isForceRelayEnabled,
+  mapPassthroughFilterParams,
+  type MediaCallbacks,
+} from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
 
 describe('passthrough filter parameter mapping', () => {
@@ -588,7 +636,10 @@ describe('passthrough filter parameter mapping', () => {
 
 // ─── Callback Mock Helper ──────────────────────────────────────────
 
-interface CallRecord { method: string; args: unknown[] }
+interface CallRecord {
+  method: string;
+  args: unknown[];
+}
 
 function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
   const calls: CallRecord[] = [];
@@ -603,19 +654,29 @@ function createMockCallbacks(): MediaCallbacks & { calls: CallRecord[] } {
     onLocalAudioLevel: (level) => calls.push({ method: 'onLocalAudioLevel', args: [level] }),
     onActiveSpeakers: (ids) => calls.push({ method: 'onActiveSpeakers', args: [ids] }),
     onConnectionQuality: (stats) => calls.push({ method: 'onConnectionQuality', args: [stats] }),
-    onRemoteCameraPublished: (participantId) => calls.push({ method: 'onRemoteCameraPublished', args: [participantId] }),
-    onRemoteCameraReady: (participantId, track) => calls.push({ method: 'onRemoteCameraReady', args: [participantId, track] }),
-    onRemoteCameraMutedChanged: (participantId, muted) => calls.push({ method: 'onRemoteCameraMutedChanged', args: [participantId, muted] }),
-    onRemoteCameraUnpublished: (participantId) => calls.push({ method: 'onRemoteCameraUnpublished', args: [participantId] }),
-    onScreenShareSubscribed: (id, stream) => calls.push({ method: 'onScreenShareSubscribed', args: [id, stream] }),
-    onScreenShareUnsubscribed: (id) => calls.push({ method: 'onScreenShareUnsubscribed', args: [id] }),
+    onRemoteCameraPublished: (participantId) =>
+      calls.push({ method: 'onRemoteCameraPublished', args: [participantId] }),
+    onRemoteCameraReady: (participantId, track) =>
+      calls.push({ method: 'onRemoteCameraReady', args: [participantId, track] }),
+    onRemoteCameraMutedChanged: (participantId, muted) =>
+      calls.push({ method: 'onRemoteCameraMutedChanged', args: [participantId, muted] }),
+    onRemoteCameraUnpublished: (participantId) =>
+      calls.push({ method: 'onRemoteCameraUnpublished', args: [participantId] }),
+    onScreenShareSubscribed: (id, stream) =>
+      calls.push({ method: 'onScreenShareSubscribed', args: [id, stream] }),
+    onScreenShareUnsubscribed: (id) =>
+      calls.push({ method: 'onScreenShareUnsubscribed', args: [id] }),
     onLocalScreenShareEnded: () => calls.push({ method: 'onLocalScreenShareEnded', args: [] }),
-    onParticipantMuteChanged: (identity, isMuted) => calls.push({ method: 'onParticipantMuteChanged', args: [identity, isMuted] }),
+    onParticipantMuteChanged: (identity, isMuted) =>
+      calls.push({ method: 'onParticipantMuteChanged', args: [identity, isMuted] }),
     onSystemEvent: (msg) => calls.push({ method: 'onSystemEvent', args: [msg] }),
     onShareLeakSummary: (summary) => calls.push({ method: 'onShareLeakSummary', args: [summary] }),
-    onNoiseSuppressionState: (active) => calls.push({ method: 'onNoiseSuppressionState', args: [active] }),
-    onAudioOnlySharerAdded: (identity) => calls.push({ method: 'onAudioOnlySharerAdded', args: [identity] }),
-    onAudioOnlySharerRemoved: (identity) => calls.push({ method: 'onAudioOnlySharerRemoved', args: [identity] }),
+    onNoiseSuppressionState: (active) =>
+      calls.push({ method: 'onNoiseSuppressionState', args: [active] }),
+    onAudioOnlySharerAdded: (identity) =>
+      calls.push({ method: 'onAudioOnlySharerAdded', args: [identity] }),
+    onAudioOnlySharerRemoved: (identity) =>
+      calls.push({ method: 'onAudioOnlySharerRemoved', args: [identity] }),
   };
 }
 
@@ -643,12 +704,14 @@ function resetAll() {
   (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData = new WeakMap();
 }
 
-beforeEach(() => { resetAll(); });
+beforeEach(() => {
+  resetAll();
+});
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
 /** Flush microtask queue so resolved promises propagate. */
-const tick = () => new Promise<void>(r => setTimeout(r, 0));
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
 const expectedPerceptualGain = (volume: number) => {
   const v = Math.max(0, Math.min(100, volume)) / 100;
@@ -679,7 +742,9 @@ function createMockScreenShareTrack(id: string, sid = id) {
   };
 }
 
-function createMockLocalScreenShareMediaTrack(displaySurface: 'monitor' | 'window' | 'browser' = 'window') {
+function createMockLocalScreenShareMediaTrack(
+  displaySurface: 'monitor' | 'window' | 'browser' = 'window',
+) {
   let readyState: 'live' | 'ended' = 'live';
   const stop = vi.fn(() => {
     readyState = 'ended';
@@ -735,17 +800,19 @@ function installLocalScreenSharePublication(
   return { publication, mediaStreamTrack };
 }
 
-function attachManagedScreenSharePublisherPeerConnection(options: {
-  displaySurface?: 'monitor' | 'window' | 'browser';
-  reuseExpected?: boolean;
-  degradationPreferenceConfigured?: boolean;
-  degradationPreferenceResult?: Partial<{
-    attemptedPreferences: string[];
-    finalErrorName: string | null;
-    finalErrorMessage: string | null;
-    invalidStateSkipped: boolean;
-  }>;
-} = {}) {
+function attachManagedScreenSharePublisherPeerConnection(
+  options: {
+    displaySurface?: 'monitor' | 'window' | 'browser';
+    reuseExpected?: boolean;
+    degradationPreferenceConfigured?: boolean;
+    degradationPreferenceResult?: Partial<{
+      attemptedPreferences: string[];
+      finalErrorName: string | null;
+      finalErrorMessage: string | null;
+      invalidStateSkipped: boolean;
+    }>;
+  } = {},
+) {
   const mediaStreamTrack = createMockLocalScreenShareMediaTrack(options.displaySurface ?? 'window');
   const publication = {
     trackSid: 'local-screen-share',
@@ -781,8 +848,14 @@ function attachManagedScreenSharePublisherPeerConnection(options: {
   };
   const videoTransceiver = {
     mid: '2',
-    direction: (options.reuseExpected ?? true) ? 'inactive' as RTCRtpTransceiverDirection : 'sendonly' as RTCRtpTransceiverDirection,
-    currentDirection: (options.reuseExpected ?? true) ? 'inactive' as RTCRtpTransceiverDirection : 'sendonly' as RTCRtpTransceiverDirection,
+    direction:
+      (options.reuseExpected ?? true)
+        ? ('inactive' as RTCRtpTransceiverDirection)
+        : ('sendonly' as RTCRtpTransceiverDirection),
+    currentDirection:
+      (options.reuseExpected ?? true)
+        ? ('inactive' as RTCRtpTransceiverDirection)
+        : ('sendonly' as RTCRtpTransceiverDirection),
     stopped: false,
     sender: videoSender,
     receiver: { track: { kind: 'video' } },
@@ -809,25 +882,23 @@ function attachManagedScreenSharePublisherPeerConnection(options: {
     },
   };
 
-  mockRoom.localParticipant.setScreenShareEnabled = vi.fn(async (
-    enabled: boolean,
-    captureOpts?: unknown,
-    publishOpts?: unknown,
-  ) => {
-    sdkCalls.push({ method: 'setScreenShareEnabled', args: [enabled, captureOpts, publishOpts] });
-    if (enabled) {
-      mockRoom.localParticipant.trackPublications.set(publication.trackSid, publication);
-      videoSender.track = mediaStreamTrack;
-      videoTransceiver.direction = 'sendonly';
-      videoTransceiver.currentDirection = 'sendonly';
-      return true;
-    }
-    mockRoom.localParticipant.trackPublications.delete(publication.trackSid);
-    videoSender.track = null;
-    videoTransceiver.direction = 'inactive';
-    videoTransceiver.currentDirection = 'inactive';
-    return false;
-  });
+  mockRoom.localParticipant.setScreenShareEnabled = vi.fn(
+    async (enabled: boolean, captureOpts?: unknown, publishOpts?: unknown) => {
+      sdkCalls.push({ method: 'setScreenShareEnabled', args: [enabled, captureOpts, publishOpts] });
+      if (enabled) {
+        mockRoom.localParticipant.trackPublications.set(publication.trackSid, publication);
+        videoSender.track = mediaStreamTrack;
+        videoTransceiver.direction = 'sendonly';
+        videoTransceiver.currentDirection = 'sendonly';
+        return true;
+      }
+      mockRoom.localParticipant.trackPublications.delete(publication.trackSid);
+      videoSender.track = null;
+      videoTransceiver.direction = 'inactive';
+      videoTransceiver.currentDirection = 'inactive';
+      return false;
+    },
+  );
 
   return {
     mediaStreamTrack,
@@ -1050,10 +1121,12 @@ describe('camera publish/unpublish', () => {
       frameRate: CAMERA_QUALITY_HIGH.maxFps,
     });
     expect(sender.setParameters).toHaveBeenCalledWith({
-      encodings: [{
-        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
-        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
-      }],
+      encodings: [
+        {
+          maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+          maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+        },
+      ],
     });
   });
 
@@ -1061,7 +1134,9 @@ describe('camera publish/unpublish', () => {
     const mediaTrack = createMockCameraMediaTrack('camera-track-merged-params');
     const existingParameters: RTCRtpSendParameters = {
       codecs: [{ mimeType: 'video/VP8' }] as unknown as RTCRtpCodecParameters[],
-      headerExtensions: [{ uri: 'urn:ietf:params:rtp-hdrext:sdes:mid' }] as unknown as RTCRtpHeaderExtensionParameters[],
+      headerExtensions: [
+        { uri: 'urn:ietf:params:rtp-hdrext:sdes:mid' },
+      ] as unknown as RTCRtpHeaderExtensionParameters[],
       rtcp: { cname: 'camera-cname' },
       transactionId: 'camera-params-1',
       encodings: [],
@@ -1109,10 +1184,12 @@ describe('camera publish/unpublish', () => {
       headerExtensions: existingParameters.headerExtensions,
       rtcp: existingParameters.rtcp,
       transactionId: existingParameters.transactionId,
-      encodings: [{
-        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
-        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
-      }],
+      encodings: [
+        {
+          maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+          maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+        },
+      ],
     });
   });
 
@@ -1182,10 +1259,12 @@ describe('camera publish/unpublish', () => {
     });
     // The bitrate cap still goes through.
     expect(sender.setParameters).toHaveBeenCalledWith({
-      encodings: [{
-        maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
-        maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
-      }],
+      encodings: [
+        {
+          maxBitrate: CAMERA_QUALITY_HIGH.maxBitrate,
+          maxFramerate: CAMERA_QUALITY_HIGH.maxFps,
+        },
+      ],
     });
   });
 
@@ -1348,16 +1427,25 @@ describe('camera publish/unpublish', () => {
     const aliceCamPub = makePub('alice-cam', true);
     const bobCamPub = makePub('bob-cam', true);
     const carolCamPub = makePub('carol-cam', false);
-    const alice = { identity: 'alice', getTrackPublication: vi.fn((src: string) => src === 'camera' ? aliceCamPub : undefined) };
-    const bob = { identity: 'bob', getTrackPublication: vi.fn((src: string) => src === 'camera' ? bobCamPub : undefined) };
-    const carol = { identity: 'carol', getTrackPublication: vi.fn((src: string) => src === 'camera' ? carolCamPub : undefined) };
+    const alice = {
+      identity: 'alice',
+      getTrackPublication: vi.fn((src: string) => (src === 'camera' ? aliceCamPub : undefined)),
+    };
+    const bob = {
+      identity: 'bob',
+      getTrackPublication: vi.fn((src: string) => (src === 'camera' ? bobCamPub : undefined)),
+    };
+    const carol = {
+      identity: 'carol',
+      getTrackPublication: vi.fn((src: string) => (src === 'camera' ? carolCamPub : undefined)),
+    };
     const dave = { identity: 'dave', getTrackPublication: vi.fn(() => undefined) };
     mockRoom.remoteParticipants = new Map([
       ['alice', alice],
       ['bob', bob],
       ['carol', carol],
       ['dave', dave],
-    ]) as unknown as typeof mockRoom.remoteParticipants;
+    ]);
 
     // Visibility set says only alice and carol are visible. bob (currently subscribed)
     // should be unsubscribed; carol (currently unsubscribed) should be subscribed.
@@ -1373,7 +1461,6 @@ describe('camera publish/unpublish', () => {
 // ═══ LiveKitModule lifecycle ═══════════════════════════════════════
 
 describe('LiveKitModule lifecycle', () => {
-
   // Feature: gui-livekit-media, Property 4: Media connects listen-only before mic publication
   describe('P4: Media connects listen-only before mic publication', () => {
     it('onMediaConnected fires after Room connected without requiring mic publication', async () => {
@@ -1386,7 +1473,8 @@ describe('LiveKitModule lifecycle', () => {
             const mod = new LiveKitModule(cbs);
             await mod.connect('wss://sfu.test', 'tok-p4');
 
-            const countConnected = () => cbs.calls.filter(c => c.method === 'onMediaConnected').length;
+            const countConnected = () =>
+              cbs.calls.filter((c) => c.method === 'onMediaConnected').length;
 
             // Before any events: not connected
             expect(countConnected()).toBe(0);
@@ -1430,8 +1518,8 @@ describe('LiveKitModule lifecycle', () => {
       await mod.connect('wss://sfu.test', 'tok-alone');
       emitRoomEvent('connected');
       await tick();
-      expect(cbs.calls.filter(c => c.method === 'onMediaConnected')).toHaveLength(1);
-      expect(sdkCalls.filter(c => c.method === 'setMicrophoneEnabled')).toHaveLength(0);
+      expect(cbs.calls.filter((c) => c.method === 'onMediaConnected')).toHaveLength(1);
+      expect(sdkCalls.filter((c) => c.method === 'setMicrophoneEnabled')).toHaveLength(0);
       mod.disconnect();
     });
   });
@@ -1441,7 +1529,7 @@ describe('LiveKitModule lifecycle', () => {
     it('connect stays listen-only and setMicEnabled reports mic denial', async () => {
       await fc.assert(
         fc.asyncProperty(
-          fc.string({ minLength: 1, maxLength: 50 }).filter(s => s.trim().length > 0),
+          fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
           async (errMsg) => {
             resetAll();
             micShouldReject = true;
@@ -1459,16 +1547,18 @@ describe('LiveKitModule lifecycle', () => {
             await tick();
 
             // onMediaConnected should fire (listen-only)
-            expect(cbs.calls.filter(c => c.method === 'onMediaConnected')).toHaveLength(1);
+            expect(cbs.calls.filter((c) => c.method === 'onMediaConnected')).toHaveLength(1);
 
             // System event about mic denied
-            const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
-            expect(sysEvents.some(c =>
-              typeof c.args[0] === 'string' && (c.args[0] as string).includes('mic permission denied'),
-            )).toBe(true);
+            const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
+            expect(
+              sysEvents.some(
+                (c) => typeof c.args[0] === 'string' && c.args[0].includes('mic permission denied'),
+              ),
+            ).toBe(true);
 
             // onMediaFailed NOT called
-            expect(cbs.calls.filter(c => c.method === 'onMediaFailed')).toHaveLength(0);
+            expect(cbs.calls.filter((c) => c.method === 'onMediaFailed')).toHaveLength(0);
 
             mod.disconnect();
           },
@@ -1484,7 +1574,7 @@ describe('LiveKitModule lifecycle', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.uniqueArray(
-            fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
             { minLength: 0, maxLength: 5 },
           ),
           async (participantIds) => {
@@ -1496,7 +1586,8 @@ describe('LiveKitModule lifecycle', () => {
 
             // Simulate TrackSubscribed for each participant
             for (const pid of participantIds) {
-              emitRoomEvent('trackSubscribed',
+              emitRoomEvent(
+                'trackSubscribed',
                 { kind: 'audio', mediaStreamTrack: { id: `t-${pid}` }, sid: `s-${pid}` },
                 { source: 'microphone' },
                 { identity: pid },
@@ -1508,7 +1599,7 @@ describe('LiveKitModule lifecycle', () => {
             // AudioContext.close() called
             expect(audioCtxCloseCalls).toBe(1);
             // room.disconnect() called
-            expect(sdkCalls.filter(c => c.method === 'disconnect')).toHaveLength(1);
+            expect(sdkCalls.filter((c) => c.method === 'disconnect')).toHaveLength(1);
             // Not connected
             expect(mod.isConnected).toBe(false);
           },
@@ -1522,24 +1613,21 @@ describe('LiveKitModule lifecycle', () => {
   describe('P21: Disconnect idempotency', () => {
     it('multiple disconnect calls do not throw and cleanup happens once', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 1, max: 10 }),
-          async (n) => {
-            resetAll();
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
-            await mod.connect('wss://sfu.test', 'tok-p21');
+        fc.asyncProperty(fc.integer({ min: 1, max: 10 }), async (n) => {
+          resetAll();
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
+          await mod.connect('wss://sfu.test', 'tok-p21');
 
-            for (let i = 0; i < n; i++) {
-              expect(() => mod.disconnect()).not.toThrow();
-            }
+          for (let i = 0; i < n; i++) {
+            expect(() => mod.disconnect()).not.toThrow();
+          }
 
-            // room.disconnect() exactly once
-            expect(sdkCalls.filter(c => c.method === 'disconnect')).toHaveLength(1);
-            // AudioContext.close() exactly once
-            expect(audioCtxCloseCalls).toBe(1);
-          },
-        ),
+          // room.disconnect() exactly once
+          expect(sdkCalls.filter((c) => c.method === 'disconnect')).toHaveLength(1);
+          // AudioContext.close() exactly once
+          expect(audioCtxCloseCalls).toBe(1);
+        }),
         { numRuns: 100 },
       );
     });
@@ -1550,19 +1638,22 @@ describe('LiveKitModule lifecycle', () => {
     it('no callbacks fire for events arriving after disconnect', async () => {
       await fc.assert(
         fc.asyncProperty(
-          fc.subarray([
-            'trackSubscribed',
-            'trackUnsubscribed',
-            'activeSpeakersChanged',
-            'participantDisconnected',
-            'connectionQualityChanged',
-            'localTrackPublished',
-            'localTrackUnpublished',
-            'mediaDevicesError',
-            'reconnecting',
-            'reconnected',
-            'disconnected',
-          ] as const, { minLength: 1 }),
+          fc.subarray(
+            [
+              'trackSubscribed',
+              'trackUnsubscribed',
+              'activeSpeakersChanged',
+              'participantDisconnected',
+              'connectionQualityChanged',
+              'localTrackPublished',
+              'localTrackUnpublished',
+              'mediaDevicesError',
+              'reconnecting',
+              'reconnected',
+              'disconnected',
+            ] as const,
+            { minLength: 1 },
+          ),
           async (eventsToFire) => {
             resetAll();
             const cbs = createMockCallbacks();
@@ -1581,10 +1672,14 @@ describe('LiveKitModule lifecycle', () => {
 
             // Invoke captured handlers directly (simulating stale async delivery)
             for (const ev of eventsToFire) {
-              for (const h of (captured.get(ev) || [])) {
+              for (const h of captured.get(ev) || []) {
                 switch (ev) {
                   case 'trackSubscribed':
-                    h({ kind: 'audio', mediaStreamTrack: { id: 'x' }, sid: 'x' }, { source: 'microphone' }, { identity: 'x' });
+                    h(
+                      { kind: 'audio', mediaStreamTrack: { id: 'x' }, sid: 'x' },
+                      { source: 'microphone' },
+                      { identity: 'x' },
+                    );
                     break;
                   case 'trackUnsubscribed':
                     h({ kind: 'audio', sid: 'x' }, { source: 'microphone' }, { identity: 'x' });
@@ -1622,21 +1717,18 @@ describe('LiveKitModule lifecycle', () => {
       );
     });
   });
-
 });
-
 
 // ═══ Audio subscription ════════════════════════════════════════════
 
 describe('Audio subscription', () => {
-
   // Feature: gui-livekit-media, Property 6: Remote audio subscription creates full audio pipeline
   describe('P6: Remote audio subscription creates full audio pipeline', () => {
     it('each subscribed participant gets an audio element, MediaStreamSource, and GainNode', async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.uniqueArray(
-            fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
             { minLength: 1, maxLength: 5 },
           ),
           async (identities) => {
@@ -1651,17 +1743,23 @@ describe('Audio subscription', () => {
 
             // Subscribe audio tracks for each participant
             for (const identity of identities) {
-              emitRoomEvent('trackSubscribed',
-                { kind: 'audio', mediaStreamTrack: { id: `track-${identity}` }, sid: `sid-${identity}` },
+              emitRoomEvent(
+                'trackSubscribed',
+                {
+                  kind: 'audio',
+                  mediaStreamTrack: { id: `track-${identity}` },
+                  sid: `sid-${identity}`,
+                },
                 { source: 'microphone' },
                 { identity },
               );
             }
 
             // Assert: document.createElement('audio') was called for each participant
-            const audioCreateCalls = vi.mocked(document.createElement).mock.calls
-              .slice(createElBefore)
-              .filter(c => c[0] === 'audio');
+            const audioCreateCalls = vi
+              .mocked(document.createElement)
+              .mock.calls.slice(createElBefore)
+              .filter((c) => c[0] === 'audio');
             expect(audioCreateCalls).toHaveLength(identities.length);
 
             // Assert: AudioContext.createMediaStreamSource was called for each
@@ -1690,7 +1788,7 @@ describe('Audio subscription', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.uniqueArray(
-            fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
             { minLength: 1, maxLength: 5 },
           ),
           async (identities) => {
@@ -1702,8 +1800,13 @@ describe('Audio subscription', () => {
 
             // Subscribe audio tracks for each participant
             for (const identity of identities) {
-              emitRoomEvent('trackSubscribed',
-                { kind: 'audio', mediaStreamTrack: { id: `track-${identity}` }, sid: `sid-${identity}` },
+              emitRoomEvent(
+                'trackSubscribed',
+                {
+                  kind: 'audio',
+                  mediaStreamTrack: { id: `track-${identity}` },
+                  sid: `sid-${identity}`,
+                },
                 { source: 'microphone' },
                 { identity },
               );
@@ -1713,10 +1816,22 @@ describe('Audio subscription', () => {
             gainDisconnectCalls = 0;
 
             // Collect audio elements before disconnect to check pause/remove
-            const audioEls: Array<{ pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }> = [];
+            const audioEls: Array<{
+              pause: ReturnType<typeof vi.fn>;
+              remove: ReturnType<typeof vi.fn>;
+            }> = [];
             for (const call of vi.mocked(document.createElement).mock.results) {
-              if (call.type === 'return' && call.value && typeof (call.value as unknown as Record<string, unknown>).pause === 'function') {
-                audioEls.push(call.value as unknown as { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> });
+              if (
+                call.type === 'return' &&
+                call.value &&
+                typeof (call.value as unknown as Record<string, unknown>).pause === 'function'
+              ) {
+                audioEls.push(
+                  call.value as unknown as {
+                    pause: ReturnType<typeof vi.fn>;
+                    remove: ReturnType<typeof vi.fn>;
+                  },
+                );
               }
             }
 
@@ -1756,33 +1871,31 @@ describe('Audio subscription', () => {
   describe('P14: Single shared AudioContext invariant', () => {
     it('exactly one AudioContext is created regardless of participant count', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 0, max: 5 }),
-          async (participantCount) => {
-            resetAll();
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
+        fc.asyncProperty(fc.integer({ min: 0, max: 5 }), async (participantCount) => {
+          resetAll();
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
 
-            await driveToConnected(mod);
+          await driveToConnected(mod);
 
-            // Subscribe audio tracks for N participants
-            for (let i = 0; i < participantCount; i++) {
-              emitRoomEvent('trackSubscribed',
-                { kind: 'audio', mediaStreamTrack: { id: `track-p${i}` }, sid: `sid-p${i}` },
-                { source: 'microphone' },
-                { identity: `participant-${i}` },
-              );
-            }
+          // Subscribe audio tracks for N participants
+          for (let i = 0; i < participantCount; i++) {
+            emitRoomEvent(
+              'trackSubscribed',
+              { kind: 'audio', mediaStreamTrack: { id: `track-p${i}` }, sid: `sid-p${i}` },
+              { source: 'microphone' },
+              { identity: `participant-${i}` },
+            );
+          }
 
-            // Assert: no more than one AudioContext is ever created.
-            // At the default volume (100) with no gain processor active, an
-            // AudioContext is only created when remote participants subscribe
-            // (N>0). For N=0 with no mic processing, count may be 0.
-            expect(audioCtxConstructorCalls).toBeLessThanOrEqual(1);
+          // Assert: no more than one AudioContext is ever created.
+          // At the default volume (100) with no gain processor active, an
+          // AudioContext is only created when remote participants subscribe
+          // (N>0). For N=0 with no mic processing, count may be 0.
+          expect(audioCtxConstructorCalls).toBeLessThanOrEqual(1);
 
-            mod.disconnect();
-          },
-        ),
+          mod.disconnect();
+        }),
         { numRuns: 100 },
       );
     });
@@ -1797,7 +1910,7 @@ describe('Audio subscription', () => {
     it('re-subscribing the same participant reuses the audio element', async () => {
       await fc.assert(
         fc.asyncProperty(
-          fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+          fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
           async (identity) => {
             resetAll();
             const cbs = createMockCallbacks();
@@ -1808,23 +1921,34 @@ describe('Audio subscription', () => {
             const createElBefore = vi.mocked(document.createElement).mock.calls.length;
 
             // Subscribe audio track for the participant — first time
-            emitRoomEvent('trackSubscribed',
-              { kind: 'audio', mediaStreamTrack: { id: `track-${identity}` }, sid: `sid-${identity}` },
+            emitRoomEvent(
+              'trackSubscribed',
+              {
+                kind: 'audio',
+                mediaStreamTrack: { id: `track-${identity}` },
+                sid: `sid-${identity}`,
+              },
               { source: 'microphone' },
               { identity },
             );
 
             // Subscribe audio track for the same participant — second time (re-subscribe)
-            emitRoomEvent('trackSubscribed',
-              { kind: 'audio', mediaStreamTrack: { id: `track-${identity}-2` }, sid: `sid-${identity}-2` },
+            emitRoomEvent(
+              'trackSubscribed',
+              {
+                kind: 'audio',
+                mediaStreamTrack: { id: `track-${identity}-2` },
+                sid: `sid-${identity}-2`,
+              },
               { source: 'microphone' },
               { identity },
             );
 
             // Assert: only one audio element was created (reused, not duplicated)
-            const audioCreateCalls = vi.mocked(document.createElement).mock.calls
-              .slice(createElBefore)
-              .filter(c => c[0] === 'audio');
+            const audioCreateCalls = vi
+              .mocked(document.createElement)
+              .mock.calls.slice(createElBefore)
+              .filter((c) => c[0] === 'audio');
             expect(audioCreateCalls).toHaveLength(1);
 
             mod.disconnect();
@@ -1838,14 +1962,11 @@ describe('Audio subscription', () => {
      * Validates: Requirements 19.5
      */
   });
-
 });
-
 
 // ═══ Volume control, mute, and speaking indicators ═════════════════
 
 describe('Volume control, mute, and speaking indicators', () => {
-
   // Feature: gui-livekit-media, Property 8: Mute/unmute round trip
   describe('P8: Mute/unmute round trip', () => {
     it('setMicEnabled calls setMicrophoneEnabled with the correct boolean for each toggle', async () => {
@@ -1863,14 +1984,16 @@ describe('Volume control, mute, and speaking indicators', () => {
             await driveToConnected(mod);
 
             // Clear SDK calls from connect flow (the initial setMicrophoneEnabled(true))
-            const micCallsBefore = sdkCalls.filter(c => c.method === 'setMicrophoneEnabled').length;
+            const micCallsBefore = sdkCalls.filter(
+              (c) => c.method === 'setMicrophoneEnabled',
+            ).length;
 
             for (const enabled of toggles) {
               await mod.setMicEnabled(enabled);
             }
 
             const micCalls = sdkCalls
-              .filter(c => c.method === 'setMicrophoneEnabled')
+              .filter((c) => c.method === 'setMicrophoneEnabled')
               .slice(micCallsBefore);
 
             // One call per toggle
@@ -1903,9 +2026,11 @@ describe('Volume control, mute, and speaking indicators', () => {
         fc.asyncProperty(
           fc.uniqueArray(
             fc.record({
-              identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+              identity: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
             }),
-            { minLength: 1, maxLength: 5, selector: r => r.identity },
+            { minLength: 1, maxLength: 5, selector: (r) => r.identity },
           ),
           async (participants) => {
             resetAll();
@@ -1915,15 +2040,18 @@ describe('Volume control, mute, and speaking indicators', () => {
             await driveToConnected(mod);
 
             // Emit ActiveSpeakersChanged with the generated participants
-            const speakers = participants.map(p => ({ identity: p.identity }));
+            const speakers = participants.map((p) => ({ identity: p.identity }));
             emitRoomEvent('activeSpeakersChanged', speakers);
 
             // onAudioLevels should have been called (rAF fires synchronously in default mock)
-            const levelCalls = cbs.calls.filter(c => c.method === 'onAudioLevels');
+            const levelCalls = cbs.calls.filter((c) => c.method === 'onAudioLevels');
             expect(levelCalls.length).toBeGreaterThanOrEqual(1);
 
             // The last onAudioLevels call should contain all speaker identities
-            const lastLevels = levelCalls[levelCalls.length - 1].args[0] as Map<string, { isSpeaking: boolean; rmsLevel: number }>;
+            const lastLevels = levelCalls[levelCalls.length - 1].args[0] as Map<
+              string,
+              { isSpeaking: boolean; rmsLevel: number }
+            >;
             for (const p of participants) {
               expect(lastLevels.has(p.identity)).toBe(true);
               const entry = lastLevels.get(p.identity)!;
@@ -1955,10 +2083,13 @@ describe('Volume control, mute, and speaking indicators', () => {
 
             // Override rAF to NOT call immediately — deferred flush
             let rafCallback: (() => void) | null = null;
-            vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => {
-              rafCallback = cb;
-              return 1;
-            }));
+            vi.stubGlobal(
+              'requestAnimationFrame',
+              vi.fn((cb: () => void) => {
+                rafCallback = cb;
+                return 1;
+              }),
+            );
 
             const cbs = createMockCallbacks();
             const mod = new LiveKitModule(cbs);
@@ -1966,7 +2097,7 @@ describe('Volume control, mute, and speaking indicators', () => {
             await driveToConnected(mod);
 
             // Clear any onAudioLevels calls from setup
-            const callsBefore = cbs.calls.filter(c => c.method === 'onAudioLevels').length;
+            const callsBefore = cbs.calls.filter((c) => c.method === 'onAudioLevels').length;
 
             // Generate participant identities
             const identities = Array.from({ length: numParticipants }, (_, i) => `p${i}`);
@@ -1977,14 +2108,14 @@ describe('Volume control, mute, and speaking indicators', () => {
             // Emit multiple ActiveSpeakersChanged events without flushing
             // Each burst uses a different subset of participants
             for (let burst = 0; burst < numBursts; burst++) {
-              const speakersInBurst = identities.slice(0, ((burst % numParticipants) + 1));
+              const speakersInBurst = identities.slice(0, (burst % numParticipants) + 1);
               for (const id of speakersInBurst) appearedIdentities.add(id);
-              const speakers = speakersInBurst.map(id => ({ identity: id }));
+              const speakers = speakersInBurst.map((id) => ({ identity: id }));
               emitRoomEvent('activeSpeakersChanged', speakers);
             }
 
             // No flush yet (rAF deferred)
-            const callsAfterEmit = cbs.calls.filter(c => c.method === 'onAudioLevels').length;
+            const callsAfterEmit = cbs.calls.filter((c) => c.method === 'onAudioLevels').length;
             expect(callsAfterEmit - callsBefore).toBe(0);
 
             // Now flush
@@ -1992,12 +2123,15 @@ describe('Volume control, mute, and speaking indicators', () => {
             rafCallback!();
 
             // Exactly one onAudioLevels call after flush
-            const callsAfterFlush = cbs.calls.filter(c => c.method === 'onAudioLevels').length;
+            const callsAfterFlush = cbs.calls.filter((c) => c.method === 'onAudioLevels').length;
             expect(callsAfterFlush - callsBefore).toBe(1);
 
             // The flushed levels should contain entries for all participants that appeared in any burst
-            const flushedCall = cbs.calls.filter(c => c.method === 'onAudioLevels')[callsBefore];
-            const levels = flushedCall.args[0] as Map<string, { isSpeaking: boolean; rmsLevel: number }>;
+            const flushedCall = cbs.calls.filter((c) => c.method === 'onAudioLevels')[callsBefore];
+            const levels = flushedCall.args[0] as Map<
+              string,
+              { isSpeaking: boolean; rmsLevel: number }
+            >;
 
             // Every participant that appeared in at least one burst should be present
             for (const id of appearedIdentities) {
@@ -2005,7 +2139,13 @@ describe('Volume control, mute, and speaking indicators', () => {
             }
 
             // Restore default rAF mock
-            vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => { cb(); return 1; }));
+            vi.stubGlobal(
+              'requestAnimationFrame',
+              vi.fn((cb: () => void) => {
+                cb();
+                return 1;
+              }),
+            );
 
             mod.disconnect();
           },
@@ -2022,46 +2162,56 @@ describe('Volume control, mute, and speaking indicators', () => {
        * Validates: Requirements 20.3
        */
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 2, max: 15 }),
-          async (numEvents) => {
-            resetAll();
+        fc.asyncProperty(fc.integer({ min: 2, max: 15 }), async (numEvents) => {
+          resetAll();
 
-            // Override rAF to NOT call immediately — deferred flush
-            let rafCallback: (() => void) | null = null;
-            vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => {
+          // Override rAF to NOT call immediately — deferred flush
+          let rafCallback: (() => void) | null = null;
+          vi.stubGlobal(
+            'requestAnimationFrame',
+            vi.fn((cb: () => void) => {
               rafCallback = cb;
               return 1;
-            }));
+            }),
+          );
 
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
 
-            await driveToConnected(mod);
+          await driveToConnected(mod);
 
-            const callsBefore = cbs.calls.filter(c => c.method === 'onAudioLevels').length;
+          const callsBefore = cbs.calls.filter((c) => c.method === 'onAudioLevels').length;
 
-            // Emit N speaker events without flushing
-            for (let i = 0; i < numEvents; i++) {
-              emitRoomEvent('activeSpeakersChanged', [{ identity: `speaker-${i % 3}` }]);
-            }
+          // Emit N speaker events without flushing
+          for (let i = 0; i < numEvents; i++) {
+            emitRoomEvent('activeSpeakersChanged', [{ identity: `speaker-${i % 3}` }]);
+          }
 
-            // No callbacks yet
-            expect(cbs.calls.filter(c => c.method === 'onAudioLevels').length - callsBefore).toBe(0);
+          // No callbacks yet
+          expect(cbs.calls.filter((c) => c.method === 'onAudioLevels').length - callsBefore).toBe(
+            0,
+          );
 
-            // Flush once
-            expect(rafCallback).not.toBeNull();
-            rafCallback!();
+          // Flush once
+          expect(rafCallback).not.toBeNull();
+          rafCallback!();
 
-            // Exactly ONE onAudioLevels callback
-            expect(cbs.calls.filter(c => c.method === 'onAudioLevels').length - callsBefore).toBe(1);
+          // Exactly ONE onAudioLevels callback
+          expect(cbs.calls.filter((c) => c.method === 'onAudioLevels').length - callsBefore).toBe(
+            1,
+          );
 
-            // Restore default rAF mock
-            vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => { cb(); return 1; }));
+          // Restore default rAF mock
+          vi.stubGlobal(
+            'requestAnimationFrame',
+            vi.fn((cb: () => void) => {
+              cb();
+              return 1;
+            }),
+          );
 
-            mod.disconnect();
-          },
-        ),
+          mod.disconnect();
+        }),
         { numRuns: 100 },
       );
     });
@@ -2086,7 +2236,8 @@ describe('Volume control, mute, and speaking indicators', () => {
 
             // Subscribe a participant's audio track so a GainNode is created
             const identity = 'test-participant';
-            emitRoomEvent('trackSubscribed',
+            emitRoomEvent(
+              'trackSubscribed',
               { kind: 'audio', mediaStreamTrack: { id: 'track-vol' }, sid: 'sid-vol' },
               { source: 'microphone' },
               { identity },
@@ -2130,7 +2281,8 @@ describe('Volume control, mute, and speaking indicators', () => {
       mod.setParticipantVolume(identity, 44);
 
       // Now subscribe the audio track — attachAudioTrack should read the cached desired volume
-      emitRoomEvent('trackSubscribed',
+      emitRoomEvent(
+        'trackSubscribed',
         { kind: 'audio', mediaStreamTrack: { id: 'track-p14' }, sid: 'sid-p14' },
         { source: 'microphone' },
         { identity },
@@ -2145,14 +2297,11 @@ describe('Volume control, mute, and speaking indicators', () => {
       mod.disconnect();
     });
   });
-
 });
-
 
 // ═══ Screen share and device selection ═════════════════════════════
 
 describe('Screen share and device selection', () => {
-
   // Feature: gui-livekit-media, Property 15: Device switching delegates to LiveKit SDK
   describe('P15: Device switching delegates to LiveKit SDK', () => {
     it('passes the saved input device to the initial microphone capture request', async () => {
@@ -2165,7 +2314,7 @@ describe('Screen share and device selection', () => {
           groupId: '',
           label: 'Headset Microphone (USB Audio)',
           toJSON: () => ({}),
-        } as MediaDeviceInfo,
+        },
       ]);
 
       const mod = new LiveKitModule(createMockCallbacks());
@@ -2173,7 +2322,7 @@ describe('Screen share and device selection', () => {
       emitRoomEvent('connected');
       await mod.setMicEnabled(true);
 
-      const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+      const micCall = sdkCalls.find((c) => c.method === 'setMicrophoneEnabled');
       expect(micCall?.args[0]).toBe(true);
       expect(micCall?.args[1]).toMatchObject({
         deviceId: 'browser-headset-id',
@@ -2195,16 +2344,17 @@ describe('Screen share and device selection', () => {
       emitRoomEvent('connected');
       await mod.setMicEnabled(true);
 
-      const micCalls = sdkCalls.filter(c => c.method === 'setMicrophoneEnabled');
+      const micCalls = sdkCalls.filter((c) => c.method === 'setMicrophoneEnabled');
       expect(micCalls).toHaveLength(1);
       expect(micCalls[0].args[1]).toMatchObject({
         deviceId: 'missing-input-device',
         noiseSuppression: false,
       });
-      expect(cbs.calls.some(c =>
-        c.method === 'onSystemEvent'
-        && String(c.args[0]).includes('listen-only mode'),
-      )).toBe(true);
+      expect(
+        cbs.calls.some(
+          (c) => c.method === 'onSystemEvent' && String(c.args[0]).includes('listen-only mode'),
+        ),
+      ).toBe(true);
 
       mod.disconnect();
     });
@@ -2215,7 +2365,7 @@ describe('Screen share and device selection', () => {
        */
       await fc.assert(
         fc.asyncProperty(
-          fc.string({ minLength: 1, maxLength: 50 }).filter(s => s.trim().length > 0),
+          fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
           async (inputDeviceId) => {
             resetAll();
             const cbs = createMockCallbacks();
@@ -2227,7 +2377,9 @@ describe('Screen share and device selection', () => {
 
             await mod.setInputDevice(inputDeviceId);
 
-            const switchCalls = sdkCalls.slice(callsBefore).filter(c => c.method === 'switchActiveDevice');
+            const switchCalls = sdkCalls
+              .slice(callsBefore)
+              .filter((c) => c.method === 'switchActiveDevice');
             expect(switchCalls).toHaveLength(1);
 
             // audioinput with the input device ID
@@ -2262,7 +2414,9 @@ describe('Screen share and device selection', () => {
             const result = await mod.startScreenShare();
             expect(result).toBe(true);
 
-            const startCalls = sdkCalls.slice(callsBefore).filter(c => c.method === 'setScreenShareEnabled');
+            const startCalls = sdkCalls
+              .slice(callsBefore)
+              .filter((c) => c.method === 'setScreenShareEnabled');
             expect(startCalls).toHaveLength(1);
             expect(startCalls[0].args[0]).toBe(true);
 
@@ -2270,7 +2424,9 @@ describe('Screen share and device selection', () => {
               const callsBeforeStop = sdkCalls.length;
               await mod.stopScreenShare();
 
-              const stopCalls = sdkCalls.slice(callsBeforeStop).filter(c => c.method === 'setScreenShareEnabled');
+              const stopCalls = sdkCalls
+                .slice(callsBeforeStop)
+                .filter((c) => c.method === 'setScreenShareEnabled');
               expect(stopCalls).toHaveLength(1);
               expect(stopCalls[0].args[0]).toBe(false);
             }
@@ -2298,16 +2454,20 @@ describe('Screen share and device selection', () => {
             const mod = new LiveKitModule(cbs);
             await driveToConnected(mod);
 
-            const countBefore = cbs.calls.filter(c => c.method === 'onLocalScreenShareEnded').length;
+            const countBefore = cbs.calls.filter(
+              (c) => c.method === 'onLocalScreenShareEnded',
+            ).length;
 
             for (let i = 0; i < fireCount; i++) {
-              emitRoomEvent('localTrackUnpublished',
+              emitRoomEvent(
+                'localTrackUnpublished',
                 { source: 'screen_share' },
                 mockRoom.localParticipant,
               );
             }
 
-            const endedCalls = cbs.calls.filter(c => c.method === 'onLocalScreenShareEnded').length - countBefore;
+            const endedCalls =
+              cbs.calls.filter((c) => c.method === 'onLocalScreenShareEnded').length - countBefore;
             expect(endedCalls).toBe(fireCount);
 
             mod.disconnect();
@@ -2328,10 +2488,14 @@ describe('Screen share and device selection', () => {
         fc.asyncProperty(
           fc.uniqueArray(
             fc.record({
-              identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
-              trackSid: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+              identity: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
+              trackSid: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
             }),
-            { minLength: 1, maxLength: 4, selector: r => r.identity },
+            { minLength: 1, maxLength: 4, selector: (r) => r.identity },
           ),
           async (participants) => {
             resetAll();
@@ -2341,15 +2505,24 @@ describe('Screen share and device selection', () => {
 
             // Subscribe screen shares for each participant
             for (const p of participants) {
-              emitRoomEvent('trackSubscribed',
-                { kind: 'video', mediaStreamTrack: { id: `screen-track-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
+              emitRoomEvent(
+                'trackSubscribed',
+                {
+                  kind: 'video',
+                  mediaStreamTrack: {
+                    id: `screen-track-${p.identity}`,
+                    addEventListener: vi.fn(),
+                    removeEventListener: vi.fn(),
+                  },
+                  sid: p.trackSid,
+                },
                 { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
             }
 
             // Verify onScreenShareSubscribed was called for each
-            const subCalls = cbs.calls.filter(c => c.method === 'onScreenShareSubscribed');
+            const subCalls = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
             expect(subCalls).toHaveLength(participants.length);
             for (let i = 0; i < participants.length; i++) {
               expect(subCalls[i].args[0]).toBe(participants[i].identity);
@@ -2357,7 +2530,8 @@ describe('Screen share and device selection', () => {
 
             // Unsubscribe each with matching trackSid
             for (const p of participants) {
-              emitRoomEvent('trackUnsubscribed',
+              emitRoomEvent(
+                'trackUnsubscribed',
                 { kind: 'video', sid: p.trackSid },
                 { source: 'screen_share' },
                 { identity: p.identity },
@@ -2365,7 +2539,7 @@ describe('Screen share and device selection', () => {
             }
 
             // Verify onScreenShareUnsubscribed was called for each
-            const unsubCalls = cbs.calls.filter(c => c.method === 'onScreenShareUnsubscribed');
+            const unsubCalls = cbs.calls.filter((c) => c.method === 'onScreenShareUnsubscribed');
             expect(unsubCalls).toHaveLength(participants.length);
             for (let i = 0; i < participants.length; i++) {
               expect(unsubCalls[i].args[0]).toBe(participants[i].identity);
@@ -2401,18 +2575,20 @@ describe('Screen share and device selection', () => {
         initialTrack.mediaStreamTrack.dispatchEnded();
 
         await vi.advanceTimersByTimeAsync(200);
-        expect(cbs.calls.filter(c => c.method === 'onScreenShareSubscribed')).toHaveLength(1);
+        expect(cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed')).toHaveLength(1);
 
         publication.track = replacementTrack;
         await vi.advanceTimersByTimeAsync(400);
 
-        const subCalls = cbs.calls.filter(c => c.method === 'onScreenShareSubscribed');
+        const subCalls = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
         expect(subCalls).toHaveLength(2);
         expect(subCalls[1].args[0]).toBe('alice');
 
-        const screenShareElements = (mod as unknown as {
-          screenShareElements: Map<string, { trackSid: string }>;
-        }).screenShareElements;
+        const screenShareElements = (
+          mod as unknown as {
+            screenShareElements: Map<string, { trackSid: string }>;
+          }
+        ).screenShareElements;
         expect(screenShareElements.get('alice')?.trackSid).toBe('sid-2');
 
         mod.disconnect();
@@ -2445,8 +2621,10 @@ describe('Screen share and device selection', () => {
 
         await vi.advanceTimersByTimeAsync(1400);
 
-        const noReplacementLogs = logSpy.mock.calls.filter(
-          args => args.some(arg => typeof arg === 'string' && arg.includes('no replacement after 4 attempts')),
+        const noReplacementLogs = logSpy.mock.calls.filter((args) =>
+          args.some(
+            (arg) => typeof arg === 'string' && arg.includes('no replacement after 4 attempts'),
+          ),
         );
         expect(noReplacementLogs).toHaveLength(1);
 
@@ -2491,7 +2669,13 @@ describe('Screen share and device selection', () => {
       await driveToConnected(mod);
 
       // Alice is a video sharer — her screen_share_audio should be deferred until the viewer attaches it.
-      const aliceWithVideo = { identity: 'alice', getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined), trackPublications: new Map() };
+      const aliceWithVideo = {
+        identity: 'alice',
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share' ? { source: 'screen_share' } : undefined,
+        ),
+        trackPublications: new Map(),
+      };
       const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-1' } };
       emitRoomEvent(
         'trackSubscribed',
@@ -2500,10 +2684,13 @@ describe('Screen share and device selection', () => {
         aliceWithVideo,
       );
 
-      const deferredMap = (mod as unknown as {
-        screenShareAudioTracks: Map<string, { track: unknown }>;
-      }).screenShareAudioTracks;
-      const audioMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const deferredMap = (
+        mod as unknown as {
+          screenShareAudioTracks: Map<string, { track: unknown }>;
+        }
+      ).screenShareAudioTracks;
+      const audioMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
 
       expect(deferredMap.has('alice')).toBe(true);
       expect(audioMapBefore.has('alice:screen-share')).toBe(false);
@@ -2511,12 +2698,16 @@ describe('Screen share and device selection', () => {
 
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMap = (mod as unknown as {
-        audioElementMap: Map<string, { autoplay: boolean; muted: boolean; srcObject: unknown }>;
-      }).audioElementMap;
-      const participantGains = (mod as unknown as {
-        participantGains: Map<string, { gain: { value: number } }>;
-      }).participantGains;
+      const audioElementMap = (
+        mod as unknown as {
+          audioElementMap: Map<string, { autoplay: boolean; muted: boolean; srcObject: unknown }>;
+        }
+      ).audioElementMap;
+      const participantGains = (
+        mod as unknown as {
+          participantGains: Map<string, { gain: { value: number } }>;
+        }
+      ).participantGains;
       const audioEl = audioElementMap.get('alice:screen-share');
 
       expect(audioEl).toBeDefined();
@@ -2540,7 +2731,9 @@ describe('Screen share and device selection', () => {
       // Alice is a video sharer — audio should be deferred until the viewer window opens.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share' ? { source: 'screen_share' } : undefined,
+        ),
         trackPublications: new Map(),
       };
 
@@ -2576,7 +2769,9 @@ describe('Screen share and device selection', () => {
       // Alice is a video sharer — audio track arriving before the viewer must be deferred.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share' ? { source: 'screen_share' } : undefined,
+        ),
         trackPublications: new Map(),
       };
 
@@ -2606,7 +2801,8 @@ describe('Screen share and device selection', () => {
         { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
       expect(setSubscribed).toHaveBeenCalledWith(false);
       expect(audioElementMap.has('alice:screen-share')).toBe(false);
       expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
@@ -2620,16 +2816,24 @@ describe('Screen share and device selection', () => {
       const mod = new LiveKitModule(cbs);
       const setSubscribed = vi.fn();
       const remoteTrack = { kind: 'audio', mediaStreamTrack: { id: 'ssa-existing-audio-only' } };
-      const publication = { source: 'screen_share_audio', kind: 'audio', track: remoteTrack, setSubscribed };
+      const publication = {
+        source: 'screen_share_audio',
+        kind: 'audio',
+        track: remoteTrack,
+        setSubscribed,
+      };
       mockRoom.remoteParticipants.set('alice', {
         identity: 'alice',
-        getTrackPublication: vi.fn((source: string) => source === 'screen_share_audio' ? publication : undefined),
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share_audio' ? publication : undefined,
+        ),
         trackPublications: new Map([['ssa-existing', publication]]),
       });
 
       await driveToConnected(mod);
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
       expect(setSubscribed).toHaveBeenCalledWith(false);
       expect(audioElementMap.has('alice:screen-share')).toBe(false);
       expect(cbs.calls).toContainEqual({ method: 'onAudioOnlySharerAdded', args: ['alice'] });
@@ -2652,7 +2856,8 @@ describe('Screen share and device selection', () => {
         { identity: 'alice', getTrackPublication: vi.fn(() => undefined) },
       );
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
       expect(setSubscribed).toHaveBeenLastCalledWith(false);
       expect(audioElementMap.has('alice:screen-share')).toBe(false);
 
@@ -2684,7 +2889,8 @@ describe('Screen share and device selection', () => {
       mod.attachScreenShareAudio('alice');
       mod.setRemoteShareType('alice', 'window');
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
       expect(audioElementMap.has('alice:screen-share')).toBe(true);
 
       mod.disconnect();
@@ -2704,16 +2910,20 @@ describe('Screen share and device selection', () => {
         ]),
       });
 
-      const audioElementMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
       expect(audioElementMapBefore.has('alice:screen-share')).toBe(false);
       expect(createMediaStreamSourceCalls).toBe(0);
 
       mod.attachScreenShareAudio('alice');
 
-      const deferredMap = (mod as unknown as {
-        screenShareAudioTracks: Map<string, { track: unknown }>;
-      }).screenShareAudioTracks;
-      const audioElementMapAfter = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const deferredMap = (
+        mod as unknown as {
+          screenShareAudioTracks: Map<string, { track: unknown }>;
+        }
+      ).screenShareAudioTracks;
+      const audioElementMapAfter = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
 
       expect(deferredMap.has('alice')).toBe(true);
       expect(audioElementMapAfter.has('alice:screen-share')).toBe(true);
@@ -2738,12 +2948,10 @@ describe('Screen share and device selection', () => {
       };
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn((source: string) => (
-          source === 'screen_share' ? publication : undefined
-        )),
-        trackPublications: new Map([
-          ['screen-late-sid', publication],
-        ]),
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share' ? publication : undefined,
+        ),
+        trackPublications: new Map([['screen-late-sid', publication]]),
       };
 
       emitRoomEvent('participantConnected', participant);
@@ -2755,12 +2963,16 @@ describe('Screen share and device selection', () => {
 
       emitRoomEvent('trackSubscribed', track, publication, participant);
 
-      const subCallsAfterDuplicate = cbs.calls.filter((c) => c.method === 'onScreenShareSubscribed');
+      const subCallsAfterDuplicate = cbs.calls.filter(
+        (c) => c.method === 'onScreenShareSubscribed',
+      );
       expect(subCallsAfterDuplicate).toHaveLength(1);
 
-      const screenShareElements = (mod as unknown as {
-        screenShareElements: Map<string, { trackSid: string }>;
-      }).screenShareElements;
+      const screenShareElements = (
+        mod as unknown as {
+          screenShareElements: Map<string, { trackSid: string }>;
+        }
+      ).screenShareElements;
       expect(screenShareElements.get('alice')?.trackSid).toBe('screen-late-sid');
 
       mod.disconnect();
@@ -2774,8 +2986,10 @@ describe('Screen share and device selection', () => {
 
       mod.attachScreenShareAudio('missing-user');
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
-      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> }).participantGains;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
+      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> })
+        .participantGains;
 
       expect(audioElementMap.size).toBe(0);
       expect(participantGains.size).toBe(0);
@@ -2799,9 +3013,11 @@ describe('Screen share and device selection', () => {
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
 
-      const participantGains = (mod as unknown as {
-        participantGains: Map<string, { gain: { value: number } }>;
-      }).participantGains;
+      const participantGains = (
+        mod as unknown as {
+          participantGains: Map<string, { gain: { value: number } }>;
+        }
+      ).participantGains;
       const gain = participantGains.get('alice:screen-share');
 
       expect(gain).toBeDefined();
@@ -2825,14 +3041,19 @@ describe('Screen share and device selection', () => {
       mod.attachScreenShareAudio('alice');
       mod.setScreenShareAudioVolume('alice', 50);
 
-      const participantGains = (mod as unknown as {
-        participantGains: Map<string, {
-          gain: {
-            value: number;
-            setValueAtTime: ReturnType<typeof vi.fn>;
-          };
-        }>;
-      }).participantGains;
+      const participantGains = (
+        mod as unknown as {
+          participantGains: Map<
+            string,
+            {
+              gain: {
+                value: number;
+                setValueAtTime: ReturnType<typeof vi.fn>;
+              };
+            }
+          >;
+        }
+      ).participantGains;
       const gain = participantGains.get('alice:screen-share');
 
       expect(gain).toBeDefined();
@@ -2857,14 +3078,19 @@ describe('Screen share and device selection', () => {
       mod.setScreenShareAudioVolume('alice', 0);
       mod.setScreenShareAudioVolume('alice', 70);
 
-      const participantGains = (mod as unknown as {
-        participantGains: Map<string, {
-          gain: {
-            value: number;
-            setValueAtTime: ReturnType<typeof vi.fn>;
-          };
-        }>;
-      }).participantGains;
+      const participantGains = (
+        mod as unknown as {
+          participantGains: Map<
+            string,
+            {
+              gain: {
+                value: number;
+                setValueAtTime: ReturnType<typeof vi.fn>;
+              };
+            }
+          >;
+        }
+      ).participantGains;
       const gain = participantGains.get('alice:screen-share');
 
       expect(gain).toBeDefined();
@@ -2902,7 +3128,8 @@ describe('Screen share and device selection', () => {
       );
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMap = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
 
       expect(audioElementMap.size).toBe(1);
       expect(audioElementMap.has('alice:screen-share')).toBe(true);
@@ -2920,10 +3147,10 @@ describe('Screen share and device selection', () => {
       // Alice is a video sharer — the second audio track (Linux WebKit path) should also be deferred.
       const participant = {
         identity: 'alice',
-        getTrackPublication: vi.fn((source: string) => source === 'screen_share' ? { source: 'screen_share' } : undefined),
-        trackPublications: new Map([
-          ['share-video', { source: 'screen_share' }],
-        ]),
+        getTrackPublication: vi.fn((source: string) =>
+          source === 'screen_share' ? { source: 'screen_share' } : undefined,
+        ),
+        trackPublications: new Map([['share-video', { source: 'screen_share' }]]),
       };
 
       emitRoomEvent(
@@ -2940,10 +3167,13 @@ describe('Screen share and device selection', () => {
         participant,
       );
 
-      const deferredMap = (mod as unknown as {
-        screenShareAudioTracks: Map<string, { track: unknown }>;
-      }).screenShareAudioTracks;
-      const audioElementMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const deferredMap = (
+        mod as unknown as {
+          screenShareAudioTracks: Map<string, { track: unknown }>;
+        }
+      ).screenShareAudioTracks;
+      const audioElementMapBefore = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
 
       expect(audioElementMapBefore.has('alice')).toBe(true);
       expect(audioElementMapBefore.has('alice:screen-share')).toBe(false);
@@ -2952,7 +3182,8 @@ describe('Screen share and device selection', () => {
 
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMapAfter = (mod as unknown as { audioElementMap: Map<string, unknown> }).audioElementMap;
+      const audioElementMapAfter = (mod as unknown as { audioElementMap: Map<string, unknown> })
+        .audioElementMap;
 
       expect(audioElementMapAfter.has('alice:screen-share')).toBe(true);
       expect(createMediaStreamSourceCalls).toBe(2);
@@ -2974,11 +3205,18 @@ describe('Screen share and device selection', () => {
       );
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMap = (mod as unknown as {
-        audioElementMap: Map<string, { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }>;
-      }).audioElementMap;
-      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> }).participantGains;
-      const deferredMap = (mod as unknown as { screenShareAudioTracks: Map<string, unknown> }).screenShareAudioTracks;
+      const audioElementMap = (
+        mod as unknown as {
+          audioElementMap: Map<
+            string,
+            { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }
+          >;
+        }
+      ).audioElementMap;
+      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> })
+        .participantGains;
+      const deferredMap = (mod as unknown as { screenShareAudioTracks: Map<string, unknown> })
+        .screenShareAudioTracks;
       const audioEl = audioElementMap.get('alice:screen-share');
 
       emitRoomEvent(
@@ -3012,11 +3250,18 @@ describe('Screen share and device selection', () => {
       );
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMap = (mod as unknown as {
-        audioElementMap: Map<string, { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }>;
-      }).audioElementMap;
-      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> }).participantGains;
-      const deferredMap = (mod as unknown as { screenShareAudioTracks: Map<string, unknown> }).screenShareAudioTracks;
+      const audioElementMap = (
+        mod as unknown as {
+          audioElementMap: Map<
+            string,
+            { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }
+          >;
+        }
+      ).audioElementMap;
+      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> })
+        .participantGains;
+      const deferredMap = (mod as unknown as { screenShareAudioTracks: Map<string, unknown> })
+        .screenShareAudioTracks;
 
       emitRoomEvent('participantDisconnected', { identity: 'alice' });
 
@@ -3041,11 +3286,18 @@ describe('Screen share and device selection', () => {
       );
       mod.attachScreenShareAudio('alice');
 
-      const audioElementMap = (mod as unknown as {
-        audioElementMap: Map<string, { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }>;
-      }).audioElementMap;
-      const participantSources = (mod as unknown as { participantSources: Map<string, unknown> }).participantSources;
-      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> }).participantGains;
+      const audioElementMap = (
+        mod as unknown as {
+          audioElementMap: Map<
+            string,
+            { pause: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }
+          >;
+        }
+      ).audioElementMap;
+      const participantSources = (mod as unknown as { participantSources: Map<string, unknown> })
+        .participantSources;
+      const participantGains = (mod as unknown as { participantGains: Map<string, unknown> })
+        .participantGains;
       const audioEl = audioElementMap.get('alice:screen-share');
 
       expect(participantSources.has('alice:screen-share')).toBe(true);
@@ -3087,9 +3339,14 @@ describe('Screen share and device selection', () => {
       );
       mod.attachScreenShareAudio('alice');
 
-      const gains = (mod as unknown as {
-        participantGains: Map<string, { gain: { value: number; setValueAtTime: ReturnType<typeof vi.fn> } }>;
-      }).participantGains;
+      const gains = (
+        mod as unknown as {
+          participantGains: Map<
+            string,
+            { gain: { value: number; setValueAtTime: ReturnType<typeof vi.fn> } }
+          >;
+        }
+      ).participantGains;
 
       const micGain = gains.get('alice');
       const sysGain = gains.get('alice:screen-share');
@@ -3121,10 +3378,12 @@ describe('Screen share and device selection', () => {
         fc.asyncProperty(
           fc.uniqueArray(
             fc.record({
-              identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+              identity: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
               timestamp: fc.integer({ min: 1000, max: 999_999_999 }),
             }),
-            { minLength: 2, maxLength: 5, selector: r => r.identity },
+            { minLength: 2, maxLength: 5, selector: (r) => r.identity },
           ),
           async (shares) => {
             resetAll();
@@ -3136,8 +3395,17 @@ describe('Screen share and device selection', () => {
             for (const s of shares) {
               vi.spyOn(Date, 'now').mockReturnValue(s.timestamp);
 
-              emitRoomEvent('trackSubscribed',
-                { kind: 'video', mediaStreamTrack: { id: `screen-${s.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: `sid-${s.identity}` },
+              emitRoomEvent(
+                'trackSubscribed',
+                {
+                  kind: 'video',
+                  mediaStreamTrack: {
+                    id: `screen-${s.identity}`,
+                    addEventListener: vi.fn(),
+                    removeEventListener: vi.fn(),
+                  },
+                  sid: `sid-${s.identity}`,
+                },
                 { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: s.identity },
               );
@@ -3154,14 +3422,14 @@ describe('Screen share and device selection', () => {
             }
 
             // Verify all identities are present
-            const activeIdentities = new Set(active.map(a => a.identity));
+            const activeIdentities = new Set(active.map((a) => a.identity));
             for (const s of shares) {
               expect(activeIdentities.has(s.identity)).toBe(true);
             }
 
             // Verify timestamps match what we set
             for (const s of shares) {
-              const entry = active.find(a => a.identity === s.identity);
+              const entry = active.find((a) => a.identity === s.identity);
               expect(entry).toBeDefined();
               expect(entry!.startedAtMs).toBe(s.timestamp);
             }
@@ -3184,10 +3452,14 @@ describe('Screen share and device selection', () => {
         fc.asyncProperty(
           fc.uniqueArray(
             fc.record({
-              identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
-              trackSid: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+              identity: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
+              trackSid: fc
+                .string({ minLength: 1, maxLength: 20 })
+                .filter((s) => s.trim().length > 0),
             }),
-            { minLength: 2, maxLength: 4, selector: r => r.identity },
+            { minLength: 2, maxLength: 4, selector: (r) => r.identity },
           ),
           async (participants) => {
             resetAll();
@@ -3197,8 +3469,17 @@ describe('Screen share and device selection', () => {
 
             // Subscribe screen shares for all participants
             for (const p of participants) {
-              emitRoomEvent('trackSubscribed',
-                { kind: 'video', mediaStreamTrack: { id: `screen-${p.identity}`, addEventListener: vi.fn(), removeEventListener: vi.fn() }, sid: p.trackSid },
+              emitRoomEvent(
+                'trackSubscribed',
+                {
+                  kind: 'video',
+                  mediaStreamTrack: {
+                    id: `screen-${p.identity}`,
+                    addEventListener: vi.fn(),
+                    removeEventListener: vi.fn(),
+                  },
+                  sid: p.trackSid,
+                },
                 { source: 'screen_share', setEnabled: vi.fn(), setVideoQuality: vi.fn() },
                 { identity: p.identity },
               );
@@ -3208,7 +3489,8 @@ describe('Screen share and device selection', () => {
 
             // Unsubscribe the first participant with the correct trackSid
             const removed = participants[0];
-            emitRoomEvent('trackUnsubscribed',
+            emitRoomEvent(
+              'trackUnsubscribed',
               { kind: 'video', sid: removed.trackSid },
               { source: 'screen_share' },
               { identity: removed.identity },
@@ -3217,16 +3499,17 @@ describe('Screen share and device selection', () => {
             // Remaining shares should still be present
             const remaining = mod.getActiveScreenShares();
             expect(remaining).toHaveLength(participants.length - 1);
-            expect(remaining.find(r => r.identity === removed.identity)).toBeUndefined();
+            expect(remaining.find((r) => r.identity === removed.identity)).toBeUndefined();
 
             // All other participants still present
             for (let i = 1; i < participants.length; i++) {
-              expect(remaining.find(r => r.identity === participants[i].identity)).toBeDefined();
+              expect(remaining.find((r) => r.identity === participants[i].identity)).toBeDefined();
             }
 
             // Stale trackSid unsubscribe does NOT remove the entry
             const target = participants[1];
-            emitRoomEvent('trackUnsubscribed',
+            emitRoomEvent(
+              'trackUnsubscribed',
               { kind: 'video', sid: 'stale-sid-that-does-not-match' },
               { source: 'screen_share' },
               { identity: target.identity },
@@ -3234,7 +3517,7 @@ describe('Screen share and device selection', () => {
 
             // Target should still be present (stale sid was rejected)
             const afterStale = mod.getActiveScreenShares();
-            expect(afterStale.find(r => r.identity === target.identity)).toBeDefined();
+            expect(afterStale.find((r) => r.identity === target.identity)).toBeDefined();
             expect(afterStale).toHaveLength(participants.length - 1);
 
             mod.disconnect();
@@ -3244,13 +3527,11 @@ describe('Screen share and device selection', () => {
       );
     });
   });
-
 });
 
 // ═══ Task 11.4: Event listener cleanup properties (P29, P30, P31) ══
 
 describe('Event listener cleanup', () => {
-
   // Feature: gui-livekit-media, Property 29: AudioContext resume lifecycle
   describe('P29: AudioContext resume lifecycle', () => {
     it('suspended AudioContext registers gesture listener, resumes on click, removes listener', async () => {
@@ -3258,12 +3539,12 @@ describe('Event listener cleanup', () => {
        * Validates: Requirements 21.2, 21.3, 21.4
        */
       await fc.assert(
-        fc.asyncProperty(
-          fc.constantFrom('click', 'keydown'),
-          async (gestureType) => {
-            resetAll();
-            // Make AudioContext start suspended
-            vi.stubGlobal('AudioContext', function AudioContextSuspended(this: Record<string, unknown>) {
+        fc.asyncProperty(fc.constantFrom('click', 'keydown'), async (gestureType) => {
+          resetAll();
+          // Make AudioContext start suspended
+          vi.stubGlobal(
+            'AudioContext',
+            function AudioContextSuspended(this: Record<string, unknown>) {
               audioCtxConstructorCalls++;
               this.state = 'suspended';
               this.currentTime = 0;
@@ -3278,7 +3559,9 @@ describe('Event listener cleanup', () => {
                     }),
                   },
                   connect: vi.fn(),
-                  disconnect: vi.fn(() => { gainDisconnectCalls++; }),
+                  disconnect: vi.fn(() => {
+                    gainDisconnectCalls++;
+                  }),
                 };
                 createdGains.push(node);
                 return node;
@@ -3293,84 +3576,94 @@ describe('Event listener cleanup', () => {
                 createMediaStreamSourceCalls++;
                 return { connect: vi.fn(), disconnect: vi.fn() };
               });
-              this.close = vi.fn(async () => { audioCtxCloseCalls++; });
-              this.resume = vi.fn(async () => { (this as Record<string, unknown>).state = 'running'; });
-              return this;
-            });
-
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
-            await mod.connect('wss://sfu', 'tok');
-
-            // System event about suspended state should have been logged
-            const suspendedEvents = cbs.calls.filter(c =>
-              c.method === 'onSystemEvent' && (c.args[0] as string).includes('suspended'),
-            );
-            expect(suspendedEvents.length).toBeGreaterThanOrEqual(1);
-
-            // Gesture listeners should be registered
-            const clickListeners = docListeners.get('click') ?? new Set();
-            const keydownListeners = docListeners.get('keydown') ?? new Set();
-            expect(clickListeners.size + keydownListeners.size).toBeGreaterThanOrEqual(1);
-
-            // Simulate gesture
-            const listeners = docListeners.get(gestureType);
-            if (listeners && listeners.size > 0) {
-              const handler = [...listeners][0];
-              handler();
-              await tick();
-            }
-
-            // Resume event should have been logged
-            const resumeEvents = cbs.calls.filter(c =>
-              c.method === 'onSystemEvent' && (c.args[0] as string).includes('resumed'),
-            );
-            expect(resumeEvents.length).toBeGreaterThanOrEqual(1);
-
-            mod.disconnect();
-
-            // Restore normal AudioContext mock
-            vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unknown>) {
-              audioCtxConstructorCalls++;
-              this.state = 'running';
-              this.currentTime = 0;
-              this.destination = {};
-              this.createGain = vi.fn(() => {
-                createGainCalls++;
-                const node = {
-                  gain: {
-                    value: 1,
-                    setValueAtTime: vi.fn((value: number) => {
-                      node.gain.value = value;
-                    }),
-                  },
-                  connect: vi.fn(),
-                  disconnect: vi.fn(() => { gainDisconnectCalls++; }),
-                };
-                createdGains.push(node);
-                return node;
+              this.close = vi.fn(async () => {
+                audioCtxCloseCalls++;
               });
-              this.createAnalyser = vi.fn(() => ({
-                fftSize: 2048,
+              this.resume = vi.fn(async () => {
+                this.state = 'running';
+              });
+              return this;
+            },
+          );
+
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
+          await mod.connect('wss://sfu', 'tok');
+
+          // System event about suspended state should have been logged
+          const suspendedEvents = cbs.calls.filter(
+            (c) => c.method === 'onSystemEvent' && (c.args[0] as string).includes('suspended'),
+          );
+          expect(suspendedEvents.length).toBeGreaterThanOrEqual(1);
+
+          // Gesture listeners should be registered
+          const clickListeners = docListeners.get('click') ?? new Set();
+          const keydownListeners = docListeners.get('keydown') ?? new Set();
+          expect(clickListeners.size + keydownListeners.size).toBeGreaterThanOrEqual(1);
+
+          // Simulate gesture
+          const listeners = docListeners.get(gestureType);
+          if (listeners && listeners.size > 0) {
+            const handler = [...listeners][0];
+            handler();
+            await tick();
+          }
+
+          // Resume event should have been logged
+          const resumeEvents = cbs.calls.filter(
+            (c) => c.method === 'onSystemEvent' && (c.args[0] as string).includes('resumed'),
+          );
+          expect(resumeEvents.length).toBeGreaterThanOrEqual(1);
+
+          mod.disconnect();
+
+          // Restore normal AudioContext mock
+          vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unknown>) {
+            audioCtxConstructorCalls++;
+            this.state = 'running';
+            this.currentTime = 0;
+            this.destination = {};
+            this.createGain = vi.fn(() => {
+              createGainCalls++;
+              const node = {
+                gain: {
+                  value: 1,
+                  setValueAtTime: vi.fn((value: number) => {
+                    node.gain.value = value;
+                  }),
+                },
                 connect: vi.fn(),
-                disconnect: vi.fn(),
-                getFloatTimeDomainData: vi.fn(),
-              }));
-              this.createMediaStreamSource = vi.fn(() => {
-                createMediaStreamSourceCalls++;
-                return { connect: vi.fn(), disconnect: vi.fn() };
-              });
-              this.createMediaStreamDestination = vi.fn(() => ({
-                stream: { getAudioTracks: () => [{ id: 'mock-wasapi-track', kind: 'audio', stop: vi.fn() }] },
-                disconnect: vi.fn(),
-              }));
-              this.audioWorklet = { addModule: vi.fn(async () => {}) };
-              this.close = vi.fn(async () => { audioCtxCloseCalls++; });
-              this.resume = vi.fn(async () => {});
-              return this;
+                disconnect: vi.fn(() => {
+                  gainDisconnectCalls++;
+                }),
+              };
+              createdGains.push(node);
+              return node;
             });
-          },
-        ),
+            this.createAnalyser = vi.fn(() => ({
+              fftSize: 2048,
+              connect: vi.fn(),
+              disconnect: vi.fn(),
+              getFloatTimeDomainData: vi.fn(),
+            }));
+            this.createMediaStreamSource = vi.fn(() => {
+              createMediaStreamSourceCalls++;
+              return { connect: vi.fn(), disconnect: vi.fn() };
+            });
+            this.createMediaStreamDestination = vi.fn(() => ({
+              stream: {
+                getAudioTracks: () => [{ id: 'mock-wasapi-track', kind: 'audio', stop: vi.fn() }],
+              },
+              disconnect: vi.fn(),
+            }));
+            this.audioWorklet = { addModule: vi.fn(async () => {}) };
+            this.close = vi.fn(async () => {
+              audioCtxCloseCalls++;
+            });
+            this.resume = vi.fn(async () => {});
+            return this;
+          });
+        }),
         { numRuns: 10 },
       );
     });
@@ -3383,33 +3676,30 @@ describe('Event listener cleanup', () => {
        * Validates: Requirements 18.5
        */
       await fc.assert(
-        fc.asyncProperty(
-          fc.constant(null),
-          async () => {
-            resetAll();
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
-            await driveToConnected(mod);
+        fc.asyncProperty(fc.constant(null), async () => {
+          resetAll();
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
+          await driveToConnected(mod);
 
-            // Before disconnect: room.on() was called multiple times
-            const onCallCount = mockRoom.on.mock.calls.length;
-            expect(onCallCount).toBeGreaterThan(0);
+          // Before disconnect: room.on() was called multiple times
+          const onCallCount = mockRoom.on.mock.calls.length;
+          expect(onCallCount).toBeGreaterThan(0);
 
-            mod.disconnect();
+          mod.disconnect();
 
-            // After disconnect: room.off() was called for each listener
-            const offCallCount = mockRoom.off.mock.calls.length;
-            expect(offCallCount).toBe(onCallCount);
+          // After disconnect: room.off() was called for each listener
+          const offCallCount = mockRoom.off.mock.calls.length;
+          expect(offCallCount).toBe(onCallCount);
 
-            // Verify each on() call has a matching off() call
-            for (const [event, handler] of mockRoom.on.mock.calls) {
-              const matchingOff = mockRoom.off.mock.calls.find(
-                ([e, h]: [string, unknown]) => e === event && h === handler,
-              );
-              expect(matchingOff).toBeDefined();
-            }
-          },
-        ),
+          // Verify each on() call has a matching off() call
+          for (const [event, handler] of mockRoom.on.mock.calls) {
+            const matchingOff = mockRoom.off.mock.calls.find(
+              ([e, h]: [string, unknown]) => e === event && h === handler,
+            );
+            expect(matchingOff).toBeDefined();
+          }
+        }),
         { numRuns: 20 },
       );
     });
@@ -3422,48 +3712,42 @@ describe('Event listener cleanup', () => {
        * Validates: Requirements 18.4, 18.5
        */
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 1, max: 5 }),
-          async (cycles) => {
+        fc.asyncProperty(fc.integer({ min: 1, max: 5 }), async (cycles) => {
+          resetAll();
+          const cbs = createMockCallbacks();
+
+          // Establish baseline listener count from a single connect
+          const mod1 = new LiveKitModule(cbs);
+          await driveToConnected(mod1);
+          const baselineListenerCount = mockRoom.on.mock.calls.length;
+          expect(baselineListenerCount).toBeGreaterThan(0);
+          mod1.disconnect();
+
+          // After disconnect, all listeners removed
+          expect(mockRoom.off.mock.calls.length).toBe(baselineListenerCount);
+
+          // Run N reconnection cycles
+          for (let i = 0; i < cycles; i++) {
             resetAll();
-            const cbs = createMockCallbacks();
+            const mod = new LiveKitModule(cbs);
+            await driveToConnected(mod);
 
-            // Establish baseline listener count from a single connect
-            const mod1 = new LiveKitModule(cbs);
-            await driveToConnected(mod1);
-            const baselineListenerCount = mockRoom.on.mock.calls.length;
-            expect(baselineListenerCount).toBeGreaterThan(0);
-            mod1.disconnect();
+            const currentListenerCount = mockRoom.on.mock.calls.length;
+            expect(currentListenerCount).toBe(baselineListenerCount);
 
-            // After disconnect, all listeners removed
+            mod.disconnect();
             expect(mockRoom.off.mock.calls.length).toBe(baselineListenerCount);
-
-            // Run N reconnection cycles
-            for (let i = 0; i < cycles; i++) {
-              resetAll();
-              const mod = new LiveKitModule(cbs);
-              await driveToConnected(mod);
-
-              const currentListenerCount = mockRoom.on.mock.calls.length;
-              expect(currentListenerCount).toBe(baselineListenerCount);
-
-              mod.disconnect();
-              expect(mockRoom.off.mock.calls.length).toBe(baselineListenerCount);
-            }
-          },
-        ),
+          }
+        }),
         { numRuns: 20 },
       );
     });
   });
-
 });
-
 
 // ═══ Screen share quality optimization ═════════════════════════════
 
 describe('Screen share quality optimization', () => {
-
   // Feature: screen-share-quality, Property 1: Capture options contain all required fields
   describe('P1: Capture options contain all required fields', () => {
     it('startScreenShare passes capture options with correct resolution, fps, contentHint, surface options, and audio', async () => {
@@ -3473,8 +3757,8 @@ describe('Screen share quality optimization', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.record({
-            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter(s => s.trim().length > 0),
-            identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+            identity: fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
           }),
           async ({ roomName, identity }) => {
             resetAll();
@@ -3489,7 +3773,9 @@ describe('Screen share quality optimization', () => {
             await mod.startScreenShare();
 
             // Find the setScreenShareEnabled call
-            const shareCalls = sdkCalls.slice(callsBefore).filter(c => c.method === 'setScreenShareEnabled');
+            const shareCalls = sdkCalls
+              .slice(callsBefore)
+              .filter((c) => c.method === 'setScreenShareEnabled');
             expect(shareCalls).toHaveLength(1);
 
             const [enabled, captureOpts] = shareCalls[0].args as [boolean, Record<string, unknown>];
@@ -3533,8 +3819,8 @@ describe('Screen share quality optimization', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.record({
-            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter(s => s.trim().length > 0),
-            identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+            identity: fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
           }),
           async ({ roomName, identity }) => {
             resetAll();
@@ -3548,10 +3834,16 @@ describe('Screen share quality optimization', () => {
             await mod.startScreenShare();
 
             // Find the setScreenShareEnabled call
-            const shareCalls = sdkCalls.slice(callsBefore).filter(c => c.method === 'setScreenShareEnabled');
+            const shareCalls = sdkCalls
+              .slice(callsBefore)
+              .filter((c) => c.method === 'setScreenShareEnabled');
             expect(shareCalls).toHaveLength(1);
 
-            const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
+            const [, , publishOpts] = shareCalls[0].args as [
+              boolean,
+              unknown,
+              Record<string, unknown>,
+            ];
             expect(publishOpts).toBeDefined();
 
             // videoCodec: 'vp8' (W4 decision 2026-05-11: vp8sim wins for motion-heavy content)
@@ -3578,11 +3870,11 @@ describe('Screen share quality optimization', () => {
             expect(layers).toBeDefined();
             expect(layers).toHaveLength(2);
 
-            const heights = layers.map(l => l.height);
+            const heights = layers.map((l) => l.height);
             expect(heights).toContain(360);
             expect(heights).toContain(720);
 
-            const widths = layers.map(l => l.width);
+            const widths = layers.map((l) => l.width);
             expect(widths).toContain(640);
             expect(widths).toContain(1280);
 
@@ -3603,7 +3895,9 @@ describe('Screen share quality optimization', () => {
       const callsBefore = sdkCalls.length;
       await mod.startScreenShare();
 
-      const shareCalls = sdkCalls.slice(callsBefore).filter((call) => call.method === 'setScreenShareEnabled');
+      const shareCalls = sdkCalls
+        .slice(callsBefore)
+        .filter((call) => call.method === 'setScreenShareEnabled');
       expect(shareCalls).toHaveLength(1);
 
       const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
@@ -3624,7 +3918,9 @@ describe('Screen share quality optimization', () => {
       const callsBefore = sdkCalls.length;
       await mod.startScreenShare();
 
-      const shareCalls = sdkCalls.slice(callsBefore).filter((call) => call.method === 'setScreenShareEnabled');
+      const shareCalls = sdkCalls
+        .slice(callsBefore)
+        .filter((call) => call.method === 'setScreenShareEnabled');
       expect(shareCalls).toHaveLength(1);
 
       const [, , publishOpts] = shareCalls[0].args as [boolean, unknown, Record<string, unknown>];
@@ -3655,7 +3951,8 @@ describe('Screen share quality optimization', () => {
       const overconstrainedErr = new Error('width is too large');
       overconstrainedErr.name = 'OverconstrainedError';
 
-      mockRoom.localParticipant.setScreenShareEnabled = vi.fn()
+      mockRoom.localParticipant.setScreenShareEnabled = vi
+        .fn()
         .mockRejectedValueOnce(overconstrainedErr)
         .mockResolvedValueOnce(true) as typeof mockRoom.localParticipant.setScreenShareEnabled;
 
@@ -3679,10 +3976,14 @@ describe('Screen share quality optimization', () => {
       }
 
       // onSystemEvent called with constraint rejection message
-      const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
-      expect(sysEvents.some(c =>
-        typeof c.args[0] === 'string' && (c.args[0] as string).toLowerCase().includes('constraints rejected'),
-      )).toBe(true);
+      const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
+      expect(
+        sysEvents.some(
+          (c) =>
+            typeof c.args[0] === 'string' &&
+            c.args[0].toLowerCase().includes('constraints rejected'),
+        ),
+      ).toBe(true);
 
       mod.disconnect();
       vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
@@ -3699,9 +4000,12 @@ describe('Screen share quality optimization', () => {
       overconstrainedErr.name = 'OverconstrainedError';
       const fallbackErr = new Error('user cancelled picker');
 
-      mockRoom.localParticipant.setScreenShareEnabled = vi.fn()
+      mockRoom.localParticipant.setScreenShareEnabled = vi
+        .fn()
         .mockRejectedValueOnce(overconstrainedErr)
-        .mockRejectedValueOnce(fallbackErr) as typeof mockRoom.localParticipant.setScreenShareEnabled;
+        .mockRejectedValueOnce(
+          fallbackErr,
+        ) as typeof mockRoom.localParticipant.setScreenShareEnabled;
 
       const result = await mod.startScreenShare();
       expect(result).toBe(false);
@@ -3710,10 +4014,12 @@ describe('Screen share quality optimization', () => {
       expect(mockRoom.localParticipant.setScreenShareEnabled.mock.calls).toHaveLength(2);
 
       // onSystemEvent called with failure message
-      const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
-      expect(sysEvents.some(c =>
-        typeof c.args[0] === 'string' && (c.args[0] as string).toLowerCase().includes('failed'),
-      )).toBe(true);
+      const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
+      expect(
+        sysEvents.some(
+          (c) => typeof c.args[0] === 'string' && c.args[0].toLowerCase().includes('failed'),
+        ),
+      ).toBe(true);
 
       mod.disconnect();
     });
@@ -3728,8 +4034,8 @@ describe('Screen share quality optimization', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.record({
-            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter(s => s.trim().length > 0),
-            identity: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            roomName: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+            identity: fc.string({ minLength: 1, maxLength: 20 }).filter((s) => s.trim().length > 0),
           }),
           async ({ roomName, identity }) => {
             resetAll();
@@ -3800,10 +4106,31 @@ describe('Screen share quality optimization', () => {
       /**
        * Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5
        */
-      const EXPECTED_PRESETS: Record<string, { w: number; h: number; fps: number; degradation: string; contentHint: string }> = {
-        low:  { w: 1920, h: 1080, fps: 60, degradation: 'maintain-framerate', contentHint: 'motion' },
-        high: { w: 2560, h: 1440, fps: 30, degradation: 'maintain-resolution', contentHint: 'detail' },
-        max:  { w: 2560, h: 1440, fps: 60, degradation: 'maintain-resolution', contentHint: 'detail' },
+      const EXPECTED_PRESETS: Record<
+        string,
+        { w: number; h: number; fps: number; degradation: string; contentHint: string }
+      > = {
+        low: {
+          w: 1920,
+          h: 1080,
+          fps: 60,
+          degradation: 'maintain-framerate',
+          contentHint: 'motion',
+        },
+        high: {
+          w: 2560,
+          h: 1440,
+          fps: 30,
+          degradation: 'maintain-resolution',
+          contentHint: 'detail',
+        },
+        max: {
+          w: 2560,
+          h: 1440,
+          fps: 60,
+          degradation: 'maintain-resolution',
+          contentHint: 'detail',
+        },
       };
 
       await fc.assert(
@@ -3850,10 +4177,10 @@ describe('Screen share quality optimization', () => {
             });
 
             // System event emitted with the quality tier name
-            const sysEvents = cbs.calls.filter(c => c.method === 'onSystemEvent');
-            expect(sysEvents.some(c =>
-              typeof c.args[0] === 'string' && (c.args[0] as string).includes(quality),
-            )).toBe(true);
+            const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
+            expect(
+              sysEvents.some((c) => typeof c.args[0] === 'string' && c.args[0].includes(quality)),
+            ).toBe(true);
 
             mod.disconnect();
           },
@@ -3871,7 +4198,7 @@ describe('Screen share quality optimization', () => {
       await mod.setScreenShareQuality('max');
 
       expect((mod as unknown as Record<string, unknown>).currentQuality).toBe('max');
-      expect(cbs.calls.filter(c => c.method === 'onSystemEvent')).toHaveLength(0);
+      expect(cbs.calls.filter((c) => c.method === 'onSystemEvent')).toHaveLength(0);
     });
 
     it('quality preset failure retains previous quality and does not emit event', async () => {
@@ -3906,8 +4233,8 @@ describe('Screen share quality optimization', () => {
       // First set to 'low' successfully
       mockMediaStreamTrack.applyConstraints.mockResolvedValueOnce(undefined);
       await mod.setScreenShareQuality('low');
-      const eventsAfterLow = cbs.calls.filter(c =>
-        c.method === 'onSystemEvent' && (c.args[0] as string).includes('low'),
+      const eventsAfterLow = cbs.calls.filter(
+        (c) => c.method === 'onSystemEvent' && (c.args[0] as string).includes('low'),
       );
       expect(eventsAfterLow).toHaveLength(1);
 
@@ -3916,8 +4243,8 @@ describe('Screen share quality optimization', () => {
       await mod.setScreenShareQuality('max');
 
       // No system event for 'max' (failure path doesn't emit)
-      const eventsForMax = cbs.calls.filter(c =>
-        c.method === 'onSystemEvent' && (c.args[0] as string).includes('max'),
+      const eventsForMax = cbs.calls.filter(
+        (c) => c.method === 'onSystemEvent' && (c.args[0] as string).includes('max'),
       );
       expect(eventsForMax).toHaveLength(0);
 
@@ -3976,7 +4303,9 @@ describe('Screen share quality optimization', () => {
             await mod.startScreenShare();
 
             // Capture the original start call's capture and publish options
-            const startCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === true);
+            const startCalls = sdkCalls.filter(
+              (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+            );
             expect(startCalls).toHaveLength(1);
             const originalCapture = startCalls[0].args[1] as Record<string, unknown>;
             const originalPublish = startCalls[0].args[2] as Record<string, unknown>;
@@ -3987,17 +4316,23 @@ describe('Screen share quality optimization', () => {
             await mod.restartScreenShareWithAudio(withAudio);
 
             // Find the restart's setScreenShareEnabled(true, ...) call
-            const restartStartCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === true);
+            const restartStartCalls = sdkCalls.filter(
+              (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+            );
             expect(restartStartCalls).toHaveLength(1);
             const restartCapture = restartStartCalls[0].args[1] as Record<string, unknown>;
             const restartPublish = restartStartCalls[0].args[2] as Record<string, unknown>;
 
             // Publish options must match exactly
             expect(restartPublish.videoCodec).toBe(originalPublish.videoCodec);
-            expect(restartPublish.degradationPreference).toBe(originalPublish.degradationPreference);
+            expect(restartPublish.degradationPreference).toBe(
+              originalPublish.degradationPreference,
+            );
             expect(restartPublish.screenShareEncoding).toEqual(originalPublish.screenShareEncoding);
             expect(restartPublish.backupCodec).toEqual(originalPublish.backupCodec);
-            expect(restartPublish.screenShareSimulcastLayers).toEqual(originalPublish.screenShareSimulcastLayers);
+            expect(restartPublish.screenShareSimulcastLayers).toEqual(
+              originalPublish.screenShareSimulcastLayers,
+            );
 
             // Capture options must match (except audio, which uses the withAudio parameter)
             const origRes = originalCapture.resolution as Record<string, unknown>;
@@ -4008,11 +4343,15 @@ describe('Screen share quality optimization', () => {
             expect(restartCapture.contentHint).toBe(originalCapture.contentHint);
             expect(restartCapture.surfaceSwitching).toBe(originalCapture.surfaceSwitching);
             expect(restartCapture.selfBrowserSurface).toBe(originalCapture.selfBrowserSurface);
-            expect(restartCapture.suppressLocalAudioPlayback).toBe(originalCapture.suppressLocalAudioPlayback);
+            expect(restartCapture.suppressLocalAudioPlayback).toBe(
+              originalCapture.suppressLocalAudioPlayback,
+            );
             expect(restartCapture.audio).toBe(withAudio);
 
             // Verify stop was called before restart
-            const stopCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === false);
+            const stopCalls = sdkCalls.filter(
+              (c) => c.method === 'setScreenShareEnabled' && c.args[0] === false,
+            );
             expect(stopCalls).toHaveLength(1);
             const stopIdx = sdkCalls.indexOf(stopCalls[0]);
             const startIdx = sdkCalls.indexOf(restartStartCalls[0]);
@@ -4033,74 +4372,77 @@ describe('Screen share quality optimization', () => {
        * setScreenShareEnabled calls happen when an existing publication is present.
        */
       await fc.assert(
-        fc.asyncProperty(
-          fc.constant(undefined),
-          async () => {
-            resetAll();
+        fc.asyncProperty(fc.constant(undefined), async () => {
+          resetAll();
 
-            const mockMediaDevices = createMockMediaDevices();
-            vi.stubGlobal('navigator', {
-              userAgent: '',
-              userActivation: { isActive: true },
-              mediaDevices: mockMediaDevices,
-            });
+          const mockMediaDevices = createMockMediaDevices();
+          vi.stubGlobal('navigator', {
+            userAgent: '',
+            userActivation: { isActive: true },
+            mediaDevices: mockMediaDevices,
+          });
 
-            const mockMediaStreamTrack = {
-              contentHint: '' as string,
-              applyConstraints: vi.fn().mockResolvedValue(undefined),
-              getSettings: vi.fn().mockReturnValue({ width: 2560, height: 1440, frameRate: 60 }),
-            };
+          const mockMediaStreamTrack = {
+            contentHint: '' as string,
+            applyConstraints: vi.fn().mockResolvedValue(undefined),
+            getSettings: vi.fn().mockReturnValue({ width: 2560, height: 1440, frameRate: 60 }),
+          };
 
-            const mockScreenSharePublication = {
-              track: {
-                mediaStreamTrack: mockMediaStreamTrack,
-                replaceTrack: vi.fn(async () => {}),
-              },
-              source: 'screen_share',
-            };
+          const mockScreenSharePublication = {
+            track: {
+              mediaStreamTrack: mockMediaStreamTrack,
+              replaceTrack: vi.fn(async () => {}),
+            },
+            source: 'screen_share',
+          };
 
-            (mockRoom.localParticipant as Record<string, unknown>).getTrackPublication = vi.fn(
-              (source: string) => {
-                if (source === 'screen_share') return mockScreenSharePublication;
-                return undefined;
-              },
-            );
+          (mockRoom.localParticipant as Record<string, unknown>).getTrackPublication = vi.fn(
+            (source: string) => {
+              if (source === 'screen_share') return mockScreenSharePublication;
+              return undefined;
+            },
+          );
 
-            const cbs = createMockCallbacks();
-            const mod = new LiveKitModule(cbs);
-            await driveToConnected(mod);
+          const cbs = createMockCallbacks();
+          const mod = new LiveKitModule(cbs);
+          await driveToConnected(mod);
 
-            // Original start — capture its options for reference
-            await mod.startScreenShare();
-            const startCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === true);
-            expect(startCalls).toHaveLength(1);
-            const originalCapture = startCalls[0].args[1] as Record<string, unknown>;
+          // Original start — capture its options for reference
+          await mod.startScreenShare();
+          const startCalls = sdkCalls.filter(
+            (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+          );
+          expect(startCalls).toHaveLength(1);
+          const originalCapture = startCalls[0].args[1] as Record<string, unknown>;
 
-            sdkCalls.length = 0;
+          sdkCalls.length = 0;
 
-            await mod.changeScreenShareSource();
+          await mod.changeScreenShareSource();
 
-            // changeScreenShareSource must NOT call setScreenShareEnabled when a
-            // publication is already active — it uses replaceTrack instead.
-            expect(sdkCalls.filter(c => c.method === 'setScreenShareEnabled')).toHaveLength(0);
+          // changeScreenShareSource must NOT call setScreenShareEnabled when a
+          // publication is already active — it uses replaceTrack instead.
+          expect(sdkCalls.filter((c) => c.method === 'setScreenShareEnabled')).toHaveLength(0);
 
-            // replaceTrack must have been called on the existing track.
-            expect(mockScreenSharePublication.track.replaceTrack).toHaveBeenCalledTimes(1);
+          // replaceTrack must have been called on the existing track.
+          expect(mockScreenSharePublication.track.replaceTrack).toHaveBeenCalledTimes(1);
 
-            // getDisplayMedia must have been called with constraints that match the
-            // capture profile used at startScreenShare time.
-            expect(mockMediaDevices.getDisplayMedia).toHaveBeenCalledTimes(1);
-            const gdmArgs = (mockMediaDevices.getDisplayMedia.mock.calls as unknown as Array<[{ video: Record<string, unknown> }]>)[0][0];
-            const origRes = originalCapture.resolution as Record<string, unknown>;
-            expect(gdmArgs.video.width).toBe(origRes.width);
-            expect(gdmArgs.video.height).toBe(origRes.height);
-            expect(gdmArgs.video.frameRate).toBe(origRes.frameRate);
-            expect(gdmArgs.video.surfaceSwitching).toBe(originalCapture.surfaceSwitching);
-            expect(gdmArgs.video.selfBrowserSurface).toBe(originalCapture.selfBrowserSurface);
+          // getDisplayMedia must have been called with constraints that match the
+          // capture profile used at startScreenShare time.
+          expect(mockMediaDevices.getDisplayMedia).toHaveBeenCalledTimes(1);
+          const gdmArgs = (
+            mockMediaDevices.getDisplayMedia.mock.calls as unknown as Array<
+              [{ video: Record<string, unknown> }]
+            >
+          )[0][0];
+          const origRes = originalCapture.resolution as Record<string, unknown>;
+          expect(gdmArgs.video.width).toBe(origRes.width);
+          expect(gdmArgs.video.height).toBe(origRes.height);
+          expect(gdmArgs.video.frameRate).toBe(origRes.frameRate);
+          expect(gdmArgs.video.surfaceSwitching).toBe(originalCapture.surfaceSwitching);
+          expect(gdmArgs.video.selfBrowserSurface).toBe(originalCapture.selfBrowserSurface);
 
-            mod.disconnect();
-          },
-        ),
+          mod.disconnect();
+        }),
         { numRuns: 20 },
       );
     });
@@ -4200,7 +4542,8 @@ describe('Screen share quality optimization', () => {
 
       const mockMediaStreamTrack = {
         contentHint: '' as string,
-        applyConstraints: vi.fn()
+        applyConstraints: vi
+          .fn()
           .mockRejectedValueOnce(new Error('track not ready'))
           .mockResolvedValueOnce(undefined),
         getSettings: vi.fn().mockReturnValue({ width: 2560, height: 1440, frameRate: 60 }),
@@ -4245,8 +4588,8 @@ describe('Screen share quality optimization', () => {
         expect(mockMediaStreamTrack.contentHint).toBe('detail');
 
         // No retry failure warning (second call succeeded)
-        const retryFailWarns = warnSpy.mock.calls.filter(
-          args => args.some(a => typeof a === 'string' && a.includes('failed after retry')),
+        const retryFailWarns = warnSpy.mock.calls.filter((args) =>
+          args.some((a) => typeof a === 'string' && a.includes('failed after retry')),
         );
         expect(retryFailWarns).toHaveLength(0);
 
@@ -4262,7 +4605,8 @@ describe('Screen share quality optimization', () => {
 
       const mockMediaStreamTrack = {
         contentHint: '' as string,
-        applyConstraints: vi.fn()
+        applyConstraints: vi
+          .fn()
           .mockRejectedValueOnce(new Error('track not ready'))
           .mockRejectedValueOnce(new Error('still not ready')),
         getSettings: vi.fn().mockReturnValue({ width: 2560, height: 1440, frameRate: 60 }),
@@ -4304,8 +4648,8 @@ describe('Screen share quality optimization', () => {
         expect(mockMediaStreamTrack.applyConstraints).toHaveBeenCalledTimes(2);
 
         // console.warn called with retry failure message
-        const retryFailWarns = warnSpy.mock.calls.filter(
-          args => args.some(a => typeof a === 'string' && a.includes('failed after retry')),
+        const retryFailWarns = warnSpy.mock.calls.filter((args) =>
+          args.some((a) => typeof a === 'string' && a.includes('failed after retry')),
         );
         expect(retryFailWarns.length).toBeGreaterThanOrEqual(1);
 
@@ -4381,7 +4725,11 @@ describe('Screen share quality optimization', () => {
               expect(qualityInfoSpy).toHaveBeenCalledTimes(1);
 
               // Verify the reported values match getSettings(), with 0 for missing values
-              const reported = qualityInfoSpy.mock.calls[0][0] as { width: number; height: number; frameRate: number };
+              const reported = qualityInfoSpy.mock.calls[0][0] as {
+                width: number;
+                height: number;
+                frameRate: number;
+              };
               expect(reported.width).toBe(width ?? 0);
               expect(reported.height).toBe(height ?? 0);
               expect(reported.frameRate).toBe(frameRate ?? 0);
@@ -4396,35 +4744,37 @@ describe('Screen share quality optimization', () => {
       );
     });
   });
-
 });
-
 
 // ═══ Screen share sender stats polling ═════════════════════════════
 
 describe('Screen share sender stats polling', () => {
-
   /**
    * Validates: Requirement 8.2
    * Task 5.2: Periodic sender stats logging during active screen share
    */
 
   /** Helper: create a mock RTCStatsReport with outbound-rtp video stats */
-  function createMockStatsReport(overrides: {
-    bytesSent?: number;
-    timestamp?: number;
-    framesPerSecond?: number;
-    qualityLimitationReason?: string;
-  } = {}): RTCStatsReport {
+  function createMockStatsReport(
+    overrides: {
+      bytesSent?: number;
+      timestamp?: number;
+      framesPerSecond?: number;
+      qualityLimitationReason?: string;
+    } = {},
+  ): RTCStatsReport {
     const entries: Array<[string, Record<string, unknown>]> = [
-      ['outbound-rtp-video', {
-        type: 'outbound-rtp',
-        kind: 'video',
-        bytesSent: overrides.bytesSent ?? 500000,
-        timestamp: overrides.timestamp ?? 1000000,
-        framesPerSecond: overrides.framesPerSecond ?? 30,
-        qualityLimitationReason: overrides.qualityLimitationReason ?? 'none',
-      }],
+      [
+        'outbound-rtp-video',
+        {
+          type: 'outbound-rtp',
+          kind: 'video',
+          bytesSent: overrides.bytesSent ?? 500000,
+          timestamp: overrides.timestamp ?? 1000000,
+          framesPerSecond: overrides.framesPerSecond ?? 30,
+          qualityLimitationReason: overrides.qualityLimitationReason ?? 'none',
+        },
+      ],
     ];
     const map = new Map(entries);
     return {
@@ -4460,7 +4810,8 @@ describe('Screen share sender stats polling', () => {
     };
     (mockRoom.localParticipant as Record<string, unknown>).getTrackPublication = vi.fn(
       (source: string) => {
-        if (source === 'screen_share') return { track: { mediaStreamTrack: mockMediaStreamTrack }, source: 'screen_share' };
+        if (source === 'screen_share')
+          return { track: { mediaStreamTrack: mockMediaStreamTrack }, source: 'screen_share' };
         return undefined;
       },
     );
@@ -4491,8 +4842,8 @@ describe('Screen share sender stats polling', () => {
       await mod.startScreenShare();
 
       // No stats logged yet (interval hasn't fired)
-      const statsLogsBefore = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const statsLogsBefore = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogsBefore).toHaveLength(0);
 
@@ -4500,21 +4851,27 @@ describe('Screen share sender stats polling', () => {
       vi.advanceTimersByTime(5000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const statsLogs1 = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const statsLogs1 = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs1).toHaveLength(1);
       // First poll has no previous data, so bitrate=0
-      expect(statsLogs1[0].some((a: unknown) =>
-        typeof a === 'string' && (a as string).includes('bitrate=') && (a as string).includes('fps=30') && (a as string).includes('qualityLimitation=none'),
-      )).toBe(true);
+      expect(
+        statsLogs1[0].some(
+          (a: unknown) =>
+            typeof a === 'string' &&
+            a.includes('bitrate=') &&
+            a.includes('fps=30') &&
+            a.includes('qualityLimitation=none'),
+        ),
+      ).toBe(true);
 
       // Advance another 5 seconds — second poll (now has delta for bitrate)
       vi.advanceTimersByTime(5000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const statsLogs2 = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const statsLogs2 = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs2).toHaveLength(2);
 
@@ -4544,8 +4901,8 @@ describe('Screen share sender stats polling', () => {
       vi.advanceTimersByTime(5000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const countAfterFirst = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const countAfterFirst = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(countAfterFirst).toBe(1);
 
@@ -4556,8 +4913,8 @@ describe('Screen share sender stats polling', () => {
       vi.advanceTimersByTime(10000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const countAfterStop = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const countAfterStop = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(countAfterStop).toBe(countAfterFirst);
 
@@ -4571,7 +4928,9 @@ describe('Screen share sender stats polling', () => {
   it('logs warning and skips cycle on stats polling failure', async () => {
     resetAll();
 
-    attachMockPublisher(async () => { throw new Error('stats unavailable'); });
+    attachMockPublisher(async () => {
+      throw new Error('stats unavailable');
+    });
     attachMockScreenShareTrack();
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -4589,14 +4948,14 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       // No stats log (failed)
-      const statsLogs = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const statsLogs = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs).toHaveLength(0);
 
       // Warning logged about failure
-      const warnLogs = warnSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('stats polling failed')),
+      const warnLogs = warnSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('stats polling failed')),
       );
       expect(warnLogs.length).toBeGreaterThanOrEqual(1);
 
@@ -4634,8 +4993,8 @@ describe('Screen share sender stats polling', () => {
       vi.advanceTimersByTime(5000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const count1 = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const count1 = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(count1).toBe(1);
 
@@ -4646,8 +5005,8 @@ describe('Screen share sender stats polling', () => {
       vi.advanceTimersByTime(5000);
       await vi.advanceTimersByTimeAsync(0);
 
-      const count2 = logSpy.mock.calls.filter(
-        args => args.some(a => typeof a === 'string' && (a as string).includes('screen share stats:')),
+      const count2 = logSpy.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(count2).toBe(2);
 
@@ -4657,14 +5016,11 @@ describe('Screen share sender stats polling', () => {
       logSpy.mockRestore();
     }
   });
-
 });
-
 
 // ═══ Adaptive quality (Phase 1) ════════════════════════════════════
 
 describe('Adaptive quality', () => {
-
   /**
    * Helper: create a mock RTCStatsReport with both outbound-rtp (packetsSent)
    * and remote-inbound-rtp (packetsLost) entries to produce a desired packet
@@ -4684,20 +5040,26 @@ describe('Adaptive quality', () => {
     const lost = Math.round(opts.lossPercent * 10);
     const sent = total - lost;
     const entries: Array<[string, Record<string, unknown>]> = [
-      ['outbound-rtp-video', {
-        type: 'outbound-rtp',
-        kind: 'video',
-        bytesSent: opts.bytesSent ?? 500000,
-        timestamp: opts.timestamp ?? 1000000,
-        framesPerSecond: opts.framesPerSecond ?? 30,
-        qualityLimitationReason: opts.qualityLimitationReason ?? 'none',
-        packetsSent: sent,
-      }],
-      ['remote-inbound-rtp-video', {
-        type: 'remote-inbound-rtp',
-        kind: 'video',
-        packetsLost: lost,
-      }],
+      [
+        'outbound-rtp-video',
+        {
+          type: 'outbound-rtp',
+          kind: 'video',
+          bytesSent: opts.bytesSent ?? 500000,
+          timestamp: opts.timestamp ?? 1000000,
+          framesPerSecond: opts.framesPerSecond ?? 30,
+          qualityLimitationReason: opts.qualityLimitationReason ?? 'none',
+          packetsSent: sent,
+        },
+      ],
+      [
+        'remote-inbound-rtp-video',
+        {
+          type: 'remote-inbound-rtp',
+          kind: 'video',
+          packetsLost: lost,
+        },
+      ],
     ];
     const map = new Map(entries);
     return {
@@ -4732,7 +5094,8 @@ describe('Adaptive quality', () => {
     };
     (mockRoom.localParticipant as Record<string, unknown>).getTrackPublication = vi.fn(
       (source: string) => {
-        if (source === 'screen_share') return { track: { mediaStreamTrack: mockMediaStreamTrack }, source: 'screen_share' };
+        if (source === 'screen_share')
+          return { track: { mediaStreamTrack: mockMediaStreamTrack }, source: 'screen_share' };
         return undefined;
       },
     );
@@ -4768,7 +5131,7 @@ describe('Adaptive quality', () => {
               const idx = Math.min(pollIndex++, losses.length - 1);
               return createAdaptiveStatsReport({
                 lossPercent: losses[idx],
-                bytesSent: (pollIndex) * 500000,
+                bytesSent: pollIndex * 500000,
                 timestamp: 1000000 + pollIndex * 5000,
               });
             });
@@ -4816,8 +5179,14 @@ describe('Adaptive quality', () => {
               expect((constraints.frameRate as ConstrainDoubleRange).max).toBe(30);
 
               // Verify transition was logged
-              const adaptiveLogs = logSpy.mock.calls.filter(
-                args => args.some(a => typeof a === 'string' && (a as string).includes('adaptive quality:') && (a as string).includes('full') && (a as string).includes('reduced-fps')),
+              const adaptiveLogs = logSpy.mock.calls.filter((args) =>
+                args.some(
+                  (a) =>
+                    typeof a === 'string' &&
+                    a.includes('adaptive quality:') &&
+                    a.includes('full') &&
+                    a.includes('reduced-fps'),
+                ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
 
@@ -4923,8 +5292,14 @@ describe('Adaptive quality', () => {
               expect((resConstraints.frameRate as ConstrainDoubleRange).max).toBe(30);
 
               // Verify transition was logged
-              const adaptiveLogs = logSpy.mock.calls.filter(
-                args => args.some(a => typeof a === 'string' && (a as string).includes('adaptive quality:') && (a as string).includes('reduced-fps') && (a as string).includes('reduced-resolution')),
+              const adaptiveLogs = logSpy.mock.calls.filter((args) =>
+                args.some(
+                  (a) =>
+                    typeof a === 'string' &&
+                    a.includes('adaptive quality:') &&
+                    a.includes('reduced-fps') &&
+                    a.includes('reduced-resolution'),
+                ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
 
@@ -5002,7 +5377,8 @@ describe('Adaptive quality', () => {
 
               // Verify step-down happened (FPS reduced from 60→30)
               expect(applyConstraintsSpy).toHaveBeenCalledTimes(1);
-              const stepDownConstraints = applyConstraintsSpy.mock.calls[0][0] as MediaTrackConstraints;
+              const stepDownConstraints = applyConstraintsSpy.mock
+                .calls[0][0] as MediaTrackConstraints;
               expect((stepDownConstraints.frameRate as ConstrainDoubleRange).max).toBe(30);
 
               applyConstraintsSpy.mockClear();
@@ -5025,14 +5401,21 @@ describe('Adaptive quality', () => {
               expect(applyConstraintsSpy).toHaveBeenCalledTimes(1);
 
               // Verify recovery: resolution stays 2560×1440, FPS restored to 60 (base 'max' preset)
-              const recoveryConstraints = applyConstraintsSpy.mock.calls[0][0] as MediaTrackConstraints;
+              const recoveryConstraints = applyConstraintsSpy.mock
+                .calls[0][0] as MediaTrackConstraints;
               expect((recoveryConstraints.width as ConstrainULongRange).ideal).toBe(2560);
               expect((recoveryConstraints.height as ConstrainULongRange).ideal).toBe(1440);
               expect((recoveryConstraints.frameRate as ConstrainDoubleRange).max).toBe(60);
 
               // Verify transition was logged
-              const adaptiveLogs = logSpy.mock.calls.filter(
-                args => args.some(a => typeof a === 'string' && (a as string).includes('adaptive quality:') && (a as string).includes('reduced-fps') && (a as string).includes('→ full')),
+              const adaptiveLogs = logSpy.mock.calls.filter((args) =>
+                args.some(
+                  (a) =>
+                    typeof a === 'string' &&
+                    a.includes('adaptive quality:') &&
+                    a.includes('reduced-fps') &&
+                    a.includes('→ full'),
+                ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
 
@@ -5048,9 +5431,7 @@ describe('Adaptive quality', () => {
       );
     });
   });
-
 });
-
 
 // ═══ Bug Condition Exploration: Windows Screen Share Self-Echo ══════
 // These tests assert the EXPECTED BEHAVIOR after the fix.
@@ -5062,7 +5443,8 @@ let tauriInvokeCalls: Array<{ cmd: string; args?: unknown }>;
 let audioShareStartResult: {
   loopback_exclusion_available: boolean;
   real_output_device_id?: string | null;
-  capture_path?: 'wasapi' | 'pulse_audio' | 'process_tap' | 'virtual_device' | 'screen_capture_kit' | null;
+  capture_path?:
+    'wasapi' | 'pulse_audio' | 'process_tap' | 'virtual_device' | 'screen_capture_kit' | null;
   fallback_reason?: string | null;
 };
 
@@ -5089,7 +5471,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
-
   beforeEach(() => {
     tauriInvokeCalls = [];
   });
@@ -5109,7 +5490,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     tauriInvokeCalls = [];
 
     // Mock Windows user agent
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5118,7 +5502,9 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     const callsBefore = sdkCalls.length;
     await mod.startScreenShare();
 
-    const shareCalls = sdkCalls.slice(callsBefore).filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === true);
+    const shareCalls = sdkCalls
+      .slice(callsBefore)
+      .filter((c) => c.method === 'setScreenShareEnabled' && c.args[0] === true);
     expect(shareCalls).toHaveLength(1);
 
     const captureOpts = shareCalls[0].args[1] as Record<string, unknown>;
@@ -5141,7 +5527,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5150,7 +5539,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     await mod.startScreenShare();
 
     // EXPECTED (after Phase 1 fix): no automatic system-audio start
-    const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+    const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
     expect(audioStartCalls).toHaveLength(0);
 
     mod.disconnect();
@@ -5171,7 +5560,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5187,7 +5579,9 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     await mod.restartScreenShareWithAudio(true);
 
     // EXPECTED (after fix): setScreenShareEnabled(false) should NOT be called
-    const stopCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === false);
+    const stopCalls = sdkCalls.filter(
+      (c) => c.method === 'setScreenShareEnabled' && c.args[0] === false,
+    );
     expect(stopCalls).toHaveLength(0);
 
     mod.disconnect();
@@ -5204,7 +5598,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5218,7 +5615,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     await mod.restartScreenShareWithAudio(true);
 
     // EXPECTED (after fix): audio_share_start should be called
-    const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+    const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
     expect(audioStartCalls).toHaveLength(1);
 
     mod.disconnect();
@@ -5236,7 +5633,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const { mediaStreamTrack } = installLocalScreenSharePublication(
@@ -5250,7 +5650,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
 
     const originalUnpublish = mockRoom.localParticipant.unpublishTrack;
     mockRoom.localParticipant.unpublishTrack = vi.fn(async (track: unknown) => {
-      expect(tauriInvokeCalls.filter(c => c.cmd === 'audio_share_stop')).toHaveLength(1);
+      expect(tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_stop')).toHaveLength(1);
       return await originalUnpublish(track);
     });
 
@@ -5260,21 +5660,21 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
 
     await mod.stopScreenShare();
 
-    const audioStopCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_stop');
+    const audioStopCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_stop');
     expect(audioStopCalls).toHaveLength(1);
-    const unpublishCalls = sdkCalls.filter(c => c.method === 'unpublishTrack');
+    const unpublishCalls = sdkCalls.filter((c) => c.method === 'unpublishTrack');
     expect(unpublishCalls).toHaveLength(1);
     expect(unpublishCalls[0].args[0]).toBe(mediaStreamTrack);
     expect(mediaStreamTrack.stop).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.readyState).toBe('ended');
     expect(
-      logSpy.mock.calls.some(args =>
-        args.some(a => typeof a === 'string' && (a as string).includes('displaySurface=window')),
+      logSpy.mock.calls.some((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('displaySurface=window')),
       ),
     ).toBe(true);
     expect(
-      logSpy.mock.calls.some(args =>
-        args.some(a => typeof a === 'string' && (a as string).includes('readyState=ended')),
+      logSpy.mock.calls.some((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('readyState=ended')),
       ),
     ).toBe(true);
 
@@ -5287,7 +5687,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const { mediaStreamTrack } = installLocalScreenSharePublication(
       createMockLocalScreenShareMediaTrack('monitor'),
@@ -5307,7 +5710,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
 
     await expect(mod.stopScreenShare()).rejects.toThrow('network hiccup');
 
-    expect(tauriInvokeCalls.filter(c => c.cmd === 'audio_share_stop')).toHaveLength(1);
+    expect(tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_stop')).toHaveLength(1);
     expect(mediaStreamTrack.stop).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.readyState).toBe('ended');
 
@@ -5319,7 +5722,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const { publication, mediaStreamTrack } = installLocalScreenSharePublication(
       createMockLocalScreenShareMediaTrack('browser'),
@@ -5336,8 +5742,10 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     await mod.changeScreenShareSource();
 
     // Acquire-before-drop: the existing track must NOT be unpublished or stopped.
-    expect(sdkCalls.findIndex(c => c.method === 'unpublishTrack')).toBe(-1);
-    expect(sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === false)).toHaveLength(0);
+    expect(sdkCalls.findIndex((c) => c.method === 'unpublishTrack')).toBe(-1);
+    expect(
+      sdkCalls.filter((c) => c.method === 'setScreenShareEnabled' && c.args[0] === false),
+    ).toHaveLength(0);
     expect(mediaStreamTrack.stop).not.toHaveBeenCalled();
 
     // replaceTrack must have been called to swap in the new source.
@@ -5345,7 +5753,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
 
     // Native audio is NOT stopped during source change (same as original change-source
     // path which passed stopNativeAudio: false).
-    expect(tauriInvokeCalls.filter(c => c.cmd === 'audio_share_stop')).toHaveLength(0);
+    expect(tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_stop')).toHaveLength(0);
 
     mod.disconnect();
     vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
@@ -5380,8 +5788,8 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     expect(result).toBe(false);
 
     // The existing publication must be completely undisturbed.
-    expect(sdkCalls.findIndex(c => c.method === 'unpublishTrack')).toBe(-1);
-    expect(sdkCalls.filter(c => c.method === 'setScreenShareEnabled')).toHaveLength(0);
+    expect(sdkCalls.findIndex((c) => c.method === 'unpublishTrack')).toBe(-1);
+    expect(sdkCalls.filter((c) => c.method === 'setScreenShareEnabled')).toHaveLength(0);
     expect(mediaStreamTrack.stop).not.toHaveBeenCalled();
     expect(publication.track.replaceTrack).not.toHaveBeenCalled();
 
@@ -5411,7 +5819,7 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     const result = await mod.changeScreenShareSource();
 
     expect(result).toBe(false);
-    expect(sdkCalls.filter(c => c.method === 'setScreenShareEnabled')).toHaveLength(0);
+    expect(sdkCalls.filter((c) => c.method === 'setScreenShareEnabled')).toHaveLength(0);
     expect(mediaStreamTrack.stop).not.toHaveBeenCalled();
     expect(publication.track.replaceTrack).not.toHaveBeenCalled();
 
@@ -5435,15 +5843,15 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
 
     expect(result).toBe(true);
     // Standard path must be used when there is no existing publication.
-    const enableCalls = sdkCalls.filter(c => c.method === 'setScreenShareEnabled' && c.args[0] === true);
+    const enableCalls = sdkCalls.filter(
+      (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+    );
     expect(enableCalls).toHaveLength(1);
 
     mod.disconnect();
     vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
   });
-
 });
-
 
 // ═══ Preservation Property Tests: Screen Share Self-Echo Fix ═══════
 // These tests capture CURRENT behavior on UNFIXED code.
@@ -5481,14 +5889,19 @@ describe('Share leak publish diagnostics', () => {
 
     const shareLeakSummaries = cbs.calls.filter((call) => call.method === 'onShareLeakSummary');
     expect(shareLeakSummaries).toHaveLength(1);
-    const summary = shareLeakSummaries[0].args[0] as import('../share-leak-diagnostics').ShareSessionLeakSummary;
+    const summary = shareLeakSummaries[0]
+      .args[0] as import('../share-leak-diagnostics').ShareSessionLeakSummary;
 
     expect(summary.senderReuseDiagnostics?.reuseExpected).toBe(true);
-    expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.publisherPeerConnectionId).toBe('publisher-pc-1');
+    expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.publisherPeerConnectionId).toBe(
+      'publisher-pc-1',
+    );
     expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.senderCount).toBe(2);
     expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.videoSenderCount).toBe(1);
     expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.transceiverCount).toBe(2);
-    expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.publicationTrackId).toBe(mediaStreamTrack.id);
+    expect(summary.senderReuseDiagnostics?.publishWebRtcSnapshot?.publicationTrackId).toBe(
+      mediaStreamTrack.id,
+    );
     expect(summary.senderReuseDiagnostics?.degradationPreferenceResult).toEqual({
       senderWasReused: true,
       attemptedPreferences: ['maintain-resolution-combined'],
@@ -5506,17 +5919,32 @@ describe('Share leak publish diagnostics', () => {
 
     expect(
       logSpy.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === 'string' && (arg as string).includes('[share-leak] session=') && (arg as string).includes('publish_snapshot')),
+        args.some(
+          (arg) =>
+            typeof arg === 'string' &&
+            arg.includes('[share-leak] session=') &&
+            arg.includes('publish_snapshot'),
+        ),
       ),
     ).toBe(true);
     expect(
       logSpy.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === 'string' && (arg as string).includes('[share-leak] session=') && (arg as string).includes('reuse_inferred')),
+        args.some(
+          (arg) =>
+            typeof arg === 'string' &&
+            arg.includes('[share-leak] session=') &&
+            arg.includes('reuse_inferred'),
+        ),
       ),
     ).toBe(true);
     expect(
       logSpy.mock.calls.some((args) =>
-        args.some((arg) => typeof arg === 'string' && (arg as string).includes('[share-leak] session=') && (arg as string).includes('degradation_preference')),
+        args.some(
+          (arg) =>
+            typeof arg === 'string' &&
+            arg.includes('[share-leak] session=') &&
+            arg.includes('degradation_preference'),
+        ),
       ),
     ).toBe(true);
 
@@ -5527,32 +5955,40 @@ describe('Share leak publish diagnostics', () => {
 });
 
 describe('Connection quality polling', () => {
-  function createConnectionQualityStatsReport(options: {
-    currentRoundTripTime?: number;
-    packetsReceived?: number;
-    packetsLost?: number;
-    jitter?: number;
-  } = {}): RTCStatsReport {
+  function createConnectionQualityStatsReport(
+    options: {
+      currentRoundTripTime?: number;
+      packetsReceived?: number;
+      packetsLost?: number;
+      jitter?: number;
+    } = {},
+  ): RTCStatsReport {
     const entries: Array<[string, Record<string, unknown>]> = [];
     if (typeof options.currentRoundTripTime === 'number') {
-      entries.push(['candidate-pair', {
-        type: 'candidate-pair',
-        nominated: true,
-        currentRoundTripTime: options.currentRoundTripTime,
-      }]);
+      entries.push([
+        'candidate-pair',
+        {
+          type: 'candidate-pair',
+          nominated: true,
+          currentRoundTripTime: options.currentRoundTripTime,
+        },
+      ]);
     }
     if (
       typeof options.packetsReceived === 'number' &&
       typeof options.packetsLost === 'number' &&
       typeof options.jitter === 'number'
     ) {
-      entries.push(['inbound-rtp-audio', {
-        type: 'inbound-rtp',
-        kind: 'audio',
-        packetsReceived: options.packetsReceived,
-        packetsLost: options.packetsLost,
-        jitter: options.jitter,
-      }]);
+      entries.push([
+        'inbound-rtp-audio',
+        {
+          type: 'inbound-rtp',
+          kind: 'audio',
+          packetsReceived: options.packetsReceived,
+          packetsLost: options.packetsLost,
+          jitter: options.jitter,
+        },
+      ]);
     }
     const map = new Map(entries);
     return {
@@ -5572,7 +6008,9 @@ describe('Connection quality polling', () => {
 
     // Publisher transport — polled every other cycle for RTT / bandwidth / candidate type
     const publisher = {
-      getStats: vi.fn(async () => createConnectionQualityStatsReport({ currentRoundTripTime: 0.123 })),
+      getStats: vi.fn(async () =>
+        createConnectionQualityStatsReport({ currentRoundTripTime: 0.123 }),
+      ),
       getSenders: () => [],
       getTransceivers: () => [],
     };
@@ -5581,19 +6019,24 @@ describe('Connection quality polling', () => {
     };
 
     // Per-receiver stats — polled every cycle via remoteTrack.receiver.getStats()
-    const receiverGetStats = vi.fn(async () => createConnectionQualityStatsReport({
-      packetsReceived: 90,
-      packetsLost: 10,
-      jitter: 0.045,
-    }));
+    const receiverGetStats = vi.fn(async () =>
+      createConnectionQualityStatsReport({
+        packetsReceived: 90,
+        packetsLost: 10,
+        jitter: 0.045,
+      }),
+    );
     mockRoom.remoteParticipants.set('peer-1', {
       identity: 'peer-1',
       trackPublications: new Map([
-        ['audio-track-1', {
-          kind: 'audio',
-          source: 'microphone',
-          track: { receiver: { getStats: receiverGetStats } },
-        }],
+        [
+          'audio-track-1',
+          {
+            kind: 'audio',
+            source: 'microphone',
+            track: { receiver: { getStats: receiverGetStats } },
+          },
+        ],
       ]),
     });
 
@@ -5686,8 +6129,10 @@ describe('Reconnect screen share cleanup', () => {
 
     expect(mockRoom.localParticipant.getTrackPublication('screen_share')).toBeUndefined();
     expect(
-      cbs.calls.some((call) =>
-        call.method === 'onSystemEvent' && call.args[0] === 'Screen share stopped due to reconnect'
+      cbs.calls.some(
+        (call) =>
+          call.method === 'onSystemEvent' &&
+          call.args[0] === 'Screen share stopped due to reconnect',
       ),
     ).toBe(true);
     expect(
@@ -5700,7 +6145,6 @@ describe('Reconnect screen share cleanup', () => {
 });
 
 describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
-
   beforeEach(() => {
     tauriInvokeCalls = [];
   });
@@ -5727,9 +6171,8 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           const cbs = createMockCallbacks();
           const mod = new LiveKitModule(cbs);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
           (mod as any).currentCaptureProfile = {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ...(mod as any).currentCaptureProfile,
             audio: true,
           };
@@ -5739,17 +6182,19 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           // Find the setScreenShareEnabled(true, captureOpts, ...) call
           const startCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+            (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
           );
           expect(startCalls.length).toBeGreaterThanOrEqual(1);
 
           const captureOpts = startCalls[0].args[1] as Record<string, unknown>;
           expect(captureOpts.audio).toBe(false);
 
-          const monitorCalls = tauriInvokeCalls.filter(c => c.cmd === 'get_default_audio_monitor_fast');
+          const monitorCalls = tauriInvokeCalls.filter(
+            (c) => c.cmd === 'get_default_audio_monitor_fast',
+          );
           expect(monitorCalls).toHaveLength(1);
 
-          const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+          const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
           expect(audioStartCalls).toHaveLength(1);
           expect(audioStartCalls[0].args).toEqual({ sourceId: 'alsa_output.test.monitor' });
 
@@ -5791,7 +6236,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           // Override the capture profile to disable audio BEFORE connecting
           // We need to access the private field — use type assertion
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
           (mod as any).currentCaptureProfile = {
             ...(mod as any).currentCaptureProfile,
             audio: false,
@@ -5802,7 +6247,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           // Find the setScreenShareEnabled(true, captureOpts, ...) call
           const startCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === true,
+            (c) => c.method === 'setScreenShareEnabled' && c.args[0] === true,
           );
           expect(startCalls.length).toBeGreaterThanOrEqual(1);
 
@@ -5810,7 +6255,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
           expect(captureOpts.audio).toBe(false);
 
           // No audio_share_start should be called for video-only
-          const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+          const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
           expect(audioStartCalls).toHaveLength(0);
 
           mod.disconnect();
@@ -5852,12 +6297,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           await mod.restartScreenShareWithAudio(true);
 
-          const videoRestartCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled',
-          );
+          const videoRestartCalls = sdkCalls.filter((c) => c.method === 'setScreenShareEnabled');
           expect(videoRestartCalls).toHaveLength(0);
 
-          const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+          const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
           expect(audioStartCalls).toHaveLength(1);
 
           mod.disconnect();
@@ -5872,7 +6315,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5885,12 +6331,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
     await mod.restartScreenShareWithAudio(true);
 
-    const videoRestartCalls = sdkCalls.filter(
-      c => c.method === 'setScreenShareEnabled',
-    );
+    const videoRestartCalls = sdkCalls.filter((c) => c.method === 'setScreenShareEnabled');
     expect(videoRestartCalls).toHaveLength(0);
 
-    const audioStartCalls = tauriInvokeCalls.filter(c => c.cmd === 'audio_share_start');
+    const audioStartCalls = tauriInvokeCalls.filter((c) => c.cmd === 'audio_share_start');
     expect(audioStartCalls).toHaveLength(1);
 
     mod.disconnect();
@@ -5931,7 +6375,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           // setScreenShareEnabled(false) should be called
           const stopCalls = sdkCalls.filter(
-            c => c.method === 'setScreenShareEnabled' && c.args[0] === false,
+            (c) => c.method === 'setScreenShareEnabled' && c.args[0] === false,
           );
           expect(stopCalls).toHaveLength(1);
 
@@ -5961,7 +6405,10 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
     resetAll();
     tauriInvokeCalls = [];
 
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', mediaDevices: createMockMediaDevices() });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      mediaDevices: createMockMediaDevices(),
+    });
 
     const cbs = createMockCallbacks();
     const mod = new LiveKitModule(cbs);
@@ -5982,7 +6429,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
     // On Windows, restartScreenShareWithAudio only toggles WASAPI audio —
     // video and its stats polling remain untouched from startScreenShare().
     // Verify stats polling is still active (not restarted, just preserved).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const statsInterval = (mod as any).screenShareStatsInterval;
     expect(statsInterval).not.toBeNull();
 
@@ -5991,19 +6438,19 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
     setIntervalSpy.mockRestore();
     clearIntervalSpy.mockRestore();
   });
-
 });
 
 // ═══ startWasapiAudioBridge: masterGain echo prevention ═══════════
 
 describe('startWasapiAudioBridge: masterGain echo prevention', () => {
-
   /** Helper: add publishTrack to the mock local participant (not present in base mock). */
   function addPublishTrack() {
-    (mockRoom.localParticipant as Record<string, unknown>).publishTrack = vi.fn(async (track: unknown) => {
-      sdkCalls.push({ method: 'publishTrack', args: [track] });
-      return { track, source: 'screen_share_audio' };
-    });
+    (mockRoom.localParticipant as Record<string, unknown>).publishTrack = vi.fn(
+      async (track: unknown) => {
+        sdkCalls.push({ method: 'publishTrack', args: [track] });
+        return { track, source: 'screen_share_audio' };
+      },
+    );
   }
 
   beforeEach(() => {
@@ -6037,13 +6484,12 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     const setValueAtTimeSpy = masterGain.gain.setValueAtTime;
     setValueAtTimeSpy.mockClear();
 
-    await (mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> })
-      .startWasapiAudioBridge(true);
+    await (
+      mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> }
+    ).startWasapiAudioBridge(true);
 
     // masterGain.gain.setValueAtTime should NOT have been called with 0
-    const zeroingCalls = (setValueAtTimeSpy as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (args: unknown[]) => args[0] === 0,
-    );
+    const zeroingCalls = setValueAtTimeSpy.mock.calls.filter((args: unknown[]) => args[0] === 0);
     expect(zeroingCalls).toHaveLength(0);
 
     // preShareGain must remain null (nothing was muted)
@@ -6066,11 +6512,12 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     const masterGain = createdGains[0];
     expect(masterGain).toBeDefined();
     const originalGainValue = masterGain.gain.value;
-    const setValueAtTimeSpy = masterGain.gain.setValueAtTime as ReturnType<typeof vi.fn>;
+    const setValueAtTimeSpy = masterGain.gain.setValueAtTime;
     setValueAtTimeSpy.mockClear();
 
-    await (mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> })
-      .startWasapiAudioBridge(false);
+    await (
+      mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> }
+    ).startWasapiAudioBridge(false);
 
     // masterGain.gain.setValueAtTime(0, ...) should have been called once
     const zeroingCalls = setValueAtTimeSpy.mock.calls.filter((args: unknown[]) => args[0] === 0);
@@ -6078,7 +6525,9 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     expect(masterGain.gain.value).toBe(0);
 
     // preShareGain stores the original value for later restoration
-    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(originalGainValue);
+    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(
+      originalGainValue,
+    );
 
     mod.disconnect();
   });
@@ -6097,13 +6546,17 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     const masterGain = createdGains[0];
     const originalGainValue = masterGain.gain.value; // e.g. 1
 
-    const bridge = (mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> });
+    const bridge = mod as unknown as { startWasapiAudioBridge: (v: boolean) => Promise<void> };
 
     await bridge.startWasapiAudioBridge(false); // first call: preShareGain = 1, gain → 0
-    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(originalGainValue);
+    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(
+      originalGainValue,
+    );
 
     await bridge.startWasapiAudioBridge(false); // second call: should NOT overwrite preShareGain with 0
-    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(originalGainValue);
+    expect((mod as unknown as { preShareGain: number | null }).preShareGain).toBe(
+      originalGainValue,
+    );
 
     mod.disconnect();
   });
@@ -6139,7 +6592,6 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
 
     mod.disconnect();
   });
-
 });
 
 // ═══ JS-side denoise (Windows/macOS) ══════════════════════════════
@@ -6173,10 +6625,10 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     await mod.setMicEnabled(true);
     await tick();
 
-    const publishCall = sdkCalls.find(c => c.method === 'publishTrack');
+    const publishCall = sdkCalls.find((c) => c.method === 'publishTrack');
     expect(publishCall).toBeUndefined();
 
-    const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+    const micCall = sdkCalls.find((c) => c.method === 'setMicrophoneEnabled');
     expect((micCall!.args[1] as Record<string, unknown>)?.noiseSuppression).toBe(false);
 
     mod.disconnect();
@@ -6195,7 +6647,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     await mod.setMicEnabled(true);
     await tick();
 
-    const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+    const micCall = sdkCalls.find((c) => c.method === 'setMicrophoneEnabled');
     expect((micCall!.args[1] as Record<string, unknown>)?.noiseSuppression).toBe(false);
 
     mod.disconnect();
@@ -6214,7 +6666,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     await mod.setMicEnabled(true);
     await tick();
 
-    const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+    const micCall = sdkCalls.find((c) => c.method === 'setMicrophoneEnabled');
     expect((micCall!.args[1] as Record<string, unknown>)?.noiseSuppression).toBe(false);
 
     mod.disconnect();
@@ -6233,7 +6685,7 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     await mod.setMicEnabled(true);
     await tick();
 
-    const micCall = sdkCalls.find(c => c.method === 'setMicrophoneEnabled');
+    const micCall = sdkCalls.find((c) => c.method === 'setMicrophoneEnabled');
     // noiseSuppression should be false (Linux uses native Rust path)
     expect((micCall!.args[1] as Record<string, unknown>)?.noiseSuppression).toBe(false);
 
@@ -6255,7 +6707,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     expect(track.setAudioContext).toHaveBeenCalledTimes(1);
     expect(track.getProcessor()).toBeTruthy();
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6273,7 +6727,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.setProcessor).not.toHaveBeenCalled();
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(false);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(false);
 
     mod.disconnect();
   });
@@ -6293,7 +6749,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.setProcessor).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6313,7 +6771,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.stopProcessor).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === false)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === false),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6333,7 +6793,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
     expect(track.setAudioContext).toHaveBeenCalledTimes(1);
     expect(track.getProcessor()).toBeTruthy();
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6351,7 +6813,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.setProcessor).not.toHaveBeenCalled();
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(false);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(false);
 
     mod.disconnect();
   });
@@ -6371,7 +6835,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.setProcessor).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === true)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === true),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6391,7 +6857,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 
     expect(track.stopProcessor).toHaveBeenCalledTimes(1);
     expect(mediaStreamTrack.applyConstraints).not.toHaveBeenCalled();
-    expect(cbs.calls.some(c => c.method === 'onNoiseSuppressionState' && c.args[0] === false)).toBe(true);
+    expect(
+      cbs.calls.some((c) => c.method === 'onNoiseSuppressionState' && c.args[0] === false),
+    ).toBe(true);
 
     mod.disconnect();
   });
@@ -6446,7 +6914,9 @@ describe('JS-side noise suppression (Windows/macOS)', () => {
 });
 
 describe('Feature: turn-credentials-audit, Property 7: GUI force-relay override', () => {
-  async function importBuildRtcConfiguration(forceRelay?: 'true'): Promise<typeof import('../livekit-media').buildRtcConfiguration> {
+  async function importBuildRtcConfiguration(
+    forceRelay?: 'true',
+  ): Promise<typeof import('../livekit-media').buildRtcConfiguration> {
     vi.resetModules();
     vi.unstubAllEnvs();
     if (forceRelay) {
@@ -6523,7 +6993,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
       turnCredential: 'test-credential',
     });
     const hasTurn = rtcConfig.iceServers?.some((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(hasTurn).toBe(true);
@@ -6550,7 +7020,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
       turnCredential: '',
     });
     const hasTurn = rtcConfig.iceServers?.some((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(hasTurn).toBeFalsy();
@@ -6591,16 +7061,16 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
           // check: it confirms the entry was wired as a TURN server, not a STUN
           // server that happens to share the same array reference.
           const turnEntries = (cfg.iceServers ?? []).filter((s) => {
-            const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+            const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
             return urls.some((u) => u.startsWith('turn:'));
           });
           // Reference equality on urls pins that the function does not slice or
           // copy the array (design § Correctness Properties).
           return (
-            turnEntries.length === 1
-            && turnEntries[0].urls === payload.turnUrls
-            && turnEntries[0].username === payload.turnUsername
-            && turnEntries[0].credential === payload.turnCredential
+            turnEntries.length === 1 &&
+            turnEntries[0].urls === payload.turnUrls &&
+            turnEntries[0].username === payload.turnUsername &&
+            turnEntries[0].credential === payload.turnCredential
           );
         },
       ),
@@ -6634,7 +7104,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
 
     // buildRtcConfiguration correctly passes credential to RTCPeerConnection
     const turnEntry = rtcConfig.iceServers?.find((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(turnEntry?.credential).toBe('super-secret');

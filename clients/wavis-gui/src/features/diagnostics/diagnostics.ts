@@ -23,7 +23,11 @@ import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { RingBuffer } from '@shared/ring-buffer';
 import type { NetworkStats } from '@features/voice/voice-room';
-import type { NativeBridgeCadenceStats, ShareStats, VideoReceiveStats } from '@features/voice/livekit-media';
+import type {
+  NativeBridgeCadenceStats,
+  ShareStats,
+  VideoReceiveStats,
+} from '@features/voice/livekit-media';
 
 const LOG = '[wavis:diagnostics]';
 
@@ -178,7 +182,13 @@ interface DiagnosticsVoiceStatsPayload {
 let config: DiagnosticsConfig | null = null;
 let baseline: DiagnosticsBaseline | null = null;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
-let onUpdate: ((snap: DiagnosticsSnapshot, warnings: WarningEntry[], history: DiagnosticsSnapshot[] | null) => void) | null = null;
+let onUpdate:
+  | ((
+      snap: DiagnosticsSnapshot,
+      warnings: WarningEntry[],
+      history: DiagnosticsSnapshot[] | null,
+    ) => void)
+  | null = null;
 const warnings = new Map<string, WarningEntry>();
 
 /** Rolling 5-minute history at 1s cadence (300 samples). */
@@ -207,7 +217,6 @@ let unlistenVoiceStats: UnlistenFn | null = null;
 /** Unlisten function for the 'diagnostics:app-dimensions' event listener. */
 let unlistenAppDimensions: UnlistenFn | null = null;
 
-
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
 function formatTimestamp(date: Date): string {
@@ -225,7 +234,8 @@ function formatTimestamp(date: Date): string {
 function readJsHeap(): DiagnosticsSnapshot['jsHeap'] {
   // performance.memory is Chromium-specific (available on Windows WebView2).
   // WKWebView (macOS) does not expose it — return null rather than undefined.
-  const mem = (performance as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number } }).memory;
+  const mem = (performance as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number } })
+    .memory;
   if (!mem) return null;
   return {
     usedMb: mem.usedJSHeapSize / 1024 / 1024,
@@ -254,11 +264,7 @@ export function mosLabel(mos: number): string {
   return 'Bad';
 }
 
-function checkWarning(
-  key: string,
-  message: string,
-  condition: boolean,
-): void {
+function checkWarning(key: string, message: string, condition: boolean): void {
   if (condition) {
     if (!warnings.has(key)) {
       warnings.set(key, { key, message, since: Date.now(), lastNotifiedAt: 0 });
@@ -276,7 +282,11 @@ function checkWarning(
  * Returns the resolved config (with enabled=false if the env var is unset).
  */
 export async function initDiagnostics(
-  cb: (snap: DiagnosticsSnapshot, warnings: WarningEntry[], history: DiagnosticsSnapshot[] | null) => void,
+  cb: (
+    snap: DiagnosticsSnapshot,
+    warnings: WarningEntry[],
+    history: DiagnosticsSnapshot[] | null,
+  ) => void,
 ): Promise<DiagnosticsConfig> {
   destroyDiagnostics();
 
@@ -295,12 +305,13 @@ export async function initDiagnostics(
   // is always empty here. App.tsx emits this event at 1s from the main window.
   unlistenVoiceStats = await listen<DiagnosticsVoiceStatsPayload>(
     'diagnostics:voice-stats',
-    (event) => { cachedVoiceStats = event.payload; },
+    (event) => {
+      cachedVoiceStats = event.payload;
+    },
   );
-  unlistenAppDimensions = await listen<AppDimensions>(
-    'diagnostics:app-dimensions',
-    (event) => { cachedAppDimensions = event.payload; },
-  );
+  unlistenAppDimensions = await listen<AppDimensions>('diagnostics:app-dimensions', (event) => {
+    cachedAppDimensions = event.payload;
+  });
 
   // VITE_DIAGNOSTICS=true is the build-time gate; the Rust `enabled` flag is
   // unreliable in release builds (dotenvy only loads .env in debug mode).
@@ -357,8 +368,7 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   const now = new Date();
   const lines: string[] = [];
 
-  const pad = (label: string, value: string): string =>
-    `  ${label.padEnd(18)} ${value}`;
+  const pad = (label: string, value: string): string => `  ${label.padEnd(18)} ${value}`;
 
   const deltaStr = (current: number, base: number | undefined, unit = ''): string => {
     if (base === undefined) return `${current.toFixed(1)}${unit}`;
@@ -374,8 +384,18 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   // App dimensions
   lines.push('[APP DIMENSIONS]');
   if (snap.appDimensions) {
-    lines.push(pad('Window:', `${snap.appDimensions.nativeWindow.width}x${snap.appDimensions.nativeWindow.height} physical px`));
-    lines.push(pad('Viewport:', `${snap.appDimensions.viewport.width}x${snap.appDimensions.viewport.height} CSS px`));
+    lines.push(
+      pad(
+        'Window:',
+        `${snap.appDimensions.nativeWindow.width}x${snap.appDimensions.nativeWindow.height} physical px`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Viewport:',
+        `${snap.appDimensions.viewport.width}x${snap.appDimensions.viewport.height} CSS px`,
+      ),
+    );
     lines.push(pad('DPR:', snap.appDimensions.devicePixelRatio.toFixed(2)));
   } else {
     lines.push(pad('Status:', 'Waiting for main app dimensions'));
@@ -391,15 +411,28 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
     lines.push(pad('Process RSS:', 'Unavailable'));
   }
   if (snap.jsHeap) {
-    lines.push(pad('JS Heap:', `${snap.jsHeap.usedMb.toFixed(1)} MB used / ${snap.jsHeap.totalMb.toFixed(1)} MB total`));
+    lines.push(
+      pad(
+        'JS Heap:',
+        `${snap.jsHeap.usedMb.toFixed(1)} MB used / ${snap.jsHeap.totalMb.toFixed(1)} MB total`,
+      ),
+    );
   } else {
     lines.push(pad('JS Heap:', 'N/A (macOS)'));
   }
-  lines.push(pad('DOM Nodes:', (() => {
-    const base = baseline?.snapshot.domNodes;
-    const d = base !== undefined ? ` (${snap.domNodes - base >= 0 ? '+' : ''}${snap.domNodes - base} from baseline)` : '';
-    return `${snap.domNodes.toLocaleString()}${d}`;
-  })()));
+  lines.push(
+    pad(
+      'DOM Nodes:',
+      (() => {
+        const base = baseline?.snapshot.domNodes;
+        const d =
+          base !== undefined
+            ? ` (${snap.domNodes - base >= 0 ? '+' : ''}${snap.domNodes - base} from baseline)`
+            : '';
+        return `${snap.domNodes.toLocaleString()}${d}`;
+      })(),
+    ),
+  );
   if (snap.cpuPercent !== null) {
     lines.push(pad('CPU Usage:', `${snap.cpuPercent.toFixed(1)}%`));
   }
@@ -411,10 +444,24 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
     lines.push(pad('RTT:', `${Math.round(snap.network.rttMs)} ms`));
     lines.push(pad('Packet Loss:', `${snap.network.packetLossPercent.toFixed(1)}%`));
     lines.push(pad('Jitter:', `${Math.round(snap.network.jitterMs)} ms`));
-    lines.push(pad('MOS (est.):', `${snap.network.mos.toFixed(1)}  (${mosLabel(snap.network.mos)})`));
-    lines.push(pad('Jitter Buffer:', snap.network.jitterBufferDelayMs > 0 ? `${snap.network.jitterBufferDelayMs} ms` : 'N/A'));
+    lines.push(
+      pad('MOS (est.):', `${snap.network.mos.toFixed(1)}  (${mosLabel(snap.network.mos)})`),
+    );
+    lines.push(
+      pad(
+        'Jitter Buffer:',
+        snap.network.jitterBufferDelayMs > 0 ? `${snap.network.jitterBufferDelayMs} ms` : 'N/A',
+      ),
+    );
     lines.push(pad('Concealment:', `${snap.network.concealmentEventsPerInterval} events/interval`));
-    lines.push(pad('Bandwidth:', snap.network.availableBandwidthKbps > 0 ? `${(snap.network.availableBandwidthKbps / 1000).toFixed(1)} Mbps avail.` : 'N/A'));
+    lines.push(
+      pad(
+        'Bandwidth:',
+        snap.network.availableBandwidthKbps > 0
+          ? `${(snap.network.availableBandwidthKbps / 1000).toFixed(1)} Mbps avail.`
+          : 'N/A',
+      ),
+    );
     lines.push(pad('Candidate:', snap.network.candidateType));
   } else {
     lines.push(pad('Status:', 'No active session'));
@@ -424,8 +471,18 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   // Audio
   lines.push('[AUDIO]');
   if (snap.audio) {
-    lines.push(pad('Local RMS:', `${snap.audio.localRms.toFixed(3)}  (${snap.audio.localSpeaking ? 'speaking' : 'silent'})`));
-    lines.push(pad('Remote Speaking:', `${snap.audio.remoteSpeakingCount}/${snap.audio.participantCount - 1}`));
+    lines.push(
+      pad(
+        'Local RMS:',
+        `${snap.audio.localRms.toFixed(3)}  (${snap.audio.localSpeaking ? 'speaking' : 'silent'})`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Remote Speaking:',
+        `${snap.audio.remoteSpeakingCount}/${snap.audio.participantCount - 1}`,
+      ),
+    );
   } else {
     lines.push(pad('Status:', 'No active session'));
   }
@@ -438,20 +495,43 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
     if (snap.shareMode) lines.push(pad('Mode:', snap.shareMode));
     if (snap.shareSourceName) lines.push(pad('Source:', snap.shareSourceName));
   } else if (snap.share) {
-    lines.push(pad('Sender Bitrate:', `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`));
+    lines.push(
+      pad(
+        'Sender Bitrate:',
+        `${snap.share.bitrateKbps} kbps (${(snap.share.bitrateKbps / 1000).toFixed(1)} Mbps)`,
+      ),
+    );
     lines.push(pad('FPS:', snap.share.fps.toFixed(1)));
-    if (snap.share.framesSentFps !== undefined || snap.share.framesEncodedFps !== undefined || snap.share.browserReportedFps !== undefined) {
-      lines.push(pad(
-        'FPS Layers:',
-        `sent ${snap.share.framesSentFps?.toFixed(1) ?? 'N/A'}, encoded ${snap.share.framesEncodedFps?.toFixed(1) ?? 'N/A'}, browser ${snap.share.browserReportedFps?.toFixed(1) ?? 'N/A'}`,
-      ));
+    if (
+      snap.share.framesSentFps !== undefined ||
+      snap.share.framesEncodedFps !== undefined ||
+      snap.share.browserReportedFps !== undefined
+    ) {
+      lines.push(
+        pad(
+          'FPS Layers:',
+          `sent ${snap.share.framesSentFps?.toFixed(1) ?? 'N/A'}, encoded ${snap.share.framesEncodedFps?.toFixed(1) ?? 'N/A'}, browser ${snap.share.browserReportedFps?.toFixed(1) ?? 'N/A'}`,
+        ),
+      );
     }
-    lines.push(pad('Resolution:', snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A'));
+    lines.push(
+      pad(
+        'Resolution:',
+        snap.share.frameWidth > 0 ? `${snap.share.frameWidth}×${snap.share.frameHeight}` : 'N/A',
+      ),
+    );
     lines.push(pad('Quality Limit:', snap.share.qualityLimitationReason || 'none'));
     lines.push(pad('Outbound Loss:', `${snap.share.packetLossPercent.toFixed(1)}%`));
     lines.push(pad('PLIs/interval:', String(snap.share.pliCount)));
     lines.push(pad('NACKs/interval:', String(snap.share.nackCount)));
-    lines.push(pad('Bandwidth:', snap.share.availableBandwidthKbps > 0 ? `${(snap.share.availableBandwidthKbps / 1000).toFixed(1)} Mbps avail.` : 'N/A'));
+    lines.push(
+      pad(
+        'Bandwidth:',
+        snap.share.availableBandwidthKbps > 0
+          ? `${(snap.share.availableBandwidthKbps / 1000).toFixed(1)} Mbps avail.`
+          : 'N/A',
+      ),
+    );
     if (snap.shareStartedAt) {
       lines.push(pad('Started:', snap.shareStartedAt));
     }
@@ -463,26 +543,93 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   }
   if (snap.share?.nativeBridge) {
     const b = snap.share.nativeBridge;
-    lines.push(pad('Bridge Target:', `${b.jsBridgeFps} writer target / ${b.rustTargetFps} backend target`));
+    lines.push(
+      pad('Bridge Target:', `${b.jsBridgeFps} writer target / ${b.rustTargetFps} backend target`),
+    );
     lines.push(pad('Bridge Polls:', `${b.pollTicks} ticks, ${b.pollHits} hits`));
     lines.push(pad('Bridge Frames:', `${b.newSeqCount} new, ${b.duplicateSeqSkips} dup skips`));
-    lines.push(pad('JS Bridge Input:', `${b.jsObservedRustSeqFps.toFixed(1)} fps, ${(b.duplicatePollRatio * 100).toFixed(1)}% duplicate polls`));
-    lines.push(pad('Stream Reads:', `${b.streamReads} reads, ${(b.streamBytesPerSec / 1024 / 1024).toFixed(1)} MiB/s, avg ${b.streamReadAvgMs.toFixed(1)} ms`));
+    lines.push(
+      pad(
+        'JS Bridge Input:',
+        `${b.jsObservedRustSeqFps.toFixed(1)} fps, ${(b.duplicatePollRatio * 100).toFixed(1)}% duplicate polls`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Stream Reads:',
+        `${b.streamReads} reads, ${(b.streamBytesPerSec / 1024 / 1024).toFixed(1)} MiB/s, avg ${b.streamReadAvgMs.toFixed(1)} ms`,
+      ),
+    );
     lines.push(pad('JS Writer FPS:', `${b.writerFps.toFixed(1)} fps`));
-    lines.push(pad('Bridge Writes:', `${b.generatorWrites + b.canvasPaints} real, ${b.keepaliveWrites} keepalive`));
-    lines.push(pad('Bridge Keepalive:', `${b.keepaliveFps.toFixed(1)} fps, avg ${b.keepaliveWriteAvgMs.toFixed(1)} ms`));
-    lines.push(pad('Bridge Decode:', `${b.jsDecodedFrames} ok, ${b.decodeFailures} failed, avg ${b.avgDecodeMs.toFixed(1)} ms (${b.rawI420Frames} raw I420, ${b.jpegFallbackFrames} JPEG fallback)`));
-    lines.push(pad('Bridge Decode Parts:', `base64 ${b.base64FetchAvgMs.toFixed(1)} ms, jpeg ${b.jpegDecodeAvgMs.toFixed(1)} ms, vf ${b.videoFrameCreateAvgMs.toFixed(1)} ms`));
-    lines.push(pad('Bridge Write:', `avg ${b.writerAvgMs.toFixed(1)} ms, real ${b.realWriteAvgMs.toFixed(1)} ms`));
-    lines.push(pad('Bridge Backpressure:', `${b.pollSkippedForWork} poll skips, ${b.writerBackpressureSkips} writer skips, ${b.staleFrameDrops} stale drops`));
-    lines.push(pad('Latest Rust Seq Age:', b.latestSeqAgeMs === null ? 'N/A' : `${b.latestSeqAgeMs.toFixed(0)} ms`));
+    lines.push(
+      pad(
+        'Bridge Writes:',
+        `${b.generatorWrites + b.canvasPaints} real, ${b.keepaliveWrites} keepalive`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Bridge Keepalive:',
+        `${b.keepaliveFps.toFixed(1)} fps, avg ${b.keepaliveWriteAvgMs.toFixed(1)} ms`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Bridge Decode:',
+        `${b.jsDecodedFrames} ok, ${b.decodeFailures} failed, avg ${b.avgDecodeMs.toFixed(1)} ms (${b.rawI420Frames} raw I420, ${b.jpegFallbackFrames} JPEG fallback)`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Bridge Decode Parts:',
+        `base64 ${b.base64FetchAvgMs.toFixed(1)} ms, jpeg ${b.jpegDecodeAvgMs.toFixed(1)} ms, vf ${b.videoFrameCreateAvgMs.toFixed(1)} ms`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Bridge Write:',
+        `avg ${b.writerAvgMs.toFixed(1)} ms, real ${b.realWriteAvgMs.toFixed(1)} ms`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Bridge Backpressure:',
+        `${b.pollSkippedForWork} poll skips, ${b.writerBackpressureSkips} writer skips, ${b.staleFrameDrops} stale drops`,
+      ),
+    );
+    lines.push(
+      pad(
+        'Latest Rust Seq Age:',
+        b.latestSeqAgeMs === null ? 'N/A' : `${b.latestSeqAgeMs.toFixed(0)} ms`,
+      ),
+    );
     lines.push(pad('Track State:', `${b.trackReadyState}, muted=${b.trackMuted ?? 'n/a'}`));
     if (b.windowsNativeCapture) {
       const rust = b.windowsNativeCapture;
-      lines.push(pad('Backend Cadence:', `${rust.rawBackendCallbackFps.toFixed(1)} callbacks/s, ${rust.emittedPollableFrameFps.toFixed(1)} pollable/s, ${rust.throttleDropFps.toFixed(1)} throttled/s`));
-      lines.push(pad('Backend Counts:', `${rust.frameArrivedCallbacks} callbacks, ${rust.emittedPollableFrames} pollable, ${rust.throttleDropCount} throttled`));
-      lines.push(pad('Rust Convert:', `cap ${rust.capDownscaleAvgMs.toFixed(1)} ms, i420 ${rust.i420ConvertAvgMs.toFixed(1)} ms, rgba ${rust.rgbaToRgbAvgMs.toFixed(1)} ms`));
-      lines.push(pad('Rust JPEG Fallback:', `jpeg ${rust.jpegEncodeAvgMs.toFixed(1)} ms, base64 ${rust.base64EncodeAvgMs.toFixed(1)} ms, write ${rust.latestFrameWriteAvgMs.toFixed(1)} ms`));
+      lines.push(
+        pad(
+          'Backend Cadence:',
+          `${rust.rawBackendCallbackFps.toFixed(1)} callbacks/s, ${rust.emittedPollableFrameFps.toFixed(1)} pollable/s, ${rust.throttleDropFps.toFixed(1)} throttled/s`,
+        ),
+      );
+      lines.push(
+        pad(
+          'Backend Counts:',
+          `${rust.frameArrivedCallbacks} callbacks, ${rust.emittedPollableFrames} pollable, ${rust.throttleDropCount} throttled`,
+        ),
+      );
+      lines.push(
+        pad(
+          'Rust Convert:',
+          `cap ${rust.capDownscaleAvgMs.toFixed(1)} ms, i420 ${rust.i420ConvertAvgMs.toFixed(1)} ms, rgba ${rust.rgbaToRgbAvgMs.toFixed(1)} ms`,
+        ),
+      );
+      lines.push(
+        pad(
+          'Rust JPEG Fallback:',
+          `jpeg ${rust.jpegEncodeAvgMs.toFixed(1)} ms, base64 ${rust.base64EncodeAvgMs.toFixed(1)} ms, write ${rust.latestFrameWriteAvgMs.toFixed(1)} ms`,
+        ),
+      );
     }
   }
   lines.push('');
@@ -491,15 +638,36 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   lines.push('[SCREEN SHARE RECEIVED]');
   if (snap.videoReceive) {
     lines.push(pad('FPS:', snap.videoReceive.fps.toFixed(1)));
-    lines.push(pad('Resolution:', snap.videoReceive.frameWidth > 0 ? `${snap.videoReceive.frameWidth}×${snap.videoReceive.frameHeight}` : 'N/A'));
+    lines.push(
+      pad(
+        'Resolution:',
+        snap.videoReceive.frameWidth > 0
+          ? `${snap.videoReceive.frameWidth}×${snap.videoReceive.frameHeight}`
+          : 'N/A',
+      ),
+    );
     lines.push(pad('Inbound loss:', `${snap.videoReceive.packetLossPercent.toFixed(1)}%`));
-    lines.push(pad('Jitter buffer:', snap.videoReceive.jitterBufferDelayMs > 0 ? `${snap.videoReceive.jitterBufferDelayMs} ms` : 'N/A'));
+    lines.push(
+      pad(
+        'Jitter buffer:',
+        snap.videoReceive.jitterBufferDelayMs > 0
+          ? `${snap.videoReceive.jitterBufferDelayMs} ms`
+          : 'N/A',
+      ),
+    );
     lines.push(pad('Frames dropped:', String(snap.videoReceive.framesDropped)));
     lines.push(pad('Freeze events:', String(snap.videoReceive.freezeCount)));
     lines.push(pad('Freeze time:', `${snap.videoReceive.freezeDurationMs} ms`));
     lines.push(pad('PLIs sent:', String(snap.videoReceive.pliCount)));
     lines.push(pad('NACKs sent:', String(snap.videoReceive.nackCount)));
-    lines.push(pad('Avg decode:', snap.videoReceive.avgDecodeTimeMs > 0 ? `${snap.videoReceive.avgDecodeTimeMs.toFixed(1)} ms` : 'N/A'));
+    lines.push(
+      pad(
+        'Avg decode:',
+        snap.videoReceive.avgDecodeTimeMs > 0
+          ? `${snap.videoReceive.avgDecodeTimeMs.toFixed(1)} ms`
+          : 'N/A',
+      ),
+    );
   } else {
     lines.push(pad('Status:', 'Not watching a share'));
   }
@@ -509,7 +677,9 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
   const history = historyBuffer.snapshot().filter((_, i) => i % 5 === 0);
   if (history.length > 0) {
     lines.push(`[HISTORY — ${history.length} samples, ~5s interval]`);
-    lines.push('timestamp,rtt_ms,loss_pct,jitter_ms,mos,jitter_buf_ms,concealment,bw_kbps,rss_mb,cpu_pct,share_bitrate_kbps,share_fps,share_res,share_pli,share_nack');
+    lines.push(
+      'timestamp,rtt_ms,loss_pct,jitter_ms,mos,jitter_buf_ms,concealment,bw_kbps,rss_mb,cpu_pct,share_bitrate_kbps,share_fps,share_res,share_pli,share_nack',
+    );
     for (const h of history) {
       const t = new Date(h.timestamp).toTimeString().slice(0, 8);
       const rtt = h.network ? Math.round(h.network.rttMs) : '';
@@ -523,10 +693,13 @@ export function exportSnapshot(snap: DiagnosticsSnapshot): string {
       const cpu = h.cpuPercent !== null ? h.cpuPercent.toFixed(1) : '';
       const shareBitrate = h.share ? h.share.bitrateKbps : '';
       const fps = h.share ? h.share.fps.toFixed(1) : '';
-      const res = h.share && h.share.frameWidth > 0 ? `${h.share.frameWidth}x${h.share.frameHeight}` : '';
+      const res =
+        h.share && h.share.frameWidth > 0 ? `${h.share.frameWidth}x${h.share.frameHeight}` : '';
       const pli = h.share ? h.share.pliCount : '';
       const nack = h.share ? h.share.nackCount : '';
-      lines.push(`${t},${rtt},${loss},${jitter},${mos},${jb},${conc},${bw},${rss},${cpu},${shareBitrate},${fps},${res},${pli},${nack}`);
+      lines.push(
+        `${t},${rtt},${loss},${jitter},${mos},${jb},${conc},${bw},${rss},${cpu},${shareBitrate},${fps},${res},${pli},${nack}`,
+      );
     }
   }
 
@@ -593,7 +766,11 @@ async function poll(): Promise<void> {
           rttMs: networkStats.rttMs,
           packetLossPercent: networkStats.packetLossPercent,
           jitterMs: networkStats.jitterMs,
-          mos: estimateMos(networkStats.rttMs, networkStats.packetLossPercent, networkStats.jitterMs),
+          mos: estimateMos(
+            networkStats.rttMs,
+            networkStats.packetLossPercent,
+            networkStats.jitterMs,
+          ),
           jitterBufferDelayMs: networkStats.jitterBufferDelayMs,
           concealmentEventsPerInterval: networkStats.concealmentEventsPerInterval,
           candidateType: networkStats.candidateType,

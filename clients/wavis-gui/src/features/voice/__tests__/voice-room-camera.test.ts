@@ -70,13 +70,17 @@ describe('VoiceRoom camera lifecycle', () => {
         shareType: 'screen_audio',
       });
 
-      expect(harness.voiceRoom.getState().participants.some((participant) => participant.isSharing)).toBe(true);
+      expect(
+        harness.voiceRoom.getState().participants.some((participant) => participant.isSharing),
+      ).toBe(true);
 
       harness.emitMessage({ type: 'session_displaced' });
       await harness.tick();
 
       expect(harness.state.lastLiveKitModule!.stopScreenShare).toHaveBeenCalled();
-      expect(harness.voiceRoom.getState().participants.some((participant) => participant.isSharing)).toBe(false);
+      expect(
+        harness.voiceRoom.getState().participants.some((participant) => participant.isSharing),
+      ).toBe(false);
       expect(harness.voiceRoom.getState().activeVideoShare).toBeNull();
       expect(harness.voiceRoom.getState().activeAudioShare).toBeNull();
       expect(harness.voiceRoom.getState().screenShareStreams.size).toBe(0);
@@ -101,7 +105,9 @@ describe('VoiceRoom camera lifecycle', () => {
       expect(harness.voiceRoom.getState().cameraIntent).toBe(false);
       expect(harness.voiceRoom.getState().cameraPublication).toBe('idle');
       expect(
-        harness.voiceRoom.getState().events.some((event) => event.message.includes('no camera available')),
+        harness.voiceRoom
+          .getState()
+          .events.some((event) => event.message.includes('no camera available')),
       ).toBe(true);
     } finally {
       harness.cleanup();

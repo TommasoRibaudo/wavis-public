@@ -307,9 +307,7 @@ impl AppState {
                         .unwrap_or(86400),
                 ),
             })),
-            admin_token: std::env::var("ADMIN_TOKEN")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            admin_token: std::env::var("ADMIN_TOKEN").ok().filter(|s| !s.is_empty()),
             refresh_token_pepper,
             refresh_token_pepper_previous,
             active_room_map: Arc::new(RwLock::new(HashMap::new())),

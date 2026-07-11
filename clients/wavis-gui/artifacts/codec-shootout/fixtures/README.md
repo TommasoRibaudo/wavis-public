@@ -17,6 +17,7 @@ A scripted terminal + IDE scroll through a fixed source file.
 **Why:** exercises Detail_Profile with static, high-contrast text. Representative of "code review" sharing.
 
 **To create:**
+
 ```
 # Record using OBS / FFmpeg on a 2560×1440 display:
 # 1. Open livekit-media.ts in VS Code at 12pt font with a dark theme
@@ -36,6 +37,7 @@ A 1080p60 demo clip with pan + zoom segments.
 **Why:** exercises Motion_Profile with high frame-over-frame change. Representative of "demo video" sharing.
 
 **To create:**
+
 ```
 # Use any 1080p60 source clip:
 ffmpeg -i source_1080p60.mp4 \

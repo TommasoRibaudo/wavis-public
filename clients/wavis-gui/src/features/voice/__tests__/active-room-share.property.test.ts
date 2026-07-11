@@ -85,7 +85,12 @@ describe('Property 14: Concurrent share slot independence', () => {
       fc.property(
         arbVideoShare.filter((v) => v !== null),
         (video) => {
-          const sel = { mode: 'audio_only' as const, sourceId: 'test', sourceName: 'Test', withAudio: false };
+          const sel = {
+            mode: 'audio_only' as const,
+            sourceId: 'test',
+            sourceName: 'Test',
+            withAudio: false,
+          };
           const result = canStartShare(sel, video, null);
           expect(result.allowed).toBe(true);
         },
@@ -99,7 +104,12 @@ describe('Property 14: Concurrent share slot independence', () => {
       fc.property(
         arbAudioShare.filter((a) => a !== null),
         (audio) => {
-          const sel = { mode: 'screen_audio' as const, sourceId: 'test', sourceName: 'Test', withAudio: false };
+          const sel = {
+            mode: 'screen_audio' as const,
+            sourceId: 'test',
+            sourceName: 'Test',
+            withAudio: false,
+          };
           const result = canStartShare(sel, null, audio);
           expect(result.allowed).toBe(true);
         },
@@ -113,7 +123,12 @@ describe('Property 14: Concurrent share slot independence', () => {
       fc.property(
         arbAudioShare.filter((a) => a !== null),
         (audio) => {
-          const sel = { mode: 'screen_audio' as const, sourceId: 'test', sourceName: 'Test', withAudio: true };
+          const sel = {
+            mode: 'screen_audio' as const,
+            sourceId: 'test',
+            sourceName: 'Test',
+            withAudio: true,
+          };
           const result = canStartShare(sel, null, audio);
           expect(result.allowed).toBe(false);
         },
@@ -142,7 +157,12 @@ describe('Property 14: Concurrent share slot independence', () => {
       fc.property(
         arbAudioShare.filter((a) => a !== null),
         (audio) => {
-          const sel = { mode: 'audio_only' as const, sourceId: 'test', sourceName: 'Test', withAudio: false };
+          const sel = {
+            mode: 'audio_only' as const,
+            sourceId: 'test',
+            sourceName: 'Test',
+            withAudio: false,
+          };
           const result = canStartShare(sel, null, audio);
           expect(result.allowed).toBe(false);
         },
@@ -164,9 +184,9 @@ describe('Property 16: shareType backward compatibility', () => {
   it('unrecognized shareType defaults to screen share indicator', () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 32 }).filter(
-          (s) => !['screen_audio', 'window', 'audio_only'].includes(s),
-        ),
+        fc
+          .string({ minLength: 1, maxLength: 32 })
+          .filter((s) => !['screen_audio', 'window', 'audio_only'].includes(s)),
         (unknownType) => {
           const indicator = shareIndicatorForType(unknownType);
           expect(indicator.char).toBe('▲');
@@ -215,13 +235,10 @@ describe('Property 17: Contextual share indicator per participant', () => {
 
   it('screen_audio and window show triangle indicator', () => {
     fc.assert(
-      fc.property(
-        fc.constantFrom('screen_audio' as const, 'window' as const),
-        (mode) => {
-          const indicator = shareIndicatorForType(mode);
-          expect(indicator.char).toBe('▲');
-        },
-      ),
+      fc.property(fc.constantFrom('screen_audio' as const, 'window' as const), (mode) => {
+        const indicator = shareIndicatorForType(mode);
+        expect(indicator.char).toBe('▲');
+      }),
       { numRuns: 100 },
     );
   });

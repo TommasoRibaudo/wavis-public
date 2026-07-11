@@ -34,7 +34,8 @@ let meFetchCount = 0;
 let mockFetchBehavior: 'network_error' | '401' | '400' | '429' | '500' | '200' = 'network_error';
 
 /** Mock /auth/me behavior — set per test */
-let mockMeBehavior: 'network_error' | '401' | '200_with_username' | '200_null' = '200_with_username';
+let mockMeBehavior: 'network_error' | '401' | '200_with_username' | '200_null' =
+  '200_with_username';
 
 /** Username returned by the mock /auth/me endpoint */
 let mockMeUsername = 'diego';
@@ -164,7 +165,6 @@ async function runAuthGateStartupFlow(): Promise<void> {
 
   navigateTarget = null;
 }
-
 
 /* ═══ Bug Condition Exploration Tests ═══════════════════════════════
  *
@@ -380,9 +380,9 @@ describe('Preservation — Existing Auth Flows Unchanged', () => {
           await runAuthGateStartupFlow();
 
           expect(navigateTarget).toBe('/setup');
-        }
+        },
       ),
-      { numRuns: 20 }
+      { numRuns: 20 },
     );
   });
 
@@ -420,9 +420,9 @@ describe('Preservation — Existing Auth Flows Unchanged', () => {
           // Valid token → no refresh attempt, stays on authenticated app
           expect(refreshFetchCount).toBe(0);
           expect(navigateTarget).toBeNull();
-        }
+        },
       ),
-      { numRuns: 20 }
+      { numRuns: 20 },
     );
   });
 
@@ -466,9 +466,9 @@ describe('Preservation — Existing Auth Flows Unchanged', () => {
           expect(mockStore['access_token']).toBeDefined();
           expect(mockStore['access_token_exp']).toBeDefined();
           expect(mockKeychain['wavis_refresh_token']).toBe('new-refresh-token');
-        }
+        },
       ),
-      { numRuns: 20 }
+      { numRuns: 20 },
     );
   });
 
@@ -507,14 +507,12 @@ describe('Preservation — Existing Auth Flows Unchanged', () => {
 
           // Refresh token must be deleted from keychain
           expect(mockKeychain['wavis_refresh_token']).toBeUndefined();
-        }
+        },
       ),
-      { numRuns: 20 }
+      { numRuns: 20 },
     );
   });
 });
-
-
 
 /* ─── Extended Mock Support ─────────────────────────────────────── */
 
@@ -531,9 +529,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
     if (typeof url === 'string' && url.includes('/auth/refresh')) {
       refreshFetchCount++;
 
-      const behavior = mockFetchResponses.length > 0
-        ? mockFetchResponses.shift()!
-        : mockFetchBehavior;
+      const behavior =
+        mockFetchResponses.length > 0 ? mockFetchResponses.shift()! : mockFetchBehavior;
 
       if (behavior === 'network_error') {
         throw new Error('Network error: connection refused');
@@ -643,10 +640,17 @@ async function runFixedAuthGateInit(options?: { onCancel?: () => boolean }): Pro
 
     if (result.status !== 'success') {
       // Check if non-recoverable
-      const isTransient = result.status === 'network_error' || result.status === 'server_error' || result.status === 'rate_limited';
+      const isTransient =
+        result.status === 'network_error' ||
+        result.status === 'server_error' ||
+        result.status === 'rate_limited';
 
       if (!isTransient) {
-        if (result.status === 'unauthorized' || result.status === 'bad_request' || result.status === 'no_refresh_token') {
+        if (
+          result.status === 'unauthorized' ||
+          result.status === 'bad_request' ||
+          result.status === 'no_refresh_token'
+        ) {
           await auth.clearSessionFull();
         } else {
           await auth.clearAccessTokens();
@@ -663,11 +667,14 @@ async function runFixedAuthGateInit(options?: { onCancel?: () => boolean }): Pro
         const baseDelay = RETRY_DELAYS[i];
         const jitter = baseDelay * 0.2 * (2 * Math.random() - 1);
         const delay = Math.round(baseDelay + jitter);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
         if (isCancelled()) return;
         lastResult = await auth.refreshTokens();
         if (lastResult.status === 'success') break;
-        const stillTransient = lastResult.status === 'network_error' || lastResult.status === 'server_error' || lastResult.status === 'rate_limited';
+        const stillTransient =
+          lastResult.status === 'network_error' ||
+          lastResult.status === 'server_error' ||
+          lastResult.status === 'rate_limited';
         if (!stillTransient) {
           await auth.clearSessionFull();
           navigateTarget = '/login';
@@ -726,7 +733,10 @@ async function runFixedScheduleRefresh(options?: {
     return { retryCount: 0 };
   }
 
-  const isTransient = result.status === 'network_error' || result.status === 'server_error' || result.status === 'rate_limited';
+  const isTransient =
+    result.status === 'network_error' ||
+    result.status === 'server_error' ||
+    result.status === 'rate_limited';
 
   if (!isTransient) {
     await auth.clearSessionFull();
@@ -741,7 +751,7 @@ async function runFixedScheduleRefresh(options?: {
     const baseDelay = RETRY_DELAYS[i] ?? 3000;
     const jitter = baseDelay * 0.2 * (2 * Math.random() - 1);
     const delay = Math.round(baseDelay + jitter);
-    await new Promise(r => setTimeout(r, delay));
+    await new Promise((r) => setTimeout(r, delay));
     if (isCancelled()) return { retryCount };
 
     const retryResult = await auth.refreshTokens();
@@ -749,7 +759,10 @@ async function runFixedScheduleRefresh(options?: {
       navigateTarget = null;
       return { retryCount };
     }
-    const stillTransient = retryResult.status === 'network_error' || retryResult.status === 'server_error' || retryResult.status === 'rate_limited';
+    const stillTransient =
+      retryResult.status === 'network_error' ||
+      retryResult.status === 'server_error' ||
+      retryResult.status === 'rate_limited';
     if (!stillTransient) {
       await auth.clearSessionFull();
       navigateTarget = '/login';
@@ -916,8 +929,8 @@ describe('init() Retry Logic — Fixed Behavior', () => {
     // Extract setTimeout delays used for retry waits (filter out unrelated calls)
     const BASE_DELAYS = [250, 1000, 3000];
     const retryDelays = setTimeoutSpy.mock.calls
-      .map(call => call[1] as number)
-      .filter(d => typeof d === 'number' && d > 0);
+      .map((call) => call[1] as number)
+      .filter((d) => typeof d === 'number' && d > 0);
 
     // Each delay should be within [base*0.8, base*1.2]
     for (let i = 0; i < BASE_DELAYS.length && i < retryDelays.length; i++) {
@@ -946,8 +959,8 @@ describe('init() Retry Logic — Fixed Behavior', () => {
 
     const BASE_DELAYS = [250, 1000, 3000];
     const retryDelays = setTimeoutSpy.mock.calls
-      .map(call => call[1] as number)
-      .filter(d => typeof d === 'number' && d > 0);
+      .map((call) => call[1] as number)
+      .filter((d) => typeof d === 'number' && d > 0);
 
     for (let i = 0; i < BASE_DELAYS.length && i < retryDelays.length; i++) {
       const base = BASE_DELAYS[i];
@@ -998,7 +1011,6 @@ describe('init() Retry Logic — Fixed Behavior', () => {
     expect(navigateTarget).toBeNull(); // success → app
   });
 });
-
 
 /* ═══ scheduleRefresh Failure-Category Handling — Fixed Behavior ════
  *
@@ -1077,8 +1089,8 @@ describe('scheduleRefresh Failure-Category Handling — Fixed Behavior', () => {
 
     const BASE_DELAYS = [250, 1000, 3000];
     const retryDelays = setTimeoutSpy.mock.calls
-      .map(call => call[1] as number)
-      .filter(d => typeof d === 'number' && d > 0);
+      .map((call) => call[1] as number)
+      .filter((d) => typeof d === 'number' && d > 0);
 
     for (let i = 0; i < BASE_DELAYS.length && i < retryDelays.length; i++) {
       const base = BASE_DELAYS[i];

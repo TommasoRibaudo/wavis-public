@@ -82,11 +82,7 @@ function emitAuthExpired(): void {
   }
 }
 
-async function doFetch(
-  endpoint: string,
-  init: RequestInit,
-  insecure: boolean,
-): Promise<Response> {
+async function doFetch(endpoint: string, init: RequestInit, insecure: boolean): Promise<Response> {
   const fetchOpts: RequestInit & { dangerouslyIgnoreCertificateErrors?: boolean } = {
     ...init,
   };
@@ -95,7 +91,7 @@ async function doFetch(
   // that has no such limit. This also ensures Content-Length reflects actual
   // byte count rather than char count (they differ for multi-byte Unicode).
   if (typeof fetchOpts.body === 'string') {
-    fetchOpts.body = new TextEncoder().encode(fetchOpts.body) as unknown as BodyInit;
+    fetchOpts.body = new TextEncoder().encode(fetchOpts.body);
   }
   if (insecure) {
     fetchOpts.dangerouslyIgnoreCertificateErrors = true;
@@ -113,10 +109,7 @@ async function doFetch(
  * - Classifies all errors into ApiErrorKind
  * - Token values never included in error messages
  */
-export async function apiFetch<T = unknown>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw new ApiError(0, 'Server URL not configured', 'Network');
 
@@ -171,7 +164,11 @@ export async function apiFetch<T = unknown>(
   if (!res.ok) {
     const body = await res.text();
     // Log raw server response for debugging unexpected error formats
-    console.error('[wavis:api] Server error response', res.status, JSON.stringify(body).slice(0, 500));
+    console.error(
+      '[wavis:api] Server error response',
+      res.status,
+      JSON.stringify(body).slice(0, 500),
+    );
     const kind = classifyError(res.status, body);
     let serverError: string | null = null;
     try {
@@ -235,7 +232,11 @@ export async function apiPublicFetch<T = unknown>(
   if (!res.ok) {
     const body = await res.text();
     // Log raw server response for debugging unexpected error formats
-    console.error('[wavis:api] Server error response', res.status, JSON.stringify(body).slice(0, 500));
+    console.error(
+      '[wavis:api] Server error response',
+      res.status,
+      JSON.stringify(body).slice(0, 500),
+    );
     const kind = classifyError(res.status, body);
     let serverError: string | null = null;
     try {

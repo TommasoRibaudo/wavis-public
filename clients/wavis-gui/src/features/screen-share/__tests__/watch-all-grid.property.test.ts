@@ -25,19 +25,24 @@ describe('Property 1: Grid layout maximizes visible video area', () => {
 
   it('returned layout visible video area >= every other candidate column count', () => {
     fc.assert(
-      fc.property(shareCountArb, containerWidthArb, containerHeightArb, (shareCount, width, height) => {
-        const result = computeGridLayout(shareCount, width, height);
-        const resultArea = computeContainedVideoArea(result.tileWidth, result.tileHeight);
+      fc.property(
+        shareCountArb,
+        containerWidthArb,
+        containerHeightArb,
+        (shareCount, width, height) => {
+          const result = computeGridLayout(shareCount, width, height);
+          const resultArea = computeContainedVideoArea(result.tileWidth, result.tileHeight);
 
-        for (let c = 1; c <= shareCount; c++) {
-          const rows = Math.ceil(shareCount / c);
-          const tileWidth = Math.floor(width / c);
-          const tileHeight = Math.floor(height / rows);
-          const candidateArea = computeContainedVideoArea(tileWidth, tileHeight);
+          for (let c = 1; c <= shareCount; c++) {
+            const rows = Math.ceil(shareCount / c);
+            const tileWidth = Math.floor(width / c);
+            const tileHeight = Math.floor(height / rows);
+            const candidateArea = computeContainedVideoArea(tileWidth, tileHeight);
 
-          expect(resultArea).toBeGreaterThanOrEqual(candidateArea);
-        }
-      }),
+            expect(resultArea).toBeGreaterThanOrEqual(candidateArea);
+          }
+        },
+      ),
       { numRuns: 200 },
     );
   });
@@ -64,16 +69,21 @@ describe('Property 2: Grid layout produces uniform tiles', () => {
 
   it('tileWidth > 0, tileHeight > 0, columns * rows >= shareCount, at most one partial row', () => {
     fc.assert(
-      fc.property(shareCountArb, containerWidthArb, containerHeightArb, (shareCount, width, height) => {
-        const result = computeGridLayout(shareCount, width, height);
+      fc.property(
+        shareCountArb,
+        containerWidthArb,
+        containerHeightArb,
+        (shareCount, width, height) => {
+          const result = computeGridLayout(shareCount, width, height);
 
-        expect(result.tileWidth).toBeGreaterThan(0);
-        expect(result.tileHeight).toBeGreaterThan(0);
-        expect(result.columns * result.rows).toBeGreaterThanOrEqual(shareCount);
+          expect(result.tileWidth).toBeGreaterThan(0);
+          expect(result.tileHeight).toBeGreaterThan(0);
+          expect(result.columns * result.rows).toBeGreaterThanOrEqual(shareCount);
 
-        const emptyCells = result.columns * result.rows - shareCount;
-        expect(emptyCells).toBeLessThan(result.columns);
-      }),
+          const emptyCells = result.columns * result.rows - shareCount;
+          expect(emptyCells).toBeLessThan(result.columns);
+        },
+      ),
       { numRuns: 200 },
     );
   });
@@ -86,18 +96,25 @@ const streamArb = fc.record({
   id: fc.uuid(),
   aspectRatio: aspectRatioArb,
 });
-const streamsArb = fc.array(streamArb, { minLength: 1, maxLength: 5 }).map((streams) => {
-  // Ensure unique ids
-  const seen = new Set<string>();
-  return streams.filter((s) => { if (seen.has(s.id)) return false; seen.add(s.id); return true; });
-}).filter((s) => s.length >= 1);
+const streamsArb = fc
+  .array(streamArb, { minLength: 1, maxLength: 5 })
+  .map((streams) => {
+    // Ensure unique ids
+    const seen = new Set<string>();
+    return streams.filter((s) => {
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+  })
+  .filter((s) => s.length >= 1);
 
 function computeOccupiedAreaFromRowAspectSums(
   rowAspectSums: number[],
   width: number,
   height: number,
 ): number {
-  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + (width / sum), 0);
+  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + width / sum, 0);
   const scale = Math.min(1, height / naturalTotalHeight);
   return rowAspectSums.reduce((acc, sum) => {
     const rowHeight = (width / sum) * scale;
@@ -126,7 +143,7 @@ function computeBestPartitionArea(
   const sorted = [...streams].sort((a, b) => a.aspectRatio - b.aspectRatio);
   let bestArea = -1;
 
-  for (let mask = 0; mask < (1 << (sorted.length - 1)); mask++) {
+  for (let mask = 0; mask < 1 << (sorted.length - 1); mask++) {
     const rowAspectSums: number[] = [];
     let rowStart = 0;
 
@@ -140,7 +157,10 @@ function computeBestPartitionArea(
       rowStart = i + 1;
     }
 
-    bestArea = Math.max(bestArea, computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height));
+    bestArea = Math.max(
+      bestArea,
+      computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height),
+    );
   }
 
   return bestArea;

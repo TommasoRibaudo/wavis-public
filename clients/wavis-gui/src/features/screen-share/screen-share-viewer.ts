@@ -45,9 +45,7 @@ export function compositeKey(participantId: string, windowLabel: string): string
  * triggering a full bridge reconnect.
  */
 export function isVideoTrackAlive(stream: MediaStream): boolean {
-  return stream.getVideoTracks().some(
-    (t) => t.readyState === 'live',
-  );
+  return stream.getVideoTracks().some((t) => t.readyState === 'live');
 }
 
 /* ─── Loopback Encoder Caps ─────────────────────────────────────── */
@@ -83,7 +81,11 @@ function applyScreenContentHint(track: MediaStreamTrack): void {
  */
 function preferH264(transceiver: RTCRtpTransceiver): void {
   try {
-    if (typeof RTCRtpSender === 'undefined' || typeof transceiver.setCodecPreferences !== 'function') return;
+    if (
+      typeof RTCRtpSender === 'undefined' ||
+      typeof transceiver.setCodecPreferences !== 'function'
+    )
+      return;
     const caps = RTCRtpSender.getCapabilities?.('video');
     if (!caps) return;
     const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
@@ -105,9 +107,19 @@ function logEncoderStats(key: string, pc: RTCPeerConnection): void {
     try {
       const stats = await pc.getStats();
       stats.forEach((s) => {
-        const stat = s as { type?: string; kind?: string; encoderImplementation?: string; frameWidth?: number; frameHeight?: number; framesPerSecond?: number };
+        const stat = s as {
+          type?: string;
+          kind?: string;
+          encoderImplementation?: string;
+          frameWidth?: number;
+          frameHeight?: number;
+          framesPerSecond?: number;
+        };
         if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
-          console.log(LOG, `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`);
+          console.log(
+            LOG,
+            `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`,
+          );
         }
       });
     } catch {
@@ -142,7 +154,8 @@ export async function startSending(
   stream: MediaStream,
 ): Promise<void> {
   const key = compositeKey(participantId, windowLabel);
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] startSending — tracks: ${stream.getTracks().length}`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `sender[${key}] startSending — tracks: ${stream.getTracks().length}`);
   stopSending(participantId, windowLabel);
 
   const pc = new RTCPeerConnection();
@@ -212,7 +225,10 @@ export async function startSending(
       // Guard: only accept an answer when we have a local offer pending.
       // Duplicate offers can cause duplicate answers — ignore if already stable.
       if (processingAnswer || e.pc.signalingState !== 'have-local-offer') {
-        console.warn(LOG, `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`);
+        console.warn(
+          LOG,
+          `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`,
+        );
         return;
       }
       processingAnswer = true;
@@ -236,13 +252,15 @@ export async function startSending(
   // Guard: if a concurrent startSending call replaced our entry and closed
   // this PC (e.g. watch-all:ready fired twice), bail out silently.
   if (senders.get(key)?.pc !== pc || pc.signalingState === 'closed') {
-    if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] PC replaced or closed before createOffer — bailing`);
+    if (DEBUG_SHARE_VIEW)
+      console.log(LOG, `sender[${key}] PC replaced or closed before createOffer — bailing`);
     return;
   }
 
   // Create offer and store it, then emit
   const offer = await pc.createOffer();
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] offer created, sdp length: ${offer.sdp?.length}`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `sender[${key}] offer created, sdp length: ${offer.sdp?.length}`);
   await pc.setLocalDescription(offer);
   entry.offerSdp = offer.sdp ?? null;
   sendOffer();
@@ -308,19 +326,25 @@ export async function resendStream(
       try {
         applyScreenContentHint(newVideoTrack);
         await videoSender.replaceTrack(newVideoTrack);
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — replaceTrack succeeded (no bridge rebuild)`);
+        if (DEBUG_SHARE_VIEW)
+          console.log(LOG, `resendStream(${key}) — replaceTrack succeeded (no bridge rebuild)`);
         return;
       } catch (e) {
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — replaceTrack failed, falling back to full rebuild`, e);
+        if (DEBUG_SHARE_VIEW)
+          console.log(
+            LOG,
+            `resendStream(${key}) — replaceTrack failed, falling back to full rebuild`,
+            e,
+          );
       }
     }
   }
 
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — full rebuild (stopSending + startSending)`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `resendStream(${key}) — full rebuild (stopSending + startSending)`);
   stopSending(participantId, windowLabel);
   await startSending(participantId, windowLabel, stream);
 }
-
 
 /* ─── Receiver (child window) ───────────────────────────────────── */
 
@@ -350,7 +374,10 @@ export class StreamReceiver {
    *   Not fired for 'disconnected' — that state may recover on its own; the
    *   stall detector handles it if video frames stop arriving.
    */
-  async start(onConnectionFailed?: () => void, onListenersReady?: () => void): Promise<MediaStream> {
+  async start(
+    onConnectionFailed?: () => void,
+    onListenersReady?: () => void,
+  ): Promise<MediaStream> {
     this.stop();
     const key = compositeKey(this.participantId, this.windowLabel);
     const startGeneration = ++this.startGeneration;
@@ -381,7 +408,10 @@ export class StreamReceiver {
 
         if (DEBUG_SHARE_VIEW) {
           this.pc.oniceconnectionstatechange = () => {
-            console.log(LOG, `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`);
+            console.log(
+              LOG,
+              `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`,
+            );
           };
           this.pc.onicegatheringstatechange = () => {
             console.log(LOG, `receiver[${key}] iceGatheringState → ${this.pc?.iceGatheringState}`);
@@ -401,7 +431,11 @@ export class StreamReceiver {
         const remoteStream = new MediaStream();
         this.pc.ontrack = (e: RTCTrackEvent) => {
           if (this.startGeneration !== startGeneration) return;
-          if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`);
+          if (DEBUG_SHARE_VIEW)
+            console.log(
+              LOG,
+              `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`,
+            );
           if (e.streams[0]) {
             for (const t of e.streams[0].getTracks()) {
               remoteStream.addTrack(t);
@@ -447,7 +481,10 @@ export class StreamReceiver {
             // has had time to change signalingState — the processingOffer flag
             // closes that TOCTOU window.
             if (processingOffer || pc.signalingState !== 'stable') {
-              console.warn(LOG, `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`);
+              console.warn(
+                LOG,
+                `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
+              );
               return;
             }
             processingOffer = true;
@@ -456,14 +493,20 @@ export class StreamReceiver {
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
               emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
-              if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`);
+              if (DEBUG_SHARE_VIEW)
+                console.log(LOG, `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`);
               console.log(LOG, `receiver[${key}] got offer, answer sent`);
             } finally {
               processingOffer = false;
             }
           }),
         ]);
-        if (this.startGeneration !== startGeneration || !this.pc || this.pc !== pc || pc.connectionState === 'closed') {
+        if (
+          this.startGeneration !== startGeneration ||
+          !this.pc ||
+          this.pc !== pc ||
+          pc.connectionState === 'closed'
+        ) {
           unlistenIce();
           unlistenOffer();
           return;
@@ -481,7 +524,8 @@ export class StreamReceiver {
 
         this.startTimeout = setTimeout(() => {
           if (!settled && this.startGeneration === startGeneration) {
-            if (DEBUG_SHARE_VIEW) console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
+            if (DEBUG_SHARE_VIEW)
+              console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
             rejectOnce(new Error('Timed out waiting for screen share stream'));
           }
         }, 15000);

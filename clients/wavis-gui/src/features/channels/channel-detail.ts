@@ -51,7 +51,6 @@ export interface BannedMember {
   displayName: string;
 }
 
-
 // ─── Backend Response Types (private) ──────────────────────────────
 
 interface BackendChannelDetailResponse {
@@ -128,9 +127,10 @@ function mapVoiceStatus(res: BackendVoiceStatusResponse): VoiceStatus {
   return {
     active: res.active,
     participantCount: res.participant_count ?? null,
-    participants: res.participants?.map((p) => ({
-      displayName: p.display_name,
-    })) ?? null,
+    participants:
+      res.participants?.map((p) => ({
+        displayName: p.display_name,
+      })) ?? null,
   };
 }
 
@@ -163,16 +163,12 @@ export async function fetchChannelDetail(
 }
 
 export async function fetchVoiceStatus(channelId: string): Promise<VoiceStatus> {
-  const res = await apiFetch<BackendVoiceStatusResponse>(
-    `/channels/${channelId}/voice`,
-  );
+  const res = await apiFetch<BackendVoiceStatusResponse>(`/channels/${channelId}/voice`);
   return mapVoiceStatus(res);
 }
 
 export async function fetchInvites(channelId: string): Promise<ChannelInvite[]> {
-  const items = await apiFetch<BackendInviteListItem[]>(
-    `/channels/${channelId}/invites`,
-  );
+  const items = await apiFetch<BackendInviteListItem[]>(`/channels/${channelId}/invites`);
   return items.map(mapInvite);
 }
 
@@ -184,28 +180,21 @@ export async function createInvite(
   const body: Record<string, unknown> = {};
   if (expiresInSecs !== undefined) body.expires_in_secs = expiresInSecs;
   if (maxUses !== undefined) body.max_uses = maxUses;
-  const res = await apiFetch<BackendCreateInviteResponse>(
-    `/channels/${channelId}/invites`,
-    { method: 'POST', body: JSON.stringify(body) },
-  );
+  const res = await apiFetch<BackendCreateInviteResponse>(`/channels/${channelId}/invites`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
   return mapInvite(res);
 }
 
-export async function revokeInvite(
-  channelId: string,
-  code: string,
-): Promise<void> {
+export async function revokeInvite(channelId: string, code: string): Promise<void> {
   await apiFetch(`/channels/${channelId}/invites/${code}`, {
     method: 'DELETE',
   });
 }
 
-export async function fetchBannedMembers(
-  channelId: string,
-): Promise<BannedMember[]> {
-  const res = await apiFetch<BackendBanListResponse>(
-    `/channels/${channelId}/bans`,
-  );
+export async function fetchBannedMembers(channelId: string): Promise<BannedMember[]> {
+  const res = await apiFetch<BackendBanListResponse>(`/channels/${channelId}/bans`);
   return res.banned.map((b) => ({
     userId: b.user_id,
     bannedAt: b.banned_at,
@@ -213,20 +202,11 @@ export async function fetchBannedMembers(
   }));
 }
 
-export async function banMember(
-  channelId: string,
-  userId: string,
-): Promise<void> {
-  await apiFetch<BackendBanResponse>(
-    `/channels/${channelId}/bans/${userId}`,
-    { method: 'POST' },
-  );
+export async function banMember(channelId: string, userId: string): Promise<void> {
+  await apiFetch<BackendBanResponse>(`/channels/${channelId}/bans/${userId}`, { method: 'POST' });
 }
 
-export async function unbanMember(
-  channelId: string,
-  userId: string,
-): Promise<void> {
+export async function unbanMember(channelId: string, userId: string): Promise<void> {
   await apiFetch(`/channels/${channelId}/bans/${userId}`, {
     method: 'DELETE',
   });
@@ -237,10 +217,10 @@ export async function changeMemberRole(
   userId: string,
   role: 'admin' | 'member',
 ): Promise<void> {
-  await apiFetch<BackendRoleChangeResponse>(
-    `/channels/${channelId}/members/${userId}/role`,
-    { method: 'PUT', body: JSON.stringify({ role }) },
-  );
+  await apiFetch<BackendRoleChangeResponse>(`/channels/${channelId}/members/${userId}/role`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
 }
 
 export async function deleteChannel(channelId: string): Promise<void> {
@@ -250,7 +230,6 @@ export async function deleteChannel(channelId: string): Promise<void> {
 export async function leaveChannel(channelId: string): Promise<void> {
   await apiFetch(`/channels/${channelId}/leave`, { method: 'POST' });
 }
-
 
 // ─── Voice Status Batch Fetching ───────────────────────────────────
 
@@ -318,9 +297,7 @@ export async function fetchVoiceStatusWithFallback(
   const controller2 = new AbortController();
   const timeout2 = setTimeout(() => controller2.abort(), AUTO_REFRESH_TIMEOUT_MS);
   try {
-    const results = await Promise.allSettled(
-      channelIds.map((id) => fetchVoiceStatus(id)),
-    );
+    const results = await Promise.allSettled(channelIds.map((id) => fetchVoiceStatus(id)));
     for (let i = 0; i < channelIds.length; i++) {
       const r = results[i];
       if (r.status === 'fulfilled') {

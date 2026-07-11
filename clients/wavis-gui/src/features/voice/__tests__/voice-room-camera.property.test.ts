@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as fc from 'fast-check';
 
-import {
-  CAMERA_QUALITY_HIGH,
-  CAMERA_QUALITY_LOW,
-} from '../camera-types';
+import { CAMERA_QUALITY_HIGH, CAMERA_QUALITY_LOW } from '../camera-types';
 import {
   LIVEKIT_ROOM_OPTIONS,
   buildCameraPublishOptions,
@@ -114,11 +111,17 @@ type CameraEvent =
   | { type: 'local_unpublished' };
 
 function applyCameraEvent(
-  remoteTiles: Record<string, { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }>,
+  remoteTiles: Record<
+    string,
+    { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }
+  >,
   localPublished: boolean,
   event: CameraEvent,
 ): {
-  remoteTiles: Record<string, { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }>;
+  remoteTiles: Record<
+    string,
+    { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }
+  >;
   localPublished: boolean;
 } {
   const nextRemoteTiles = { ...remoteTiles };
@@ -194,13 +197,20 @@ type IntegrationMockLiveKitModule = {
   setScreenShareAudioVolume: (id: string, vol: number) => void;
   attachScreenShareAudio: (id: string) => void;
   detachScreenShareAudio: (id: string) => void;
-  setRemoteShareType: (id: string, shareType?: 'screen_audio' | 'window' | 'audio_only' | 'browser') => void;
+  setRemoteShareType: (
+    id: string,
+    shareType?: 'screen_audio' | 'window' | 'audio_only' | 'browser',
+  ) => void;
   clearRemoteShareType: (id: string) => void;
   startWasapiAudioBridge: (loopbackExclusionAvailable: boolean) => Promise<void>;
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
-  getActiveScreenShares: () => Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
+  getActiveScreenShares: () => Array<{
+    identity: string;
+    stream: MediaStream;
+    startedAtMs: number;
+  }>;
 };
 
 let integrationLastLiveKitModule: IntegrationMockLiveKitModule | null = null;
@@ -208,10 +218,13 @@ let integrationMessageHandler: ((message: unknown) => void) | null = null;
 let integrationVideoInputDevice: string | null = 'camera-1';
 let integrationEnumeratedVideoDevices: string[] = ['camera-1'];
 let integrationPublishCameraImpl:
-  | ((module: IntegrationMockLiveKitModule, opts: {
-      deviceId: string | null;
-      quality: { tier: string };
-    }) => Promise<{ trackId: string }>)
+  | ((
+      module: IntegrationMockLiveKitModule,
+      opts: {
+        deviceId: string | null;
+        quality: { tier: string };
+      },
+    ) => Promise<{ trackId: string }>)
   | null = null;
 
 function resetIntegrationHarnessState(): void {
@@ -308,7 +321,7 @@ async function loadVoiceRoomIntegrationHarness() {
     ) {
       const module = createIntegrationMockLiveKitModule(callbacks);
       integrationLastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));
@@ -320,7 +333,7 @@ async function loadVoiceRoomIntegrationHarness() {
     ) {
       const module = createIntegrationMockLiveKitModule(callbacks);
       integrationLastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));
@@ -528,10 +541,12 @@ describe('Feature: video-feed, Property 1: Publish-options invariant', () => {
           frameRate: quality.maxFps,
         });
         expect(senderParameters).toEqual({
-          encodings: [{
-            maxBitrate: quality.maxBitrate,
-            maxFramerate: quality.maxFps,
-          }],
+          encodings: [
+            {
+              maxBitrate: quality.maxBitrate,
+              maxFramerate: quality.maxFps,
+            },
+          ],
         });
 
         // setPublishingLayers must never appear in publish options — it is the
@@ -555,35 +570,38 @@ describe('Feature: video-feed, Property 6: Panel-tab state machine', () => {
     });
 
     fc.assert(
-      fc.property(inputArb, ({ anyVideoActive, manualOverride, hadAnyVideoActive, perTileErrors }) => {
-        const result = computeRoomPanelTab({
-          anyVideoActive,
-          manualOverride,
-          hadAnyVideoActive,
-        });
+      fc.property(
+        inputArb,
+        ({ anyVideoActive, manualOverride, hadAnyVideoActive, perTileErrors }) => {
+          const result = computeRoomPanelTab({
+            anyVideoActive,
+            manualOverride,
+            hadAnyVideoActive,
+          });
 
-        if (!anyVideoActive) {
-          expect(result).toBe('logs');
-        } else if (manualOverride !== null) {
-          expect(result).toBe(manualOverride);
-        } else {
-          expect(result).toBe('video');
-        }
+          if (!anyVideoActive) {
+            expect(result).toBe('logs');
+          } else if (manualOverride !== null) {
+            expect(result).toBe(manualOverride);
+          } else {
+            expect(result).toBe('video');
+          }
 
-        // Independence invariant: perTileErrors must not affect the tab result.
-        // Vary the error list while holding all other inputs constant and assert
-        // the result is identical — computeRoomPanelTab's signature doesn't
-        // accept perTileErrors, so this is trivially true by type, but we make
-        // it explicit so a future signature change that adds the field would
-        // require updating this assertion.
-        void perTileErrors; // consumed — independence is enforced by the assertion below
-        const resultWithNoErrors = computeRoomPanelTab({
-          anyVideoActive,
-          manualOverride,
-          hadAnyVideoActive,
-        });
-        expect(resultWithNoErrors).toBe(result);
-      }),
+          // Independence invariant: perTileErrors must not affect the tab result.
+          // Vary the error list while holding all other inputs constant and assert
+          // the result is identical — computeRoomPanelTab's signature doesn't
+          // accept perTileErrors, so this is trivially true by type, but we make
+          // it explicit so a future signature change that adds the field would
+          // require updating this assertion.
+          void perTileErrors; // consumed — independence is enforced by the assertion below
+          const resultWithNoErrors = computeRoomPanelTab({
+            anyVideoActive,
+            manualOverride,
+            hadAnyVideoActive,
+          });
+          expect(resultWithNoErrors).toBe(result);
+        },
+      ),
       { numRuns: 100 },
     );
   });
@@ -593,13 +611,15 @@ describe('Feature: video-feed, Property 5: Tile-map projection agreement', () =>
   it('projects remote and local camera state into video tiles with stable participant metadata', () => {
     const participantIdArb = fc.constantFrom('peer-a', 'peer-b', 'peer-c');
     const eventArb = fc.oneof(
-      participantIdArb.map((participantId) => ({ type: 'published', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'subscribed', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'muted', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'unmuted', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'unpublished', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'disconnected', participantId } as const)),
-      participantIdArb.map((participantId) => ({ type: 'subscription_failed', participantId } as const)),
+      participantIdArb.map((participantId) => ({ type: 'published', participantId }) as const),
+      participantIdArb.map((participantId) => ({ type: 'subscribed', participantId }) as const),
+      participantIdArb.map((participantId) => ({ type: 'muted', participantId }) as const),
+      participantIdArb.map((participantId) => ({ type: 'unmuted', participantId }) as const),
+      participantIdArb.map((participantId) => ({ type: 'unpublished', participantId }) as const),
+      participantIdArb.map((participantId) => ({ type: 'disconnected', participantId }) as const),
+      participantIdArb.map(
+        (participantId) => ({ type: 'subscription_failed', participantId }) as const,
+      ),
       fc.constant({ type: 'local_published' } as const),
       fc.constant({ type: 'local_unpublished' } as const),
     );
@@ -613,7 +633,10 @@ describe('Feature: video-feed, Property 5: Tile-map projection agreement', () =>
           makeParticipant('peer-c', { displayName: '' }),
         ];
 
-        let remoteTiles: Record<string, { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }> = {};
+        let remoteTiles: Record<
+          string,
+          { track: MediaStreamTrack | null; isMuted: boolean; hasError: boolean }
+        > = {};
         let localPublished = false;
 
         for (const event of events) {
@@ -626,7 +649,9 @@ describe('Feature: video-feed, Property 5: Tile-map projection agreement', () =>
           participants,
           selfParticipantId: 'self',
           cameraPublication: localPublished ? 'published' : 'idle',
-          localTrack: localPublished ? ({ id: 'local-track', kind: 'video' } as MediaStreamTrack) : null,
+          localTrack: localPublished
+            ? ({ id: 'local-track', kind: 'video' } as MediaStreamTrack)
+            : null,
           remoteTilesById: remoteTiles,
         });
 
@@ -636,7 +661,9 @@ describe('Feature: video-feed, Property 5: Tile-map projection agreement', () =>
           expect(tiles[participantId].track).toBe(remoteTile.track);
           const participant = participants.find((item) => item.id === participantId);
           expect(tiles[participantId].displayName).toBe(participant?.displayName || participantId);
-          expect(tiles[participantId].color).toBe(participant?.color || colorFor({ id: participantId }));
+          expect(tiles[participantId].color).toBe(
+            participant?.color || colorFor({ id: participantId }),
+          );
         }
 
         const remoteTileCount = Object.keys(remoteTiles).length;
@@ -688,12 +715,12 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
   it('resets intent, clears local publication state, and preserves classified errors for any injected camera start failure', async () => {
     const failureArb = fc.record({
       kind: fc.constantFrom<
-        'permission_denied' |
-        'device_unavailable' |
-        'device_in_use' |
-        'timeout' |
-        'no_camera_configured' |
-        'publish_failed'
+        | 'permission_denied'
+        | 'device_unavailable'
+        | 'device_in_use'
+        | 'timeout'
+        | 'no_camera_configured'
+        | 'publish_failed'
       >(
         'permission_denied',
         'device_unavailable',
@@ -708,16 +735,19 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
     await fc.assert(
       fc.asyncProperty(failureArb, async ({ kind, capturedTrackAcquired }) => {
         const harness = await loadVoiceRoomIntegrationHarness();
-        integrationVideoInputDevice = kind === 'no_camera_configured' ? 'camera-missing' : 'camera-1';
+        integrationVideoInputDevice =
+          kind === 'no_camera_configured' ? 'camera-missing' : 'camera-1';
         integrationEnumeratedVideoDevices = kind === 'no_camera_configured' ? [] : ['camera-1'];
-        const expectedErrorMessage = ({
-          permission_denied: 'camera permission denied',
-          device_unavailable: 'camera device unavailable',
-          device_in_use: 'camera device is already in use',
-          timeout: 'camera start timed out',
-          no_camera_configured: 'no camera available',
-          publish_failed: 'camera publish failed',
-        } as const)[kind];
+        const expectedErrorMessage = (
+          {
+            permission_denied: 'camera permission denied',
+            device_unavailable: 'camera device unavailable',
+            device_in_use: 'camera device is already in use',
+            timeout: 'camera start timed out',
+            no_camera_configured: 'no camera available',
+            publish_failed: 'camera publish failed',
+          } as const
+        )[kind];
 
         let stoppedTrackCount = 0;
         integrationPublishCameraImpl = async (module) => {
@@ -743,9 +773,9 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
         expect(state.cameraIntent).toBe(false);
         expect(state.cameraPublication).toBe('idle');
         expect(state.videoTilesById['self-peer']).toBeUndefined();
-        expect(
-          state.events.some((event) => event.message.includes(expectedErrorMessage)),
-        ).toBe(true);
+        expect(state.events.some((event) => event.message.includes(expectedErrorMessage))).toBe(
+          true,
+        );
 
         if (kind === 'no_camera_configured') {
           expect(liveKitModule!.publishCameraCalls).toHaveLength(0);
@@ -789,16 +819,16 @@ describe('Feature: video-feed, Property 8: Quality convergence', () => {
           integrationMessageHandler?.(
             nextShareActive
               ? {
-                type: 'share_started',
-                participantId: 'peer-2',
-                displayName: 'Alice',
-                shareType: 'screen_audio',
-              }
+                  type: 'share_started',
+                  participantId: 'peer-2',
+                  displayName: 'Alice',
+                  shareType: 'screen_audio',
+                }
               : {
-                type: 'share_stopped',
-                participantId: 'peer-2',
-                displayName: 'Alice',
-              },
+                  type: 'share_stopped',
+                  participantId: 'peer-2',
+                  displayName: 'Alice',
+                },
           );
           currentShareActive = nextShareActive;
           await integrationTick();
@@ -837,13 +867,14 @@ describe('Feature: video-feed, Property 8: Quality convergence', () => {
               entry,
             ): entry is
               | { type: 'publish'; tier: string; deviceId: string | null }
-              | { type: 'setQuality'; tier: string } => (
-              entry.type === 'publish' || entry.type === 'setQuality'
-            ),
+              | { type: 'setQuality'; tier: string } =>
+              entry.type === 'publish' || entry.type === 'setQuality',
           );
 
         expect(liveKitModule!.setPublishingLayersCalls).toBe(0);
-        expect(liveKitModule!.publishCameraCalls.map((call) => call.quality.tier)).toEqual(expectedPublishTiers);
+        expect(liveKitModule!.publishCameraCalls.map((call) => call.quality.tier)).toEqual(
+          expectedPublishTiers,
+        );
 
         if (finalPublishState === 'published') {
           const effectiveTier = tierOperationsSinceLastUnpublish.at(-1)?.tier;

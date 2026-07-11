@@ -476,12 +476,11 @@ pub async fn update_username(
 }
 
 pub async fn get_username(pool: &sqlx::PgPool, user_id: Uuid) -> Result<String, AuthError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT username FROM users WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT username FROM users WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
     Ok(row.map(|(u,)| u).unwrap_or_default())
 }
 

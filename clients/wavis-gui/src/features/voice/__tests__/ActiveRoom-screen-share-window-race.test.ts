@@ -144,7 +144,7 @@ async function simulateOpenShareWindow(
     // Cleanup
   });
 
-  windowsRef.set(participantId, win as MockWebviewWindow);
+  windowsRef.set(participantId, win);
 }
 
 /* ─── Tests ──────────────────────────────────────────────────────────── */

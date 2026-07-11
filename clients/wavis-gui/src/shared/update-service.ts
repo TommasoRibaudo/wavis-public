@@ -3,9 +3,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '@tauri-apps/api/core';
 
 export type UpdateCheckResult =
-  | { kind: 'none' }
-  | { kind: 'available'; update: Update }
-  | { kind: 'error'; message: string };
+  { kind: 'none' } | { kind: 'available'; update: Update } | { kind: 'error'; message: string };
 
 export type UpdateProgress = {
   downloadedBytes: number;
@@ -56,10 +54,7 @@ export async function leaveActiveVoiceRoomForUpdate(): Promise<void> {
 
 export function updateProgressPercent(progress: UpdateProgress): number | null {
   if (!progress.totalBytes) return null;
-  return Math.min(
-    100,
-    Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
-  );
+  return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
 }
 
 export function updateProgressLabel(progress: UpdateProgress): string {

@@ -30,14 +30,15 @@ export function useHotkeys(): HotkeyDisplays {
   });
 
   useEffect(() => {
-    void Promise.all([getMuteHotkey(), getWatchAllHotkey(), getFocusMainHotkey()])
-      .then(([mute, watchAll, focusMain]) => {
+    void Promise.all([getMuteHotkey(), getWatchAllHotkey(), getFocusMainHotkey()]).then(
+      ([mute, watchAll, focusMain]) => {
         setHotkeys({
           mute: formatForDisplay(mute),
           watchAll: formatForDisplay(watchAll),
           focusMain: formatForDisplay(focusMain),
         });
-      });
+      },
+    );
   }, []);
 
   return hotkeys;

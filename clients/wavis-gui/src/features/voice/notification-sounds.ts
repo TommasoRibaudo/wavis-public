@@ -87,11 +87,11 @@ async function getAudioBuffer(name: string): Promise<AudioBuffer> {
 }
 
 export async function playNotificationSound(name: string): Promise<void> {
-  const masterVolume = cachedVolume ?? await getNotificationVolume();
+  const masterVolume = cachedVolume ?? (await getNotificationVolume());
   if (cachedVolume === null) cachedVolume = masterVolume;
   if (masterVolume === 0) return;
 
-  const soundVolumes = cachedSoundVolumes ?? await getSoundVolumes();
+  const soundVolumes = cachedSoundVolumes ?? (await getSoundVolumes());
   if (cachedSoundVolumes === null) cachedSoundVolumes = { ...soundVolumes };
 
   const individualVolume = soundVolumes[name] ?? 100;

@@ -7,10 +7,15 @@ let mockRoom: ReturnType<typeof createMockRoom>;
 
 function createMockLocalParticipant() {
   return {
-    setScreenShareEnabled: vi.fn(async (enabled: boolean, captureOpts?: unknown, publishOpts?: unknown) => {
-      sdkCalls.push({ method: 'setScreenShareEnabled', args: [enabled, captureOpts, publishOpts] });
-      return enabled;
-    }),
+    setScreenShareEnabled: vi.fn(
+      async (enabled: boolean, captureOpts?: unknown, publishOpts?: unknown) => {
+        sdkCalls.push({
+          method: 'setScreenShareEnabled',
+          args: [enabled, captureOpts, publishOpts],
+        });
+        return enabled;
+      },
+    ),
     setMicrophoneEnabled: vi.fn(async () => {}),
     getTrackPublication: vi.fn(() => undefined),
     trackPublications: new Map(),
@@ -30,7 +35,10 @@ function createMockRoom() {
     }),
     off: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       const handlers = roomEventHandlers.get(event) ?? [];
-      roomEventHandlers.set(event, handlers.filter((candidate) => candidate !== handler));
+      roomEventHandlers.set(
+        event,
+        handlers.filter((candidate) => candidate !== handler),
+      );
     }),
     localParticipant,
     switchActiveDevice: vi.fn(async () => {}),
@@ -46,7 +54,11 @@ async function driveToConnected(mod: LiveKitModule) {
   await mod.connect('wss://sfu.test', 'tok');
   emitRoomEvent('connected');
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  emitRoomEvent('localTrackPublished', { track: { kind: 'audio' }, source: 'microphone' }, mockRoom.localParticipant);
+  emitRoomEvent(
+    'localTrackPublished',
+    { track: { kind: 'audio' }, source: 'microphone' },
+    mockRoom.localParticipant,
+  );
 }
 
 vi.mock('livekit-client', () => ({
@@ -70,7 +82,11 @@ vi.mock('livekit-client', () => ({
   },
   Track: {
     Kind: { Audio: 'audio', Video: 'video' },
-    Source: { Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio' },
+    Source: {
+      Microphone: 'microphone',
+      ScreenShare: 'screen_share',
+      ScreenShareAudio: 'screen_share_audio',
+    },
   },
 }));
 
@@ -121,7 +137,13 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
 });
 
 vi.stubGlobal('document', {
-  createElement: vi.fn(() => ({ pause: vi.fn(), remove: vi.fn(), srcObject: null, muted: false, autoplay: false })),
+  createElement: vi.fn(() => ({
+    pause: vi.fn(),
+    remove: vi.fn(),
+    srcObject: null,
+    muted: false,
+    autoplay: false,
+  })),
   body: { appendChild: vi.fn((node: unknown) => node) },
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),

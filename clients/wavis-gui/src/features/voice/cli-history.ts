@@ -22,7 +22,10 @@ export function pushCliHistory(history: string[], raw: string): string[] {
   return [...history, trimmed];
 }
 
-export function resetCliHistoryNavigation(): Pick<CliHistoryNavigationResult, 'historyIndex' | 'draft'> {
+export function resetCliHistoryNavigation(): Pick<
+  CliHistoryNavigationResult,
+  'historyIndex' | 'draft'
+> {
   return { historyIndex: -1, draft: '' };
 }
 

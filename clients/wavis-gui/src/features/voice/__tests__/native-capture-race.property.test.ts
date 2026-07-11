@@ -62,7 +62,7 @@ vi.mock('@tauri-apps/api/core', () => ({
           pollFramesDelivered++;
           operationLog.push('poll_i420_frame');
           return {
-            frame: new Array(1920 * 1080 * 3 / 2).fill(128),
+            frame: new Array((1920 * 1080 * 3) / 2).fill(128),
             width: 1920,
             height: 1080,
             timestampUs: pollSeq * 16_667,
@@ -187,40 +187,46 @@ const mockWritable = {
   getWriter: vi.fn(() => mockWriter),
 };
 
-vi.stubGlobal('MediaStreamTrackGenerator', function MockMediaStreamTrackGenerator(
-  this: Record<string, unknown>,
-) {
-  this.kind = 'video';
-  this.writable = mockWritable;
-  this.readyState = 'live';
-  this.enabled = true;
-  this.id = 'mock-generator-track';
-  this.stop = vi.fn();
-  return this;
-});
+vi.stubGlobal(
+  'MediaStreamTrackGenerator',
+  function MockMediaStreamTrackGenerator(this: Record<string, unknown>) {
+    this.kind = 'video';
+    this.writable = mockWritable;
+    this.readyState = 'live';
+    this.enabled = true;
+    this.id = 'mock-generator-track';
+    this.stop = vi.fn();
+    return this;
+  },
+);
 
-vi.stubGlobal('VideoFrame', function MockVideoFrame(
-  this: Record<string, unknown>,
-  _bitmap: unknown,
-  _opts: unknown,
-) {
-  this.close = vi.fn();
-  return this;
-});
+vi.stubGlobal(
+  'VideoFrame',
+  function MockVideoFrame(this: Record<string, unknown>, _bitmap: unknown, _opts: unknown) {
+    this.close = vi.fn();
+    return this;
+  },
+);
 
-vi.stubGlobal('createImageBitmap', vi.fn(async () => {
-  const bitmap = {
-    width: 1920,
-    height: 1080,
-    close: vi.fn(),
-  };
-  createdBitmaps.push(bitmap);
-  return bitmap;
-}));
+vi.stubGlobal(
+  'createImageBitmap',
+  vi.fn(async () => {
+    const bitmap = {
+      width: 1920,
+      height: 1080,
+      close: vi.fn(),
+    };
+    createdBitmaps.push(bitmap);
+    return bitmap;
+  }),
+);
 
-vi.stubGlobal('fetch', vi.fn(async () => ({
-  arrayBuffer: async () => new ArrayBuffer(100),
-})));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => ({
+    arrayBuffer: async () => new ArrayBuffer(100),
+  })),
+);
 
 vi.stubGlobal('navigator', {
   userAgent: '',
@@ -291,7 +297,13 @@ vi.stubGlobal('MediaStream', function MockMediaStream(this: Record<string, unkno
   return this;
 });
 
-vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => { cb(); return 1; }));
+vi.stubGlobal(
+  'requestAnimationFrame',
+  vi.fn((cb: () => void) => {
+    cb();
+    return 1;
+  }),
+);
 vi.stubGlobal('cancelAnimationFrame', vi.fn());
 vi.stubGlobal('Image', function MockImage(this: Record<string, unknown>) {
   this.onload = null;
@@ -326,7 +338,7 @@ function createMockCallbacks(): MediaCallbacks {
 
 async function driveToConnected(mod: LiveKitModule): Promise<void> {
   await mod.connect('wss://sfu.test', 'test-token');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const room = (mod as any).room;
   if (room && room.on.mock) {
     for (const call of room.on.mock.calls) {
@@ -372,72 +384,76 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     vi.useRealTimers();
   });
 
-  it('early frames are processed before publishTrack via prepareNativeCapture + feedNativeFrame', { timeout: 30_000 }, async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 50, max: 500 }),  // publishDelay ms
-        fc.integer({ min: 1, max: 15 }),     // frameCount
-        async (publishDelay, frameCount) => {
-          // Reset state for each property run
-          operationLog = [];
-          pollSeq = 0;
-          pollFrameCount = 0; // No frames from polling — we use early frames
-          pollFramesDelivered = 0;
-          pollDelayMs = 0;
-          pollInvokeCalls = 0;
-          pollI420Available = false;
-          activePollInvokes = 0;
-          maxConcurrentPollInvokes = 0;
-          generatorWrites = 0;
-          generatorWritesAtPublishComplete = 0;
-          publishDelayMs = publishDelay;
-          mockWriter.write.mockClear();
+  it(
+    'early frames are processed before publishTrack via prepareNativeCapture + feedNativeFrame',
+    { timeout: 30_000 },
+    async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.integer({ min: 50, max: 500 }), // publishDelay ms
+          fc.integer({ min: 1, max: 15 }), // frameCount
+          async (publishDelay, frameCount) => {
+            // Reset state for each property run
+            operationLog = [];
+            pollSeq = 0;
+            pollFrameCount = 0; // No frames from polling — we use early frames
+            pollFramesDelivered = 0;
+            pollDelayMs = 0;
+            pollInvokeCalls = 0;
+            pollI420Available = false;
+            activePollInvokes = 0;
+            maxConcurrentPollInvokes = 0;
+            generatorWrites = 0;
+            generatorWritesAtPublishComplete = 0;
+            publishDelayMs = publishDelay;
+            mockWriter.write.mockClear();
 
-          const cbs = createMockCallbacks();
-          const mod = new LiveKitModule(cbs);
-          await driveToConnected(mod);
+            const cbs = createMockCallbacks();
+            const mod = new LiveKitModule(cbs);
+            await driveToConnected(mod);
 
-          // Prepare native capture — installs the buffering handler
-          mod.prepareNativeCapture();
+            // Prepare native capture — installs the buffering handler
+            mod.prepareNativeCapture();
 
-          // Feed frames into the early buffer BEFORE startNativeCapture
-          for (let i = 0; i < frameCount; i++) {
-            mod.feedNativeFrame({ frame: 'AAAA', width: 1920, height: 1080 });
-          }
+            // Feed frames into the early buffer BEFORE startNativeCapture
+            for (let i = 0; i < frameCount; i++) {
+              mod.feedNativeFrame({ frame: 'AAAA', width: 1920, height: 1080 });
+            }
 
-          operationLog.push('early_frames_fed');
+            operationLog.push('early_frames_fed');
 
-          // Start native capture — drains early frames, first-frame gate
-          // resolves from the buffered frames, then publishTrack is called
-          const capturePromise = mod.startNativeCapture();
+            // Start native capture — drains early frames, first-frame gate
+            // resolves from the buffered frames, then publishTrack is called
+            const capturePromise = mod.startNativeCapture();
 
-          // Advance timers to let async frame processing complete
-          // (decode → createImageBitmap → VideoFrame → write)
-          for (let i = 0; i < frameCount + 30; i++) {
-            await vi.advanceTimersByTimeAsync(20);
-          }
+            // Advance timers to let async frame processing complete
+            // (decode → createImageBitmap → VideoFrame → write)
+            for (let i = 0; i < frameCount + 30; i++) {
+              await vi.advanceTimersByTimeAsync(20);
+            }
 
-          // Advance past the publish delay
-          await vi.advanceTimersByTimeAsync(publishDelay + 200);
+            // Advance past the publish delay
+            await vi.advanceTimersByTimeAsync(publishDelay + 200);
 
-          await capturePromise.catch(() => {});
+            await capturePromise.catch(() => {});
 
-          // ── Assertions encoding CORRECT post-fix behavior ──
+            // ── Assertions encoding CORRECT post-fix behavior ──
 
-          // 1. Early frames were fed before publishTrack
-          const earlyIdx = operationLog.indexOf('early_frames_fed');
-          const publishIdx = operationLog.indexOf('publishTrack:start');
-          expect(earlyIdx).toBeGreaterThanOrEqual(0);
-          expect(publishIdx).toBeGreaterThanOrEqual(0);
-          expect(earlyIdx).toBeLessThan(publishIdx);
+            // 1. Early frames were fed before publishTrack
+            const earlyIdx = operationLog.indexOf('early_frames_fed');
+            const publishIdx = operationLog.indexOf('publishTrack:start');
+            expect(earlyIdx).toBeGreaterThanOrEqual(0);
+            expect(publishIdx).toBeGreaterThanOrEqual(0);
+            expect(earlyIdx).toBeLessThan(publishIdx);
 
-          // 2. At least one VideoFrame was written before publishTrack completed
-          expect(generatorWritesAtPublishComplete).toBeGreaterThanOrEqual(1);
-        },
-      ),
-      { numRuns: 20 },
-    );
-  });
+            // 2. At least one VideoFrame was written before publishTrack completed
+            expect(generatorWritesAtPublishComplete).toBeGreaterThanOrEqual(1);
+          },
+        ),
+        { numRuns: 20 },
+      );
+    },
+  );
 
   it('publishes after the first generator write is queued, not after write() resolves', async () => {
     let resolveWrite: (() => void) | null = null;
@@ -508,7 +524,9 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     }
 
     expect(generatorWrites).toBe(1);
-    expect((mod as any).nativeCaptureLeakSession?.summary.counters.coalescedFrames ?? 0).toBeGreaterThanOrEqual(4);
+    expect(
+      (mod as any).nativeCaptureLeakSession?.summary.counters.coalescedFrames ?? 0,
+    ).toBeGreaterThanOrEqual(4);
 
     resolveWrite!();
     await vi.advanceTimersByTimeAsync(20);
@@ -676,7 +694,9 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     expect(operationLog).toContain('poll_i420_frame');
     expect(generatorWrites).toBeGreaterThan(0);
     expect(globalThis.fetch as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
-    expect(globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(
+      globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>,
+    ).not.toHaveBeenCalled();
 
     const stats = (mod as any).nativeBridgeCadenceStats;
     expect(stats.rawI420Frames).toBeGreaterThan(0);
@@ -706,7 +726,9 @@ describe('Property 1: Fault Condition — First-Frame Gate Ensures Frames Before
     expect(statsBeforeStop.keepaliveWrites).toBeGreaterThan(0);
     expect(statsBeforeStop.jsDecodedFrames).toBe(1);
     expect(globalThis.fetch as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
-    expect(globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(
+      globalThis.createImageBitmap as unknown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(1);
     expect(createdBitmaps).toHaveLength(1);
     expect(createdBitmaps[0].close).not.toHaveBeenCalled();
 

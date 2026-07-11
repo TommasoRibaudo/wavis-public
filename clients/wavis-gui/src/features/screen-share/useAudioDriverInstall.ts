@@ -2,11 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 export type AudioDriverState =
-  | 'checking'
-  | 'installed'
-  | 'not_installed'
-  | 'browser_opened'
-  | 'install_failed';
+  'checking' | 'installed' | 'not_installed' | 'browser_opened' | 'install_failed';
 
 export interface AudioDriverInstall {
   driverState: AudioDriverState;

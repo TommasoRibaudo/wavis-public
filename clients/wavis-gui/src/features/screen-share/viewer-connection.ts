@@ -56,9 +56,9 @@ export interface ScreenSharePublicationLike {
 }
 
 /** Pick a participant's screen-share VIDEO publication (audio/camera ignored). */
-export function pickScreenSharePublication<T extends ScreenSharePublicationLike>(
-  participant: { getTrackPublication(source: Track.Source): T | undefined },
-): T | null {
+export function pickScreenSharePublication<T extends ScreenSharePublicationLike>(participant: {
+  getTrackPublication(source: Track.Source): T | undefined;
+}): T | null {
   const publication = participant.getTrackPublication(Track.Source.ScreenShare);
   if (!publication || publication.kind !== Track.Kind.Video) return null;
   return publication;
@@ -296,7 +296,10 @@ export class ViewerRoomConnection {
       if (!track || track.kind !== Track.Kind.Video) return;
       if (!this.watches.has(participant.identity)) return;
       if (DEBUG_VIEWER_CONNECTION) {
-        console.log(LOG, `[${this.windowLabel}] screen share unmuted for ${participant.identity} — re-delivering stream`);
+        console.log(
+          LOG,
+          `[${this.windowLabel}] screen share unmuted for ${participant.identity} — re-delivering stream`,
+        );
       }
       this.deliverStream(participant.identity, (track as RemoteTrack).mediaStreamTrack);
     });
@@ -321,7 +324,8 @@ export class ViewerRoomConnection {
 
     room.on(RoomEvent.Reconnected, () => {
       if (room !== this.room) return;
-      if (DEBUG_VIEWER_CONNECTION) console.log(LOG, `[${this.windowLabel}] reconnected — re-pinning subscriptions`);
+      if (DEBUG_VIEWER_CONNECTION)
+        console.log(LOG, `[${this.windowLabel}] reconnected — re-pinning subscriptions`);
       this.subscribeAll();
     });
 
@@ -331,7 +335,8 @@ export class ViewerRoomConnection {
     // until the window is closed by the existing voice-session:ended listener.
     room.on(RoomEvent.Disconnected, (reason) => {
       if (this.disposed || room !== this.room) return;
-      if (DEBUG_VIEWER_CONNECTION) console.log(LOG, `[${this.windowLabel}] disconnected (${reason ?? 'unknown'})`);
+      if (DEBUG_VIEWER_CONNECTION)
+        console.log(LOG, `[${this.windowLabel}] disconnected (${reason ?? 'unknown'})`);
       this.room = null;
       this.clearStreams();
       this.scheduleReconnect();
@@ -347,7 +352,10 @@ export class ViewerRoomConnection {
     if (track.kind !== Track.Kind.Video) return;
     if (!this.watches.has(participant.identity)) return;
     if (DEBUG_VIEWER_CONNECTION) {
-      console.log(LOG, `[${this.windowLabel}] screen share subscribed for ${participant.identity} (sid ${track.sid})`);
+      console.log(
+        LOG,
+        `[${this.windowLabel}] screen share subscribed for ${participant.identity} (sid ${track.sid})`,
+      );
     }
     this.deliverStream(participant.identity, track.mediaStreamTrack);
   }
@@ -365,10 +373,10 @@ export class ViewerRoomConnection {
     if (!participant) return; // will subscribe on ParticipantConnected/TrackPublished
     const publication = pickScreenSharePublication(participant);
     if (!publication) return;
-    this.pinPublication(publication as RemoteTrackPublication);
+    this.pinPublication(publication);
 
     // Track may already be subscribed (e.g. re-watch after tile retry).
-    const track = (publication as RemoteTrackPublication).track;
+    const track = publication.track;
     if (track && track.kind === Track.Kind.Video && track.mediaStreamTrack) {
       this.deliverStream(identity, track.mediaStreamTrack);
     }

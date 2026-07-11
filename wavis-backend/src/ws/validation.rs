@@ -211,11 +211,10 @@ mod tests {
 
     #[test]
     fn request_viewer_token_rejected_without_session() {
-        let msg = SignalingMessage::RequestViewerToken(
-            shared::signaling::RequestViewerTokenPayload {
+        let msg =
+            SignalingMessage::RequestViewerToken(shared::signaling::RequestViewerTokenPayload {
                 window_id: "w1".to_string(),
-            },
-        );
+            });
         assert_eq!(
             validate_state_transition(&msg, None, false),
             Err("not authenticated")
@@ -229,11 +228,10 @@ mod tests {
     #[test]
     fn request_viewer_token_allowed_with_session() {
         let s = session();
-        let msg = SignalingMessage::RequestViewerToken(
-            shared::signaling::RequestViewerTokenPayload {
+        let msg =
+            SignalingMessage::RequestViewerToken(shared::signaling::RequestViewerTokenPayload {
                 window_id: "w1".to_string(),
-            },
-        );
+            });
         assert!(validate_state_transition(&msg, Some(&s), false).is_ok());
     }
 

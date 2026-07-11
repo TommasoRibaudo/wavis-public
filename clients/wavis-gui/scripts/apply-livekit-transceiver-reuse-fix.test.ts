@@ -12,14 +12,17 @@ import {
 } from './apply-livekit-transceiver-reuse-fix.mjs';
 
 type TestWavisSenderDataStoreHost = typeof globalThis & {
-  __wavisSenderData?: WeakMap<object, {
-    reused: boolean;
-    degradationPreferenceConfigured: boolean;
-    attemptedPreferences: string[];
-    invalidStateSkipped: boolean;
-    lastErrorName: string | null;
-    lastErrorMessage: string | null;
-  }>;
+  __wavisSenderData?: WeakMap<
+    object,
+    {
+      reused: boolean;
+      degradationPreferenceConfigured: boolean;
+      attemptedPreferences: string[];
+      invalidStateSkipped: boolean;
+      lastErrorName: string | null;
+      lastErrorMessage: string | null;
+    }
+  >;
 };
 
 /** Helper: build a fake bundle from a transceiver fixture + degradation fixture */
@@ -38,7 +41,9 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
   });
 
   it('upgrades the patchedWithoutLogs fixture', () => {
-    const patched = applyLivekitTransceiverReuseFix(bundle(livekitFixTestFixtures.patchedWithoutLogs));
+    const patched = applyLivekitTransceiverReuseFix(
+      bundle(livekitFixTestFixtures.patchedWithoutLogs),
+    );
     for (const marker of LIVEKIT_FIX_LOG_MARKERS) {
       expect(patched).toContain(marker);
     }
@@ -53,7 +58,9 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
   });
 
   it('upgrades the patchedCrashGuard (intermediate) fixture', () => {
-    const patched = applyLivekitTransceiverReuseFix(bundle(livekitFixTestFixtures.patchedCrashGuard));
+    const patched = applyLivekitTransceiverReuseFix(
+      bundle(livekitFixTestFixtures.patchedCrashGuard),
+    );
     for (const marker of LIVEKIT_FIX_LOG_MARKERS) {
       expect(patched).toContain(marker);
     }
@@ -80,20 +87,21 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         _arguments: unknown,
         P: PromiseConstructor,
         generator: () => Generator<Promise<unknown>, void, unknown>,
-      ) => new (P || Promise)((resolve, reject) => {
-        const iterator = generator.call(thisArg);
-        const step = (result: IteratorResult<Promise<unknown>, void>) => {
-          if (result.done) {
-            resolve(result.value);
-            return;
-          }
-          Promise.resolve(result.value).then(
-            (value) => step(iterator.next(value)),
-            (error) => step(iterator.throw(error)),
-          );
-        };
-        step(iterator.next());
-      });
+      ) =>
+        new (P || Promise)((resolve, reject) => {
+          const iterator = generator.call(thisArg);
+          const step = (result: IteratorResult<Promise<unknown>, void>) => {
+            if (result.done) {
+              resolve(result.value);
+              return;
+            }
+            Promise.resolve(result.value).then(
+              (value) => step(iterator.next(value)),
+              (error) => step(iterator.throw(error)),
+            );
+          };
+          step(iterator.next());
+        });
       const factory = new Function(
         '__awaiter',
         `return class PatchedTrack {
@@ -132,21 +140,27 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
       const track = new PatchedTrack(sender, log);
 
       await expect(track.setDegradationPreference('maintain-resolution')).resolves.toBeUndefined();
-      expect((globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender)).toMatchObject({
+      expect(
+        (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender),
+      ).toMatchObject({
         attemptedPreferences: ['maintain-resolution'],
         invalidStateSkipped: true,
         lastErrorName: 'InvalidStateError',
         lastErrorMessage: "Failed to execute 'setParameters' on 'RTCRtpSender'",
       });
       expect(
-        warnSpy.mock.calls.some((args) => args.some((arg) =>
-          typeof arg === 'string' && arg.includes('skipped_reused_sender')
-        )),
+        warnSpy.mock.calls.some((args) =>
+          args.some((arg) => typeof arg === 'string' && arg.includes('skipped_reused_sender')),
+        ),
       ).toBe(true);
       expect(
-        logSpy.mock.calls.some((args) => args.some((arg) =>
-          typeof arg === 'string' && arg.includes('degradationPreference.setParameters attempt')
-        )),
+        logSpy.mock.calls.some((args) =>
+          args.some(
+            (arg) =>
+              typeof arg === 'string' &&
+              arg.includes('degradationPreference.setParameters attempt'),
+          ),
+        ),
       ).toBe(true);
     } finally {
       warnSpy.mockRestore();
@@ -163,20 +177,21 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         _arguments: unknown,
         P: PromiseConstructor,
         generator: () => Generator<Promise<unknown>, void, unknown>,
-      ) => new (P || Promise)((resolve, reject) => {
-        const iterator = generator.call(thisArg);
-        const step = (result: IteratorResult<Promise<unknown>, void>) => {
-          if (result.done) {
-            resolve(result.value);
-            return;
-          }
-          Promise.resolve(result.value).then(
-            (value) => step(iterator.next(value)),
-            (error) => step(iterator.throw(error)),
-          );
-        };
-        step(iterator.next());
-      });
+      ) =>
+        new (P || Promise)((resolve, reject) => {
+          const iterator = generator.call(thisArg);
+          const step = (result: IteratorResult<Promise<unknown>, void>) => {
+            if (result.done) {
+              resolve(result.value);
+              return;
+            }
+            Promise.resolve(result.value).then(
+              (value) => step(iterator.next(value)),
+              (error) => step(iterator.throw(error)),
+            );
+          };
+          step(iterator.next());
+        });
       const transceiverMethods = applyTransceiverReusePatch(livekitFixTestFixtures.patchedWithLogs);
       if (transceiverMethods === null) {
         throw new Error('failed to build patched transceiver fixture');
@@ -216,13 +231,16 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         sender,
         receiver: { track: { kind: 'video' } },
       };
-      const publisher = new PatchedPublisher({
-        publisher: {
-          getTransceivers: () => [transceiver],
+      const publisher = new PatchedPublisher(
+        {
+          publisher: {
+            getTransceivers: () => [transceiver],
+          },
         },
-      }, {
-        warn: () => {},
-      });
+        {
+          warn: () => {},
+        },
+      );
       (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData = undefined;
 
       const track = {
@@ -239,7 +257,9 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         encodings: [{ rid: 'f' }],
         degradationPreference: 'maintain-resolution',
       });
-      expect((globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender)).toMatchObject({
+      expect(
+        (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender),
+      ).toMatchObject({
         reused: true,
         degradationPreferenceConfigured: true,
         attemptedPreferences: ['maintain-resolution-combined'],
@@ -248,9 +268,13 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         lastErrorMessage: null,
       });
       expect(
-        logSpy.mock.calls.some((args) => args.some((arg) =>
-          typeof arg === 'string' && arg.includes('post-replaceTrack combined setParameters success')
-        )),
+        logSpy.mock.calls.some((args) =>
+          args.some(
+            (arg) =>
+              typeof arg === 'string' &&
+              arg.includes('post-replaceTrack combined setParameters success'),
+          ),
+        ),
       ).toBe(true);
       expect(assertSpy).toHaveBeenCalled();
     } finally {
@@ -268,20 +292,21 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         _arguments: unknown,
         P: PromiseConstructor,
         generator: () => Generator<Promise<unknown>, void, unknown>,
-      ) => new (P || Promise)((resolve, reject) => {
-        const iterator = generator.call(thisArg);
-        const step = (result: IteratorResult<Promise<unknown>, void>) => {
-          if (result.done) {
-            resolve(result.value);
-            return;
-          }
-          Promise.resolve(result.value).then(
-            (value) => step(iterator.next(value)),
-            (error) => step(iterator.throw(error)),
-          );
-        };
-        step(iterator.next());
-      });
+      ) =>
+        new (P || Promise)((resolve, reject) => {
+          const iterator = generator.call(thisArg);
+          const step = (result: IteratorResult<Promise<unknown>, void>) => {
+            if (result.done) {
+              resolve(result.value);
+              return;
+            }
+            Promise.resolve(result.value).then(
+              (value) => step(iterator.next(value)),
+              (error) => step(iterator.throw(error)),
+            );
+          };
+          step(iterator.next());
+        });
       const factory = new Function(
         '__awaiter',
         `return class PatchedTrack {
@@ -318,7 +343,9 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
       await expect(track.setDegradationPreference('maintain-resolution')).resolves.toBeUndefined();
       expect(sender.getParameters).not.toHaveBeenCalled();
       expect(sender.setParameters).not.toHaveBeenCalled();
-      expect((globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender)).toMatchObject({
+      expect(
+        (globalThis as TestWavisSenderDataStoreHost).__wavisSenderData?.get(sender),
+      ).toMatchObject({
         degradationPreferenceConfigured: true,
         attemptedPreferences: ['maintain-resolution-combined'],
         invalidStateSkipped: false,
@@ -326,9 +353,15 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
         lastErrorMessage: null,
       });
       expect(
-        logSpy.mock.calls.some((args) => args.some((arg) =>
-          typeof arg === 'string' && arg.includes('setDegradationPreference skipped (already configured via combined call)')
-        )),
+        logSpy.mock.calls.some((args) =>
+          args.some(
+            (arg) =>
+              typeof arg === 'string' &&
+              arg.includes(
+                'setDegradationPreference skipped (already configured via combined call)',
+              ),
+          ),
+        ),
       ).toBe(true);
     } finally {
       logSpy.mockRestore();
@@ -351,22 +384,24 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
 
   it('verifyPatchMarkers throws when markers are missing', () => {
     expect(() => verifyPatchMarkers('some random content')).toThrow(
-      /post-patch verification failed/
+      /post-patch verification failed/,
     );
   });
 
   // ── Strict anchor guards ───────────────────────────────────────────
 
   it('throws when createTransceiverRTCRtpSender anchor is missing', () => {
-    expect(() => applyLivekitTransceiverReuseFix(
-      'no matching anchor here' + livekitFixTestFixtures.degradationPrefBefore
-    )).toThrow(/could not find createTransceiverRTCRtpSender anchor/);
+    expect(() =>
+      applyLivekitTransceiverReuseFix(
+        'no matching anchor here' + livekitFixTestFixtures.degradationPrefBefore,
+      ),
+    ).toThrow(/could not find createTransceiverRTCRtpSender anchor/);
   });
 
   it('throws when setDegradationPreference anchor is missing', () => {
-    expect(() => applyLivekitTransceiverReuseFix(
-      livekitFixTestFixtures.before + 'no degradation anchor here'
-    )).toThrow(/could not find setDegradationPreference anchor/);
+    expect(() =>
+      applyLivekitTransceiverReuseFix(livekitFixTestFixtures.before + 'no degradation anchor here'),
+    ).toThrow(/could not find setDegradationPreference anchor/);
   });
 
   // ── Combined markers ───────────────────────────────────────────────
@@ -379,7 +414,9 @@ describe('apply-livekit-transceiver-reuse-fix', () => {
   });
 
   it('patched output from crashGuard intermediate also contains all markers', () => {
-    const patched = applyLivekitTransceiverReuseFix(bundle(livekitFixTestFixtures.patchedCrashGuard));
+    const patched = applyLivekitTransceiverReuseFix(
+      bundle(livekitFixTestFixtures.patchedCrashGuard),
+    );
     for (const marker of REQUIRED_POST_PATCH_MARKERS) {
       expect(patched).toContain(marker);
     }
