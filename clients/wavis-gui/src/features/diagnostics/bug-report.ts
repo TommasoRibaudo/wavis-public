@@ -89,9 +89,11 @@ async function captureScreenshot(): Promise<Uint8Array | null> {
 }
 
 function formatConsoleLogEntries(): string[] {
-  return consoleLogBuffer.snapshot().map(
-    (entry) => `[${new Date(entry.timestamp).toISOString()}] [${entry.level}] ${entry.message}`,
-  );
+  return consoleLogBuffer
+    .snapshot()
+    .map(
+      (entry) => `[${new Date(entry.timestamp).toISOString()}] [${entry.level}] ${entry.message}`,
+    );
 }
 
 // ─── API Functions (exported) ──────────────────────────────────────
@@ -101,7 +103,9 @@ function formatConsoleLogEntries(): string[] {
  * Applies redaction to all text fields before returning.
  * Uses snapshot() (not drain()) to preserve buffer contents.
  */
-export async function captureAllContext(preScreenshot?: Uint8Array | null): Promise<CapturedContext> {
+export async function captureAllContext(
+  preScreenshot?: Uint8Array | null,
+): Promise<CapturedContext> {
   const [jsLogs, rustLogs, wsMessages, screenshot] = await Promise.all([
     Promise.resolve(formatConsoleLogEntries()),
     captureRustLogs(),
@@ -148,9 +152,7 @@ export function isScreenshotTooLarge(screenshot: Uint8Array): boolean {
  * Submit a bug report to POST /bug-report.
  * Uses apiFetch() for authenticated users, apiPublicFetch() for anonymous.
  */
-export async function submitBugReport(
-  payload: BugReportPayload,
-): Promise<BugReportResponse> {
+export async function submitBugReport(payload: BugReportPayload): Promise<BugReportResponse> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) {
     throw new Error('Server not configured — please complete setup first');
@@ -172,7 +174,11 @@ export async function submitBugReport(
       body,
     });
   } catch (err) {
-    if (err instanceof Error && 'kind' in err && (err as { kind?: string }).kind === 'RateLimited') {
+    if (
+      err instanceof Error &&
+      'kind' in err &&
+      (err as { kind?: string }).kind === 'RateLimited'
+    ) {
       const message = err.message.replace(/^too many requests — /i, 'please ');
       throw new Error(message);
     }

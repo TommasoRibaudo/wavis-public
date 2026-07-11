@@ -83,9 +83,7 @@ export default function AppUpdatePrompt() {
         <span className={isError ? 'text-wavis-danger' : 'text-wavis-accent'}>▸</span>
         <span className="font-semibold">{versionText}</span>
       </div>
-      <div className="mt-1 pl-5 text-wavis-text-secondary">
-        {body}
-      </div>
+      <div className="mt-1 pl-5 text-wavis-text-secondary">{body}</div>
       {isInstalling && promptState.progress.totalBytes != null && (
         <div className="mt-2 ml-5 h-1 overflow-hidden bg-wavis-text-secondary/20">
           <div

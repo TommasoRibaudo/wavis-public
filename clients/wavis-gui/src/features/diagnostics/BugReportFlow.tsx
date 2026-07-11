@@ -2,11 +2,7 @@ import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react
 
 import type { CapturedContext, BugReportPayload } from './bug-report';
 import { captureAllContext, isScreenshotTooLarge, submitBugReport } from './bug-report';
-import {
-  analyzeBugReport,
-  generateIssueBody,
-  buildOfflineIssueBody,
-} from './llm-client';
+import { analyzeBugReport, generateIssueBody, buildOfflineIssueBody } from './llm-client';
 import type { LlmAnalysis, QaPair } from './llm-client';
 import ScreenshotRedactor from './ScreenshotRedactor';
 
@@ -57,9 +53,7 @@ export function truncateTitle(title: string): string {
   return title.length > MAX_TITLE_CHARS ? title.slice(0, MAX_TITLE_CHARS).trimEnd() : title;
 }
 
-export function truncateIssueBody(
-  body: string,
-): string {
+export function truncateIssueBody(body: string): string {
   return body.length > MAX_ISSUE_BODY_CHARS
     ? body.slice(0, MAX_ISSUE_BODY_CHARS) + DEFAULT_TRUNCATION_NOTICE
     : body;
@@ -167,11 +161,13 @@ function buildOfflineFormBody(
     description,
     context,
     form.stepsToReproduce
-      ? [[
-          { question: 'Steps to reproduce', answer: form.stepsToReproduce },
-          { question: 'Expected behavior', answer: form.expectedBehavior },
-          { question: 'Actual behavior', answer: form.actualBehavior },
-        ]]
+      ? [
+          [
+            { question: 'Steps to reproduce', answer: form.stepsToReproduce },
+            { question: 'Expected behavior', answer: form.expectedBehavior },
+            { question: 'Actual behavior', answer: form.actualBehavior },
+          ],
+        ]
       : [],
     form.category || 'other',
   );
@@ -226,7 +222,12 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     setCurrentAnswers({});
     setLlmRound(0);
     setLlmLoading(false);
-    setOfflineForm({ category: 'other', stepsToReproduce: '', expectedBehavior: '', actualBehavior: '' });
+    setOfflineForm({
+      category: 'other',
+      stepsToReproduce: '',
+      expectedBehavior: '',
+      actualBehavior: '',
+    });
     setIssueTitle('');
     setIssueBody('');
     setCategory('other');
@@ -274,7 +275,9 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [step, preScreenshot]);
 
   /* ── Focus description input when entering describe step ────────── */
@@ -336,10 +339,16 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       setCategory(result.category);
       setLlmRound(1);
       const answers: Record<number, string> = {};
-      result.questions.forEach((_, i) => { answers[i] = ''; });
+      result.questions.forEach((_, i) => {
+        answers[i] = '';
+      });
       setCurrentAnswers(answers);
     } catch (err) {
-      console.warn(LOG_PREFIX, 'Server LLM analysis unavailable, falling back to offline mode:', err);
+      console.warn(
+        LOG_PREFIX,
+        'Server LLM analysis unavailable, falling back to offline mode:',
+        err,
+      );
       setIsOfflineMode(true);
       setAnalysis(null);
     } finally {
@@ -378,7 +387,9 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
         setAnalysis(result);
         setLlmRound(2);
         const newAnswers: Record<number, string> = {};
-        result.questions.forEach((_, i) => { newAnswers[i] = ''; });
+        result.questions.forEach((_, i) => {
+          newAnswers[i] = '';
+        });
         setCurrentAnswers(newAnswers);
       } catch (err) {
         console.warn(LOG_PREFIX, 'Second LLM round failed:', err);
@@ -391,33 +402,45 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       // No more rounds — generate preview
       await generatePreview(newRounds);
     }
-  }, [isOfflineMode, context, description, offlineForm, analysis, currentAnswers, qaRounds, llmRound]);
+  }, [
+    isOfflineMode,
+    context,
+    description,
+    offlineForm,
+    analysis,
+    currentAnswers,
+    qaRounds,
+    llmRound,
+  ]);
 
-  const generatePreview = useCallback(async (rounds: QaPair[][]) => {
-    if (!context) return;
+  const generatePreview = useCallback(
+    async (rounds: QaPair[][]) => {
+      if (!context) return;
 
-    if (!isOfflineMode) {
-      setLlmLoading(true);
-      try {
-        const result = await generateIssueBody(description, context, rounds, category);
-        setIssueTitle(result.title);
-        setIssueBody(result.body);
-      } catch (err) {
-        console.warn(LOG_PREFIX, 'Issue body generation failed, using offline format:', err);
+      if (!isOfflineMode) {
+        setLlmLoading(true);
+        try {
+          const result = await generateIssueBody(description, context, rounds, category);
+          setIssueTitle(result.title);
+          setIssueBody(result.body);
+        } catch (err) {
+          console.warn(LOG_PREFIX, 'Issue body generation failed, using offline format:', err);
+          const body = buildOfflineIssueBody(description, context, rounds, category);
+          setIssueTitle(truncateTitle(`Bug Report: ${description}`));
+          setIssueBody(body);
+        } finally {
+          setLlmLoading(false);
+        }
+      } else {
         const body = buildOfflineIssueBody(description, context, rounds, category);
         setIssueTitle(truncateTitle(`Bug Report: ${description}`));
         setIssueBody(body);
-      } finally {
-        setLlmLoading(false);
       }
-    } else {
-      const body = buildOfflineIssueBody(description, context, rounds, category);
-      setIssueTitle(truncateTitle(`Bug Report: ${description}`));
-      setIssueBody(body);
-    }
 
-    setStep('preview');
-  }, [context, description, category, isOfflineMode]);
+      setStep('preview');
+    },
+    [context, description, category, isOfflineMode],
+  );
 
   /* ── Step 5: Submit ────────────────────────────────────────────── */
   const handleSubmit = useCallback(async () => {
@@ -434,10 +457,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
 
       if (measureBugReportPayloadChars(basePayload) > MAX_SUBMISSION_JSON_CHARS) {
         const fixedChars = measureBugReportPayloadChars({ ...basePayload, body: '' });
-        const maxBodyChars = Math.max(
-          0,
-          MAX_SUBMISSION_JSON_CHARS - fixedChars,
-        );
+        const maxBodyChars = Math.max(0, MAX_SUBMISSION_JSON_CHARS - fixedChars);
         submissionBody = truncateTextToBudget(
           submissionBody,
           maxBodyChars,
@@ -531,19 +551,25 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     setStep('preview');
   }, []);
 
-  const handleIssueLinkClick = useCallback(async (event: MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
+  const handleIssueLinkClick = useCallback(
+    async (event: MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
 
-    try {
-      await openExternalLink(issueUrl);
-    } catch (err) {
-      console.error(LOG_PREFIX, 'Failed to open issue URL:', err);
-    }
-  }, [issueUrl]);
+      try {
+        await openExternalLink(issueUrl);
+      } catch (err) {
+        console.error(LOG_PREFIX, 'Failed to open issue URL:', err);
+      }
+    },
+    [issueUrl],
+  );
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
-    <div data-bug-report-modal className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-overlay-base/80 font-mono text-wavis-text">
+    <div
+      data-bug-report-modal
+      className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-overlay-base/80 font-mono text-wavis-text"
+    >
       <div
         className="bg-wavis-panel border border-wavis-text-secondary w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
         onClick={(e) => e.stopPropagation()}
@@ -623,7 +649,8 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
               >
                 <p className="text-sm text-wavis-text font-bold mb-1">Quick Send</p>
                 <p className="text-xs text-wavis-text-secondary leading-relaxed">
-                  Submits your description immediately with diagnostic logs attached. No extra steps.
+                  Submits your description immediately with diagnostic logs attached. No extra
+                  steps.
                 </p>
               </button>
               <button
@@ -633,7 +660,8 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
               >
                 <p className="text-sm text-wavis-accent font-bold mb-1">AI-Assisted</p>
                 <p className="text-xs text-wavis-text-secondary leading-relaxed">
-                  An AI analyzes your report, asks targeted follow-up questions, and generates a structured GitHub issue.
+                  An AI analyzes your report, asks targeted follow-up questions, and generates a
+                  structured GitHub issue.
                 </p>
               </button>
             </div>
@@ -681,9 +709,13 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                             setCurrentAnswers((prev) => ({ ...prev, [i]: e.target.value }))
                           }
                         >
-                          <option value="" disabled>Select an option...</option>
+                          <option value="" disabled>
+                            Select an option...
+                          </option>
                           {q.options.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
                           ))}
                         </select>
                       ) : (
@@ -717,9 +749,13 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
           <div>
             <p className="text-sm text-wavis-text-secondary mb-3">
               {reportMode === 'quick'
-                ? (context?.screenshot ? 'Step 3 of 3' : 'Step 2 of 2')
-                : (context?.screenshot ? 'Step 4 of 4' : 'Step 3 of 3')
-              } — Review &amp; Submit
+                ? context?.screenshot
+                  ? 'Step 3 of 3'
+                  : 'Step 2 of 2'
+                : context?.screenshot
+                  ? 'Step 4 of 4'
+                  : 'Step 3 of 3'}{' '}
+              — Review &amp; Submit
             </p>
 
             {llmLoading ? (
@@ -845,9 +881,7 @@ function OfflineForm({
 }) {
   return (
     <div className="space-y-3">
-      <p className="text-xs text-wavis-text-secondary">
-        Offline mode — LLM analysis unavailable
-      </p>
+      <p className="text-xs text-wavis-text-secondary">Offline mode — LLM analysis unavailable</p>
 
       <div>
         <label className="text-xs text-wavis-text-secondary block mb-1">Category</label>
@@ -857,7 +891,9 @@ function OfflineForm({
           onChange={(e) => onChange({ ...form, category: e.target.value })}
         >
           {OFFLINE_CATEGORIES.map((cat) => (
-            <option key={cat} value={cat}>{cat}</option>
+            <option key={cat} value={cat}>
+              {cat}
+            </option>
           ))}
         </select>
       </div>

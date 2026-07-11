@@ -45,9 +45,7 @@ export default function ShareSwitchingOverlay({
         </div>
         <div className="mt-2 text-sm text-wavis-text">{title}</div>
         {subtitle && (
-          <div className="mt-1 text-xs leading-5 text-wavis-text-secondary">
-            {subtitle}
-          </div>
+          <div className="mt-1 text-xs leading-5 text-wavis-text-secondary">{subtitle}</div>
         )}
       </div>
     </div>

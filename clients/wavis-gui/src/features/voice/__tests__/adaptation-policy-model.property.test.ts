@@ -26,46 +26,38 @@ const networkSampleArb: fc.Arbitrary<NetworkSample> = fc.record({
 describe('adaptation-policy-model Property 3', () => {
   it('never silently drops below Minimum_Readable_Layer in Detail_Profile steady state', () => {
     fc.assert(
-      fc.property(
-        fc.array(networkSampleArb, { minLength: 5, maxLength: 100 }),
-        (sampleStream) => {
-          const { steps } = adaptationPolicyModel({ sampleStream, profile: DETAIL_PROFILE });
-          const floor = DETAIL_PROFILE.minReadableLayer!;
+      fc.property(fc.array(networkSampleArb, { minLength: 5, maxLength: 100 }), (sampleStream) => {
+        const { steps } = adaptationPolicyModel({ sampleStream, profile: DETAIL_PROFILE });
+        const floor = DETAIL_PROFILE.minReadableLayer!;
 
-          for (const step of steps) {
-            const l = step.publishedLayer;
-            const aboveFloor =
-              l.width >= floor.minWidth &&
-              l.height >= floor.minHeight &&
-              l.bitrate >= floor.minBitrate &&
-              l.fps >= floor.minFramerate;
+        for (const step of steps) {
+          const l = step.publishedLayer;
+          const aboveFloor =
+            l.width >= floor.minWidth &&
+            l.height >= floor.minHeight &&
+            l.bitrate >= floor.minBitrate &&
+            l.fps >= floor.minFramerate;
 
-            const floorHitEmitted = step.telemetryEvents.some(
-              (e) => e.name === 'share.floor.hit',
-            );
+          const floorHitEmitted = step.telemetryEvents.some((e) => e.name === 'share.floor.hit');
 
-            // Disjunctive: above floor OR floor-hit event was emitted (R16.2)
-            expect(aboveFloor || floorHitEmitted).toBe(true);
-          }
-        },
-      ),
+          // Disjunctive: above floor OR floor-hit event was emitted (R16.2)
+          expect(aboveFloor || floorHitEmitted).toBe(true);
+        }
+      }),
       { numRuns: 500 },
     );
   });
 
   it('never emits share.floor.hit for Motion_Profile (no floor to enforce)', () => {
     fc.assert(
-      fc.property(
-        fc.array(networkSampleArb, { minLength: 5, maxLength: 100 }),
-        (sampleStream) => {
-          const { steps } = adaptationPolicyModel({ sampleStream, profile: MOTION_PROFILE });
+      fc.property(fc.array(networkSampleArb, { minLength: 5, maxLength: 100 }), (sampleStream) => {
+        const { steps } = adaptationPolicyModel({ sampleStream, profile: MOTION_PROFILE });
 
-          for (const step of steps) {
-            const hasFloorHit = step.telemetryEvents.some((e) => e.name === 'share.floor.hit');
-            expect(hasFloorHit).toBe(false);
-          }
-        },
-      ),
+        for (const step of steps) {
+          const hasFloorHit = step.telemetryEvents.some((e) => e.name === 'share.floor.hit');
+          expect(hasFloorHit).toBe(false);
+        }
+      }),
       { numRuns: 200 },
     );
   });
@@ -73,8 +65,8 @@ describe('adaptation-policy-model Property 3', () => {
   it('emits share.floor.hit with correct field shape when floor is crossed', () => {
     // Craft a stream that forces a reduced-resolution transition
     const badStream: NetworkSample[] = Array.from({ length: 10 }, () => ({
-      lossPct: 100,       // always above severe threshold
-      bandwidthKbps: 10,  // severely bandwidth-limited
+      lossPct: 100, // always above severe threshold
+      bandwidthKbps: 10, // severely bandwidth-limited
       cpuPct: 100,
       dtMs: 1_000,
     }));
@@ -85,9 +77,14 @@ describe('adaptation-policy-model Property 3', () => {
       maxBitrate: 100_000, // tiny bitrate so derived bitrate < minBitrate
     };
 
-    const { steps } = adaptationPolicyModel({ sampleStream: badStream, profile: lowBitrateProfile });
+    const { steps } = adaptationPolicyModel({
+      sampleStream: badStream,
+      profile: lowBitrateProfile,
+    });
 
-    const floorHitStep = steps.find((s) => s.telemetryEvents.some((e) => e.name === 'share.floor.hit'));
+    const floorHitStep = steps.find((s) =>
+      s.telemetryEvents.some((e) => e.name === 'share.floor.hit'),
+    );
     expect(floorHitStep).toBeDefined();
 
     const floorHitEvent = floorHitStep!.telemetryEvents.find((e) => e.name === 'share.floor.hit');
@@ -104,14 +101,17 @@ describe('adaptation-policy-model Property 3', () => {
   it('holds floor on every subsequent step once floor is reached', () => {
     // Persistent bad conditions — should stay at floor, not keep emitting floor-hit
     const persistentBadStream: NetworkSample[] = Array.from({ length: 30 }, () => ({
-      lossPct: 20,        // above severe threshold
+      lossPct: 20, // above severe threshold
       bandwidthKbps: 100, // bandwidth-limited
       cpuPct: 90,
       dtMs: 500,
     }));
 
     const lowBitrateProfile = { ...DETAIL_PROFILE, maxBitrate: 50_000 };
-    const { steps } = adaptationPolicyModel({ sampleStream: persistentBadStream, profile: lowBitrateProfile });
+    const { steps } = adaptationPolicyModel({
+      sampleStream: persistentBadStream,
+      profile: lowBitrateProfile,
+    });
     const floor = DETAIL_PROFILE.minReadableLayer!;
 
     for (const step of steps) {

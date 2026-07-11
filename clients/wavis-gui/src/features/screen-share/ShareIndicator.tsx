@@ -51,7 +51,9 @@ export default function ShareIndicator() {
   };
 
   const handleHide = () => {
-    getCurrentWindow().hide().catch(() => {});
+    getCurrentWindow()
+      .hide()
+      .catch(() => {});
   };
 
   return (
@@ -59,7 +61,9 @@ export default function ShareIndicator() {
       className="h-full flex flex-col justify-center gap-0.5 px-3 bg-wavis-bg font-mono text-wavis-text text-xs select-none cursor-move"
       onMouseDown={(e) => {
         if (!(e.target as HTMLElement).closest('button')) {
-          getCurrentWindow().startDragging().catch(() => {});
+          getCurrentWindow()
+            .startDragging()
+            .catch(() => {});
         }
       }}
     >

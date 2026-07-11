@@ -53,11 +53,20 @@ function isCorner(edge: ResizeEdge): boolean {
 
 function cursorForEdge(edge: ResizeEdge): string {
   switch (edge) {
-    case 'n': case 's': return 'ns-resize';
-    case 'e': case 'w': return 'ew-resize';
-    case 'ne': case 'sw': return 'nesw-resize';
-    case 'nw': case 'se': return 'nwse-resize';
-    default: return 'default';
+    case 'n':
+    case 's':
+      return 'ns-resize';
+    case 'e':
+    case 'w':
+      return 'ew-resize';
+    case 'ne':
+    case 'sw':
+      return 'nesw-resize';
+    case 'nw':
+    case 'se':
+      return 'nwse-resize';
+    default:
+      return 'default';
   }
 }
 
@@ -91,10 +100,17 @@ export default function ScreenShareWindow({
   // Zoom state: scale + translate offset (px) for panning
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const panRef = useRef<{ startX: number; startY: number; origPanX: number; origPanY: number } | null>(null);
+  const panRef = useRef<{
+    startX: number;
+    startY: number;
+    origPanX: number;
+    origPanY: number;
+  } | null>(null);
 
   // Drag state
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
+    null,
+  );
 
   // Resize state
   const resizeRef = useRef<{
@@ -130,11 +146,14 @@ export default function ScreenShareWindow({
 
   /* ── Drag handlers ── */
 
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
-    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
-    e.preventDefault();
-  }, [pos]);
+  const onDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
+      dragRef.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+      e.preventDefault();
+    },
+    [pos],
+  );
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -144,7 +163,9 @@ export default function ScreenShareWindow({
         setPos({ x: dragRef.current.origX + dx, y: dragRef.current.origY + dy });
       }
     };
-    const onUp = () => { dragRef.current = null; };
+    const onUp = () => {
+      dragRef.current = null;
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => {
@@ -155,19 +176,22 @@ export default function ScreenShareWindow({
 
   /* ── Resize handlers ── */
 
-  const onResizeStart = useCallback((edge: ResizeEdge, e: React.MouseEvent) => {
-    resizeRef.current = {
-      edge,
-      startX: e.clientX,
-      startY: e.clientY,
-      origW: size.w,
-      origH: size.h,
-      origX: pos.x,
-      origY: pos.y,
-    };
-    e.preventDefault();
-    e.stopPropagation();
-  }, [size, pos]);
+  const onResizeStart = useCallback(
+    (edge: ResizeEdge, e: React.MouseEvent) => {
+      resizeRef.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        origW: size.w,
+        origH: size.h,
+        origX: pos.x,
+        origY: pos.y,
+      };
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    [size, pos],
+  );
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -183,9 +207,15 @@ export default function ScreenShareWindow({
 
       // Compute raw size changes based on edge
       if (r.edge.includes('e')) newW = r.origW + dx;
-      if (r.edge.includes('w')) { newW = r.origW - dx; newX = r.origX + dx; }
+      if (r.edge.includes('w')) {
+        newW = r.origW - dx;
+        newX = r.origX + dx;
+      }
       if (r.edge.includes('s')) newH = r.origH + dy;
-      if (r.edge.includes('n')) { newH = r.origH - dy; newY = r.origY + dy; }
+      if (r.edge.includes('n')) {
+        newH = r.origH - dy;
+        newY = r.origY + dy;
+      }
 
       // Corner resize: lock aspect ratio
       if (isCorner(r.edge)) {
@@ -203,13 +233,21 @@ export default function ScreenShareWindow({
       }
 
       // Enforce minimums
-      if (newW < MIN_W) { newW = MIN_W; newX = r.edge.includes('w') ? r.origX + r.origW - MIN_W : newX; }
-      if (newH < MIN_H) { newH = MIN_H; newY = r.edge.includes('n') ? r.origY + r.origH - MIN_H : newY; }
+      if (newW < MIN_W) {
+        newW = MIN_W;
+        newX = r.edge.includes('w') ? r.origX + r.origW - MIN_W : newX;
+      }
+      if (newH < MIN_H) {
+        newH = MIN_H;
+        newY = r.edge.includes('n') ? r.origY + r.origH - MIN_H : newY;
+      }
 
       setSize({ w: newW, h: newH });
       setPos({ x: newX, y: newY });
     };
-    const onUp = () => { resizeRef.current = null; };
+    const onUp = () => {
+      resizeRef.current = null;
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => {
@@ -285,9 +323,19 @@ export default function ScreenShareWindow({
       const dx = e.clientX - panRef.current.startX;
       const dy = e.clientY - panRef.current.startY;
       const rect = area.getBoundingClientRect();
-      setPan(clampPan(panRef.current.origPanX + dx, panRef.current.origPanY + dy, zoom, rect.width, rect.height));
+      setPan(
+        clampPan(
+          panRef.current.origPanX + dx,
+          panRef.current.origPanY + dy,
+          zoom,
+          rect.width,
+          rect.height,
+        ),
+      );
     };
-    const onUp = () => { panRef.current = null; };
+    const onUp = () => {
+      panRef.current = null;
+    };
 
     area.addEventListener('mousedown', onDown);
     window.addEventListener('mousemove', onMove);
@@ -307,17 +355,30 @@ export default function ScreenShareWindow({
   /* ── Edge hit-test zones (8px grab area) ── */
   const GRAB = 8;
   const edgeStyle = (edge: ResizeEdge): React.CSSProperties => {
-    const base: React.CSSProperties = { position: 'absolute', zIndex: 10, cursor: cursorForEdge(edge) };
+    const base: React.CSSProperties = {
+      position: 'absolute',
+      zIndex: 10,
+      cursor: cursorForEdge(edge),
+    };
     switch (edge) {
-      case 'n': return { ...base, top: -GRAB / 2, left: GRAB, right: GRAB, height: GRAB };
-      case 's': return { ...base, bottom: -GRAB / 2, left: GRAB, right: GRAB, height: GRAB };
-      case 'e': return { ...base, right: -GRAB / 2, top: GRAB, bottom: GRAB, width: GRAB };
-      case 'w': return { ...base, left: -GRAB / 2, top: GRAB, bottom: GRAB, width: GRAB };
-      case 'ne': return { ...base, top: -GRAB / 2, right: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
-      case 'nw': return { ...base, top: -GRAB / 2, left: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
-      case 'se': return { ...base, bottom: -GRAB / 2, right: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
-      case 'sw': return { ...base, bottom: -GRAB / 2, left: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
-      default: return base;
+      case 'n':
+        return { ...base, top: -GRAB / 2, left: GRAB, right: GRAB, height: GRAB };
+      case 's':
+        return { ...base, bottom: -GRAB / 2, left: GRAB, right: GRAB, height: GRAB };
+      case 'e':
+        return { ...base, right: -GRAB / 2, top: GRAB, bottom: GRAB, width: GRAB };
+      case 'w':
+        return { ...base, left: -GRAB / 2, top: GRAB, bottom: GRAB, width: GRAB };
+      case 'ne':
+        return { ...base, top: -GRAB / 2, right: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
+      case 'nw':
+        return { ...base, top: -GRAB / 2, left: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
+      case 'se':
+        return { ...base, bottom: -GRAB / 2, right: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
+      case 'sw':
+        return { ...base, bottom: -GRAB / 2, left: -GRAB / 2, width: GRAB * 2, height: GRAB * 2 };
+      default:
+        return base;
     }
   };
 
@@ -352,7 +413,9 @@ export default function ScreenShareWindow({
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
-          <span className="truncate" style={{ color: userColor }}>{username}</span>
+          <span className="truncate" style={{ color: userColor }}>
+            {username}
+          </span>
           <span className="text-wavis-text-secondary">{isOwner ? '(you)' : 'screen share'}</span>
         </div>
         <button
@@ -412,7 +475,9 @@ export default function ScreenShareWindow({
                   key={q}
                   onClick={() => onQualityChange(q)}
                   className="hover:underline"
-                  style={{ color: quality === q ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
+                  style={{
+                    color: quality === q ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                  }}
                 >
                   {qualityLabel[q]}
                 </button>
@@ -421,7 +486,9 @@ export default function ScreenShareWindow({
               <button
                 onClick={onToggleAudio}
                 className="hover:underline"
-                style={{ color: sharingAudio ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)' }}
+                style={{
+                  color: sharingAudio ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
+                }}
               >
                 {sharingAudio ? '♪ audio on' : '♪ audio off'}
               </button>
@@ -429,7 +496,12 @@ export default function ScreenShareWindow({
                 <>
                   <span className="text-wavis-text-secondary">|</span>
                   <span className="text-wavis-text-secondary">{Math.round(zoom * 100)}%</span>
-                  <button onClick={resetZoom} className="text-wavis-text hover:text-wavis-accent hover:underline">/reset</button>
+                  <button
+                    onClick={resetZoom}
+                    className="text-wavis-text hover:text-wavis-accent hover:underline"
+                  >
+                    /reset
+                  </button>
                 </>
               )}
             </div>
@@ -450,8 +522,15 @@ export default function ScreenShareWindow({
               {zoom > 1 && (
                 <>
                   <span className="text-wavis-text-secondary">|</span>
-                  <span className="text-wavis-text-secondary shrink-0">{Math.round(zoom * 100)}%</span>
-                  <button onClick={resetZoom} className="text-wavis-text hover:text-wavis-accent hover:underline shrink-0">/reset</button>
+                  <span className="text-wavis-text-secondary shrink-0">
+                    {Math.round(zoom * 100)}%
+                  </span>
+                  <button
+                    onClick={resetZoom}
+                    className="text-wavis-text hover:text-wavis-accent hover:underline shrink-0"
+                  >
+                    /reset
+                  </button>
                 </>
               )}
             </div>

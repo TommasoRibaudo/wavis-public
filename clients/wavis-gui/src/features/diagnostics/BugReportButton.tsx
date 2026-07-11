@@ -76,15 +76,11 @@ export function shouldExpandLeft(
 }
 
 export function getButtonTransitionClass(isDragging: boolean): string {
-  return isDragging
-    ? 'transition-none'
-    : 'transition-opacity duration-200';
+  return isDragging ? 'transition-none' : 'transition-opacity duration-200';
 }
 
 export function getHoverLabelPositionClass(expandLeft: boolean): string {
-  return expandLeft
-    ? 'right-full mr-1'
-    : 'left-full ml-1';
+  return expandLeft ? 'right-full mr-1' : 'left-full ml-1';
 }
 
 /* ═══ Component ═════════════════════════════════════════════════════ */
@@ -132,16 +128,17 @@ function useBugReportLauncher({ captureScreenshot = true }: { captureScreenshot?
     }
   }, [captureScreenshot, isCapturing, showFlow]);
 
-  const flow = showFlow && FlowComponent ? (
-    <FlowComponent
-      preScreenshot={preScreenshot}
-      onClose={() => {
-        setShowFlow(false);
-        setPreScreenshot(null);
-        setFlowComponent(null);
-      }}
-    />
-  ) : null;
+  const flow =
+    showFlow && FlowComponent ? (
+      <FlowComponent
+        preScreenshot={preScreenshot}
+        onClose={() => {
+          setShowFlow(false);
+          setPreScreenshot(null);
+          setFlowComponent(null);
+        }}
+      />
+    ) : null;
 
   return { flow, handleClick, isCapturing };
 }
@@ -198,24 +195,26 @@ export default function BugReportButton() {
     }
 
     // Load persisted position
-    getStoreValue<{ x: number; y: number }>(
-      STORE_KEYS.bugReportButtonPos,
-      { x: -1, y: -1 },
-    ).then((pos) => {
-      if (pos.x === -1 && pos.y === -1) {
-        // Default to bottom-right
-        setPosition({
-          x: window.innerWidth - BUTTON_WIDTH - 16,
-          y: window.innerHeight - BUTTON_HEIGHT - 16,
-        });
-      } else {
-        // Clamp both axes to keep the button visible within the current viewport
-        const clampedX = Math.max(0, Math.min(pos.x, window.innerWidth - BUTTON_WIDTH));
-        const clampedY = Math.max(TITLE_BAR_HEIGHT, Math.min(pos.y, window.innerHeight - BUTTON_HEIGHT));
-        setPosition({ x: clampedX, y: clampedY });
-      }
-      setLoaded(true);
-    });
+    getStoreValue<{ x: number; y: number }>(STORE_KEYS.bugReportButtonPos, { x: -1, y: -1 }).then(
+      (pos) => {
+        if (pos.x === -1 && pos.y === -1) {
+          // Default to bottom-right
+          setPosition({
+            x: window.innerWidth - BUTTON_WIDTH - 16,
+            y: window.innerHeight - BUTTON_HEIGHT - 16,
+          });
+        } else {
+          // Clamp both axes to keep the button visible within the current viewport
+          const clampedX = Math.max(0, Math.min(pos.x, window.innerWidth - BUTTON_WIDTH));
+          const clampedY = Math.max(
+            TITLE_BAR_HEIGHT,
+            Math.min(pos.y, window.innerHeight - BUTTON_HEIGHT),
+          );
+          setPosition({ x: clampedX, y: clampedY });
+        }
+        setLoaded(true);
+      },
+    );
   }, []);
 
   // Re-clamp position when the window is resized
@@ -231,35 +230,41 @@ export default function BugReportButton() {
     return () => window.removeEventListener('resize', onResize);
   }, [loaded, isChromeless]);
 
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      offsetX: e.clientX - position.x,
-      offsetY: e.clientY - position.y,
-      moved: false,
-    };
-  }, [position]);
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        offsetX: e.clientX - position.x,
+        offsetY: e.clientY - position.y,
+        moved: false,
+      };
+    },
+    [position],
+  );
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragRef.current) return;
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragRef.current) return;
 
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
 
-    if (!dragRef.current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) {
-      return;
-    }
+      if (!dragRef.current.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) {
+        return;
+      }
 
-    dragRef.current.moved = true;
-    if (!isDragging) setIsDragging(true);
+      dragRef.current.moved = true;
+      if (!isDragging) setIsDragging(true);
 
-    setPosition({
-      x: e.clientX - dragRef.current.offsetX,
-      y: Math.max(TITLE_BAR_HEIGHT, e.clientY - dragRef.current.offsetY),
-    });
-  }, [isDragging]);
+      setPosition({
+        x: e.clientX - dragRef.current.offsetX,
+        y: Math.max(TITLE_BAR_HEIGHT, e.clientY - dragRef.current.offsetY),
+      });
+    },
+    [isDragging],
+  );
 
   const handlePointerUp = useCallback(() => {
     const wasDragging = dragRef.current?.moved ?? false;
@@ -306,13 +311,15 @@ export default function BugReportButton() {
           ${getButtonTransitionClass(isDragging)} cursor-grab select-none
           ${isHovered ? 'opacity-90' : 'opacity-60'}
           ${isDragging ? 'cursor-grabbing' : ''}`}
-        style={{
-          left: position.x,
-          top: position.y,
-          width: BUTTON_WIDTH,
-          height: BUTTON_HEIGHT,
-          appRegion: 'no-drag',
-        } as React.CSSProperties}
+        style={
+          {
+            left: position.x,
+            top: position.y,
+            width: BUTTON_WIDTH,
+            height: BUTTON_HEIGHT,
+            appRegion: 'no-drag',
+          } as React.CSSProperties
+        }
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

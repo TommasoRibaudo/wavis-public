@@ -90,7 +90,9 @@ function deriveLayer(tier: ModelAdaptiveTier, profile: ShareProfile): PublishedL
   }
 
   // reduced-resolution
-  const baseResIdx = RESOLUTION_TIERS.findIndex(r => r.width === fullWidth && r.height === fullHeight);
+  const baseResIdx = RESOLUTION_TIERS.findIndex(
+    (r) => r.width === fullWidth && r.height === fullHeight,
+  );
   let targetWidth: number;
   let targetHeight: number;
   if (baseResIdx >= 0 && baseResIdx < RESOLUTION_TIERS.length - 1) {
@@ -233,7 +235,11 @@ export function adaptationPolicyModel(params: {
   sampleStream: NetworkSample[];
   profile: ShareProfile;
   windowMs?: number;
-}): { publishedLayers: PublishedLayer[]; telemetryEvents: TelemetryEvent[][]; steps: PolicyStep[] } {
+}): {
+  publishedLayers: PublishedLayer[];
+  telemetryEvents: TelemetryEvent[][];
+  steps: PolicyStep[];
+} {
   const { sampleStream, profile } = params;
 
   let state: AdaptationModelState = {

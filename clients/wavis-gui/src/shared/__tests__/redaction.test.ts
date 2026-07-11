@@ -3,9 +3,7 @@ import fc from 'fast-check';
 
 import { redactAll, redactText } from '../redaction';
 
-const base64UrlChars = [
-  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_',
-];
+const base64UrlChars = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'];
 const lowerAlphaChars = [...'abcdefghijklmnopqrstuvwxyz'];
 const hexChars = [...'0123456789abcdefABCDEF'];
 const safeTextChars = [...'ABCDEFGHILMNOPQRTUVWXYZ abcdefghilmnopqrtuvwxyz'];
@@ -24,10 +22,7 @@ const lowerWordArb = fc
   .map((chars) => chars.join(''));
 
 const recoveryPhraseArb = fc
-  .tuple(
-    fc.array(lowerWordArb, { minLength: 3, maxLength: 8 }),
-    fc.constantFrom(' ', '-'),
-  )
+  .tuple(fc.array(lowerWordArb, { minLength: 3, maxLength: 8 }), fc.constantFrom(' ', '-'))
   .map(([words, separator]) => words.join(separator));
 
 const jwtArb = fc
@@ -96,16 +91,13 @@ describe('redaction', () => {
   });
 
   it('redacts tokens and API keys that end with URL-safe punctuation', () => {
-    const input = [
-      'token=eyJAAAAAAAAAA.AAAAAAAAAA.AAAAAAAAA-',
-      'api_key=sk-AAAAAAAAA-',
-    ].join(' | ');
+    const input = ['token=eyJAAAAAAAAAA.AAAAAAAAAA.AAAAAAAAA-', 'api_key=sk-AAAAAAAAA-'].join(
+      ' | ',
+    );
 
     const result = redactText(input);
 
-    expect(result).toBe(
-      'token=[REDACTED_TOKEN] | api_key=[REDACTED_API_KEY]',
-    );
+    expect(result).toBe('token=[REDACTED_TOKEN] | api_key=[REDACTED_API_KEY]');
   });
 
   it('preserves operational UUID contexts', () => {
@@ -125,12 +117,7 @@ describe('redaction', () => {
   });
 
   it('redactAll maps over every input string', () => {
-    expect(
-      redactAll([
-        'invite_code=AbCdEfGhIjKlMnOpQrStUv',
-        'safe text',
-      ]),
-    ).toEqual([
+    expect(redactAll(['invite_code=AbCdEfGhIjKlMnOpQrStUv', 'safe text'])).toEqual([
       'invite_code=[REDACTED_INVITE]',
       'safe text',
     ]);
@@ -206,10 +193,9 @@ describe('Feature: in-app-bug-report, Property 5: Redaction preserves operationa
         fc.uuid(),
         fc.uuid(),
         (operationalKey, operationalUuid, privacyUuid) => {
-          const input = [
-            `${operationalKey}=${operationalUuid}`,
-            `user_id=${privacyUuid}`,
-          ].join(' | ');
+          const input = [`${operationalKey}=${operationalUuid}`, `user_id=${privacyUuid}`].join(
+            ' | ',
+          );
 
           const result = redactText(input);
 

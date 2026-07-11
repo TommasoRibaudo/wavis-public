@@ -9,19 +9,21 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import * as fc from 'fast-check';
-import { openExternalLink, truncateIssueBody, truncateTitle, validateDescription } from '../BugReportFlow';
+import {
+  openExternalLink,
+  truncateIssueBody,
+  truncateTitle,
+  validateDescription,
+} from '../BugReportFlow';
 import type { BugReportPayload } from '../bug-report';
 
 describe('Feature: in-app-bug-report, Property 9: Description minimum length enforcement', () => {
   it('rejects strings with trimmed length < 10', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 0, maxLength: 9 }),
-        (s) => {
-          if (s.trim().length >= 10) return;
-          expect(validateDescription(s)).toBe(false);
-        },
-      ),
+      fc.property(fc.string({ minLength: 0, maxLength: 9 }), (s) => {
+        if (s.trim().length >= 10) return;
+        expect(validateDescription(s)).toBe(false);
+      }),
       { numRuns: 200 },
     );
   });
@@ -218,25 +220,19 @@ describe('Feature: in-app-bug-report, issue body truncation before submission', 
   it('Property: result never exceeds limit + notice length for any input', () => {
     const noticeLength = '\n\n_[diagnostics truncated]_'.length;
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 0, maxLength: LIMIT + 10_000 }),
-        (body) => {
-          const result = truncateIssueBody(body);
-          expect(result.length).toBeLessThanOrEqual(LIMIT + noticeLength);
-        },
-      ),
+      fc.property(fc.string({ minLength: 0, maxLength: LIMIT + 10_000 }), (body) => {
+        const result = truncateIssueBody(body);
+        expect(result.length).toBeLessThanOrEqual(LIMIT + noticeLength);
+      }),
       { numRuns: 200 },
     );
   });
 
   it('Property: body under the limit is always returned as-is', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 0, maxLength: LIMIT }),
-        (body) => {
-          expect(truncateIssueBody(body)).toBe(body);
-        },
-      ),
+      fc.property(fc.string({ minLength: 0, maxLength: LIMIT }), (body) => {
+        expect(truncateIssueBody(body)).toBe(body);
+      }),
       { numRuns: 200 },
     );
   });
@@ -264,24 +260,18 @@ describe('Feature: in-app-bug-report, issue title truncation for branch naming',
 
   it('Property: result never exceeds 72 characters for any title', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 0, maxLength: 200 }),
-        (title) => {
-          expect(truncateTitle(title).length).toBeLessThanOrEqual(LIMIT);
-        },
-      ),
+      fc.property(fc.string({ minLength: 0, maxLength: 200 }), (title) => {
+        expect(truncateTitle(title).length).toBeLessThanOrEqual(LIMIT);
+      }),
       { numRuns: 200 },
     );
   });
 
   it('Property: title under the limit is always returned as-is', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 0, maxLength: LIMIT }),
-        (title) => {
-          expect(truncateTitle(title)).toBe(title);
-        },
-      ),
+      fc.property(fc.string({ minLength: 0, maxLength: LIMIT }), (title) => {
+        expect(truncateTitle(title)).toBe(title);
+      }),
       { numRuns: 200 },
     );
   });
@@ -291,7 +281,9 @@ describe('Feature: in-app-bug-report, issue link opening', () => {
   it('opens the submitted issue URL via the provided opener', async () => {
     const open = vi.fn(async (_url: string) => {});
 
-    await expect(openExternalLink('https://github.com/example/wavis/issues/79', open)).resolves.toBe(true);
+    await expect(
+      openExternalLink('https://github.com/example/wavis/issues/79', open),
+    ).resolves.toBe(true);
 
     expect(open).toHaveBeenCalledWith('https://github.com/example/wavis/issues/79');
   });

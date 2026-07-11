@@ -12,11 +12,12 @@ void loadShootoutEnv();
 // before any screen sharing attempts
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 if (!(globalThis as { __wavisSenderData?: unknown }).__wavisSenderData) {
-  (globalThis as { __wavisSenderData?: WeakMap<object, unknown> }).__wavisSenderData = new WeakMap();
+  (globalThis as { __wavisSenderData?: WeakMap<object, unknown> }).__wavisSenderData =
+    new WeakMap();
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

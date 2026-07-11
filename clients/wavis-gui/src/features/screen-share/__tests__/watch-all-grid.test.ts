@@ -12,7 +12,7 @@ function computeOccupiedAreaFromRowAspectSums(
   width: number,
   height: number,
 ): number {
-  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + (width / sum), 0);
+  const naturalTotalHeight = rowAspectSums.reduce((acc, sum) => acc + width / sum, 0);
   const scale = Math.min(1, height / naturalTotalHeight);
   return rowAspectSums.reduce((acc, sum) => {
     const rowHeight = (width / sum) * scale;
@@ -42,7 +42,7 @@ function computeBestPartitionArea(
   if (sorted.length === 0) return 0;
 
   let bestArea = -1;
-  for (let mask = 0; mask < (1 << (sorted.length - 1)); mask++) {
+  for (let mask = 0; mask < 1 << (sorted.length - 1); mask++) {
     const rowAspectSums: number[] = [];
     let rowStart = 0;
     for (let i = 0; i < sorted.length; i++) {
@@ -53,7 +53,10 @@ function computeBestPartitionArea(
       );
       rowStart = i + 1;
     }
-    bestArea = Math.max(bestArea, computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height));
+    bestArea = Math.max(
+      bestArea,
+      computeOccupiedAreaFromRowAspectSums(rowAspectSums, width, height),
+    );
   }
 
   return bestArea;
@@ -265,7 +268,10 @@ describe('computeWatchAllLayout - edge cases', () => {
   it('tile flexGrow values are proportional to aspect ratios within each row', () => {
     const ar1 = 16 / 9;
     const ar2 = 4 / 3;
-    const streams = [{ id: 'a', aspectRatio: ar1 }, { id: 'b', aspectRatio: ar2 }];
+    const streams = [
+      { id: 'a', aspectRatio: ar1 },
+      { id: 'b', aspectRatio: ar2 },
+    ];
     const result = computeWatchAllLayout(streams, 1920, 1080);
     // If both tiles are in the same row, their flexGrow ratio should equal their AR ratio
     if (result.rows.length === 1) {

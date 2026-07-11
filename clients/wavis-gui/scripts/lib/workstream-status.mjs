@@ -24,7 +24,10 @@ export function assertEntryGate(status, requiredWorkstreams) {
   const failing = requiredWorkstreams.filter((w) => !status[w]?.exit_criteria_met);
   if (failing.length > 0) {
     const details = failing
-      .map((w) => `  ${w}: exit_criteria_met=${status[w]?.exit_criteria_met ?? 'MISSING'}, notes="${status[w]?.notes ?? ''}"`)
+      .map(
+        (w) =>
+          `  ${w}: exit_criteria_met=${status[w]?.exit_criteria_met ?? 'MISSING'}, notes="${status[w]?.notes ?? ''}"`,
+      )
       .join('\n');
     throw new Error(
       `[workstream-status] Entry gate blocked — the following workstreams have not met exit criteria:\n${details}\n\nSet exit_criteria_met=true in ${STATUS_FILE_REL} after manual verification.`,

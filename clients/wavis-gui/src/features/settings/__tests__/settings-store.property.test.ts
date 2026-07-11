@@ -5,7 +5,8 @@ const mockStorage = new Map<string, unknown>();
 
 let lastLiveKitModule: MockLiveKitModule | null = null;
 let messageHandler: ((message: unknown) => void) | null = null;
-let replaceCameraDeviceImpl: ((deviceId: string | null) => Promise<{ trackId: string }>) | null = null;
+let replaceCameraDeviceImpl: ((deviceId: string | null) => Promise<{ trackId: string }>) | null =
+  null;
 
 interface MockLiveKitModule {
   callbacks: Record<string, (...args: unknown[]) => void>;
@@ -35,7 +36,11 @@ interface MockLiveKitModule {
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
-  getActiveScreenShares: () => Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
+  getActiveScreenShares: () => Array<{
+    identity: string;
+    stream: MediaStream;
+    startedAtMs: number;
+  }>;
   applyRemoteCameraVisibility: (visibleParticipantIds: ReadonlySet<string>) => void;
 }
 
@@ -311,10 +316,7 @@ describe('Feature: video-feed, Property 9: Settings persistence and fallback', (
 
   it('falls back to the browser default when the persisted camera is absent, without changing the stored value', async () => {
     const missingAndPresentDeviceArb = fc
-      .tuple(
-        fc.string({ minLength: 1, maxLength: 24 }),
-        fc.string({ minLength: 1, maxLength: 24 }),
-      )
+      .tuple(fc.string({ minLength: 1, maxLength: 24 }), fc.string({ minLength: 1, maxLength: 24 }))
       .filter(([missingDeviceId, presentDeviceId]) => missingDeviceId !== presentDeviceId);
 
     await fc.assert(
@@ -335,8 +337,7 @@ describe('Feature: video-feed, Property 9: Settings persistence and fallback', (
         expect(
           getState().events.some(
             (event) =>
-              event.message.includes('device_not_found') &&
-              event.message.includes(missingDeviceId),
+              event.message.includes('device_not_found') && event.message.includes(missingDeviceId),
           ),
         ).toBe(true);
 
@@ -382,9 +383,9 @@ describe('Feature: video-feed, Property 9: Settings persistence and fallback', (
         await expect(getVideoInputDevice()).resolves.toBe(initialDeviceId);
         expect(getState().cameraSelectedDeviceId).toBe(initialDeviceId);
         expect(getState().videoTilesById['self-peer']?.track?.id).toBe(initialTrackId);
-        expect(
-          getState().events.some((event) => event.message.includes(`(${warningKind})`)),
-        ).toBe(true);
+        expect(getState().events.some((event) => event.message.includes(`(${warningKind})`))).toBe(
+          true,
+        );
 
         leaveRoom();
         await tick();

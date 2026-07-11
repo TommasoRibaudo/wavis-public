@@ -19,7 +19,12 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 /* ─── Import after mock ─────────────────────────────────────────── */
 
-import { computeTrayMenuState, deafenMenuLabel, muteMenuLabel, shouldHideOnClose } from '../tray-bridge';
+import {
+  computeTrayMenuState,
+  deafenMenuLabel,
+  muteMenuLabel,
+  shouldHideOnClose,
+} from '../tray-bridge';
 import type { TrayStateUpdate } from '../tray-bridge';
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */

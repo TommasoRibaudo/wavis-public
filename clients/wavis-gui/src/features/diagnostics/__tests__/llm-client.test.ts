@@ -91,9 +91,7 @@ describe('llm-client', () => {
 
   it('buildOfflineIssueBody includes QA rounds when provided', () => {
     const context = makeMockContext();
-    const qaRounds: QaPair[][] = [
-      [{ question: 'What happened?', answer: 'It crashed' }],
-    ];
+    const qaRounds: QaPair[][] = [[{ question: 'What happened?', answer: 'It crashed' }]];
     const body = buildOfflineIssueBody('Bug', context, qaRounds, 'audio');
 
     expect(body).toContain('### Follow-Up Answers');
@@ -112,7 +110,12 @@ describe('llm-client', () => {
     const context = makeMockContext();
     apiFetchMock.mockResolvedValue({
       category: 'audio',
-      questions: [{ text: 'What happened first?', options: ['Immediately', 'After a few seconds', 'On reconnect'] }],
+      questions: [
+        {
+          text: 'What happened first?',
+          options: ['Immediately', 'After a few seconds', 'On reconnect'],
+        },
+      ],
       needs_follow_up: true,
     });
 
@@ -138,7 +141,12 @@ describe('llm-client', () => {
     });
     expect(result).toEqual({
       category: 'audio',
-      questions: [{ text: 'What happened first?', options: ['Immediately', 'After a few seconds', 'On reconnect'] }],
+      questions: [
+        {
+          text: 'What happened first?',
+          options: ['Immediately', 'After a few seconds', 'On reconnect'],
+        },
+      ],
       needsFollowUp: true,
     });
   });

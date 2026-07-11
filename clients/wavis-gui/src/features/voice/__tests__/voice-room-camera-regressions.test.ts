@@ -37,15 +37,16 @@ describe('Bug 3: toggleCameraIntent serialises concurrent invocations', () => {
 
       // Make publishCamera slow so the second click lands while the first is in flight.
       let resolvePublish: ((value: { trackId: string }) => void) | null = null;
-      harness.state.publishCameraImpl = (module, opts) => new Promise((resolve) => {
-        const stop = vi.fn();
-        module.localCameraTrack = {
-          id: `camera-${opts.deviceId ?? 'default'}`,
-          kind: 'video',
-          stop,
-        } as unknown as MediaStreamTrack;
-        resolvePublish = resolve;
-      });
+      harness.state.publishCameraImpl = (module, opts) =>
+        new Promise((resolve) => {
+          const stop = vi.fn();
+          module.localCameraTrack = {
+            id: `camera-${opts.deviceId ?? 'default'}`,
+            kind: 'video',
+            stop,
+          } as unknown as MediaStreamTrack;
+          resolvePublish = resolve;
+        });
 
       const firstToggle = harness.voiceRoom.toggleCameraIntent();
       // Fire a second toggle while the first is still pending.
@@ -71,8 +72,10 @@ describe('Bug 3: toggleCameraIntent serialises concurrent invocations', () => {
       expect(harness.state.lastLiveKitModule!.unpublishCameraCalls).toBe(1);
       // The operation log must show publish-before-unpublish, never overlapping.
       expect(
-        harness.state.lastLiveKitModule!.cameraOperationLog
-          .filter((op) => op.type === 'publish' || op.type === 'unpublish')
+        harness.state
+          .lastLiveKitModule!.cameraOperationLog.filter(
+            (op) => op.type === 'publish' || op.type === 'unpublish',
+          )
           .map((op) => op.type),
       ).toEqual(['publish', 'unpublish']);
     } finally {
@@ -139,10 +142,17 @@ describe('Bug 4: quality update controller does not poison the dedupe cache on r
       for (let attempt = 1; attempt < CAMERA_QUALITY_MAX_ATTEMPTS; attempt += 1) {
         await vi.advanceTimersByTimeAsync(CAMERA_QUALITY_RETRY_INTERVAL_MS);
       }
-      expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(CAMERA_QUALITY_MAX_ATTEMPTS);
+      expect(harness.state.lastLiveKitModule!.setCameraQualityCalls).toHaveLength(
+        CAMERA_QUALITY_MAX_ATTEMPTS,
+      );
       expect(
-        harness.voiceRoom.getState().events.some((event) =>
-          event.message.includes(`camera quality update failed after ${CAMERA_QUALITY_MAX_ATTEMPTS} attempts (low)`)),
+        harness.voiceRoom
+          .getState()
+          .events.some((event) =>
+            event.message.includes(
+              `camera quality update failed after ${CAMERA_QUALITY_MAX_ATTEMPTS} attempts (low)`,
+            ),
+          ),
       ).toBe(true);
 
       // Re-enable success on the next call.
@@ -171,9 +181,7 @@ describe('Bug 4: quality update controller does not poison the dedupe cache on r
 
       const callsAfter = harness.state.lastLiveKitModule!.setCameraQualityCalls.length;
       expect(callsAfter).toBeGreaterThan(callsBefore);
-      expect(
-        harness.state.lastLiveKitModule!.setCameraQualityCalls.at(-1)?.tier,
-      ).toBe('low');
+      expect(harness.state.lastLiveKitModule!.setCameraQualityCalls.at(-1)?.tier).toBe('low');
     } finally {
       harness.cleanup();
       vi.useRealTimers();
@@ -213,11 +221,14 @@ describe('Bug 6: setCameraQuality fallback prevents the retry loop from firing',
 
       // Even after letting the retry-interval pass several times, only one
       // attempt should have been made.
-      await vi.advanceTimersByTimeAsync(CAMERA_QUALITY_RETRY_INTERVAL_MS * (CAMERA_QUALITY_MAX_ATTEMPTS + 1));
+      await vi.advanceTimersByTimeAsync(
+        CAMERA_QUALITY_RETRY_INTERVAL_MS * (CAMERA_QUALITY_MAX_ATTEMPTS + 1),
+      );
       expect(setQualityCalls).toBe(1);
       expect(
-        harness.voiceRoom.getState().events.some((event) =>
-          event.message.includes('camera quality update failed')),
+        harness.voiceRoom
+          .getState()
+          .events.some((event) => event.message.includes('camera quality update failed')),
       ).toBe(false);
     } finally {
       harness.cleanup();

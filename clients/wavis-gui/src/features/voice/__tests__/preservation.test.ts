@@ -153,11 +153,17 @@ describe('Property 2: Preservation — PBT module routing', () => {
     const hasGetDisplayMediaArb = fc.boolean();
 
     fc.assert(
-      fc.property(platformArb, hasRTCArb, hasGetUserMediaArb, hasGetDisplayMediaArb, (platform, hasRTC, hasGetUserMedia, hasGetDisplayMedia) => {
-        const ua = `Mozilla/5.0 (${platform}) AppleWebKit/605.1.15`;
-        const result = shouldUseNativeMedia(ua, hasRTC, hasGetUserMedia, hasGetDisplayMedia);
-        return result === !(hasRTC && hasGetUserMedia && hasGetDisplayMedia);
-      }),
+      fc.property(
+        platformArb,
+        hasRTCArb,
+        hasGetUserMediaArb,
+        hasGetDisplayMediaArb,
+        (platform, hasRTC, hasGetUserMedia, hasGetDisplayMedia) => {
+          const ua = `Mozilla/5.0 (${platform}) AppleWebKit/605.1.15`;
+          const result = shouldUseNativeMedia(ua, hasRTC, hasGetUserMedia, hasGetDisplayMedia);
+          return result === !(hasRTC && hasGetUserMedia && hasGetDisplayMedia);
+        },
+      ),
       { numRuns: 200 },
     );
   });
@@ -386,7 +392,6 @@ describe('Property 2: Preservation — NativeMediaModule audio IPC baseline', ()
   });
 });
 
-
 /* ═══ NativeMediaModule startScreenShare() Baseline (Unfixed) ═══════ */
 
 describe('Property 2: Preservation — NativeMediaModule startScreenShare baseline', () => {
@@ -411,9 +416,7 @@ describe('Property 2: Preservation — NativeMediaModule startScreenShare baseli
    * happens and the result is forwarded.
    */
   it('startScreenShare() invokes screen_share_start IPC (fixed)', async () => {
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(true);
+    vi.mocked(invoke).mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
     const result = await mod_.startScreenShare();
     expect(invoke).toHaveBeenCalledWith('media_set_screen_share_quality', { quality: 'high' });
     expect(invoke).toHaveBeenCalledWith('screen_share_start');
@@ -421,9 +424,7 @@ describe('Property 2: Preservation — NativeMediaModule startScreenShare baseli
   });
 
   it('startScreenShare() does not emit "not available" system event (fixed)', async () => {
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(true);
+    vi.mocked(invoke).mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
     await mod_.startScreenShare();
     expect(callbacks.onSystemEvent).not.toHaveBeenCalled();
   });
@@ -623,24 +624,21 @@ describe('Property 2: Preservation — PBT audio IPC volume clamping', () => {
    */
   it('setParticipantVolume always clamps to [0, 100]', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: -1000, max: 1000 }),
-        (volume) => {
-          vi.clearAllMocks();
-          vi.mocked(invoke).mockResolvedValue(undefined);
+      fc.property(fc.integer({ min: -1000, max: 1000 }), (volume) => {
+        vi.clearAllMocks();
+        vi.mocked(invoke).mockResolvedValue(undefined);
 
-          mod_.setParticipantVolume('test-user', volume);
+        mod_.setParticipantVolume('test-user', volume);
 
-          const call = vi.mocked(invoke).mock.calls[0];
-          expect(call[0]).toBe('media_set_participant_volume');
-          const args = call[1] as { id: string; level: number };
-          expect(args.level).toBeGreaterThanOrEqual(0);
-          expect(args.level).toBeLessThanOrEqual(100);
-          // Verify it's the correctly clamped + rounded value
-          const expected = Math.max(0, Math.min(100, Math.round(volume)));
-          expect(args.level).toBe(expected);
-        },
-      ),
+        const call = vi.mocked(invoke).mock.calls[0];
+        expect(call[0]).toBe('media_set_participant_volume');
+        const args = call[1] as { id: string; level: number };
+        expect(args.level).toBeGreaterThanOrEqual(0);
+        expect(args.level).toBeLessThanOrEqual(100);
+        // Verify it's the correctly clamped + rounded value
+        const expected = Math.max(0, Math.min(100, Math.round(volume)));
+        expect(args.level).toBe(expected);
+      }),
       { numRuns: 200 },
     );
   });
@@ -653,23 +651,20 @@ describe('Property 2: Preservation — PBT audio IPC volume clamping', () => {
    */
   it('setMasterVolume always clamps to [0, 100]', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: -1000, max: 1000 }),
-        (volume) => {
-          vi.clearAllMocks();
-          vi.mocked(invoke).mockResolvedValue(undefined);
+      fc.property(fc.integer({ min: -1000, max: 1000 }), (volume) => {
+        vi.clearAllMocks();
+        vi.mocked(invoke).mockResolvedValue(undefined);
 
-          mod_.setMasterVolume(volume);
+        mod_.setMasterVolume(volume);
 
-          const call = vi.mocked(invoke).mock.calls[0];
-          expect(call[0]).toBe('media_set_master_volume');
-          const args = call[1] as { level: number };
-          expect(args.level).toBeGreaterThanOrEqual(0);
-          expect(args.level).toBeLessThanOrEqual(100);
-          const expected = Math.max(0, Math.min(100, Math.round(volume)));
-          expect(args.level).toBe(expected);
-        },
-      ),
+        const call = vi.mocked(invoke).mock.calls[0];
+        expect(call[0]).toBe('media_set_master_volume');
+        const args = call[1] as { level: number };
+        expect(args.level).toBeGreaterThanOrEqual(0);
+        expect(args.level).toBeLessThanOrEqual(100);
+        const expected = Math.max(0, Math.min(100, Math.round(volume)));
+        expect(args.level).toBe(expected);
+      }),
       { numRuns: 200 },
     );
   });

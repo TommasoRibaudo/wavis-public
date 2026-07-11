@@ -36,19 +36,16 @@ describe('Feature: in-app-bug-report, Property 15: Screenshot raw PNG > 4 MB ref
    */
   it('rejects screenshots larger than 4 MB, accepts those at or below', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 8 * 1024 * 1024 }),
-        (size) => {
-          const screenshot = new Uint8Array(size);
-          const tooLarge = isScreenshotTooLarge(screenshot);
+      fc.property(fc.integer({ min: 0, max: 8 * 1024 * 1024 }), (size) => {
+        const screenshot = new Uint8Array(size);
+        const tooLarge = isScreenshotTooLarge(screenshot);
 
-          if (size > FOUR_MB) {
-            expect(tooLarge).toBe(true);
-          } else {
-            expect(tooLarge).toBe(false);
-          }
-        },
-      ),
+        if (size > FOUR_MB) {
+          expect(tooLarge).toBe(true);
+        } else {
+          expect(tooLarge).toBe(false);
+        }
+      }),
       { numRuns: 200 },
     );
   });

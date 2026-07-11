@@ -88,6 +88,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
     "fast-check": "^4.5.3",
+    "prettier": "^3.9.5",
     "tailwindcss": "^4",
     "typescript": "^5.7",
     "vite": "^6",

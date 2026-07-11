@@ -19,10 +19,7 @@ export type NativeShareLeakStage =
   | 'session_closed';
 
 export type ShareLeakCaptureBackend =
-  | 'browser-display-media'
-  | 'native-wgc'
-  | 'native-gdi-screen'
-  | 'native-gdi-window';
+  'browser-display-media' | 'native-wgc' | 'native-gdi-screen' | 'native-gdi-window';
 
 export interface ShareLeakMemorySample {
   capturedAt: string;

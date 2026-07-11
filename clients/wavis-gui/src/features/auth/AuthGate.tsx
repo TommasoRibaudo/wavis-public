@@ -78,7 +78,10 @@ export default function AuthGate() {
         if (refreshRetriesRef.current === 0) {
           // First non-recoverable failure — retry once after a short delay
           refreshRetriesRef.current = MAX_REFRESH_RETRIES - 1;
-          console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable (${result.status}) — retrying once`);
+          console.warn(
+            LOG_PREFIX,
+            `Scheduled refresh non-recoverable (${result.status}) — retrying once`,
+          );
           refreshTimeoutRef.current = setTimeout(() => {
             scheduleRefresh();
           }, jitteredDelay(1000));
@@ -95,7 +98,10 @@ export default function AuthGate() {
 
       // Transient: retry with backoff
       refreshRetriesRef.current += 1;
-      console.warn(LOG_PREFIX, `Scheduled refresh failed (attempt ${refreshRetriesRef.current}/${MAX_REFRESH_RETRIES}): ${result.status}`);
+      console.warn(
+        LOG_PREFIX,
+        `Scheduled refresh failed (attempt ${refreshRetriesRef.current}/${MAX_REFRESH_RETRIES}): ${result.status}`,
+      );
 
       if (refreshRetriesRef.current < MAX_REFRESH_RETRIES) {
         const retryDelay =

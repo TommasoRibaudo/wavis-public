@@ -66,7 +66,8 @@ export interface AudioShareStartResult {
    * prevent the viewer from hearing their own voice in loopback. */
   requires_mute_for_echo_prevention?: boolean;
   /** Backend-selected capture path for this audio-share session. */
-  capture_path?: 'wasapi' | 'pulse_audio' | 'process_tap' | 'virtual_device' | 'screen_capture_kit' | null;
+  capture_path?:
+    'wasapi' | 'pulse_audio' | 'process_tap' | 'virtual_device' | 'screen_capture_kit' | null;
   /** Human-readable reason when a weaker fallback path was selected. */
   fallback_reason?: string | null;
 }

@@ -85,15 +85,15 @@ describe('Feature: video-feed — Linux browser media support', () => {
 
 /* ─── Button label ──────────────────────────────────────────────── */
 
-  describe('Feature: video-feed — button label (Req 1.7, 1.8)', () => {
-    it('returns "camera-on" when intent is false', () => {
-      expect(cameraButtonLabel(false)).toBe('camera-on');
-    });
-
-    it('returns "camera-off" when intent is true', () => {
-      expect(cameraButtonLabel(true)).toBe('camera-off');
-    });
+describe('Feature: video-feed — button label (Req 1.7, 1.8)', () => {
+  it('returns "camera-on" when intent is false', () => {
+    expect(cameraButtonLabel(false)).toBe('camera-on');
   });
+
+  it('returns "camera-off" when intent is true', () => {
+    expect(cameraButtonLabel(true)).toBe('camera-off');
+  });
+});
 
 /* ─── Panel tab defaults ────────────────────────────────────────── */
 
@@ -101,34 +101,42 @@ import { computeRoomPanelTab } from '../voice-room';
 
 describe('Feature: video-feed — Logs_Tab is default and resets (Req 3.1, 3.6, 3.8)', () => {
   it('defaults to logs when no video is active', () => {
-    expect(computeRoomPanelTab({
-      anyVideoActive: false,
-      manualOverride: null,
-      hadAnyVideoActive: false,
-    })).toBe('logs');
+    expect(
+      computeRoomPanelTab({
+        anyVideoActive: false,
+        manualOverride: null,
+        hadAnyVideoActive: false,
+      }),
+    ).toBe('logs');
   });
 
   it('resets to logs when last video ends even after manual override', () => {
-    expect(computeRoomPanelTab({
-      anyVideoActive: false,
-      manualOverride: 'video',
-      hadAnyVideoActive: false,
-    })).toBe('logs');
+    expect(
+      computeRoomPanelTab({
+        anyVideoActive: false,
+        manualOverride: 'video',
+        hadAnyVideoActive: false,
+      }),
+    ).toBe('logs');
   });
 
   it('shows video when video is active and no override', () => {
-    expect(computeRoomPanelTab({
-      anyVideoActive: true,
-      manualOverride: null,
-      hadAnyVideoActive: true,
-    })).toBe('video');
+    expect(
+      computeRoomPanelTab({
+        anyVideoActive: true,
+        manualOverride: null,
+        hadAnyVideoActive: true,
+      }),
+    ).toBe('video');
   });
 
   it('respects manual override to logs while video is active', () => {
-    expect(computeRoomPanelTab({
-      anyVideoActive: true,
-      manualOverride: 'logs',
-      hadAnyVideoActive: true,
-    })).toBe('logs');
+    expect(
+      computeRoomPanelTab({
+        anyVideoActive: true,
+        manualOverride: 'logs',
+        hadAnyVideoActive: true,
+      }),
+    ).toBe('logs');
   });
 });

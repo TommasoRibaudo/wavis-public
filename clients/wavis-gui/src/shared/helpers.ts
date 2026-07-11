@@ -13,10 +13,12 @@ import type { NotificationToggles } from '@features/settings/settings-store';
 
 /** Derive WS URL from server URL: https→wss, http→ws, append /ws */
 export function toWsUrl(serverUrl: string): string {
-  return serverUrl
-    .replace(/^https:\/\//, 'wss://')
-    .replace(/^http:\/\//, 'ws://')
-    .replace(/\/+$/, '') + '/ws';
+  return (
+    serverUrl
+      .replace(/^https:\/\//, 'wss://')
+      .replace(/^http:\/\//, 'ws://')
+      .replace(/\/+$/, '') + '/ws'
+  );
 }
 
 /** Parse hostname from a URL string, fallback to 'wavis' */
@@ -38,9 +40,11 @@ export function shouldBlockRoomNavigation(
   return !allowNavigation && currentPathname === '/room' && nextPathname !== '/room';
 }
 
-export function shouldPreventRoomNavigationGesture(
-  input: { button?: number; key?: string; altKey?: boolean },
-): boolean {
+export function shouldPreventRoomNavigationGesture(input: {
+  button?: number;
+  key?: string;
+  altKey?: boolean;
+}): boolean {
   if (input.button === 3) return true;
   if (input.key === 'BrowserBack' || input.key === 'GoBack') return true;
   return Boolean(input.altKey && input.key === 'ArrowLeft');
@@ -142,7 +146,6 @@ export function redactToken(token: string, showSecrets: boolean): string {
   return token.slice(0, 16) + '...';
 }
 
-
 // ─── Connection mode badge helpers ─────────────────────────────────
 
 /**
@@ -157,26 +160,32 @@ export function connectionModeBadgeText(
   return connectionMode === 'livekit' ? 'LiveKit' : 'Proxy';
 }
 
-
 // ─── Toast helpers ─────────────────────────────────────────────────
 
 /**
  * Map a room event type to a notification toggle key, or null if the event
  * type has no corresponding toggle (e.g. system events, muted/unmuted).
  */
-export function eventToToggleKey(
-  type: RoomEventType,
-): keyof NotificationToggles | null {
+export function eventToToggleKey(type: RoomEventType): keyof NotificationToggles | null {
   switch (type) {
-    case 'join': return 'participantJoined';
-    case 'leave': return 'participantLeft';
-    case 'kicked': return 'participantKicked';
-    case 'host-mute': return 'participantMutedByHost';
-    case 'host-unmute': return 'participantMutedByHost';
-    case 'passthrough': return 'passthroughChanged';
-    case 'deafen': return null;
-    case 'undeafen': return null;
-    default: return null;
+    case 'join':
+      return 'participantJoined';
+    case 'leave':
+      return 'participantLeft';
+    case 'kicked':
+      return 'participantKicked';
+    case 'host-mute':
+      return 'participantMutedByHost';
+    case 'host-unmute':
+      return 'participantMutedByHost';
+    case 'passthrough':
+      return 'passthroughChanged';
+    case 'deafen':
+      return null;
+    case 'undeafen':
+      return null;
+    default:
+      return null;
   }
 }
 
@@ -184,23 +193,32 @@ export function eventToToggleKey(
  * Generate a toast message for a room event.
  * Returns null for event types that should not produce toasts (system, muted/unmuted).
  */
-export function toastMessageForEvent(
-  type: RoomEventType,
-  displayName: string,
-): string | null {
+export function toastMessageForEvent(type: RoomEventType, displayName: string): string | null {
   switch (type) {
-    case 'join': return `${displayName} joined`;
-    case 'leave': return `${displayName} left`;
-    case 'kicked': return `${displayName} was kicked`;
-    case 'host-mute': return `${displayName} was muted by host`;
-    case 'host-unmute': return `${displayName} was unmuted by host`;
-    case 'share-start': return `${displayName} started sharing`;
-    case 'share-stop': return `${displayName} stopped sharing`;
-    case 'share-permission': return `share permission changed`;
-    case 'passthrough': return displayName === 'cleared' ? 'Passthrough Disabled' : 'Passthrough Enabled';
-    case 'deafen': return `${displayName} deafened`;
-    case 'undeafen': return `${displayName} undeafened`;
-    default: return null;
+    case 'join':
+      return `${displayName} joined`;
+    case 'leave':
+      return `${displayName} left`;
+    case 'kicked':
+      return `${displayName} was kicked`;
+    case 'host-mute':
+      return `${displayName} was muted by host`;
+    case 'host-unmute':
+      return `${displayName} was unmuted by host`;
+    case 'share-start':
+      return `${displayName} started sharing`;
+    case 'share-stop':
+      return `${displayName} stopped sharing`;
+    case 'share-permission':
+      return `share permission changed`;
+    case 'passthrough':
+      return displayName === 'cleared' ? 'Passthrough Disabled' : 'Passthrough Enabled';
+    case 'deafen':
+      return `${displayName} deafened`;
+    case 'undeafen':
+      return `${displayName} undeafened`;
+    default:
+      return null;
   }
 }
 
@@ -209,18 +227,28 @@ export function toastMessageForEvent(
  */
 export function toastColorForEvent(type: RoomEventType): string {
   switch (type) {
-    case 'join': return 'var(--wavis-accent)';
+    case 'join':
+      return 'var(--wavis-accent)';
     case 'leave':
-    case 'kicked': return 'var(--wavis-danger)';
-    case 'host-mute': return 'var(--wavis-warn)';
-    case 'host-unmute': return 'var(--wavis-accent)';
+    case 'kicked':
+      return 'var(--wavis-danger)';
+    case 'host-mute':
+      return 'var(--wavis-warn)';
+    case 'host-unmute':
+      return 'var(--wavis-accent)';
     case 'share-start':
-    case 'share-stop': return 'var(--wavis-purple)';
-    case 'share-permission': return 'var(--wavis-warn)';
-    case 'passthrough': return 'var(--wavis-accent)';
-    case 'deafen': return 'var(--wavis-warn)';
-    case 'undeafen': return 'var(--wavis-accent)';
-    default: return 'var(--wavis-text)';
+    case 'share-stop':
+      return 'var(--wavis-purple)';
+    case 'share-permission':
+      return 'var(--wavis-warn)';
+    case 'passthrough':
+      return 'var(--wavis-accent)';
+    case 'deafen':
+      return 'var(--wavis-warn)';
+    case 'undeafen':
+      return 'var(--wavis-accent)';
+    default:
+      return 'var(--wavis-text)';
   }
 }
 

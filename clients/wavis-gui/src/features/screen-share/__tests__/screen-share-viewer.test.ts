@@ -22,7 +22,10 @@ vi.mock('@tauri-apps/api/event', () => ({
     eventListeners.set(event, listeners);
     return () => {
       const current = eventListeners.get(event) ?? [];
-      eventListeners.set(event, current.filter((entry) => entry !== callback));
+      eventListeners.set(
+        event,
+        current.filter((entry) => entry !== callback),
+      );
     };
   }),
 }));
@@ -78,10 +81,18 @@ globalThis.RTCPeerConnection = MockRTCPeerConnection as unknown as typeof RTCPee
 class MockMediaStream {
   private tracks: MediaStreamTrack[] = [];
   id = Math.random().toString(36).slice(2);
-  getTracks() { return this.tracks; }
-  addTrack(t: MediaStreamTrack) { this.tracks.push(t); }
-  getVideoTracks() { return this.tracks.filter((t) => t.kind === 'video'); }
-  getAudioTracks() { return this.tracks.filter((t) => t.kind === 'audio'); }
+  getTracks() {
+    return this.tracks;
+  }
+  addTrack(t: MediaStreamTrack) {
+    this.tracks.push(t);
+  }
+  getVideoTracks() {
+    return this.tracks.filter((t) => t.kind === 'video');
+  }
+  getAudioTracks() {
+    return this.tracks.filter((t) => t.kind === 'audio');
+  }
 }
 globalThis.MediaStream = MockMediaStream as unknown as typeof MediaStream;
 
@@ -138,18 +149,19 @@ describe('startSending with two different window labels', () => {
 
     const pc = sender?.pc as unknown as MockRTCPeerConnection;
     let resolveRemoteDescription: VoidFunction | undefined;
-    pc.setRemoteDescription = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
-      resolveRemoteDescription = resolve;
-    }));
+    pc.setRemoteDescription = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRemoteDescription = resolve;
+        }),
+    );
 
     const answerListeners = eventListeners.get('ss-bridge:answer:user1::watch-all') as
-      | Array<(event: { payload: { sdp: string } }) => unknown>
-      | undefined;
+      Array<(event: { payload: { sdp: string } }) => unknown> | undefined;
     expect(answerListeners).toHaveLength(1);
 
     const onAnswer = answerListeners?.[0] as
-      | ((event: { payload: { sdp: string } }) => Promise<void> | void)
-      | undefined;
+      ((event: { payload: { sdp: string } }) => Promise<void> | void) | undefined;
     expect(onAnswer).toBeDefined();
 
     const firstAnswer = Promise.resolve(onAnswer?.({ payload: { sdp: 'answer-1' } }));
@@ -211,7 +223,8 @@ describe('isVideoTrackAlive', () => {
   it('returns false when audio track is live but video track is ended (the bug scenario)', () => {
     const stream = {
       active: true, // stream.active is true because audio track is still alive
-      getVideoTracks: () => [{ readyState: 'ended', muted: false }] as unknown as MediaStreamTrack[],
+      getVideoTracks: () =>
+        [{ readyState: 'ended', muted: false }] as unknown as MediaStreamTrack[],
     } as unknown as MediaStream;
     expect(isVideoTrackAlive(stream)).toBe(false);
   });
@@ -414,9 +427,8 @@ describe('resendStream', () => {
     // The peer connection must NOT have been closed (no full rebuild)
     expect(pc.close).not.toHaveBeenCalled();
     // replaceTrack must have been called on the video sender
-    const videoSender = pc.getSenders().find(
-      (s: MockRTCRtpSender) => s.track?.kind === 'video',
-    ) as MockRTCRtpSender | undefined;
+    const videoSender = pc.getSenders().find((s: MockRTCRtpSender) => s.track?.kind === 'video') as
+      MockRTCRtpSender | undefined;
     expect(videoSender?.replaceTrack).toHaveBeenCalledWith(track2);
     // The entry must still be in the senders map (not torn down)
     expect(senders.has('user1::watch-all')).toBe(true);

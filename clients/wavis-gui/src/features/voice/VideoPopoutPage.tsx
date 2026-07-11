@@ -59,7 +59,8 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
     receiverRef.current = receiver;
     setReceiverError(false);
 
-    receiver.start()
+    receiver
+      .start()
       .then((nextStream) => {
         if (cancelled) return;
         setStream(nextStream);
@@ -88,7 +89,7 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
       return;
     }
     el.srcObject = stream;
-    el.play().catch(() => { });
+    el.play().catch(() => {});
     return () => {
       el.srcObject = null;
     };
@@ -151,7 +152,10 @@ function VideoPopoutTile({ tile }: { tile: VideoTileSnapshot }) {
   const showNativeFallback = shouldReceive && nativeFallbackActive;
 
   return (
-    <div className="relative overflow-hidden bg-wavis-panel" style={{ width: '100%', height: '100%' }}>
+    <div
+      className="relative overflow-hidden bg-wavis-panel"
+      style={{ width: '100%', height: '100%' }}
+    >
       {showVideo ? (
         <video
           ref={videoRef}
@@ -245,10 +249,14 @@ export default function VideoPopoutPage() {
         });
       }),
       listen('camera-popout:close', () => {
-        getCurrentWindow().close().catch(() => { });
+        getCurrentWindow()
+          .close()
+          .catch(() => {});
       }),
       listen('voice-session:ended', () => {
-        getCurrentWindow().close().catch(() => { });
+        getCurrentWindow()
+          .close()
+          .catch(() => {});
       }),
     ];
 
@@ -266,16 +274,19 @@ export default function VideoPopoutPage() {
     const unlisten = win.onCloseRequested(async () => {
       await emit('camera-popout:closed', {});
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const { isVisible: controlsVisible } = useAutoHide({ delayMs: 3000, listenToMouseMove: true });
   const { isFullscreen, toggleFullscreen } = useFullscreen();
 
   const tiles = useMemo(() => Object.values(tilesById), [tilesById]);
-  const layout = tiles.length > 0 && gridSize.width > 0 && gridSize.height > 0
-    ? computeGridLayout(tiles.length, gridSize.width, gridSize.height)
-    : null;
+  const layout =
+    tiles.length > 0 && gridSize.width > 0 && gridSize.height > 0
+      ? computeGridLayout(tiles.length, gridSize.width, gridSize.height)
+      : null;
   const handleClose = () => {
     getCurrentWindow().close();
   };
@@ -286,16 +297,20 @@ export default function VideoPopoutPage() {
       <div
         data-tauri-drag-region
         className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
-        style={isFullscreen ? {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          zIndex: 20,
-          height: TITLE_BAR_HEIGHT,
-          opacity: controlsVisible ? 1 : 0,
-          pointerEvents: controlsVisible ? 'auto' : 'none',
-        } : { height: TITLE_BAR_HEIGHT }}
+        style={
+          isFullscreen
+            ? {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 20,
+                height: TITLE_BAR_HEIGHT,
+                opacity: controlsVisible ? 1 : 0,
+                pointerEvents: controlsVisible ? 'auto' : 'none',
+              }
+            : { height: TITLE_BAR_HEIGHT }
+        }
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
@@ -318,7 +333,9 @@ export default function VideoPopoutPage() {
       <div ref={gridRef} className="flex-1 overflow-hidden relative">
         {tiles.length === 0 ? (
           <div className="h-full flex items-center justify-center text-wavis-text-secondary text-sm">
-            {paramsRef.current?.channelName ? `${paramsRef.current.channelName}: no camera active` : 'No camera active'}
+            {paramsRef.current?.channelName
+              ? `${paramsRef.current.channelName}: no camera active`
+              : 'No camera active'}
           </div>
         ) : layout ? (
           <div

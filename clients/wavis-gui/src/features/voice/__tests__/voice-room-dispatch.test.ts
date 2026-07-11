@@ -10,11 +10,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  getState,
-  leaveRoom,
-  initSession,
-} from '../voice-room';
+import { getState, leaveRoom, initSession } from '../voice-room';
 
 // ─── Mock all Tauri / external dependencies ────────────────────────
 
@@ -127,7 +123,9 @@ vi.mock('@shared/websocket', () => {
     send = vi.fn();
     onMessage = vi.fn().mockImplementation((h: (msg: unknown) => void) => {
       _messageHandler = h;
-      return () => { _messageHandler = null; };
+      return () => {
+        _messageHandler = null;
+      };
     });
     onStatusChange = vi.fn().mockImplementation((_h: (s: string) => void) => {
       return () => {};
@@ -180,7 +178,9 @@ describe('session_displaced', () => {
     await setupActiveSession();
     inject({ type: 'session_displaced' });
     const events = getState().events;
-    expect(events.some((e) => e.type === 'system' && e.message.includes('another device'))).toBe(true);
+    expect(events.some((e) => e.type === 'system' && e.message.includes('another device'))).toBe(
+      true,
+    );
   });
 });
 
@@ -366,7 +366,12 @@ describe('sub_room_joined', () => {
       passthroughVolumePercent: 20,
     });
     inject({ type: 'participant_joined', participantId: 'peer-2', displayName: 'Bob' });
-    inject({ type: 'sub_room_joined', participantId: 'peer-2', subRoomId: 'sr-1', source: 'explicit' });
+    inject({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'sr-1',
+      source: 'explicit',
+    });
     const room = getState().subRooms.find((r) => r.id === 'sr-1');
     expect(room?.participantIds).toContain('peer-2');
   });
@@ -379,7 +384,12 @@ describe('sub_room_joined', () => {
       passthroughVolumePercent: 20,
     });
     inject({ type: 'participant_joined', participantId: 'peer-2', displayName: 'Bob' });
-    inject({ type: 'sub_room_joined', participantId: 'peer-2', subRoomId: 'sr-1', source: 'explicit' });
+    inject({
+      type: 'sub_room_joined',
+      participantId: 'peer-2',
+      subRoomId: 'sr-1',
+      source: 'explicit',
+    });
     const events = getState().events;
     expect(events.some((e) => e.type === 'join' && e.participantId === 'peer-2')).toBe(true);
   });
@@ -441,7 +451,9 @@ describe('error message', () => {
     await setupActiveSession();
     inject({ type: 'error', message: 'something went wrong' });
     const events = getState().events;
-    expect(events.some((e) => e.type === 'system' && e.message === 'something went wrong')).toBe(true);
+    expect(events.some((e) => e.type === 'system' && e.message === 'something went wrong')).toBe(
+      true,
+    );
   });
 
   it('sets lastChatError', async () => {
@@ -464,13 +476,15 @@ describe('chat_history_response', () => {
     await setupActiveSession();
     inject({
       type: 'chat_history_response',
-      messages: [{
-        messageId: 'hist-1',
-        participantId: 'peer-2',
-        displayName: 'Bob',
-        text: 'hello from history',
-        timestamp: '2026-05-01T10:00:00Z',
-      }],
+      messages: [
+        {
+          messageId: 'hist-1',
+          participantId: 'peer-2',
+          displayName: 'Bob',
+          text: 'hello from history',
+          timestamp: '2026-05-01T10:00:00Z',
+        },
+      ],
     });
     const { chatMessages } = getState();
     expect(chatMessages.some((m) => m.text === 'hello from history')).toBe(true);

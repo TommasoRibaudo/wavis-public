@@ -107,9 +107,7 @@ describe('recovery ID storage helpers', () => {
 
     expect(result.success).toBe(true);
     expect(mockStore['recovery_id']).toBe('wvs-TRIM-0001');
-    expect(fetchBodies).toMatchObject([
-      { recovery_id: 'wvs-TRIM-0001', phrase: 'passphrase' },
-    ]);
+    expect(fetchBodies).toMatchObject([{ recovery_id: 'wvs-TRIM-0001', phrase: 'passphrase' }]);
     expect(fetchBodies[0]).not.toHaveProperty('username');
   });
 

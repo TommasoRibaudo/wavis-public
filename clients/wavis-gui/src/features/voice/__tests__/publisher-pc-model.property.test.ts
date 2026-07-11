@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 
-import {
-  publisherPcModel,
-  type PublisherPcOperation,
-} from '../publisher-pc-model';
+import { publisherPcModel, type PublisherPcOperation } from '../publisher-pc-model';
 
 const publisherPcOperationArb: fc.Arbitrary<PublisherPcOperation> = fc.record({
   op: fc.constantFrom('publish', 'unpublish', 'republish'),

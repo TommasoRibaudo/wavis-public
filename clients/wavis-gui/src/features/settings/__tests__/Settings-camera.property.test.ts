@@ -9,7 +9,10 @@ import * as fc from 'fast-check';
 
 // ─── Pure helper extracted from Settings.tsx label logic ─────────────
 
-export function cameraOptionLabel(device: { deviceId: string; label: string }, index: number): string {
+export function cameraOptionLabel(
+  device: { deviceId: string; label: string },
+  index: number,
+): string {
   return device.label || `Camera ${index + 1}`;
 }
 

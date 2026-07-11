@@ -9,9 +9,7 @@ interface ChannelRoleBadgeProps {
 
 export function ChannelRoleBadge({ role, variant = 'detail', className }: ChannelRoleBadgeProps) {
   const { label, color } =
-    variant === 'list'
-      ? { label: role, color: roleBadgeColor(role) }
-      : roleBadgeInfo(role);
+    variant === 'list' ? { label: role, color: roleBadgeColor(role) } : roleBadgeInfo(role);
   return (
     <span
       className={`px-1.5 py-0.5 border text-[0.625rem]${className ? ` ${className}` : ''}`}

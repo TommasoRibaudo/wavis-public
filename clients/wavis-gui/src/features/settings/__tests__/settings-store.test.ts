@@ -279,7 +279,7 @@ describe('Video input device helpers', () => {
     expect(result).toBeNull();
   });
 
-    // Feature: video-feed, Property 9: Settings persistence and fallback (round-trip clause)
+  // Feature: video-feed, Property 9: Settings persistence and fallback (round-trip clause)
   it('persists and retrieves any video input device id or null', async () => {
     const deviceIdArb = fc.option(fc.string(), { nil: null });
     await fc.assert(
@@ -332,14 +332,10 @@ describe('inputVolumeToGain', () => {
 
   it('is monotonically non-decreasing across the full range', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 99 }),
-        fc.integer({ min: 1, max: 100 }),
-        (a, b) => {
-          fc.pre(a < b);
-          expect(inputVolumeToGain(a)).toBeLessThanOrEqual(inputVolumeToGain(b));
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 99 }), fc.integer({ min: 1, max: 100 }), (a, b) => {
+        fc.pre(a < b);
+        expect(inputVolumeToGain(a)).toBeLessThanOrEqual(inputVolumeToGain(b));
+      }),
       { numRuns: 200 },
     );
   });

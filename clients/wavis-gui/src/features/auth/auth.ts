@@ -21,8 +21,7 @@ const LOG_PREFIX = '[wavis:auth]';
  * Controlled by VITE_ALLOW_INSECURE_TLS env var. Defaults to false.
  * When false, http:// URLs are always rejected and dangerouslyIgnoreCertificateErrors is never set.
  */
-export const INSECURE_TLS_ALLOWED =
-  import.meta.env.VITE_ALLOW_INSECURE_TLS === 'true';
+export const INSECURE_TLS_ALLOWED = import.meta.env.VITE_ALLOW_INSECURE_TLS === 'true';
 
 // --- Types ---
 export type AuthLogEntry = {
@@ -62,10 +61,7 @@ async function getStore() {
   return storeInstance;
 }
 
-function makeLogEntry(
-  message: string,
-  type: AuthLogEntry['type'],
-): AuthLogEntry {
+function makeLogEntry(message: string, type: AuthLogEntry['type']): AuthLogEntry {
   return {
     time: new Date().toLocaleTimeString('en-US', { hour12: false }),
     message,
@@ -132,7 +128,10 @@ export function validateServerUrl(
       }
       return { valid: false, reason: 'http:// requires "Allow insecure TLS" to be enabled' };
     }
-    return { valid: false, reason: 'Unsupported protocol "' + parsed.protocol + '" -- use https://' };
+    return {
+      valid: false,
+      reason: 'Unsupported protocol "' + parsed.protocol + '" -- use https://',
+    };
   } catch {
     return { valid: false, reason: 'Malformed URL' };
   }
@@ -422,10 +421,7 @@ export async function startPairing(
   return (await res.json()) as { pairing_id: string; code: string };
 }
 
-export async function approvePairing(
-  pairingId: string,
-  code: string,
-): Promise<void> {
+export async function approvePairing(pairingId: string, code: string): Promise<void> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw new Error('No server URL configured');
   const accessToken = await getAccessToken();
@@ -437,7 +433,7 @@ export async function approvePairing(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify({ pairing_id: pairingId, code }),
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
@@ -448,10 +444,7 @@ export async function approvePairing(
   }
 }
 
-export async function finishPairing(
-  pairingId: string,
-  code: string,
-): Promise<void> {
+export async function finishPairing(pairingId: string, code: string): Promise<void> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw new Error('No server URL configured');
   const insecure = await getInsecureTls();
@@ -500,7 +493,7 @@ export async function listDevices(): Promise<{ devices: DeviceInfo[]; current_de
   const url = serverUrl.replace(/\/+$/, '') + '/auth/devices';
   const res = await tauriFetch(url, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}` },
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
   });
 
@@ -521,7 +514,7 @@ export async function revokeDevice(deviceId: string): Promise<void> {
   const url = serverUrl.replace(/\/+$/, '') + `/auth/devices/${deviceId}/revoke`;
   const res = await tauriFetch(url, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}` },
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
   });
 
@@ -540,7 +533,7 @@ export async function logoutAll(): Promise<void> {
   const url = serverUrl.replace(/\/+$/, '') + '/auth/logout_all';
   const res = await tauriFetch(url, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}` },
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
   });
 
@@ -551,10 +544,7 @@ export async function logoutAll(): Promise<void> {
   await resetAuth();
 }
 
-export async function rotatePhrase(
-  currentPhrase: string,
-  newPhrase: string,
-): Promise<void> {
+export async function rotatePhrase(currentPhrase: string, newPhrase: string): Promise<void> {
   const serverUrl = await getServerUrl();
   if (!serverUrl) throw new Error('No server URL configured');
   const accessToken = await getAccessToken();
@@ -566,7 +556,7 @@ export async function rotatePhrase(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify({ current_phrase: currentPhrase, new_phrase: newPhrase }),
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
@@ -689,7 +679,7 @@ export async function updateUsername(username: string): Promise<void> {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ username }),
       ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
@@ -726,7 +716,7 @@ export async function fetchMyUsername(): Promise<string | null> {
 
   const res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/me', {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}` },
     ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
   });
 
