@@ -47,6 +47,12 @@ class MockRTCPeerConnection {
     this._senders.push(sender);
     return sender;
   });
+  // Video tracks go through addTransceiver (sendonly + encoder caps).
+  addTransceiver = vi.fn().mockImplementation((track: MediaStreamTrack) => {
+    const sender = new MockRTCRtpSender(track);
+    this._senders.push(sender);
+    return { sender, setCodecPreferences: vi.fn() };
+  });
   getSenders = vi.fn().mockImplementation(() => this._senders);
   createOffer = vi.fn().mockResolvedValue({ sdp: 'mock-offer', type: 'offer' });
   createAnswer = vi.fn().mockResolvedValue({ sdp: 'mock-answer', type: 'answer' });
@@ -426,9 +432,9 @@ describe('resendStream', () => {
 
     const senders = _getSendersForTest();
     expect(senders.has('user1::watch-all')).toBe(true);
-    // addTrack must have been called (startSending path)
+    // addTransceiver must have been called for the video track (startSending path)
     const entry = senders.get('user1::watch-all');
-    expect((entry!.pc as unknown as MockRTCPeerConnection).addTrack).toHaveBeenCalled();
+    expect((entry!.pc as unknown as MockRTCPeerConnection).addTransceiver).toHaveBeenCalled();
   });
 
   it('falls back to full rebuild when connection is not yet connected', async () => {

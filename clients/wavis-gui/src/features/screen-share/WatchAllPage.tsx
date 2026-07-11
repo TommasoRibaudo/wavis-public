@@ -3,7 +3,7 @@ import { Volume2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { StreamReceiver } from './screen-share-viewer';
+import { ViewerRoomConnection } from './viewer-connection';
 import { computeWatchAllLayout } from './watch-all-grid';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { isPlaybackHealthyWithoutFreshFrames, STATIC_CONTENT_HEALTH_PING_MS } from './useVideoStallDetector';
@@ -40,9 +40,6 @@ interface PolledScreenShareFrame {
 const TITLE_BAR_HEIGHT = 32;
 const LABEL_FADE_DELAY_MS = 3000;
 const GLOBAL_BAR_FADE_DELAY_MS = 5000;
-// Delay before auto-retrying after a bridge failure. Gives the main window
-// time to call resendStream() after LiveKit reconnects the screen share track.
-const AUTO_RETRY_DELAY_MS = 1500;
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
@@ -108,6 +105,8 @@ interface ShareTileProps {
   nativeWidth: number | null;
   nativeHeight: number | null;
   aspectRatio: number;
+  /** Window-wide direct LiveKit viewer connection (null in diagnostics test mode). */
+  viewerConn: ViewerRoomConnection | null;
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
   onPopOut: (participantId: string, volume: number, muted: boolean) => void;
@@ -126,6 +125,7 @@ const ShareTile = memo(function ShareTile({
   nativeWidth,
   nativeHeight,
   aspectRatio,
+  viewerConn,
   onToggleMute,
   onVolumeChange,
   onPopOut,
@@ -133,7 +133,6 @@ const ShareTile = memo(function ShareTile({
 }: ShareTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const receiverRef = useRef<StreamReceiver | null>(null);
   const diagnosticViewportRef = useRef<HTMLDivElement>(null);
   const onAspectRatioDetectedRef = useRef(onAspectRatioDetected);
   onAspectRatioDetectedRef.current = onAspectRatioDetected;
@@ -217,88 +216,37 @@ const ShareTile = memo(function ShareTile({
   /* ── Stream lifecycle ── */
 
   const [retryCount, setRetryCount] = useState(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestSenderResync = useCallback(() => {
-    void emitTo('main', 'watch-all:request-resend', { participantId });
-  }, [participantId]);
-
-  // Called by StreamReceiver when the RTCPeerConnection transitions to 'failed'.
-  // Sets error state and schedules an automatic bridge reconnect after a short
-  // delay to give the main window time to call resendStream() once LiveKit
-  // finishes reconnecting the screen share track.
-  const scheduleRetry = useCallback(() => {
-    if (DEBUG_SHARE_VIEW) console.warn(LOG, `scheduleRetry — participantId: ${participantId}, retryCount: ${retryCount}, timestamp: ${Date.now()}`);
-    requestSenderResync();
-    setError('connection failed');
-    if (retryTimerRef.current !== null) return; // already scheduled
-    retryTimerRef.current = setTimeout(() => {
-      retryTimerRef.current = null;
-      setRetryCount((c) => c + 1);
-    }, AUTO_RETRY_DELAY_MS);
-  }, [participantId, requestSenderResync, retryCount]);
 
   useEffect(() => {
-    if (canvasFallback || isDiagnosticTest) return;
+    if (canvasFallback || isDiagnosticTest || !viewerConn) return;
     let cancelled = false;
-
-    // Stop the previous receiver before creating a fresh one (handles
-    // both the initial mount and every auto-retry / manual-retry cycle).
-    if (receiverRef.current) {
-      receiverRef.current.stop();
-      receiverRef.current = null;
-    }
-
     setError(null);
-    const receiver = new StreamReceiver(participantId, 'watch-all');
-    receiverRef.current = receiver;
 
-    // Pass scheduleRetry as onConnectionFailed so it is wired to
-    // pc.onconnectionstatechange synchronously — before any await — which
-    // closes the race window where a failure could arrive before the
-    // manual pc.addEventListener() call after start() resolved (old code).
-    //
-    // requestSenderResync is passed as onListenersReady: the main window's
-    // resendStream() fires only after this receiver has registered its offer +
-    // ICE listeners. Calling it before start() (old pattern) created a race —
-    // startSending() in main raced to register its receiver-ready listener
-    // while the receiver was still registering its offer listener, and with 2
-    // concurrent streams the double-miss probability was high enough to cause
-    // persistent blank screens.
-    receiver.start(scheduleRetry, requestSenderResync)
-      .then((s) => {
-        if (cancelled) return;
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver.start() resolved — participantId: ${participantId}, retryCount: ${retryCount}`);
-        setStream(s);
-        void emitTo('main', 'screen-share-viewer:ready', {
-          participantId,
-          windowLabel: 'watch-all',
-        });
-        void emitTo('main', 'viewer-subscribed', { targetId: participantId });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (DEBUG_SHARE_VIEW) console.error(LOG, `receiver.start() rejected — participantId: ${participantId}, error:`, err);
-        const message = err instanceof Error ? err.message : 'connection failed';
-        if (message === 'Timed out waiting for screen share stream') {
-          scheduleRetry();
-          return;
-        }
-        setError(message);
+    // Direct LiveKit subscription over the window-wide viewer connection.
+    // Reconnection/backoff live inside ViewerRoomConnection — a tile only
+    // registers interest in its identity and renders whatever arrives.
+    const identity = liveKitIdentity ?? participantId;
+    const unwatch = viewerConn.watch(identity, (s) => {
+      if (cancelled) return;
+      if (DEBUG_SHARE_VIEW) console.log(LOG, `viewer stream ${s ? 'delivered' : 'ended'} — participantId: ${participantId}, retryCount: ${retryCount}`);
+      if (!s) {
+        setStream(null);
+        return;
+      }
+      setError(null);
+      setStream(s);
+      void emitTo('main', 'screen-share-viewer:ready', {
+        participantId,
+        windowLabel: 'watch-all',
       });
+      void emitTo('main', 'viewer-subscribed', { targetId: participantId });
+    });
 
     return () => {
       cancelled = true;
-      // Cancel any pending auto-retry timer on cleanup/unmount.
-      if (retryTimerRef.current !== null) {
-        clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-      if (receiverRef.current) {
-        receiverRef.current.stop();
-        receiverRef.current = null;
-      }
+      unwatch();
     };
-  }, [canvasFallback, isDiagnosticTest, participantId, requestSenderResync, retryCount, scheduleRetry]);
+  }, [canvasFallback, isDiagnosticTest, liveKitIdentity, participantId, retryCount, viewerConn]);
 
   // Attach stream to video element and detect aspect ratio from metadata
   useEffect(() => {
@@ -468,21 +416,13 @@ const ShareTile = memo(function ShareTile({
   /* ── Retry handler ── */
 
   const handleRetry = useCallback(() => {
-    // Cancel any scheduled auto-retry so we don't double-reconnect.
-    if (retryTimerRef.current !== null) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
     setStream(null);
     setError(null);
-    requestSenderResync();
-    // Increment retryCount — the bridge useEffect re-runs, stops the old
-    // receiver, creates a new StreamReceiver, and emits receiver-ready.
-    // The main window's sender (re-established by resendStream() in ActiveRoom)
-    // will respond with the current offer. No resendStream() call here: that
-    // must only be called by the MAIN window which owns the sender entry.
+    // Rebuild the viewer Room (dead-transport escape hatch), then bump
+    // retryCount so the watch effect re-registers cleanly.
+    viewerConn?.forceReconnect();
     setRetryCount((c) => c + 1);
-  }, [requestSenderResync]);
+  }, [viewerConn]);
 
   /* ── Double-click → pop out ── */
 
@@ -749,6 +689,18 @@ export default function WatchAllPage() {
   const p = params.current;
   const diagnosticsTestSessionId = p?.testSessionId ?? null;
   const isDiagnosticsTestMode = diagnosticsTestSessionId !== null;
+
+  // One direct LiveKit viewer connection for the whole window — every live
+  // tile subscribes over this single Room. Constructor is side-effect free;
+  // the Room only connects once the first tile calls watch().
+  const viewerConn = useMemo(
+    () => (isDiagnosticsTestMode ? null : new ViewerRoomConnection({ windowLabel: 'watch-all' })),
+    [isDiagnosticsTestMode],
+  );
+  useEffect(() => {
+    if (!viewerConn) return;
+    return () => viewerConn.dispose();
+  }, [viewerConn]);
 
   /* ── Tile event listeners ── */
 
@@ -1247,6 +1199,7 @@ export default function WatchAllPage() {
                     nativeWidth={tile.nativeWidth}
                     nativeHeight={tile.nativeHeight}
                     aspectRatio={tile.aspectRatio}
+                    viewerConn={viewerConn}
                     onToggleMute={handleToggleMute}
                     onVolumeChange={handleVolumeChange}
                     onPopOut={handlePopOut}

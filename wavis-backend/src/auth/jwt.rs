@@ -156,6 +156,49 @@ pub fn sign_livekit_token(
         .map_err(|e| SfuError::TokenError(format!("LiveKit token signing failed: {e}")))
 }
 
+/// Sign a subscribe-only, hidden LiveKit viewer token.
+///
+/// Issued to child viewer windows (screen-share pop-outs, Watch All) so they
+/// can open their own direct LiveKit connection instead of relaying video
+/// through the main window. The `hidden` grant keeps the viewer out of other
+/// participants' rosters; `can_publish`/`can_publish_data` are explicitly
+/// denied so a leaked token cannot inject media or data into the room.
+pub fn sign_livekit_viewer_token(
+    room_id: &str,
+    viewer_identity: &str,
+    api_key: &str,
+    api_secret: &str,
+    ttl_secs: u64,
+) -> Result<String, SfuError> {
+    if api_key.is_empty() || api_secret.is_empty() {
+        return Err(SfuError::TokenError(
+            "LiveKit api_key and api_secret must be non-empty".to_string(),
+        ));
+    }
+    if room_id.is_empty() || viewer_identity.is_empty() {
+        return Err(SfuError::TokenError(
+            "room_id and viewer_identity must be non-empty".to_string(),
+        ));
+    }
+
+    let grants = VideoGrants {
+        room_join: true,
+        room: room_id.to_string(),
+        can_subscribe: true,
+        can_publish: false,
+        can_publish_data: false,
+        hidden: true,
+        ..Default::default()
+    };
+
+    AccessToken::with_api_key(api_key, api_secret)
+        .with_identity(viewer_identity)
+        .with_grants(grants)
+        .with_ttl(std::time::Duration::from_secs(ttl_secs))
+        .to_jwt()
+        .map_err(|e| SfuError::TokenError(format!("LiveKit viewer token signing failed: {e}")))
+}
+
 /// Identity to present to LiveKit: prefer the durable user_id (stable across
 /// reconnects) and fall back to the ephemeral peer_id for anonymous ad-hoc
 /// rooms with no authenticated user. Without this, a silent WS reconnect that
@@ -413,6 +456,64 @@ mod tests {
 
         // Note: We do NOT assert token authenticity here — only claim construction correctness.
         // The LiveKit server validates the token signature using the shared API secret.
+    }
+
+    #[test]
+    fn livekit_viewer_token_grants_are_subscribe_only_and_hidden() {
+        let room_id = "test-room-123";
+        let viewer_identity = "user-42-vw-w8f3a2b1c";
+        let ttl_secs = 600;
+
+        let token = sign_livekit_viewer_token(
+            room_id,
+            viewer_identity,
+            "test-api-key",
+            "test-api-secret-long-enough",
+            ttl_secs,
+        )
+        .expect("sign_livekit_viewer_token should succeed");
+
+        let claims = livekit_api::access_token::Claims::from_unverified(&token)
+            .expect("token must be a valid JWT");
+
+        assert_eq!(&claims.sub, viewer_identity, "sub must equal viewer_identity");
+        assert_eq!(&claims.video.room, room_id, "video.room must equal room_id");
+        assert!(claims.video.room_join, "video.room_join must be true");
+        assert!(claims.video.can_subscribe, "video.can_subscribe must be true");
+        assert!(!claims.video.can_publish, "video.can_publish must be false");
+        assert!(
+            !claims.video.can_publish_data,
+            "video.can_publish_data must be false"
+        );
+        assert!(claims.video.hidden, "video.hidden must be true");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as usize;
+        assert!(claims.exp > now, "exp must be in the future");
+        assert!(
+            claims.exp <= now + ttl_secs as usize + 2,
+            "exp must be within ttl_secs of now"
+        );
+    }
+
+    #[test]
+    fn livekit_viewer_token_rejects_empty_inputs() {
+        for (room, identity) in [("", "v"), ("r", ""), ("", "")] {
+            assert!(
+                sign_livekit_viewer_token(room, identity, "k", "s", 60).is_err(),
+                "empty room/identity must be rejected"
+            );
+        }
+        assert!(
+            sign_livekit_viewer_token("r", "v", "", "s", 60).is_err(),
+            "empty api_key must be rejected"
+        );
+        assert!(
+            sign_livekit_viewer_token("r", "v", "k", "", 60).is_err(),
+            "empty api_secret must be rejected"
+        );
     }
 
     #[test]

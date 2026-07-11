@@ -207,6 +207,38 @@ impl Arbitrary for MediaTokenPayload {
     }
 }
 
+impl Arbitrary for RequestViewerTokenPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        any::<String>()
+            .prop_map(|window_id| RequestViewerTokenPayload { window_id })
+            .boxed()
+    }
+}
+
+impl Arbitrary for ViewerTokenPayload {
+    type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
+    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        (
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+        )
+            .prop_map(|(window_id, token, sfu_url, identity)| ViewerTokenPayload {
+                window_id,
+                token,
+                sfu_url,
+                identity,
+            })
+            .boxed()
+    }
+}
+
 impl Arbitrary for KickParticipantPayload {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
@@ -1082,6 +1114,8 @@ impl Arbitrary for SignalingMessage {
             any::<ParticipantLeftPayload>().prop_map(SignalingMessage::ParticipantLeft),
             any::<RoomStatePayload>().prop_map(SignalingMessage::RoomState),
             any::<MediaTokenPayload>().prop_map(SignalingMessage::MediaToken),
+            any::<RequestViewerTokenPayload>().prop_map(SignalingMessage::RequestViewerToken),
+            any::<ViewerTokenPayload>().prop_map(SignalingMessage::ViewerToken),
             // Action messages
             any::<KickParticipantPayload>().prop_map(SignalingMessage::KickParticipant),
             any::<MuteParticipantPayload>().prop_map(SignalingMessage::MuteParticipant),

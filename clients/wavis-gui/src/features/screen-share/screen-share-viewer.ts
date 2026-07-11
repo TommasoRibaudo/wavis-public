@@ -50,6 +50,72 @@ export function isVideoTrackAlive(stream: MediaStream): boolean {
   );
 }
 
+/* ─── Loopback Encoder Caps ─────────────────────────────────────── */
+
+// The bridge re-encodes each piped stream inside the main window. With
+// default addTrack(), Chromium negotiates VP8 and encodes at full source
+// resolution in software (libvpx) — one such encode per open viewer window,
+// which is the dominant CPU cost when several shares are watched at once.
+// The caps below bound that encode, and the H.264 preference moves it to
+// the GPU's dedicated encode block (Media Foundation on Windows).
+const BRIDGE_MAX_BITRATE_BPS = 8_000_000; // matches the publisher-side 6-8 Mbps ceiling
+const BRIDGE_MAX_FRAMERATE = 30;
+
+/**
+ * Mark a bridged video track as screen content so the encoder preserves
+ * text sharpness and sheds framerate (not resolution) under pressure.
+ */
+function applyScreenContentHint(track: MediaStreamTrack): void {
+  try {
+    if ('contentHint' in track && !track.contentHint) {
+      track.contentHint = 'detail';
+    }
+  } catch {
+    // non-fatal — runtime without contentHint support
+  }
+}
+
+/**
+ * Reorder codec preferences so H.264 is negotiated first. On Windows
+ * WebView2, H.264 encodes/decodes through Media Foundation (GPU), while
+ * VP8 is software libvpx. No-ops silently when capabilities are
+ * unavailable (e.g. test environments).
+ */
+function preferH264(transceiver: RTCRtpTransceiver): void {
+  try {
+    if (typeof RTCRtpSender === 'undefined' || typeof transceiver.setCodecPreferences !== 'function') return;
+    const caps = RTCRtpSender.getCapabilities?.('video');
+    if (!caps) return;
+    const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
+    if (h264.length === 0) return;
+    const rest = caps.codecs.filter((c) => c.mimeType.toLowerCase() !== 'video/h264');
+    transceiver.setCodecPreferences([...h264, ...rest]);
+  } catch (err) {
+    console.warn(LOG, 'setCodecPreferences(H.264) failed — keeping default codec order:', err);
+  }
+}
+
+/**
+ * Debug-only: report which encoder implementation the bridge sender ended up
+ * with ("libvpx"/"SimulcastEncoderAdapter" = software; Media Foundation
+ * names = GPU). Sampled once, shortly after the connection is established.
+ */
+function logEncoderStats(key: string, pc: RTCPeerConnection): void {
+  setTimeout(async () => {
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((s) => {
+        const stat = s as { type?: string; kind?: string; encoderImplementation?: string; frameWidth?: number; frameHeight?: number; framesPerSecond?: number };
+        if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
+          console.log(LOG, `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`);
+        }
+      });
+    } catch {
+      // stats are best-effort diagnostics
+    }
+  }, 2000);
+}
+
 /* ─── Sender (main window) ──────────────────────────────────────── */
 
 interface SenderEntry {
@@ -92,7 +158,17 @@ export async function startSending(
   }
 
   for (const track of stream.getTracks()) {
-    pc.addTrack(track, stream);
+    if (track.kind === 'video') {
+      applyScreenContentHint(track);
+      const transceiver = pc.addTransceiver(track, {
+        direction: 'sendonly',
+        streams: [stream],
+        sendEncodings: [{ maxBitrate: BRIDGE_MAX_BITRATE_BPS, maxFramerate: BRIDGE_MAX_FRAMERATE }],
+      });
+      preferH264(transceiver);
+    } else {
+      pc.addTrack(track, stream);
+    }
   }
 
   pc.onicecandidate = (e) => {
@@ -143,6 +219,7 @@ export async function startSending(
       try {
         await e.pc.setRemoteDescription({ type: 'answer', sdp: event.payload.sdp });
         console.log(LOG, `sender[${key}] got answer, connection established`);
+        if (DEBUG_SHARE_VIEW) logEncoderStats(key, e.pc);
       } catch (err) {
         console.warn(LOG, `sender[${key}] setRemoteDescription(answer) failed:`, err);
       } finally {
@@ -229,6 +306,7 @@ export async function resendStream(
     const videoSender = existing.pc.getSenders().find((s) => s.track?.kind === 'video');
     if (newVideoTrack && videoSender) {
       try {
+        applyScreenContentHint(newVideoTrack);
         await videoSender.replaceTrack(newVideoTrack);
         if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — replaceTrack succeeded (no bridge rebuild)`);
         return;

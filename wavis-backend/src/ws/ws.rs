@@ -401,6 +401,8 @@ mod tests {
                         SignalingMessage::ParticipantLeft(_) |
                         SignalingMessage::RoomState(_) |
                         SignalingMessage::MediaToken(_) |
+                        SignalingMessage::RequestViewerToken(_) |
+                        SignalingMessage::ViewerToken(_) |
                         SignalingMessage::KickParticipant(_) |
                         SignalingMessage::MuteParticipant(_) |
                         SignalingMessage::UnmuteParticipant(_) |

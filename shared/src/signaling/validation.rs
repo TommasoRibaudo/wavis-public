@@ -12,6 +12,7 @@ pub const MAX_CHAT_TEXT_LEN: usize = 2_000;
 pub const MAX_PROFILE_COLOR_LEN: usize = 16;
 pub const MAX_CHAT_HISTORY_SINCE_LEN: usize = 64;
 pub const MAX_SUB_ROOM_ID_LEN: usize = 128;
+pub const MAX_VIEWER_WINDOW_ID_LEN: usize = 32;
 
 /// Error returned when a field exceeds its maximum allowed length.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +143,15 @@ pub fn validate_field_lengths(msg: &SignalingMessage) -> Result<(), ValidationEr
             }
         }
         SignalingMessage::MediaToken(_) => {}
+        SignalingMessage::RequestViewerToken(p) => {
+            check("window_id", &p.window_id, MAX_VIEWER_WINDOW_ID_LEN)?;
+        }
+        SignalingMessage::ViewerToken(p) => {
+            check("window_id", &p.window_id, MAX_VIEWER_WINDOW_ID_LEN)?;
+            check("token", &p.token, MAX_SDP_LEN)?;
+            check("sfu_url", &p.sfu_url, MAX_CANDIDATE_LEN)?;
+            check("identity", &p.identity, MAX_PEER_ID_LEN)?;
+        }
         SignalingMessage::KickParticipant(p) => {
             check(
                 "target_participant_id",
