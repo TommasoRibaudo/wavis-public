@@ -5374,13 +5374,15 @@ export async function startCustomShare(
         try {
           await syncNativeScreenShareQualityBeforeCapture(`windows_${captureBackend}`);
           await invoke('screen_share_start_source', {
-            sourceId: selection.sourceId,
-            shareSessionId,
-            sourceKind,
-            captureBackend,
-            compatibilityMode: selection.compatibilityMode ?? false,
-            previousBackend: retryMetadata?.previousBackend ?? null,
-            retryReason: retryMetadata?.retryReason ?? null,
+            request: {
+              sourceId: selection.sourceId,
+              shareSessionId,
+              sourceKind,
+              captureBackend,
+              compatibilityMode: selection.compatibilityMode ?? false,
+              previousBackend: retryMetadata?.previousBackend ?? null,
+              retryReason: retryMetadata?.retryReason ?? null,
+            },
           });
           rustCaptureStarted = true;
           if (options.isSourceChange) {

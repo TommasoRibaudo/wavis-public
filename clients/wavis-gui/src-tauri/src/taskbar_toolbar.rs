@@ -7,8 +7,6 @@
 //!
 //! Reuses `tray-event` and `tray-state-update` events — no frontend changes needed.
 
-#![cfg(target_os = "windows")]
-
 use std::sync::{
     atomic::{AtomicIsize, Ordering},
     Mutex,
