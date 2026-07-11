@@ -545,7 +545,7 @@ describe('Video source change selection preservation', () => {
           expect(result.mode).toBe(selection.mode);
           expect(result.sourceId).toBe(selection.sourceId);
           expect(result.sourceName).toBe(selection.sourceName);
-          expect(result.withAudio).toBe(videoShare!.withAudio);
+          expect(result.withAudio).toBe(videoShare.withAudio);
         },
       ),
       { numRuns: 100 },
@@ -579,7 +579,7 @@ describe('Property 19: activeShareType derivation', () => {
         arbAudioShare,
         (video, audio) => {
           const result = activeShareType(video, audio);
-          expect(result).toBe(video!.mode);
+          expect(result).toBe(video.mode);
         },
       ),
       { numRuns: 100 },

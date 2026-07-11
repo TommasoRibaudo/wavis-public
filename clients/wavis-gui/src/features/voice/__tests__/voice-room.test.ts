@@ -1014,16 +1014,13 @@ describe('Property 5: Client since cursor derivation', () => {
         color: fc.constantFrom(...TERMINAL_COLORS),
         text: fc.string({ minLength: 1, maxLength: 200 }),
       })
-      .map(
-        (m) =>
-          ({
-            ...m,
-            messageId: undefined,
-            isHistory: undefined,
-            isDivider: undefined,
-            ...overrides,
-          }) as ChatMessage,
-      );
+      .map((m) => ({
+        ...m,
+        messageId: undefined,
+        isHistory: undefined,
+        isDivider: undefined,
+        ...overrides,
+      }));
 
   it('non-empty real-time messages: since = earliest timestamp minus 1 second', () => {
     fc.assert(

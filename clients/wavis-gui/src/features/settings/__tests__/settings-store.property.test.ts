@@ -120,7 +120,7 @@ vi.mock('../../voice/livekit-media', () => ({
   ) {
     const module = createMockLiveKitModule(callbacks);
     lastLiveKitModule = module;
-    Object.assign(this as Record<string, unknown>, module);
+    Object.assign(this, module);
     return this;
   }),
 }));
@@ -132,7 +132,7 @@ vi.mock('../../voice/native-media', () => ({
   ) {
     const module = createMockLiveKitModule(callbacks);
     lastLiveKitModule = module;
-    Object.assign(this as Record<string, unknown>, module);
+    Object.assign(this, module);
     return this;
   }),
 }));

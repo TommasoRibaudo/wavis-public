@@ -82,7 +82,7 @@ function populateSenders(pairs: [string, string][]): void {
   for (const [pid, wl] of pairs) {
     const key = compositeKey(pid, wl);
     senders.set(key, {
-      pc: new RTCPeerConnection() as unknown as RTCPeerConnection,
+      pc: new RTCPeerConnection(),
       cleanups: [],
       offerSdp: null,
     });

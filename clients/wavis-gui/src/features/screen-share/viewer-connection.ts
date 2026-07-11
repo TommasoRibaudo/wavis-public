@@ -373,10 +373,10 @@ export class ViewerRoomConnection {
     if (!participant) return; // will subscribe on ParticipantConnected/TrackPublished
     const publication = pickScreenSharePublication(participant);
     if (!publication) return;
-    this.pinPublication(publication as RemoteTrackPublication);
+    this.pinPublication(publication);
 
     // Track may already be subscribed (e.g. re-watch after tile retry).
-    const track = (publication as RemoteTrackPublication).track;
+    const track = publication.track;
     if (track && track.kind === Track.Kind.Video && track.mediaStreamTrack) {
       this.deliverStream(identity, track.mediaStreamTrack);
     }

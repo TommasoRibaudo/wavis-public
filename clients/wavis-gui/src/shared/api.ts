@@ -91,7 +91,7 @@ async function doFetch(endpoint: string, init: RequestInit, insecure: boolean): 
   // that has no such limit. This also ensures Content-Length reflects actual
   // byte count rather than char count (they differ for multi-byte Unicode).
   if (typeof fetchOpts.body === 'string') {
-    fetchOpts.body = new TextEncoder().encode(fetchOpts.body) as unknown as BodyInit;
+    fetchOpts.body = new TextEncoder().encode(fetchOpts.body);
   }
   if (insecure) {
     fetchOpts.dangerouslyIgnoreCertificateErrors = true;

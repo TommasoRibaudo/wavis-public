@@ -1390,7 +1390,7 @@ const DEFAULT_STATE: VoiceRoomState = {
     candidateType: 'unknown' as const,
     availableBandwidthKbps: 0,
   },
-  mediaState: 'disconnected' as MediaState,
+  mediaState: 'disconnected',
   mediaError: null,
   screenShareStreams: new Map(),
   events: [],
@@ -3490,6 +3490,9 @@ function dispatchMessage(raw: unknown): void {
         displayNameCache.set(p.participantId as string, p.displayName as string);
         const isSelf = p.participantId === state.selfParticipantId;
         const pUserId = p.userId as string | undefined;
+        // Annotated so the literal union doesn't widen to string in the
+        // non-contextually-typed object literal below.
+        const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
           id: p.participantId as string,
           userId: pUserId,
@@ -3499,8 +3502,7 @@ function dispatchMessage(raw: unknown): void {
               ? sessionProfileColor
               : ((p.profileColor as string | undefined) ??
                 colorFor({ userId: pUserId, id: p.participantId as string })),
-          role:
-            isSelf && state.selfIsHost ? ('host' as ParticipantRole) : ('guest' as ParticipantRole),
+          role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
@@ -3735,8 +3737,8 @@ function dispatchMessage(raw: unknown): void {
         const pairChanged =
           wasActive &&
           isActive &&
-          (previousPassthrough!.sourceSubRoomId !== newPassthrough.sourceSubRoomId ||
-            previousPassthrough!.targetSubRoomId !== newPassthrough.targetSubRoomId);
+          (previousPassthrough.sourceSubRoomId !== newPassthrough.sourceSubRoomId ||
+            previousPassthrough.targetSubRoomId !== newPassthrough.targetSubRoomId);
         if (!wasActive && isActive) {
           appendEvent({
             id: makeEventId(),
@@ -3756,7 +3758,7 @@ function dispatchMessage(raw: unknown): void {
             id: makeEventId(),
             timestamp: timestamp(),
             type: 'passthrough',
-            message: `set ${newPassthrough!.label}`,
+            message: `set ${newPassthrough.label}`,
           });
         }
       }
@@ -3807,9 +3809,7 @@ function dispatchMessage(raw: unknown): void {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const participantId = msg.participantId as string;
       const subRoomId = msg.subRoomId as string;
-      const source = (
-        (msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit'
-      ) as SubRoomMembershipSource;
+      const source = (msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
       state.subRooms = state.subRooms.map((room) => {
         if (room.id === subRoomId) {
           return room.participantIds.includes(participantId)
@@ -3940,6 +3940,9 @@ function dispatchMessage(raw: unknown): void {
         displayNameCache.set(p.participantId as string, p.displayName as string);
         const isSelf = p.participantId === state.selfParticipantId;
         const rsUserId = p.userId as string | undefined;
+        // Annotated so the literal union doesn't widen to string in the
+        // non-contextually-typed object literal below.
+        const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
           id: p.participantId as string,
           userId: rsUserId,
@@ -3949,8 +3952,7 @@ function dispatchMessage(raw: unknown): void {
               ? sessionProfileColor
               : ((p.profileColor as string | undefined) ??
                 colorFor({ userId: rsUserId, id: p.participantId as string })),
-          role:
-            isSelf && state.selfIsHost ? ('host' as ParticipantRole) : ('guest' as ParticipantRole),
+          role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
@@ -5031,7 +5033,7 @@ export async function reconnectMedia(): Promise<void> {
   // Check retry budget (async — load config then proceed)
   const config = await getReconnectConfig();
   if (state.mediaReconnectFailures >= config.maxRetries) {
-    state.mediaState = 'failed' as MediaState;
+    state.mediaState = 'failed';
     appendEvent({
       id: makeEventId(),
       timestamp: timestamp(),
@@ -5825,7 +5827,7 @@ export async function stopCustomShare(
 }
 
 /** No-op: share indicator window removed. Stop is accessible from the main room UI. */
-// eslint-disable-next-line @typescript-eslint/no-empty-function
+
 async function updateShareIndicator(): Promise<void> {}
 
 export async function stopShare(): Promise<void> {
@@ -5877,7 +5879,7 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
   if (lkModule && 'restartScreenShareWithAudio' in lkModule) {
     localSourceChanging = true;
     try {
-      const result = await (lkModule as LiveKitModule).restartScreenShareWithAudio(withAudio);
+      const result = await lkModule.restartScreenShareWithAudio(withAudio);
       if (result && state.activeVideoShare) {
         state.activeVideoShare.withAudio = withAudio;
         if (!withAudio) {
@@ -5897,7 +5899,7 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
 export async function changeShareSource(): Promise<boolean> {
   if (lkModule && 'changeScreenShareSource' in lkModule) {
     localSourceChanging = true;
-    const result = await (lkModule as LiveKitModule).changeScreenShareSource();
+    const result = await lkModule.changeScreenShareSource();
     localSourceChanging = false;
 
     if (!result && client && !localStopShareSent) {
@@ -5905,7 +5907,7 @@ export async function changeShareSource(): Promise<boolean> {
       // publication, reconcile backend state by sending stop_share. This
       // prevents the backend from staying stuck in a "sharing" state when
       // local media is already dead (e.g. replaceTrack threw after teardown).
-      const stillActive = (lkModule as LiveKitModule).hasActiveScreenShareTrack();
+      const stillActive = lkModule.hasActiveScreenShareTrack();
       if (!stillActive) {
         client.send({ type: 'stop-share' });
         localStopShareSent = true;

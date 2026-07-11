@@ -193,7 +193,7 @@ vi.mock('../livekit-media', () => ({
     lastLkModule = mod;
     lkConstructorCalls.push(callbacks);
     // Copy methods onto `this` so the module-level code sees them
-    Object.assign(this as Record<string, unknown>, mod);
+    Object.assign(this, mod);
     return this;
   }),
 }));
@@ -221,10 +221,10 @@ vi.mock('@shared/websocket', () => ({
     });
     this.connectWithAuth = vi.fn(async () => {
       if (connectShouldFail) throw new Error('connect failed');
-      (this as Record<string, unknown>).status = 'connected';
+      this.status = 'connected';
     });
     this.disconnect = vi.fn(() => {
-      (this as Record<string, unknown>).status = 'disconnected';
+      this.status = 'disconnected';
     });
     return this;
   }),
@@ -327,7 +327,7 @@ vi.mock('../native-media', () => ({
     const mod = createMockLkModule(callbacks);
     lastLkModule = mod;
     lkConstructorCalls.push(callbacks);
-    Object.assign(this as Record<string, unknown>, mod);
+    Object.assign(this, mod);
     return this;
   }),
 }));

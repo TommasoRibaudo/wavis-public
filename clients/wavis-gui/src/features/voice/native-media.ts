@@ -520,19 +520,18 @@ export class NativeMediaModule {
   async listDevices(): Promise<{ inputs: MediaDeviceInfo[]; outputs: MediaDeviceInfo[] }> {
     const devices = await invoke<NativeAudioDevice[]>('list_audio_devices');
 
-    const toMediaDeviceInfo = (device: NativeAudioDevice): MediaDeviceInfo =>
-      ({
+    const toMediaDeviceInfo = (device: NativeAudioDevice): MediaDeviceInfo => ({
+      deviceId: device.id,
+      groupId: '',
+      kind: device.kind === 'input' ? 'audioinput' : 'audiooutput',
+      label: device.name,
+      toJSON: () => ({
         deviceId: device.id,
         groupId: '',
         kind: device.kind === 'input' ? 'audioinput' : 'audiooutput',
         label: device.name,
-        toJSON: () => ({
-          deviceId: device.id,
-          groupId: '',
-          kind: device.kind === 'input' ? 'audioinput' : 'audiooutput',
-          label: device.name,
-        }),
-      }) as MediaDeviceInfo;
+      }),
+    });
 
     return {
       inputs: devices.filter((device) => device.kind === 'input').map(toMediaDeviceInfo),

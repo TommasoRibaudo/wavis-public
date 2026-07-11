@@ -685,7 +685,7 @@ export async function updateUsername(username: string): Promise<void> {
       ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
 
-  let accessToken = await getAccessToken();
+  const accessToken = await getAccessToken();
   if (!accessToken) throw new Error('Not authenticated');
 
   let res = await doRequest(accessToken);

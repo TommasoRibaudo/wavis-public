@@ -283,7 +283,7 @@ vi.stubGlobal('AudioContext', function AudioContextMock(this: Record<string, unk
 });
 
 // Stub AudioWorkletNode as a proper constructor (must use function, not arrow)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 vi.stubGlobal('AudioWorkletNode', function AudioWorkletNodeMock(this: Record<string, unknown>) {
   this.port = { postMessage: vi.fn(), onmessage: null };
   this.connect = vi.fn();
@@ -356,7 +356,7 @@ describe('macOS share-audio routing', () => {
 
     const masterGain = createdGains[0];
     expect(masterGain).toBeDefined();
-    const setValueAtTimeSpy = masterGain.gain.setValueAtTime as ReturnType<typeof vi.fn>;
+    const setValueAtTimeSpy = masterGain.gain.setValueAtTime;
     setValueAtTimeSpy.mockClear();
 
     await (
@@ -498,8 +498,7 @@ describe('macOS share-audio routing', () => {
       warnSpy.mock.calls.some((args) =>
         args.some(
           (arg) =>
-            typeof arg === 'string' &&
-            (arg as string).includes('no browser audiooutput matched CoreAudio UID'),
+            typeof arg === 'string' && arg.includes('no browser audiooutput matched CoreAudio UID'),
         ),
       ),
     ).toBe(true);
@@ -1446,7 +1445,7 @@ describe('camera publish/unpublish', () => {
       ['bob', bob],
       ['carol', carol],
       ['dave', dave],
-    ]) as unknown as typeof mockRoom.remoteParticipants;
+    ]);
 
     // Visibility set says only alice and carol are visible. bob (currently subscribed)
     // should be unsubscribed; carol (currently unsubscribed) should be subscribed.
@@ -1554,9 +1553,7 @@ describe('LiveKitModule lifecycle', () => {
             const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
             expect(
               sysEvents.some(
-                (c) =>
-                  typeof c.args[0] === 'string' &&
-                  (c.args[0] as string).includes('mic permission denied'),
+                (c) => typeof c.args[0] === 'string' && c.args[0].includes('mic permission denied'),
               ),
             ).toBe(true);
 
@@ -2317,7 +2314,7 @@ describe('Screen share and device selection', () => {
           groupId: '',
           label: 'Headset Microphone (USB Audio)',
           toJSON: () => ({}),
-        } as MediaDeviceInfo,
+        },
       ]);
 
       const mod = new LiveKitModule(createMockCallbacks());
@@ -3583,7 +3580,7 @@ describe('Event listener cleanup', () => {
                 audioCtxCloseCalls++;
               });
               this.resume = vi.fn(async () => {
-                (this as Record<string, unknown>).state = 'running';
+                this.state = 'running';
               });
               return this;
             },
@@ -3984,7 +3981,7 @@ describe('Screen share quality optimization', () => {
         sysEvents.some(
           (c) =>
             typeof c.args[0] === 'string' &&
-            (c.args[0] as string).toLowerCase().includes('constraints rejected'),
+            c.args[0].toLowerCase().includes('constraints rejected'),
         ),
       ).toBe(true);
 
@@ -4020,8 +4017,7 @@ describe('Screen share quality optimization', () => {
       const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
       expect(
         sysEvents.some(
-          (c) =>
-            typeof c.args[0] === 'string' && (c.args[0] as string).toLowerCase().includes('failed'),
+          (c) => typeof c.args[0] === 'string' && c.args[0].toLowerCase().includes('failed'),
         ),
       ).toBe(true);
 
@@ -4183,9 +4179,7 @@ describe('Screen share quality optimization', () => {
             // System event emitted with the quality tier name
             const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
             expect(
-              sysEvents.some(
-                (c) => typeof c.args[0] === 'string' && (c.args[0] as string).includes(quality),
-              ),
+              sysEvents.some((c) => typeof c.args[0] === 'string' && c.args[0].includes(quality)),
             ).toBe(true);
 
             mod.disconnect();
@@ -4849,7 +4843,7 @@ describe('Screen share sender stats polling', () => {
 
       // No stats logged yet (interval hasn't fired)
       const statsLogsBefore = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogsBefore).toHaveLength(0);
 
@@ -4858,7 +4852,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const statsLogs1 = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs1).toHaveLength(1);
       // First poll has no previous data, so bitrate=0
@@ -4866,9 +4860,9 @@ describe('Screen share sender stats polling', () => {
         statsLogs1[0].some(
           (a: unknown) =>
             typeof a === 'string' &&
-            (a as string).includes('bitrate=') &&
-            (a as string).includes('fps=30') &&
-            (a as string).includes('qualityLimitation=none'),
+            a.includes('bitrate=') &&
+            a.includes('fps=30') &&
+            a.includes('qualityLimitation=none'),
         ),
       ).toBe(true);
 
@@ -4877,7 +4871,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const statsLogs2 = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs2).toHaveLength(2);
 
@@ -4908,7 +4902,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const countAfterFirst = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(countAfterFirst).toBe(1);
 
@@ -4920,7 +4914,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const countAfterStop = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(countAfterStop).toBe(countAfterFirst);
 
@@ -4955,13 +4949,13 @@ describe('Screen share sender stats polling', () => {
 
       // No stats log (failed)
       const statsLogs = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       );
       expect(statsLogs).toHaveLength(0);
 
       // Warning logged about failure
       const warnLogs = warnSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('stats polling failed')),
+        args.some((a) => typeof a === 'string' && a.includes('stats polling failed')),
       );
       expect(warnLogs.length).toBeGreaterThanOrEqual(1);
 
@@ -5000,7 +4994,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const count1 = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(count1).toBe(1);
 
@@ -5012,7 +5006,7 @@ describe('Screen share sender stats polling', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const count2 = logSpy.mock.calls.filter((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('screen share stats:')),
+        args.some((a) => typeof a === 'string' && a.includes('screen share stats:')),
       ).length;
       expect(count2).toBe(2);
 
@@ -5189,9 +5183,9 @@ describe('Adaptive quality', () => {
                 args.some(
                   (a) =>
                     typeof a === 'string' &&
-                    (a as string).includes('adaptive quality:') &&
-                    (a as string).includes('full') &&
-                    (a as string).includes('reduced-fps'),
+                    a.includes('adaptive quality:') &&
+                    a.includes('full') &&
+                    a.includes('reduced-fps'),
                 ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
@@ -5302,9 +5296,9 @@ describe('Adaptive quality', () => {
                 args.some(
                   (a) =>
                     typeof a === 'string' &&
-                    (a as string).includes('adaptive quality:') &&
-                    (a as string).includes('reduced-fps') &&
-                    (a as string).includes('reduced-resolution'),
+                    a.includes('adaptive quality:') &&
+                    a.includes('reduced-fps') &&
+                    a.includes('reduced-resolution'),
                 ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
@@ -5418,9 +5412,9 @@ describe('Adaptive quality', () => {
                 args.some(
                   (a) =>
                     typeof a === 'string' &&
-                    (a as string).includes('adaptive quality:') &&
-                    (a as string).includes('reduced-fps') &&
-                    (a as string).includes('→ full'),
+                    a.includes('adaptive quality:') &&
+                    a.includes('reduced-fps') &&
+                    a.includes('→ full'),
                 ),
               );
               expect(adaptiveLogs.length).toBeGreaterThanOrEqual(1);
@@ -5675,12 +5669,12 @@ describe('Bug Condition Exploration: Windows Screen Share Self-Echo', () => {
     expect(mediaStreamTrack.readyState).toBe('ended');
     expect(
       logSpy.mock.calls.some((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('displaySurface=window')),
+        args.some((a) => typeof a === 'string' && a.includes('displaySurface=window')),
       ),
     ).toBe(true);
     expect(
       logSpy.mock.calls.some((args) =>
-        args.some((a) => typeof a === 'string' && (a as string).includes('readyState=ended')),
+        args.some((a) => typeof a === 'string' && a.includes('readyState=ended')),
       ),
     ).toBe(true);
 
@@ -5928,8 +5922,8 @@ describe('Share leak publish diagnostics', () => {
         args.some(
           (arg) =>
             typeof arg === 'string' &&
-            (arg as string).includes('[share-leak] session=') &&
-            (arg as string).includes('publish_snapshot'),
+            arg.includes('[share-leak] session=') &&
+            arg.includes('publish_snapshot'),
         ),
       ),
     ).toBe(true);
@@ -5938,8 +5932,8 @@ describe('Share leak publish diagnostics', () => {
         args.some(
           (arg) =>
             typeof arg === 'string' &&
-            (arg as string).includes('[share-leak] session=') &&
-            (arg as string).includes('reuse_inferred'),
+            arg.includes('[share-leak] session=') &&
+            arg.includes('reuse_inferred'),
         ),
       ),
     ).toBe(true);
@@ -5948,8 +5942,8 @@ describe('Share leak publish diagnostics', () => {
         args.some(
           (arg) =>
             typeof arg === 'string' &&
-            (arg as string).includes('[share-leak] session=') &&
-            (arg as string).includes('degradation_preference'),
+            arg.includes('[share-leak] session=') &&
+            arg.includes('degradation_preference'),
         ),
       ),
     ).toBe(true);
@@ -6177,9 +6171,8 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           const cbs = createMockCallbacks();
           const mod = new LiveKitModule(cbs);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
           (mod as any).currentCaptureProfile = {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ...(mod as any).currentCaptureProfile,
             audio: true,
           };
@@ -6243,7 +6236,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
 
           // Override the capture profile to disable audio BEFORE connecting
           // We need to access the private field — use type assertion
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
           (mod as any).currentCaptureProfile = {
             ...(mod as any).currentCaptureProfile,
             audio: false,
@@ -6436,7 +6429,7 @@ describe('Preservation: Native Share-Audio Path and Non-Audio Paths', () => {
     // On Windows, restartScreenShareWithAudio only toggles WASAPI audio —
     // video and its stats polling remain untouched from startScreenShare().
     // Verify stats polling is still active (not restarted, just preserved).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const statsInterval = (mod as any).screenShareStatsInterval;
     expect(statsInterval).not.toBeNull();
 
@@ -6496,9 +6489,7 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     ).startWasapiAudioBridge(true);
 
     // masterGain.gain.setValueAtTime should NOT have been called with 0
-    const zeroingCalls = (setValueAtTimeSpy as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (args: unknown[]) => args[0] === 0,
-    );
+    const zeroingCalls = setValueAtTimeSpy.mock.calls.filter((args: unknown[]) => args[0] === 0);
     expect(zeroingCalls).toHaveLength(0);
 
     // preShareGain must remain null (nothing was muted)
@@ -6521,7 +6512,7 @@ describe('startWasapiAudioBridge: masterGain echo prevention', () => {
     const masterGain = createdGains[0];
     expect(masterGain).toBeDefined();
     const originalGainValue = masterGain.gain.value;
-    const setValueAtTimeSpy = masterGain.gain.setValueAtTime as ReturnType<typeof vi.fn>;
+    const setValueAtTimeSpy = masterGain.gain.setValueAtTime;
     setValueAtTimeSpy.mockClear();
 
     await (
@@ -7002,7 +6993,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
       turnCredential: 'test-credential',
     });
     const hasTurn = rtcConfig.iceServers?.some((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(hasTurn).toBe(true);
@@ -7029,7 +7020,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
       turnCredential: '',
     });
     const hasTurn = rtcConfig.iceServers?.some((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(hasTurn).toBeFalsy();
@@ -7070,7 +7061,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
           // check: it confirms the entry was wired as a TURN server, not a STUN
           // server that happens to share the same array reference.
           const turnEntries = (cfg.iceServers ?? []).filter((s) => {
-            const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+            const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
             return urls.some((u) => u.startsWith('turn:'));
           });
           // Reference equality on urls pins that the function does not slice or
@@ -7113,7 +7104,7 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
 
     // buildRtcConfiguration correctly passes credential to RTCPeerConnection
     const turnEntry = rtcConfig.iceServers?.find((s) => {
-      const urls = Array.isArray(s.urls) ? s.urls : [s.urls as string];
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
       return urls.some((u) => u.startsWith('turn:'));
     });
     expect(turnEntry?.credential).toBe('super-secret');

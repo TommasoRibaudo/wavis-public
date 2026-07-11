@@ -402,7 +402,7 @@ export default function ScreenShareWindow({
     >
       {/* Resize grab zones */}
       {(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as ResizeEdge[]).map((edge) => (
-        <div key={edge!} style={edgeStyle(edge)} onMouseDown={(e) => onResizeStart(edge, e)} />
+        <div key={edge} style={edgeStyle(edge)} onMouseDown={(e) => onResizeStart(edge, e)} />
       ))}
 
       {/* Header — draggable */}

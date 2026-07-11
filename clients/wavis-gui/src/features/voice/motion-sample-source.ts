@@ -45,7 +45,7 @@ export function startOffscreenCanvasSampling(
   const offscreen = new OffscreenCanvas(SAMPLE_WIDTH, SAMPLE_HEIGHT);
   const ctx = offscreen.getContext('2d', {
     willReadFrequently: true,
-  }) as OffscreenCanvasRenderingContext2D | null;
+  });
   if (!ctx) return () => {};
 
   let previousData: Uint8ClampedArray | null = null;

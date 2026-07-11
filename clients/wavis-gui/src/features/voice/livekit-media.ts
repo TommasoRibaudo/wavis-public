@@ -7,11 +7,12 @@
  * VoiceRoom session — never reused across sessions.
  */
 
-import {
-  Room,
-  RoomEvent,
-  Track,
-  VideoQuality,
+import { Room, RoomEvent, Track, VideoQuality, VideoPreset } from 'livekit-client';
+import type {
+  AudioProcessorOptions,
+  TrackProcessor,
+  LocalVideoTrack,
+  TrackPublishOptions,
   RemoteTrack,
   RemoteTrackPublication,
   RemoteParticipant,
@@ -19,14 +20,7 @@ import {
   LocalTrackPublication,
   LocalAudioTrack,
   Participant,
-  VideoPreset,
   TrackPublication,
-} from 'livekit-client';
-import type {
-  AudioProcessorOptions,
-  TrackProcessor,
-  LocalVideoTrack,
-  TrackPublishOptions,
 } from 'livekit-client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -199,7 +193,7 @@ export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishO
       maxBitrate: quality.maxBitrate,
       maxFramerate: quality.maxFps,
     },
-  } as TrackPublishOptions;
+  };
 }
 
 export function buildCameraTrackConstraints(quality: CameraQuality): MediaTrackConstraints {
@@ -640,7 +634,7 @@ function buildNativeScreenSharePublishOptions(
       maxFramerate: pubOpts.screenShareEncoding.maxFramerate,
     },
     screenShareSimulcastLayers: [],
-  } as unknown as TrackPublishOptions;
+  };
 }
 
 /* ─── Adaptive Quality ──────────────────────────────────────────── */
@@ -2963,7 +2957,7 @@ export class LiveKitModule {
         if (!this.screenShareAudioPending.has(participant.identity)) return;
         for (const pub of participant.trackPublications.values()) {
           if (pub.source === Track.Source.ScreenShareAudio && pub.track) {
-            const track = pub.track as RemoteTrack;
+            const track = pub.track;
             this.screenShareAudioTracks.set(participant.identity, { track, participant });
             if (DEBUG_SHARE_AUDIO)
               console.log(
@@ -3225,7 +3219,7 @@ export class LiveKitModule {
           let videoReceiverReport: RTCStatsReport | null = null;
           for (const participant of this.room.remoteParticipants.values()) {
             for (const pub of participant.trackPublications.values()) {
-              const remoteTrack = pub.track as RemoteTrack | undefined;
+              const remoteTrack = pub.track;
               if (!remoteTrack?.receiver) continue;
               // First remote microphone audio track → jitter buffer, concealment, loss, jitter
               if (
@@ -4564,12 +4558,7 @@ export class LiveKitModule {
 
     const track = publication.track;
     if (track && track.kind === Track.Kind.Video) {
-      this.attachRemoteScreenShareTrack(
-        participant,
-        publication,
-        track as RemoteTrack,
-        'signaling_recovery',
-      );
+      this.attachRemoteScreenShareTrack(participant, publication, track, 'signaling_recovery');
     }
   }
 
@@ -4684,37 +4673,29 @@ export class LiveKitModule {
                 let availableBandwidthKbps = 0;
                 report.forEach((stat: Record<string, unknown>) => {
                   if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
-                    if (typeof stat.bytesSent === 'number') bytesSent = stat.bytesSent as number;
-                    if (typeof stat.timestamp === 'number') timestamp = stat.timestamp as number;
+                    if (typeof stat.bytesSent === 'number') bytesSent = stat.bytesSent;
+                    if (typeof stat.timestamp === 'number') timestamp = stat.timestamp;
                     if (typeof stat.framesPerSecond === 'number')
-                      browserReportedFps = stat.framesPerSecond as number;
-                    if (typeof stat.framesSent === 'number')
-                      framesSentCumulative = stat.framesSent as number;
+                      browserReportedFps = stat.framesPerSecond;
+                    if (typeof stat.framesSent === 'number') framesSentCumulative = stat.framesSent;
                     if (typeof stat.framesEncoded === 'number')
-                      framesEncodedCumulative = stat.framesEncoded as number;
+                      framesEncodedCumulative = stat.framesEncoded;
                     if (typeof stat.qualityLimitationReason === 'string')
-                      qualityLimitation = stat.qualityLimitationReason as string;
-                    if (typeof stat.packetsSent === 'number')
-                      packetsSent = stat.packetsSent as number;
-                    if (typeof stat.frameWidth === 'number') frameWidth = stat.frameWidth as number;
-                    if (typeof stat.frameHeight === 'number')
-                      frameHeight = stat.frameHeight as number;
-                    if (typeof stat.pliCount === 'number')
-                      pliCountCumulative = stat.pliCount as number;
-                    if (typeof stat.nackCount === 'number')
-                      nackCountCumulative = stat.nackCount as number;
+                      qualityLimitation = stat.qualityLimitationReason;
+                    if (typeof stat.packetsSent === 'number') packetsSent = stat.packetsSent;
+                    if (typeof stat.frameWidth === 'number') frameWidth = stat.frameWidth;
+                    if (typeof stat.frameHeight === 'number') frameHeight = stat.frameHeight;
+                    if (typeof stat.pliCount === 'number') pliCountCumulative = stat.pliCount;
+                    if (typeof stat.nackCount === 'number') nackCountCumulative = stat.nackCount;
                   }
                   // Read packet loss from remote-inbound-rtp (RTCP receiver reports for our outbound stream)
                   if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') {
-                    if (typeof stat.packetsLost === 'number')
-                      packetsLost = stat.packetsLost as number;
+                    if (typeof stat.packetsLost === 'number') packetsLost = stat.packetsLost;
                   }
                   // Available outgoing bandwidth from nominated ICE candidate pair
                   if (stat.type === 'candidate-pair' && stat.nominated === true) {
                     if (typeof stat.availableOutgoingBitrate === 'number') {
-                      availableBandwidthKbps = Math.round(
-                        (stat.availableOutgoingBitrate as number) / 1000,
-                      );
+                      availableBandwidthKbps = Math.round(stat.availableOutgoingBitrate / 1000);
                     }
                   }
                 });
@@ -6167,7 +6148,6 @@ export class LiveKitModule {
   private suppressLocalAudioOnTrack(track: MediaStreamTrack | undefined): void {
     if (!track) return;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (
         'suppressLocalAudioPlayback' in track &&
         typeof (track as any).suppressLocalAudioPlayback !== 'undefined'
@@ -6353,7 +6333,7 @@ export class LiveKitModule {
       const screenShareAudioTrack = screenShareAudioPub.track;
       if (screenShareAudioTrack && screenShareAudioTrack.kind === Track.Kind.Audio) {
         this.screenShareAudioTracks.set(participant.identity, {
-          track: screenShareAudioTrack as RemoteTrack,
+          track: screenShareAudioTrack,
           participant,
         });
         if (this.shouldPlayScreenShareAudio(participant.identity)) {
@@ -6371,7 +6351,7 @@ export class LiveKitModule {
       this.attachRemoteScreenShareTrack(
         participant,
         screenShareVideoPub,
-        screenShareVideoTrack as RemoteTrack,
+        screenShareVideoTrack,
         'participant_connected_recovery',
       );
     }
@@ -6442,7 +6422,7 @@ export class LiveKitModule {
       if (participant) {
         for (const pub of participant.trackPublications.values()) {
           if (pub.source === Track.Source.ScreenShareAudio && pub.track) {
-            entry = { track: pub.track as RemoteTrack, participant };
+            entry = { track: pub.track, participant };
             this.screenShareAudioTracks.set(participantIdentity, entry);
             console.log(
               LOG,
@@ -7157,7 +7137,7 @@ export class LiveKitModule {
         let writePromise: Promise<void>;
         try {
           writePromise = Promise.resolve(trackWriter.write(vf));
-        } catch (err) {
+        } catch {
           vf.close();
           frameWorkInFlight = false;
           processNextPendingFrame();
@@ -7239,7 +7219,7 @@ export class LiveKitModule {
             codedHeight: height,
             timestamp: raw.timestampUs || performance.now() * 1000,
           });
-        } catch (err) {
+        } catch {
           this.nativeCaptureI420Unavailable = true;
           void this.enableNativeJpegFallback();
           if (this.nativeBridgeCadenceStats) {
@@ -7256,7 +7236,7 @@ export class LiveKitModule {
         const writeStartedAt = performance.now();
         try {
           writePromise = Promise.resolve(trackWriter.write(vf));
-        } catch (err) {
+        } catch {
           vf.close();
           frameWorkInFlight = false;
           processNextPendingFrame();
@@ -7308,7 +7288,7 @@ export class LiveKitModule {
             jpegDecodeMs = performance.now() - decodeStartedAt - base64FetchMs;
             this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
             this.replaceNativeCaptureDecodedCache(bitmap, width, height);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
             const videoFrameCreateStartedAt = performance.now();
             const vf = new (globalThis as any).VideoFrame(bitmap, {
               timestamp: performance.now() * 1000, // microseconds
@@ -7881,7 +7861,7 @@ export class LiveKitModule {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
         stream: Track.Source.ScreenShare,
-      } as unknown as TrackPublishOptions);
+      });
     } catch (err) {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await this.stopNativeCapture();

@@ -128,7 +128,7 @@ describe('compositeKey', () => {
 
 describe('startSending with two different window labels', () => {
   it('creates two separate entries for the same participant', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
     await startSending('user1', 'screen-share-user1', stream);
@@ -140,7 +140,7 @@ describe('startSending with two different window labels', () => {
   });
 
   it('ignores a duplicate answer while the first answer is still being applied', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
 
@@ -179,7 +179,7 @@ describe('startSending with two different window labels', () => {
 
 describe('stopSendingForWindow', () => {
   it('removes only entries for the target window label', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
     await startSending('user2', 'watch-all', stream);
@@ -343,7 +343,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     firstPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await Promise.resolve();
 
     expect(firstResolved).not.toHaveBeenCalled();
@@ -352,7 +352,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     secondPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await secondStart;
 
     expect(firstResolved).not.toHaveBeenCalled();
@@ -378,7 +378,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     firstPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await Promise.resolve();
 
     expect(readySpy).not.toHaveBeenCalled();
@@ -386,7 +386,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     secondPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await latestStart;
 
     expect(readySpy).toHaveBeenCalledTimes(1);
@@ -405,7 +405,7 @@ function makeVideoTrack(readyState: string = 'live'): MediaStreamTrack {
 describe('resendStream', () => {
   it('uses replaceTrack() when an existing connected sender is found — no stopSending/startSending', async () => {
     const track1 = makeVideoTrack();
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(track1);
 
     await startSending('user1', 'watch-all', stream1);
@@ -419,7 +419,7 @@ describe('resendStream', () => {
     pc._simulateConnectionState('connected');
 
     const track2 = makeVideoTrack();
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(track2);
 
     await resendStream('user1', 'watch-all', stream2);
@@ -436,7 +436,7 @@ describe('resendStream', () => {
 
   it('falls back to full rebuild when no existing sender is found', async () => {
     const track = makeVideoTrack();
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
     (stream as unknown as MockMediaStream).addTrack(track);
 
     // No startSending called first — resendStream acts like startSending
@@ -450,7 +450,7 @@ describe('resendStream', () => {
   });
 
   it('falls back to full rebuild when connection is not yet connected', async () => {
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await startSending('user1', 'watch-all', stream1);
@@ -460,7 +460,7 @@ describe('resendStream', () => {
     const pc = entry!.pc as unknown as MockRTCPeerConnection;
     // connectionState remains 'new' — not 'connected'
 
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await resendStream('user1', 'watch-all', stream2);
@@ -472,7 +472,7 @@ describe('resendStream', () => {
   });
 
   it('falls back to full rebuild when replaceTrack() rejects', async () => {
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await startSending('user1', 'watch-all', stream1);
@@ -486,7 +486,7 @@ describe('resendStream', () => {
     const videoSender = pc.getSenders()[0] as MockRTCRtpSender;
     videoSender.replaceTrack.mockRejectedValueOnce(new Error('codec mismatch'));
 
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await resendStream('user1', 'watch-all', stream2);

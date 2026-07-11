@@ -66,7 +66,13 @@ export default tseslint.config(
           ignoreRestSiblings: true,
         },
       ],
-      '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
+      // disallowTypeAnnotations:false — `typeof import('...')` annotations are
+      // the idiom for typing lazily/dynamically imported modules (App.tsx lazy
+      // voice-room access, vi.resetModules() test harnesses).
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', disallowTypeAnnotations: false },
+      ],
 
       // React design pressure — review triggers
       'react-hooks/exhaustive-deps': 'warn',

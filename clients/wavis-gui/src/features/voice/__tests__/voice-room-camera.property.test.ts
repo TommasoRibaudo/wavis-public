@@ -321,7 +321,7 @@ async function loadVoiceRoomIntegrationHarness() {
     ) {
       const module = createIntegrationMockLiveKitModule(callbacks);
       integrationLastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));
@@ -333,7 +333,7 @@ async function loadVoiceRoomIntegrationHarness() {
     ) {
       const module = createIntegrationMockLiveKitModule(callbacks);
       integrationLastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));

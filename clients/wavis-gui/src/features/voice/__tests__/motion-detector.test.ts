@@ -55,7 +55,7 @@ describe('MotionDetector', () => {
 
   it('switches motion→detail after ≥5 s sustained <10% motion (accounting for rolling window)', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 44 low samples: well past the 5 s dwell (triggers at t=7000ms)
@@ -66,7 +66,7 @@ describe('MotionDetector', () => {
 
   it('does NOT switch-out before the 5 s dwell elapses', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 23 low samples: dwell = 6750 - 2000 = 4750ms < 5000ms → no switch
@@ -76,7 +76,7 @@ describe('MotionDetector', () => {
 
   it('hysteresis: ratio between 0.10 and 0.40 does NOT trigger switch-out from motion', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 0.15 is above switchOutAreaThreshold (0.10) → belowThresholdSinceMs never set
@@ -122,7 +122,7 @@ describe('MotionDetector', () => {
 
   it('does NOT switch out when ratio is exactly at switchOutAreaThreshold (< required, not <=)', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 0.10 is NOT < 0.10 → condition never satisfied → no switch-out
@@ -134,7 +134,7 @@ describe('MotionDetector', () => {
     const det = new MotionDetector();
     expect(det.lastSwitchReason()).toBeNull();
 
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.lastSwitchReason()).toBe('auto_switch_in');
 
     // 44 low samples to clear window and expire dwell

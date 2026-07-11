@@ -338,7 +338,7 @@ function createMockCallbacks(): MediaCallbacks {
 
 async function driveToConnected(mod: LiveKitModule): Promise<void> {
   await mod.connect('wss://sfu.test', 'test-token');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const room = (mod as any).room;
   if (room && room.on.mock) {
     for (const call of room.on.mock.calls) {

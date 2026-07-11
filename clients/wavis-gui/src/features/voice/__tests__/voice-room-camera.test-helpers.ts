@@ -197,7 +197,7 @@ export async function setupVoiceRoomCameraHarness(): Promise<VoiceRoomCameraHarn
     ) {
       const module = createMockLiveKitModule(state, callbacks);
       state.lastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));
@@ -209,7 +209,7 @@ export async function setupVoiceRoomCameraHarness(): Promise<VoiceRoomCameraHarn
     ) {
       const module = createMockLiveKitModule(state, callbacks);
       state.lastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));

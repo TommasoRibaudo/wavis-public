@@ -23,7 +23,7 @@ import { clearTelemetrySnapshot, getTelemetrySnapshot } from '../telemetry';
  */
 type AssertNoWarning = AudioShareStartResult extends { warning: unknown } ? never : true;
 // @ts-expect-error — unused variable; exists solely for compile-time assertion
-const _typeCheck: AssertNoWarning = true; // eslint-disable-line @typescript-eslint/no-unused-vars
+const _typeCheck: AssertNoWarning = true;
 
 /* ─── Mock State ────────────────────────────────────────────────── */
 
@@ -122,10 +122,10 @@ vi.mock('@shared/websocket', () => ({
       return () => {};
     });
     this.connectWithAuth = vi.fn(async () => {
-      (this as Record<string, unknown>).status = 'connected';
+      this.status = 'connected';
     });
     this.disconnect = vi.fn(() => {
-      (this as Record<string, unknown>).status = 'disconnected';
+      this.status = 'disconnected';
     });
     return this;
   }),

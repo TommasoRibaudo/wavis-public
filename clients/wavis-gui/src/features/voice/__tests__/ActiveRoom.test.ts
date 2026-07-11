@@ -1073,14 +1073,14 @@ describe('Watch All Lifecycle', () => {
   });
 
   it('Pop-out from Watch All tile opens ScreenShareWindow', () => {
-    let shareState = initialShareWindowsState();
+    const shareState = initialShareWindowsState();
     const { state: next, action } = handlePopOut(shareState, 'user-1');
     expect(action).toBe('opened');
     expect(next.openWindows.has('user-1')).toBe(true);
   });
 
   it('Pop-out brings existing ScreenShareWindow to foreground', () => {
-    let shareState = initialShareWindowsState();
+    const shareState = initialShareWindowsState();
     // First pop-out opens the window
     const { state: afterOpen } = handlePopOut(shareState, 'user-1');
     expect(afterOpen.openWindows.has('user-1')).toBe(true);
@@ -1092,7 +1092,7 @@ describe('Watch All Lifecycle', () => {
   });
 
   it('Pop-out for different participants opens separate windows', () => {
-    let shareState = initialShareWindowsState();
+    const shareState = initialShareWindowsState();
     const { state: s1 } = handlePopOut(shareState, 'user-1');
     const { state: s2 } = handlePopOut(s1, 'user-2');
     expect(s2.openWindows.size).toBe(2);
