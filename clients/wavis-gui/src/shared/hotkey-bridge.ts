@@ -46,7 +46,7 @@ export async function registerMuteHotkey(hotkey: string, onToggleMute: () => voi
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(LOG, `failed to register hotkey "${hotkey}":`, message);
-    throw new Error(`Hotkey conflict — choose a different combination`);
+    throw new Error(`Hotkey conflict — choose a different combination`, { cause: err });
   }
 }
 

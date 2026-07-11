@@ -49,7 +49,7 @@ export function makeViewerWindowId(): string {
 }
 
 export interface ScreenSharePublicationLike {
-  kind: string;
+  kind: Track.Kind;
   setSubscribed?: (subscribed: boolean) => void;
   setEnabled?: (enabled: boolean) => void;
   setVideoQuality?: (quality: VideoQuality) => void;
@@ -267,7 +267,7 @@ export class ViewerRoomConnection {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          reject(err);
+          reject(err instanceof Error ? err : new Error(String(err)));
         });
     });
   }

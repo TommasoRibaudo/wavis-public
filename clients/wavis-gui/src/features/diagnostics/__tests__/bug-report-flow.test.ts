@@ -82,10 +82,10 @@ describe('Feature: in-app-bug-report, Property 13: Edited preview is the submitt
 
 describe('Feature: in-app-bug-report, Property 21: Cancel discards all captured data', () => {
   interface CapturedState {
-    context: unknown | null;
-    screenshotBlob: unknown | null;
+    context: unknown;
+    screenshotBlob: unknown;
     description: string;
-    analysis: unknown | null;
+    analysis: unknown;
     qaRounds: unknown[];
     issueTitle: string;
     issueBody: string;

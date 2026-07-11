@@ -180,7 +180,7 @@ export async function submitBugReport(payload: BugReportPayload): Promise<BugRep
       (err as { kind?: string }).kind === 'RateLimited'
     ) {
       const message = err.message.replace(/^too many requests — /i, 'please ');
-      throw new Error(message);
+      throw new Error(message, { cause: err });
     }
     throw err;
   }

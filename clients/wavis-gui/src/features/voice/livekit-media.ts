@@ -10,6 +10,7 @@
 import { Room, RoomEvent, Track, VideoQuality, VideoPreset } from 'livekit-client';
 import type {
   AudioProcessorOptions,
+  RoomConnectOptions,
   TrackProcessor,
   LocalVideoTrack,
   TrackPublishOptions,
@@ -3317,7 +3318,7 @@ export class LiveKitModule {
       console.log(LOG, `RTCPeerConnection available: ${typeof RTCPeerConnection !== 'undefined'}`);
 
       // Mac-specific: Try to work around WKWebView WebSocket issues
-      const connectOptions: any = {
+      const connectOptions: RoomConnectOptions = {
         autoSubscribe: true,
         rtcConfig: Object.keys(rtcConfig).length > 0 ? rtcConfig : undefined,
       };
@@ -6148,12 +6149,12 @@ export class LiveKitModule {
   private suppressLocalAudioOnTrack(track: MediaStreamTrack | undefined): void {
     if (!track) return;
     try {
+      const suppressible = track as MediaStreamTrack & { suppressLocalAudioPlayback?: boolean };
       if (
         'suppressLocalAudioPlayback' in track &&
-        typeof (track as any).suppressLocalAudioPlayback !== 'undefined'
+        typeof suppressible.suppressLocalAudioPlayback !== 'undefined'
       ) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (track as any).suppressLocalAudioPlayback = true;
+        suppressible.suppressLocalAudioPlayback = true;
         console.log(LOG, 'suppressLocalAudioPlayback applied on screen share audio track');
       } else {
         // Fallback: try applyConstraints (older Chromium path)
@@ -7209,11 +7210,11 @@ export class LiveKitModule {
         const raw = payload as NativeI420PollFrame;
         const bytes = this.nativeI420Bytes(raw);
         const decodeStartedAt = performance.now();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let vf: any;
+        let vf: VideoFrame | undefined;
         const videoFrameCreateStartedAt = performance.now();
         try {
-          vf = new (globalThis as any).VideoFrame(bytes, {
+          // Runtime absence of WebCodecs VideoFrame lands in the catch below.
+          vf = new VideoFrame(bytes, {
             format: 'I420',
             codedWidth: width,
             codedHeight: height,
@@ -7290,7 +7291,7 @@ export class LiveKitModule {
             this.replaceNativeCaptureDecodedCache(bitmap, width, height);
 
             const videoFrameCreateStartedAt = performance.now();
-            const vf = new (globalThis as any).VideoFrame(bitmap, {
+            const vf = new VideoFrame(bitmap, {
               timestamp: performance.now() * 1000, // microseconds
             });
             this.recordNativeBridgeDecodeParts({
@@ -7623,6 +7624,7 @@ export class LiveKitModule {
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(
             `native capture: screen_share_poll_frame failed during startup: ${message}`,
+            { cause: error },
           );
         }
         if (!firstFrameResolved) {

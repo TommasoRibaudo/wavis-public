@@ -845,7 +845,12 @@ export class NativeMediaModule {
   }
 
   private classifyNativeCameraError(err: unknown): { kind: string } {
-    const message = String(err ?? '').toLowerCase();
+    // Tauri invoke rejections are strings or structured objects, never
+    // reliably Error instances — stringify objects so their fields still
+    // participate in the keyword classification below.
+    const message = (
+      err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')
+    ).toLowerCase();
     if (message.includes('no camera') || message.includes('/dev/video')) {
       return { kind: 'no_camera_configured' };
     }

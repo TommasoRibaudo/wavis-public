@@ -74,15 +74,28 @@ export default tseslint.config(
         { prefer: 'type-imports', disallowTypeAnnotations: false },
       ],
 
+      // Ratcheted to error 2026-07-10 (violation count reached zero).
+      // Ratchet policy: a warn rule graduates here once its count is zero;
+      // it never goes back.
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/restrict-template-expressions': 'error',
+      '@typescript-eslint/no-redundant-type-constituents': 'error',
+      '@typescript-eslint/no-unsafe-enum-comparison': 'error',
+      '@typescript-eslint/no-base-to-string': 'error',
+      '@typescript-eslint/no-this-alias': 'error', // off in tests (vi.mock `this` captures)
+      '@typescript-eslint/unbound-method': 'error', // off in tests (vi.mocked false positive)
+      'preserve-caught-error': 'error',
+      'no-async-promise-executor': 'error',
+
       // React design pressure — review triggers
       'react-hooks/exhaustive-deps': 'warn',
       'react-hooks/set-state-in-effect': 'warn',
+      // purity: 1 known hit — vendored shadcn sidebar skeleton uses
+      // Math.random for decorative width; not worth forking vendored UI over.
       'react-hooks/purity': 'warn',
 
       // TS design pressure — review triggers
-      '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unnecessary-condition': 'warn',
-      '@typescript-eslint/restrict-template-expressions': 'warn',
 
       // Typed-strictness rules from recommendedTypeChecked demoted to warn:
       // ~900 pre-existing violations (Tauri invoke() returns any, LiveKit
@@ -97,15 +110,11 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-return': 'warn',
       '@typescript-eslint/no-unsafe-argument': 'warn',
       '@typescript-eslint/only-throw-error': 'warn',
+      // prefer-promise-reject-errors: 2 known hits in withTimeout()
+      // (livekit-media.ts) — rejecting with a typed CameraStartError sentinel
+      // is an intentional contract discriminated by isCameraStartError().
       '@typescript-eslint/prefer-promise-reject-errors': 'warn',
-      '@typescript-eslint/unbound-method': 'warn',
-      '@typescript-eslint/no-redundant-type-constituents': 'warn',
-      '@typescript-eslint/no-unsafe-enum-comparison': 'warn',
-      '@typescript-eslint/no-base-to-string': 'warn',
-      '@typescript-eslint/no-this-alias': 'warn',
       'no-useless-assignment': 'warn',
-      'preserve-caught-error': 'warn',
-      'no-async-promise-executor': 'warn',
       // Empty catch is an established intentional pattern here
       // (best-effort native calls); empty non-catch blocks still error.
       'no-empty': ['error', { allowEmptyCatch: true }],
@@ -162,6 +171,12 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
       'max-lines-per-function': 'off',
+      // vi.mocked(obj.method) / expect(obj.method) are the documented
+      // unbound-method false positive in vitest/jest suites.
+      '@typescript-eslint/unbound-method': 'off',
+      // vi.mock constructor doubles capture `this` into module-scope vars
+      // (lastLkModule = this) so tests can assert on the built instance.
+      '@typescript-eslint/no-this-alias': 'off',
     },
   },
 );

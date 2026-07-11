@@ -383,7 +383,7 @@ export class StreamReceiver {
     const startGeneration = ++this.startGeneration;
     if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] start()`);
 
-    return new Promise<MediaStream>(async (resolve, reject) => {
+    return new Promise<MediaStream>((resolve, reject) => {
       let settled = false;
       const clearStartTimeout = () => {
         if (this.startTimeout !== null) {
@@ -401,137 +401,147 @@ export class StreamReceiver {
         if (settled || this.startGeneration !== startGeneration) return;
         settled = true;
         clearStartTimeout();
-        reject(err);
+        reject(err instanceof Error ? err : new Error(String(err)));
       };
-      try {
-        this.pc = new RTCPeerConnection();
+      // Async work lives in an IIFE so the executor itself stays synchronous
+      // (an async executor would swallow throws instead of rejecting).
+      void (async () => {
+        try {
+          this.pc = new RTCPeerConnection();
 
-        if (DEBUG_SHARE_VIEW) {
-          this.pc.oniceconnectionstatechange = () => {
-            console.log(
-              LOG,
-              `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`,
-            );
-          };
-          this.pc.onicegatheringstatechange = () => {
-            console.log(LOG, `receiver[${key}] iceGatheringState → ${this.pc?.iceGatheringState}`);
-          };
-        }
-
-        // Detect permanent bridge failure early so the consumer can reconnect
-        // without waiting for the 3-second stall detector cycle.
-        this.pc.onconnectionstatechange = () => {
-          if (this.startGeneration !== startGeneration) return;
-          if (this.pc?.connectionState === 'failed') {
-            console.warn(LOG, `receiver[${key}] connection failed`);
-            onConnectionFailed?.();
-          }
-        };
-
-        const remoteStream = new MediaStream();
-        this.pc.ontrack = (e: RTCTrackEvent) => {
-          if (this.startGeneration !== startGeneration) return;
-          if (DEBUG_SHARE_VIEW)
-            console.log(
-              LOG,
-              `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`,
-            );
-          if (e.streams[0]) {
-            for (const t of e.streams[0].getTracks()) {
-              remoteStream.addTrack(t);
-            }
-          } else {
-            remoteStream.addTrack(e.track);
-          }
-          if (remoteStream.getTracks().length > 0) {
-            resolveOnce(remoteStream);
-          }
-        };
-
-        this.pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            emit(`ss-bridge:ice-receiver:${key}`, { candidate: JSON.stringify(e.candidate) });
-          }
-        };
-
-        // Capture pc reference for use in closures (avoid `this` binding issues)
-        const pc = this.pc;
-
-        // Serialise offer processing: two offers arriving simultaneously both
-        // see signalingState==='stable' before either calls setRemoteDescription,
-        // so the plain signalingState guard is insufficient — use an explicit flag.
-        let processingOffer = false;
-
-        // Register both listeners in parallel before emitting receiver-ready
-        const [unlistenIce, unlistenOffer] = await Promise.all([
-          listen<{ candidate: string }>(`ss-bridge:ice-sender:${key}`, (event) => {
-            if (this.startGeneration !== startGeneration) return;
-            if (!pc || pc.connectionState === 'closed') return;
-            const candidate = JSON.parse(event.payload.candidate);
-            pc.addIceCandidate(candidate).catch((err) => {
-              console.warn(LOG, `receiver[${key}] addIceCandidate failed:`, err);
-            });
-          }),
-          listen<{ sdp: string }>(`ss-bridge:offer:${key}`, async (event) => {
-            if (this.startGeneration !== startGeneration) return;
-            if (!pc || pc.connectionState === 'closed') return;
-            // Guard: only accept an offer when in 'stable' state and not already
-            // processing one. The sender fires the offer both on creation and on
-            // receiver-ready, so two offers can arrive before either async handler
-            // has had time to change signalingState — the processingOffer flag
-            // closes that TOCTOU window.
-            if (processingOffer || pc.signalingState !== 'stable') {
-              console.warn(
+          if (DEBUG_SHARE_VIEW) {
+            this.pc.oniceconnectionstatechange = () => {
+              console.log(
                 LOG,
-                `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
+                `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`,
               );
-              return;
-            }
-            processingOffer = true;
-            try {
-              await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
-              if (DEBUG_SHARE_VIEW)
-                console.log(LOG, `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`);
-              console.log(LOG, `receiver[${key}] got offer, answer sent`);
-            } finally {
-              processingOffer = false;
-            }
-          }),
-        ]);
-        if (
-          this.startGeneration !== startGeneration ||
-          !this.pc ||
-          this.pc !== pc ||
-          pc.connectionState === 'closed'
-        ) {
-          unlistenIce();
-          unlistenOffer();
-          return;
-        }
-        this.cleanups.push(unlistenIce, unlistenOffer);
-
-        // Notify caller that offer + ICE listeners are registered. The caller
-        // should trigger resendStream() here — not before — so the sender's
-        // initial offer arrives after this receiver can already handle it.
-        onListenersReady?.();
-
-        // Signal readiness — sender will (re-)send the offer
-        emit(`ss-bridge:receiver-ready:${key}`, {});
-        console.log(LOG, `receiver[${key}] started, waiting for offer`);
-
-        this.startTimeout = setTimeout(() => {
-          if (!settled && this.startGeneration === startGeneration) {
-            if (DEBUG_SHARE_VIEW)
-              console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
-            rejectOnce(new Error('Timed out waiting for screen share stream'));
+            };
+            this.pc.onicegatheringstatechange = () => {
+              console.log(
+                LOG,
+                `receiver[${key}] iceGatheringState → ${this.pc?.iceGatheringState}`,
+              );
+            };
           }
-        }, 15000);
-      } catch (err) {
-        rejectOnce(err);
-      }
+
+          // Detect permanent bridge failure early so the consumer can reconnect
+          // without waiting for the 3-second stall detector cycle.
+          this.pc.onconnectionstatechange = () => {
+            if (this.startGeneration !== startGeneration) return;
+            if (this.pc?.connectionState === 'failed') {
+              console.warn(LOG, `receiver[${key}] connection failed`);
+              onConnectionFailed?.();
+            }
+          };
+
+          const remoteStream = new MediaStream();
+          this.pc.ontrack = (e: RTCTrackEvent) => {
+            if (this.startGeneration !== startGeneration) return;
+            if (DEBUG_SHARE_VIEW)
+              console.log(
+                LOG,
+                `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`,
+              );
+            if (e.streams[0]) {
+              for (const t of e.streams[0].getTracks()) {
+                remoteStream.addTrack(t);
+              }
+            } else {
+              remoteStream.addTrack(e.track);
+            }
+            if (remoteStream.getTracks().length > 0) {
+              resolveOnce(remoteStream);
+            }
+          };
+
+          this.pc.onicecandidate = (e) => {
+            if (e.candidate) {
+              emit(`ss-bridge:ice-receiver:${key}`, { candidate: JSON.stringify(e.candidate) });
+            }
+          };
+
+          // Capture pc reference for use in closures (avoid `this` binding issues)
+          const pc = this.pc;
+
+          // Serialise offer processing: two offers arriving simultaneously both
+          // see signalingState==='stable' before either calls setRemoteDescription,
+          // so the plain signalingState guard is insufficient — use an explicit flag.
+          let processingOffer = false;
+
+          // Register both listeners in parallel before emitting receiver-ready
+          const [unlistenIce, unlistenOffer] = await Promise.all([
+            listen<{ candidate: string }>(`ss-bridge:ice-sender:${key}`, (event) => {
+              if (this.startGeneration !== startGeneration) return;
+              if (!pc || pc.connectionState === 'closed') return;
+              const candidate = JSON.parse(event.payload.candidate);
+              pc.addIceCandidate(candidate).catch((err) => {
+                console.warn(LOG, `receiver[${key}] addIceCandidate failed:`, err);
+              });
+            }),
+            listen<{ sdp: string }>(`ss-bridge:offer:${key}`, async (event) => {
+              if (this.startGeneration !== startGeneration) return;
+              if (!pc || pc.connectionState === 'closed') return;
+              // Guard: only accept an offer when in 'stable' state and not already
+              // processing one. The sender fires the offer both on creation and on
+              // receiver-ready, so two offers can arrive before either async handler
+              // has had time to change signalingState — the processingOffer flag
+              // closes that TOCTOU window.
+              if (processingOffer || pc.signalingState !== 'stable') {
+                console.warn(
+                  LOG,
+                  `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
+                );
+                return;
+              }
+              processingOffer = true;
+              try {
+                await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
+                if (DEBUG_SHARE_VIEW)
+                  console.log(
+                    LOG,
+                    `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`,
+                  );
+                console.log(LOG, `receiver[${key}] got offer, answer sent`);
+              } finally {
+                processingOffer = false;
+              }
+            }),
+          ]);
+          if (
+            this.startGeneration !== startGeneration ||
+            !this.pc ||
+            this.pc !== pc ||
+            pc.connectionState === 'closed'
+          ) {
+            unlistenIce();
+            unlistenOffer();
+            return;
+          }
+          this.cleanups.push(unlistenIce, unlistenOffer);
+
+          // Notify caller that offer + ICE listeners are registered. The caller
+          // should trigger resendStream() here — not before — so the sender's
+          // initial offer arrives after this receiver can already handle it.
+          onListenersReady?.();
+
+          // Signal readiness — sender will (re-)send the offer
+          emit(`ss-bridge:receiver-ready:${key}`, {});
+          console.log(LOG, `receiver[${key}] started, waiting for offer`);
+
+          this.startTimeout = setTimeout(() => {
+            if (!settled && this.startGeneration === startGeneration) {
+              if (DEBUG_SHARE_VIEW)
+                console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
+              rejectOnce(new Error('Timed out waiting for screen share stream'));
+            }
+          }, 15000);
+        } catch (err) {
+          rejectOnce(err);
+        }
+      })();
     });
   }
 
