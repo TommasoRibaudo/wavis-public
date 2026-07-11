@@ -1086,3 +1086,162 @@ async fn prop13_refresh_token_reuse_detection() {
         new_result
     );
 }
+
+// ---------------------------------------------------------------------------
+// Characterization tests for auth::authenticate_access_token — the shared
+// entry point behind the REST extractor and the WS Auth arm. These pin the
+// contract before/after the ws_dispatch auth extraction: JWT validity,
+// device revocation, and session epoch are all enforced.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn authenticate_access_token_accepts_valid_token() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let reg = auth::register_user(
+        &pool,
+        "test-phrase-authenticate-ok",
+        "device-authenticate-ok",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    let (user_id, device_id) =
+        auth::authenticate_access_token(&pool, &secret, None, &reg.access_token)
+            .await
+            .expect("freshly issued token should authenticate");
+    assert_eq!(user_id, reg.user_id);
+    assert_eq!(device_id, reg.device_id);
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn authenticate_access_token_rejects_wrong_secret() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let reg = auth::register_user(
+        &pool,
+        "test-phrase-authenticate-secret",
+        "device-authenticate-secret",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    let wrong_secret = b"a-different-secret-at-least-32-bytes!".to_vec();
+    let result =
+        auth::authenticate_access_token(&pool, &wrong_secret, None, &reg.access_token).await;
+    assert!(
+        result.is_err(),
+        "token signed with another secret must be rejected, got: {:?}",
+        result
+    );
+
+    // With rotation: the signing secret offered as previous_secret still passes.
+    auth::authenticate_access_token(&pool, &wrong_secret, Some(&secret), &reg.access_token)
+        .await
+        .expect("previous-secret rotation path should authenticate");
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn authenticate_access_token_rejects_revoked_device() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let reg = auth::register_user(
+        &pool,
+        "test-phrase-authenticate-revoke",
+        "device-authenticate-revoke",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    device::revoke_device(&pool, reg.user_id, reg.device_id)
+        .await
+        .unwrap();
+
+    let result = auth::authenticate_access_token(&pool, &secret, None, &reg.access_token).await;
+    assert!(
+        matches!(result, Err(AuthError::DeviceRevoked)),
+        "revoked device must be rejected even with a valid JWT, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn authenticate_access_token_rejects_stale_epoch() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let reg = auth::register_user(
+        &pool,
+        "test-phrase-authenticate-epoch",
+        "device-authenticate-epoch",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    // Token authenticates at epoch 0.
+    auth::authenticate_access_token(&pool, &secret, None, &reg.access_token)
+        .await
+        .expect("token should authenticate before epoch bump");
+
+    // logout_all bumps the session epoch, invalidating the old token.
+    let new_epoch = device::logout_all(&pool, reg.user_id).await.unwrap();
+    assert_eq!(new_epoch, 1);
+
+    let result = auth::authenticate_access_token(&pool, &secret, None, &reg.access_token).await;
+    assert!(
+        matches!(result, Err(AuthError::EpochMismatch)),
+        "token issued before epoch bump must be rejected, got: {:?}",
+        result
+    );
+}
