@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   computeSpeaking,
   updateSpeakingTracker,
-  computeEffectiveParticipantVolume,
   TERMINAL_COLORS,
   RMS_START_THRESHOLD,
   RMS_STOP_THRESHOLD,
@@ -10,6 +9,7 @@ import {
   MAX_EVENTS,
 } from '../voice-room';
 import { colorFor } from '../chat-display-model';
+import { computeEffectiveParticipantVolume } from '../participant-volume-model';
 
 describe('computeSpeaking', () => {
   it('returns true when RMS above start threshold and not currently speaking', () => {
@@ -330,7 +330,7 @@ describe('Property 2: Share button enabled iff permission allows and media ready
   });
 });
 
-import { mergeParticipantsWithVolume } from '../voice-room';
+import { mergeParticipantsWithVolume } from '../participant-volume-model';
 import type { RoomParticipant } from '../voice-room';
 
 /* ═══ Property 11: Volume preservation across reconnect ═════════════ */

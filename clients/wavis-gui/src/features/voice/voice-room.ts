@@ -78,6 +78,14 @@ import {
   type ActiveAudioShare,
   type ActiveVideoShare,
 } from './share-slot-policy';
+import {
+  computeEffectiveParticipantVolume,
+  deriveParticipantSubRoomById,
+  mergeParticipantsWithVolume,
+  pairedSubRoomId,
+  type VoicePassthroughState,
+  type VoiceSubRoom,
+} from './participant-volume-model';
 import { lookupLinuxCapability, type LinuxCapabilityRow } from './linux-capability-matrix';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
@@ -219,20 +227,6 @@ function clearRemoteShareType(participantId: string): void {
 }
 
 export type SubRoomMembershipSource = 'explicit' | 'legacy_room_one';
-
-export interface VoiceSubRoom {
-  id: string;
-  roomNumber: number;
-  isDefault: boolean;
-  participantIds: string[];
-  deleteAtMs: number | null;
-}
-
-export interface VoicePassthroughState {
-  sourceSubRoomId: string;
-  targetSubRoomId: string;
-  label: string;
-}
 
 export interface NetworkStats {
   rttMs: number;
@@ -590,44 +584,13 @@ function resolvePersistedVolume(userId: string | undefined, defaultVolume: numbe
   return channelVolumePrefs.participants[userId] ?? defaultVolume;
 }
 
-export function computeEffectiveParticipantVolume(
-  manualVolume: number,
-  participantId: string,
-  selfParticipantId: string | null,
-  joinedSubRoomId: string | null,
-  participantSubRoomById: Record<string, string>,
-  passthrough: VoicePassthroughState | null,
-  passthroughVolumeFraction = 0.2,
-): number {
-  if (participantId === selfParticipantId) return manualVolume;
-  if (!joinedSubRoomId) return 0;
-  const participantSubRoomId = participantSubRoomById[participantId] ?? null;
-  if (participantSubRoomId === joinedSubRoomId) return manualVolume;
-  if (!participantSubRoomId || !passthrough) return 0;
-
-  const pairedSubRoomId =
-    passthrough.sourceSubRoomId === joinedSubRoomId
-      ? passthrough.targetSubRoomId
-      : passthrough.targetSubRoomId === joinedSubRoomId
-        ? passthrough.sourceSubRoomId
-        : null;
-  if (participantSubRoomId !== pairedSubRoomId) return 0;
-  return Math.round(manualVolume * passthroughVolumeFraction);
-}
-
 function isPassthroughParticipant(participantId: string): boolean {
   if (participantId === state.selfParticipantId || !state.joinedSubRoomId || !state.passthrough) {
     return false;
   }
   const participantSubRoomId = state.participantSubRoomById[participantId] ?? null;
   if (!participantSubRoomId || participantSubRoomId === state.joinedSubRoomId) return false;
-  const pairedSubRoomId =
-    state.passthrough.sourceSubRoomId === state.joinedSubRoomId
-      ? state.passthrough.targetSubRoomId
-      : state.passthrough.targetSubRoomId === state.joinedSubRoomId
-        ? state.passthrough.sourceSubRoomId
-        : null;
-  return participantSubRoomId === pairedSubRoomId;
+  return participantSubRoomId === pairedSubRoomId(state.joinedSubRoomId, state.passthrough);
 }
 
 function applyPassthroughFilterSettings(): void {
@@ -635,31 +598,6 @@ function applyPassthroughFilterSettings(): void {
     enabled: state.passthroughFiltersEnabled,
     strength: state.passthroughFilterStrength,
   });
-}
-
-/**
- * Pure function: merge old and new participant lists, preserving per-participant
- * volume settings across reconnects. Matched by id: present in both → keep old
- * volume; only in new → default volume; only in old → discarded.
- */
-export function mergeParticipantsWithVolume(
-  oldList: RoomParticipant[],
-  newList: RoomParticipant[],
-): RoomParticipant[] {
-  const preserved = new Map(
-    oldList.map((p) => [
-      p.id,
-      {
-        volume: p.volume,
-        mediaConnected: p.mediaConnected,
-      },
-    ]),
-  );
-  return newList.map((p) => ({
-    ...p,
-    volume: preserved.get(p.id)?.volume ?? p.volume,
-    mediaConnected: preserved.get(p.id)?.mediaConnected ?? p.mediaConnected,
-  }));
 }
 
 function applyEffectiveParticipantVolume(participant: RoomParticipant): void {
@@ -1971,16 +1909,6 @@ function appendEvent(event: RoomEvent): void {
 
 function isWsRateLimitError(message: string): boolean {
   return message.trim().toLowerCase() === WS_RATE_LIMIT_ERROR_MESSAGE;
-}
-
-function deriveParticipantSubRoomById(subRooms: VoiceSubRoom[]): Record<string, string> {
-  const assignments: Record<string, string> = {};
-  for (const room of subRooms) {
-    for (const participantId of room.participantIds) {
-      assignments[participantId] = room.id;
-    }
-  }
-  return assignments;
 }
 
 function syncDerivedSubRoomState(): void {
