@@ -212,18 +212,18 @@ impl WindowsNativeCaptureDiagnostics {
             return;
         }
         let elapsed_s = elapsed_ms as f64 / 1000.0;
-        self.raw_backend_callback_fps = self
-            .frame_arrived_callbacks
-            .saturating_sub(self.interval_frame_arrived_callbacks) as f64
-            / elapsed_s;
-        self.emitted_pollable_frame_fps = self
-            .emitted_pollable_frames
-            .saturating_sub(self.interval_emitted_pollable_frames) as f64
-            / elapsed_s;
-        self.throttle_drop_fps = self
-            .throttle_drop_count
-            .saturating_sub(self.interval_throttle_drop_count) as f64
-            / elapsed_s;
+        self.raw_backend_callback_fps =
+            self.frame_arrived_callbacks
+                .saturating_sub(self.interval_frame_arrived_callbacks) as f64
+                / elapsed_s;
+        self.emitted_pollable_frame_fps =
+            self.emitted_pollable_frames
+                .saturating_sub(self.interval_emitted_pollable_frames) as f64
+                / elapsed_s;
+        self.throttle_drop_fps =
+            self.throttle_drop_count
+                .saturating_sub(self.interval_throttle_drop_count) as f64
+                / elapsed_s;
         self.interval_started_at_ms = now;
         self.interval_frame_arrived_callbacks = self.frame_arrived_callbacks;
         self.interval_emitted_pollable_frames = self.emitted_pollable_frames;
@@ -261,7 +261,10 @@ impl WindowsNativeCaptureDiagnostics {
         update(&mut self.jpeg_encode_avg_ms, jpeg_encode_ms);
         update(&mut self.base64_encode_avg_ms, base64_encode_ms);
         update(&mut self.latest_frame_write_avg_ms, latest_frame_write_ms);
-        update(&mut self.raw_to_pollable_frame_avg_ms, raw_to_pollable_frame_ms);
+        update(
+            &mut self.raw_to_pollable_frame_avg_ms,
+            raw_to_pollable_frame_ms,
+        );
         self.refresh_interval_rates();
     }
 
@@ -283,12 +286,7 @@ impl WindowsNativeCaptureDiagnostics {
         );
     }
 
-    pub fn record_startup_stage(
-        &mut self,
-        stage: &str,
-        current_operation: &str,
-        elapsed_ms: u64,
-    ) {
+    pub fn record_startup_stage(&mut self, stage: &str, current_operation: &str, elapsed_ms: u64) {
         self.startup_stage = stage.to_string();
         self.current_operation = current_operation.to_string();
         self.startup_elapsed_ms = Some(elapsed_ms);

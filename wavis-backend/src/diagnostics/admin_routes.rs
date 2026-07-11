@@ -23,13 +23,24 @@ use crate::error::ErrorResponse;
 type AdminResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
 fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
-    (status, Json(ErrorResponse { error: msg.to_string() }))
+    (
+        status,
+        Json(ErrorResponse {
+            error: msg.to_string(),
+        }),
+    )
 }
 
 /// Validate the Bearer token against `state.admin_token`. Returns Err if missing/wrong/unconfigured.
-fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+fn require_admin(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let Some(ref expected) = state.admin_token else {
-        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "admin endpoints not configured"));
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin endpoints not configured",
+        ));
     };
     let provided = headers
         .get("authorization")
@@ -115,7 +126,11 @@ pub async fn get_bug_report_stats(
     .await
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "database error"))?;
 
-    Ok(Json(BugReportStats { banned_users, active_ip_counts: ip_counts, active_user_counts: user_counts }))
+    Ok(Json(BugReportStats {
+        banned_users,
+        active_ip_counts: ip_counts,
+        active_user_counts: user_counts,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +169,10 @@ pub async fn ban_user(
 
     tracing::warn!(user_id = %user_id, reason = %reason, "admin banned user from bug reports");
 
-    Ok(Json(BanResponse { user_id, banned: true }))
+    Ok(Json(BanResponse {
+        user_id,
+        banned: true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -182,5 +200,8 @@ pub async fn unban_user(
 
     tracing::info!(user_id = %user_id, "admin unbanned user from bug reports");
 
-    Ok(Json(UnbanResponse { user_id, banned: false }))
+    Ok(Json(UnbanResponse {
+        user_id,
+        banned: false,
+    }))
 }

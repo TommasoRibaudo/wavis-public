@@ -507,12 +507,18 @@ impl Arbitrary for ShareStartedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>(), prop::option::of(any::<WireShareType>()))
-            .prop_map(|(participant_id, display_name, share_type)| ShareStartedPayload {
-                participant_id,
-                display_name,
-                share_type,
-            })
+        (
+            any::<String>(),
+            any::<String>(),
+            prop::option::of(any::<WireShareType>()),
+        )
+            .prop_map(
+                |(participant_id, display_name, share_type)| ShareStartedPayload {
+                    participant_id,
+                    display_name,
+                    share_type,
+                },
+            )
             .boxed()
     }
 }

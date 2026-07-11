@@ -492,9 +492,7 @@ impl LiveKitConnection for RealLiveKitConnection {
                             "livekit_audio: audio track unsubscribed from {participant_id}, source={source:?}"
                         );
                         if source == TrackSource::ScreenshareAudio {
-                            if let Some(cb) =
-                                screen_share_audio_ended_cb.lock().unwrap().as_ref()
-                            {
+                            if let Some(cb) = screen_share_audio_ended_cb.lock().unwrap().as_ref() {
                                 cb(&participant_id);
                             }
                         }

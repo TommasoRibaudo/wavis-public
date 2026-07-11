@@ -721,7 +721,11 @@ pub struct ShareStatePayload {
     #[serde(rename = "participantIds")]
     pub participant_ids: Vec<String>,
     /// Typed metadata for clients that support share-type-aware behavior.
-    #[serde(rename = "activeShares", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "activeShares",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub active_shares: Vec<ActiveSharePayload>,
 }
 

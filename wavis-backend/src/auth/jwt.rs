@@ -476,10 +476,16 @@ mod tests {
         let claims = livekit_api::access_token::Claims::from_unverified(&token)
             .expect("token must be a valid JWT");
 
-        assert_eq!(&claims.sub, viewer_identity, "sub must equal viewer_identity");
+        assert_eq!(
+            &claims.sub, viewer_identity,
+            "sub must equal viewer_identity"
+        );
         assert_eq!(&claims.video.room, room_id, "video.room must equal room_id");
         assert!(claims.video.room_join, "video.room_join must be true");
-        assert!(claims.video.can_subscribe, "video.can_subscribe must be true");
+        assert!(
+            claims.video.can_subscribe,
+            "video.can_subscribe must be true"
+        );
         assert!(!claims.video.can_publish, "video.can_publish must be false");
         assert!(
             !claims.video.can_publish_data,
