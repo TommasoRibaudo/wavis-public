@@ -64,16 +64,67 @@ import {
   computeStopRoute,
   preserveVideoShareSelectionForSourceChange,
 } from './share-slot-policy';
-import type { ShareSelection, EnumerationResult } from '@features/screen-share/share-types';
+import type { EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { LogicalSize } from '@tauri-apps/api/dpi';
-import { open } from '@tauri-apps/plugin-shell';
+import { openExternalUrl } from '@shared/shell-bridge';
+import {
+  closeMainWindow,
+  onFocusMainWindow,
+  onMainWindowClosing,
+  setCurrentWindowSize,
+  showMainWindow,
+} from '@shared/window-bridge';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { emit, emitTo, listen } from '@tauri-apps/api/event';
+import {
+  closeNativeScreenShareViewer,
+  emitCameraPopoutTileAdded,
+  emitCameraPopoutTileRemoved,
+  emitCameraPopoutTileUpdated,
+  emitShareRestoreVolume,
+  emitShareUserState,
+  emitShareVoiceParticipants,
+  emitWatchAllAudioShareAdded,
+  emitWatchAllAudioShareRemoved,
+  emitWatchAllRestoreVolume,
+  emitWatchAllShareAdded,
+  emitWatchAllShareRemoved,
+  emitWatchAllShareUpdated,
+  emitWatchAllVoiceParticipants,
+  ensureScreenRecordingAccess,
+  listShareSources,
+  listenCameraPopoutReady,
+  listenWatchAllReady,
+  onCameraPopoutClosed,
+  onNativeShareError,
+  onScreenShareChangeSource,
+  onScreenShareClosed,
+  onScreenShareMuteChange,
+  onScreenSharePopBackIn,
+  onScreenShareQuality,
+  onScreenShareToggleAudio,
+  onScreenShareViewerReady,
+  onScreenShareVolumeChange,
+  onShareIndicatorStop,
+  onSharePickerCancelled,
+  onSharePickerSelected,
+  onSharePickerUsePortal,
+  onShareToggleDeafen,
+  onShareToggleMute,
+  onShareToggleShare,
+  onShareVoiceVolumeChange,
+  onWatchAllClosed,
+  onWatchAllMuteChange,
+  onWatchAllPopOut,
+  onWatchAllVolumeChange,
+  openCameraPopoutWindow,
+  openNativeScreenShareViewer,
+  openScreenShareViewerWindow,
+  openSharePickerWindow,
+  openWatchAllGridWindow,
+  requestScreenShareWindowClose,
+} from '@features/screen-share/share-window-bridge';
+import type { ChildWindowHandle } from '@features/screen-share/share-window-bridge';
 import {
   startSending,
   stopSending,
@@ -97,8 +148,7 @@ import {
   unregisterFocusMainHotkey,
 } from '@shared/hotkey-bridge';
 import { useHotkeys } from '@shared/useHotkeys';
-import { listenTrayEvents, updateTrayState } from './tray-bridge';
-import type { TrayAction } from './tray-bridge';
+import { useTrayIntegration } from './useTrayIntegration';
 import { useDebug } from '@shared/debug-context';
 import {
   connectionModeBadgeText,
@@ -232,7 +282,7 @@ function renderChatText(text: string): ReactNode[] {
         className="text-wavis-accent underline underline-offset-2 break-words hover:opacity-80"
         onClick={(event) => {
           event.preventDefault();
-          void open(href);
+          void openExternalUrl(href);
         }}
         rel="noreferrer"
         title={href}
@@ -277,7 +327,7 @@ type ShareViewerScope = 'direct' | 'watch-all';
 
 interface ShareViewerWindow {
   scope: ShareViewerScope;
-  window: WebviewWindow;
+  window: ChildWindowHandle;
 }
 
 function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
@@ -416,13 +466,13 @@ async function withPickerResize<T>(isMacPlatform: boolean, fn: () => Promise<T>)
   const targetWidth = Math.min(MIN_NATIVE_PICKER_WIDTH, window.screen.availWidth - 20);
   const needsResize = !isMacPlatform && originalWidth < targetWidth;
   if (needsResize) {
-    await getCurrentWindow().setSize(new LogicalSize(targetWidth, originalHeight));
+    await setCurrentWindowSize(targetWidth, originalHeight);
   }
   try {
     return await fn();
   } finally {
     if (needsResize) {
-      await getCurrentWindow().setSize(new LogicalSize(originalWidth, originalHeight));
+      await setCurrentWindowSize(originalWidth, originalHeight);
     }
   }
 }
@@ -651,50 +701,13 @@ export default function ActiveRoom() {
     }
   }, [roomState?.error, roomState?.rejectionReason]);
 
-  // Tray event wiring: dispatch tray menu actions to voice room
-  useEffect(() => {
-    const cleanup = listenTrayEvents((action: TrayAction) => {
-      switch (action) {
-        case 'toggle-mute':
-          toggleSelfMute();
-          break;
-        case 'toggle-deafen':
-          toggleSelfDeafen();
-          break;
-        case 'leave':
-          navigateAwayFromRoom('/', 'immediate');
-          break;
-        case 'show':
-          // handled by Rust side (window.show + set_focus)
-          break;
-      }
-    });
-    return cleanup;
-  }, [channelId, navigateAwayFromRoom]);
-
-  // Tray state sync: update tray menu items when voice/mute state changes
-  useEffect(() => {
-    if (!roomState) return;
-    const selfP = roomState.participants.find((p) => p.id === roomState.selfParticipantId);
-    const inVoice = roomState.machineState === 'active';
-    updateTrayState({
-      inVoiceSession: inVoice,
-      isMuted: selfP?.isMuted ?? false,
-      isDeafened: roomState.isDeafened,
-    });
-  }, [
-    roomState?.machineState,
-    roomState?.participants,
-    roomState?.selfParticipantId,
-    roomState?.isDeafened,
-  ]);
-
-  // Send "not in voice" on unmount so tray items get disabled
-  useEffect(() => {
-    return () => {
-      updateTrayState({ inVoiceSession: false, isMuted: false, isDeafened: false });
-    };
-  }, []);
+  useTrayIntegration({
+    roomState,
+    channelId,
+    onLeave: () => navigateAwayFromRoom('/', 'immediate'),
+    onToggleMute: toggleSelfMute,
+    onToggleDeafen: toggleSelfDeafen,
+  });
 
   // Toast notifications for new room events
   useEffect(() => {
@@ -789,11 +802,11 @@ export default function ActiveRoom() {
   }, [cliInput]);
 
   // Watch All window state
-  const watchAllWindowRef = useRef<WebviewWindow | null>(null);
+  const watchAllWindowRef = useRef<ChildWindowHandle | null>(null);
   const watchAllReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [watchAllOpen, setWatchAllOpen] = useState(false);
   const watchAllReadyRef = useRef(false);
-  const videoPopoutWindowRef = useRef<WebviewWindow | null>(null);
+  const videoPopoutWindowRef = useRef<ChildWindowHandle | null>(null);
   const videoPopoutReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [videoPopoutOpen, setVideoPopoutOpen] = useState(false);
   const videoPopoutReadyRef = useRef(false);
@@ -949,12 +962,7 @@ export default function ActiveRoom() {
   }, [watchingShareIds, roomState?.screenShareStreams]);
 
   useEffect(() => {
-    const unlisten = listen('camera-popout:closed', () => {
-      closeVideoPopoutWindow(true);
-    });
-    return () => {
-      unlisten.then((fn) => fn?.());
-    };
+    return onCameraPopoutClosed(() => closeVideoPopoutWindow(true));
   }, []);
 
   const getSavedShareVolume = useCallback((participantId: string) => {
@@ -1014,8 +1022,7 @@ export default function ActiveRoom() {
         attachScreenShareAudio(participantId);
       }
       setScreenShareAudioVolume(participantId, muted ? 0 : restoredVolume);
-      emit('watch-all:restore-volume', { participantId, volume: restoredVolume, muted });
-      emit('screen-share:restore-volume', { participantId, volume: restoredVolume, muted });
+      emitShareRestoreVolume({ participantId, volume: restoredVolume, muted });
     },
     [getSavedShareVolume],
   );
@@ -1044,8 +1051,7 @@ export default function ActiveRoom() {
     setScreenShareAudioVolume(participantId, muted ? 0 : volume);
     persistStreamVolume(participantId, volume);
     persistStreamMuted(participantId, muted);
-    emit('watch-all:restore-volume', { participantId, volume, muted });
-    emit('screen-share:restore-volume', { participantId, volume, muted });
+    emitShareRestoreVolume({ participantId, volume, muted });
   }, []);
 
   const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
@@ -1063,9 +1069,9 @@ export default function ActiveRoom() {
     });
   }, []);
 
-  const emitWatchAllRestoreVolume = useCallback(
+  const restoreWatchAllVolumeForParticipant = useCallback(
     (participantId: string) => {
-      emit('watch-all:restore-volume', {
+      emitWatchAllRestoreVolume({
         participantId,
         volume: getSavedShareVolume(participantId),
         muted: getSavedShareMuted(participantId),
@@ -1143,8 +1149,8 @@ export default function ActiveRoom() {
         attachScreenShareAudio(participantId);
         applySavedScreenShareAudio(participantId);
         watchAllAttachedAudioRef.current.add(participantId);
-        void emit('share:user-state', shareUserStateRef.current);
-        void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
+        emitShareUserState(shareUserStateRef.current);
+        emitWatchAllVoiceParticipants(watchAllVoiceParticipantsRef.current);
         return;
       }
 
@@ -1152,8 +1158,8 @@ export default function ActiveRoom() {
       if (!shareWindow || shareWindow.window.label !== windowLabel) return;
       attachScreenShareAudio(participantId);
       applySavedScreenShareAudio(participantId);
-      void emit('share:user-state', shareUserStateRef.current);
-      void emit('share:voice-participants', voiceParticipantsRef.current);
+      emitShareUserState(shareUserStateRef.current);
+      emitShareVoiceParticipants(voiceParticipantsRef.current);
     },
     [applySavedScreenShareAudio],
   );
@@ -1167,14 +1173,14 @@ export default function ActiveRoom() {
     const stream = scope.streams.get(participantId) ?? null;
     const participant = scope.participants.find((p) => p.id === participantId);
     if (!participant) return;
-    emit('watch-all:share-added', {
+    emitWatchAllShareAdded({
       participantId,
       liveKitIdentity: liveKitIdentityForParticipant(participantId),
       displayName: participant.displayName,
       color: participant.color,
       canvasFallback: stream === null,
     });
-    emitWatchAllRestoreVolume(participantId);
+    restoreWatchAllVolumeForParticipant(participantId);
     prevWatchAllStreamsRef.current.set(participantId, stream);
     // Attach audio directly. If the tile already exists in Watch All,
     // share-added is a no-op and viewer-ready never fires, so audio would be
@@ -1208,8 +1214,7 @@ export default function ActiveRoom() {
 
   // Listen for child windows closing themselves
   useEffect(() => {
-    const unlisten = listen<{ participantId: string }>('screen-share:closed', (event) => {
-      const pid = event.payload.participantId;
+    return onScreenShareClosed((pid) => {
       // Gate on delete — if closeShareWindow already handled this pid,
       // delete() returns false and we skip to avoid double-add.
       if (!shareWindowsRef.current.delete(pid)) return;
@@ -1223,40 +1228,37 @@ export default function ActiveRoom() {
       });
       reAddStreamToWatchAll(pid);
     });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   // Listen for owner actions from the child window
   useEffect(() => {
-    const cleanups: Array<Promise<() => void>> = [];
+    const cleanups: Array<() => void> = [];
 
     cleanups.push(
-      listen<{ quality: ShareQuality }>('screen-share:quality', (event) => {
-        setShareQualityState(event.payload.quality);
-        setShareQuality(event.payload.quality);
+      onScreenShareQuality((quality) => {
+        setShareQualityState(quality);
+        setShareQuality(quality);
       }),
     );
     cleanups.push(
-      listen<{ withAudio: boolean }>('screen-share:toggle-audio', (event) => {
+      onScreenShareToggleAudio((withAudio) => {
         if (DEBUG_SHARE_AUDIO) {
           console.log('[wavis:active-room] [share-audio] screen-share:toggle-audio received', {
-            withAudio: event.payload.withAudio,
+            withAudio,
             userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } })
               .userActivation?.isActive,
           });
         }
-        if (isMacPlatform && event.payload.withAudio) {
+        if (isMacPlatform && withAudio) {
           setShareAudioOn(false);
           return;
         }
-        setShareAudioOn(event.payload.withAudio);
-        toggleShareAudio(event.payload.withAudio);
+        setShareAudioOn(withAudio);
+        toggleShareAudio(withAudio);
       }),
     );
     cleanups.push(
-      listen('screen-share:change-source', async () => {
+      onScreenShareChangeSource(() => {
         if (isWindowsPlatform) {
           const occupied = {
             videoOccupied: false,
@@ -1269,59 +1271,57 @@ export default function ActiveRoom() {
             isChangingSource: true,
             initialWithAudio,
           });
-          try {
-            const enumResult = await invoke<EnumerationResult>('list_share_sources');
-            setWinSharePicker((current) => (current ? { ...current, enumResult } : current));
-          } catch (err) {
-            setWinSharePicker(null);
-            const detail = err instanceof Error ? err.message : String(err);
-            toast.error(`Screen sharing failed: ${detail}`);
-          }
+          listShareSources()
+            .then((enumResult) => {
+              setWinSharePicker((current) => (current ? { ...current, enumResult } : current));
+            })
+            .catch((err: unknown) => {
+              setWinSharePicker(null);
+              const detail = err instanceof Error ? err.message : String(err);
+              toast.error(`Screen sharing failed: ${detail}`);
+            });
         } else {
-          await withPickerResize(isMacPlatform, () => changeShareSource());
+          void withPickerResize(isMacPlatform, () => changeShareSource());
         }
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; volume: number }>('watch-all:volume-change', (event) => {
-        const { participantId, volume } = event.payload;
+      onWatchAllVolumeChange((participantId, volume) => {
         syncScreenShareVolume(participantId, volume);
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; volume: number }>('screen-share:volume-change', (event) => {
-        const { participantId, volume } = event.payload;
+      onScreenShareVolumeChange((participantId, volume) => {
         syncScreenShareVolume(participantId, volume);
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; muted: boolean }>('watch-all:mute-change', (event) => {
-        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
+      onWatchAllMuteChange((participantId, muted) => {
+        syncScreenShareMuted(participantId, muted);
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; muted: boolean }>('screen-share:mute-change', (event) => {
-        syncScreenShareMuted(event.payload.participantId, event.payload.muted);
+      onScreenShareMuteChange((participantId, muted) => {
+        syncScreenShareMuted(participantId, muted);
       }),
     );
     cleanups.push(
-      listen<{ participantId: string; volume: number }>('share:voice-volume-change', (event) => {
-        const { participantId, volume } = event.payload;
+      onShareVoiceVolumeChange((participantId, volume) => {
         setParticipantVolume(participantId, volume);
       }),
     );
     cleanups.push(
-      listen('share:toggle-mute', () => {
+      onShareToggleMute(() => {
         toggleSelfMute();
       }),
     );
     cleanups.push(
-      listen('share:toggle-deafen', () => {
+      onShareToggleDeafen(() => {
         toggleSelfDeafen();
       }),
     );
     cleanups.push(
-      listen('share:toggle-share', () => {
+      onShareToggleShare(() => {
         if (selfSharingRef.current) {
           stopShareActionRef.current();
         } else {
@@ -1331,76 +1331,53 @@ export default function ActiveRoom() {
     );
 
     return () => {
-      for (const p of cleanups) p.then((fn) => fn());
+      for (const cleanup of cleanups) cleanup();
     };
   }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   useEffect(() => {
-    const unlisten = listen<{ participantId: string; windowLabel: string }>(
-      'screen-share-viewer:ready',
-      (event) => {
-        handleViewerReady(event.payload.participantId, event.payload.windowLabel);
-      },
-    );
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return onScreenShareViewerReady(handleViewerReady);
   }, [handleViewerReady]);
 
   // Watch All: listen for close event from WatchAllPage
   useEffect(() => {
-    const unlisten = listen('watch-all:closed', () => {
-      closeWatchAllWindow();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return onWatchAllClosed(() => closeWatchAllWindow());
   }, []);
 
   // Screen share: listen for pop-back-in request from ScreenSharePage
   // Only acts when Watch All is open — otherwise double-click is a no-op.
   useEffect(() => {
-    const unlisten = listen<{ participantId: string }>('screen-share:pop-back-in', (event) => {
-      const pid = event.payload.participantId;
+    return onScreenSharePopBackIn((pid) => {
       if (!watchAllWindowRef.current || !watchAllReadyRef.current) return;
       handleShareWindowClosed(pid); // deletes from shareWindowsRef, re-adds to watch-all
       // Tell the child window to close itself — emitTo is reliable; win.close() from parent is not.
       // screen-share:closed will fire but is a no-op since the map entry was already deleted above.
-      emitTo(`screen-share-${pid}`, 'screen-share:close', {}).catch(() => {});
+      requestScreenShareWindowClose(pid);
     });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   // Watch All: listen for pop-out request from WatchAllPage
   useEffect(() => {
-    const unlisten = listen<{ participantId: string; volume?: number; muted?: boolean }>(
-      'watch-all:pop-out',
-      (event) => {
-        const pid = event.payload.participantId;
-        if (typeof event.payload.volume === 'number') {
-          syncScreenShareVolume(pid, event.payload.volume);
-        }
-        if (typeof event.payload.muted === 'boolean') {
-          syncScreenShareMuted(pid, event.payload.muted);
-        }
-        const rs = roomStateRef.current;
-        const participant = rs?.participants.find((p) => p.id === pid);
-        if (!participant) return;
-        // If already open, bring to foreground
-        const existingWin = shareWindowsRef.current.get(pid);
-        if (existingWin) {
-          existingWin.window.setFocus();
-          return;
-        }
-        // openShareWindow handles removing the tile from Watch All grid
-        openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
-      },
-    );
-    return () => {
-      unlisten.then((fn) => fn?.());
-    };
+    return onWatchAllPopOut((payload) => {
+      const pid = payload.participantId;
+      if (typeof payload.volume === 'number') {
+        syncScreenShareVolume(pid, payload.volume);
+      }
+      if (typeof payload.muted === 'boolean') {
+        syncScreenShareMuted(pid, payload.muted);
+      }
+      const rs = roomStateRef.current;
+      const participant = rs?.participants.find((p) => p.id === pid);
+      if (!participant) return;
+      // If already open, bring to foreground
+      const existingWin = shareWindowsRef.current.get(pid);
+      if (existingWin) {
+        void existingWin.window.setFocus();
+        return;
+      }
+      // openShareWindow handles removing the tile from Watch All grid
+      void openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
+    });
   }, [syncScreenShareMuted, syncScreenShareVolume]);
 
   // Dynamic share tracking for Watch All window
@@ -1431,14 +1408,14 @@ export default function ActiveRoom() {
         // New participant started sharing
         const participant = scope.participants.find((p) => p.id === pid);
         if (participant) {
-          emit('watch-all:share-added', {
+          emitWatchAllShareAdded({
             participantId: pid,
             liveKitIdentity: liveKitIdentityForParticipant(pid),
             displayName: participant.displayName,
             color: participant.color,
             canvasFallback: stream === null,
           });
-          emitWatchAllRestoreVolume(pid);
+          restoreWatchAllVolumeForParticipant(pid);
         }
       } else {
         // Existing participant — check if stream reference changed
@@ -1464,7 +1441,7 @@ export default function ActiveRoom() {
       if (!currentStreams.has(pid)) {
         detachScreenShareAudio(pid);
         watchAllAttachedAudioRef.current.delete(pid);
-        emit('watch-all:share-removed', { participantId: pid });
+        emitWatchAllShareRemoved(pid);
       }
     }
 
@@ -1500,7 +1477,7 @@ export default function ActiveRoom() {
       detachScreenShareAudio(identity);
       setScreenShareAudioVolume(identity, 0);
       if (watchAllOpen && watchAllReadyRef.current) {
-        void emit('watch-all:audio-share-added', {
+        emitWatchAllAudioShareAdded({
           participantId: identity,
           displayName: participant.displayName,
           color: participant.color,
@@ -1512,7 +1489,7 @@ export default function ActiveRoom() {
     for (const identity of prev) {
       if (curr.has(identity)) continue;
       if (watchAllOpen && watchAllReadyRef.current) {
-        void emit('watch-all:audio-share-removed', { participantId: identity });
+        emitWatchAllAudioShareRemoved(identity);
       }
     }
     prevAudioOnlySharersRef.current = new Set(curr);
@@ -1529,7 +1506,7 @@ export default function ActiveRoom() {
     for (const p of sharers) {
       const prev = prevParticipantsRef.current.get(p.id);
       if (prev && (prev.displayName !== p.displayName || prev.color !== p.color)) {
-        emit('watch-all:share-updated', {
+        emitWatchAllShareUpdated({
           participantId: p.id,
           displayName: p.displayName,
           color: p.color,
@@ -1553,65 +1530,69 @@ export default function ActiveRoom() {
 
   // Custom share picker + indicator event listeners
   useEffect(() => {
-    const cleanups: Array<Promise<() => void>> = [];
+    const cleanups: Array<() => void> = [];
 
     // Share picker selection → start custom share
     cleanups.push(
-      listen<ShareSelection>('share-picker:selected', async (event) => {
+      onSharePickerSelected((selection) => {
         setPendingSharePickerData(null);
-        const showStartingIndicator = isVideoShareSelectionMode(event.payload.mode);
+        const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
         if (showStartingIndicator) setShareStarting(true);
-        try {
-          await startCustomShare(event.payload);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          showTransientScreenShareError(msg);
-        } finally {
-          if (showStartingIndicator) setShareStarting(false);
-        }
+        startCustomShare(selection)
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            showTransientScreenShareError(msg);
+          })
+          .finally(() => {
+            if (showStartingIndicator) setShareStarting(false);
+          });
       }),
     );
 
     // Share picker cancelled → clear pending data
     cleanups.push(
-      listen('share-picker:cancelled', () => {
+      onSharePickerCancelled(() => {
         setPendingSharePickerData(null);
       }),
     );
 
     cleanups.push(
-      listen('share-picker:use-portal', async () => {
+      onSharePickerUsePortal(() => {
         setPendingSharePickerData(null);
         setShareStarting(true);
-        try {
-          await startPortalShare();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          showTransientScreenShareError(msg);
-        } finally {
-          setShareStarting(false);
-        }
+        startPortalShare()
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            showTransientScreenShareError(msg);
+          })
+          .finally(() => {
+            setShareStarting(false);
+          });
       }),
     );
 
     // Share indicator stop button (now with target: 'video' | 'audio' | 'all')
     cleanups.push(
-      listen<{ target?: 'video' | 'audio' | 'all' }>('share-indicator:stop', (event) => {
-        const target = event.payload?.target ?? 'all';
+      onShareIndicatorStop((target) => {
         stopCustomShare(target);
       }),
     );
 
     // Rust-side share error (PipeWire disconnect, window closed, etc.)
     cleanups.push(
-      listen<string>('share_error', async (event) => {
-        await stopCustomShare();
-        showTransientScreenShareError(event.payload);
+      onNativeShareError((message) => {
+        stopCustomShare()
+          .catch((err) => {
+            console.error('[wavis:active-room] failed to stop after native share error:', err);
+          })
+          .finally(() => {
+            showTransientScreenShareError(message);
+          });
       }),
     );
 
     return () => {
-      for (const p of cleanups) p.then((fn) => fn());
+      for (const cleanup of cleanups) cleanup();
     };
   }, [showTransientScreenShareError]); // listeners surface share errors via shared timer helper
 
@@ -1626,17 +1607,14 @@ export default function ActiveRoom() {
   // tear down the voice session and close all child windows so nothing
   // is orphaned. The Rust on_window_event handler emits this event.
   useEffect(() => {
-    const unlisten = listen('main-window-closing', async () => {
+    return onMainWindowClosing(() => {
       closeAllShareWindows();
       leaveRoom();
       // Give the JS event loop a tick so room.disconnect() can flush its
       // WebSocket Leave signal to the LiveKit SFU before the webview is
       // destroyed. The Rust side uses prevent_close() until this resolves.
-      await invoke('close_main_window').catch(() => {});
+      void closeMainWindow().catch(() => {});
     });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   // Child windows (watch-all, screen-share) emit this to restore and focus the
@@ -1644,18 +1622,16 @@ export default function ActiveRoom() {
   // unminimize/setFocus on another window from a child webview.
   useEffect(() => {
     console.log('[wavis:focus-main] registering focus-main-window listener');
-    const unlisten = listen('focus-main-window', async () => {
+    return onFocusMainWindow(() => {
       console.log('[wavis:focus-main] event received — calling show_main_window');
-      try {
-        await invoke('show_main_window');
-        console.log('[wavis:focus-main] show_main_window done');
-      } catch (e) {
-        console.error('[wavis:focus-main] error:', e);
-      }
+      void showMainWindow()
+        .then(() => {
+          console.log('[wavis:focus-main] show_main_window done');
+        })
+        .catch((e) => {
+          console.error('[wavis:focus-main] error:', e);
+        });
     });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
@@ -1676,7 +1652,7 @@ export default function ActiveRoom() {
       closeShareWindow(participantId);
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(resolve, 1000);
-        oldWin.window.once('tauri://destroyed', () => {
+        oldWin.window.onceDestroyed(() => {
           clearTimeout(timeout);
           resolve();
         });
@@ -1694,18 +1670,15 @@ export default function ActiveRoom() {
       initialVolume: getSavedShareVolume(participantId),
       initialMuted: getSavedShareMuted(participantId),
     };
-    const hash = encodeURIComponent(JSON.stringify(params));
-    const windowLabel = `screen-share-${participantId}`;
-
     try {
       if (stream === null) {
         // The Rust side keys share frames by LiveKit identity (the durable
         // userId on new backends), not by the signaling participantId.
         const nativeIdentity = liveKitIdentityForParticipant(participantId);
-        await invoke('media_open_native_screen_share_viewer', {
-          identity: nativeIdentity,
-          title: `${participant.displayName} — screen share`,
-        });
+        await openNativeScreenShareViewer(
+          nativeIdentity,
+          `${participant.displayName} — screen share`,
+        );
 
         nativeShareViewersRef.current.set(participantId, nativeIdentity);
         attachScreenShareAudio(participantId);
@@ -1715,26 +1688,16 @@ export default function ActiveRoom() {
         if (watchAllWindowRef.current && watchAllReadyRef.current) {
           watchAllAttachedAudioRef.current.delete(participantId);
           prevWatchAllStreamsRef.current.delete(participantId);
-          emit('watch-all:share-removed', { participantId });
+          emitWatchAllShareRemoved(participantId);
         }
         return;
       }
 
-      const win = new WebviewWindow(windowLabel, {
-        url: `/screen-share#${hash}`,
-        title: `${participant.displayName} — screen share`,
-        width: 800,
-        height: 520,
-        minWidth: 320,
-        minHeight: 232,
-        resizable: true,
-        decorations: false,
-        center: true,
-      });
+      const win = openScreenShareViewerWindow(params, `${participant.displayName} — screen share`);
 
       // The pop-out subscribes to the share directly via its own LiveKit
       // viewer connection (see viewer-connection.ts) — no loopback bridge.
-      win.once('tauri://error', (e) => {
+      win.onceError((e) => {
         console.error('[wavis:active-room] screen share window error:', e);
         setWatchingShareIds((prev) => {
           const next = new Set(prev);
@@ -1745,7 +1708,7 @@ export default function ActiveRoom() {
 
       // Defense-in-depth: restore the tile even if the page-level close event
       // is missed and only the native window destruction fires.
-      win.once('tauri://destroyed', () => {
+      win.onceDestroyed(() => {
         handleShareWindowClosed(participantId);
       });
 
@@ -1759,7 +1722,7 @@ export default function ActiveRoom() {
       if (watchAllWindowRef.current && watchAllReadyRef.current) {
         watchAllAttachedAudioRef.current.delete(participantId);
         prevWatchAllStreamsRef.current.delete(participantId);
-        emit('watch-all:share-removed', { participantId });
+        emitWatchAllShareRemoved(participantId);
       }
     } catch (err) {
       console.error('[wavis:active-room] failed to open screen share window:', err);
@@ -1775,9 +1738,7 @@ export default function ActiveRoom() {
     const openedNativeIdentity = nativeShareViewersRef.current.get(participantId);
     if (openedNativeIdentity !== undefined) {
       nativeShareViewersRef.current.delete(participantId);
-      invoke('media_close_native_screen_share_viewer', { identity: openedNativeIdentity }).catch(
-        () => {},
-      );
+      closeNativeScreenShareViewer(openedNativeIdentity);
     }
     const shareWindow = shareWindowsRef.current.get(participantId);
     if (shareWindow) {
@@ -1800,9 +1761,7 @@ export default function ActiveRoom() {
     closeWatchAllWindow(); // close Watch All window first
     for (const [pid, nativeIdentity] of nativeShareViewersRef.current) {
       detachScreenShareAudio(pid);
-      invoke('media_close_native_screen_share_viewer', { identity: nativeIdentity }).catch(
-        () => {},
-      );
+      closeNativeScreenShareViewer(nativeIdentity);
     }
     nativeShareViewersRef.current.clear();
     for (const [pid, shareWindow] of shareWindowsRef.current) {
@@ -1852,9 +1811,9 @@ export default function ActiveRoom() {
 
         const prevSnapshot = prevTiles.get(tile.participantId);
         if (!prevSnapshot) {
-          void emit('camera-popout:tile-added', snapshot);
+          emitCameraPopoutTileAdded(snapshot);
         } else if (!areVideoTileSnapshotsEqual(prevSnapshot, snapshot)) {
-          void emit('camera-popout:tile-updated', snapshot);
+          emitCameraPopoutTileUpdated(snapshot);
         }
 
         const prevTrack = prevTracks.get(tile.participantId) ?? null;
@@ -1870,7 +1829,7 @@ export default function ActiveRoom() {
       for (const participantId of prevTiles.keys()) {
         if (!nextTiles.has(participantId)) {
           stopSending(participantId, 'camera-popout');
-          void emit('camera-popout:tile-removed', { participantId });
+          emitCameraPopoutTileRemoved(participantId);
         }
       }
 
@@ -1889,35 +1848,23 @@ export default function ActiveRoom() {
     const rs = roomStateRef.current;
     if (!rs) return;
 
-    const hash = encodeURIComponent(JSON.stringify({ channelName: rs.channelName }));
-
     try {
       videoPopoutReadyRef.current = false;
-      const unlistenReady = await listen('camera-popout:ready', () => {
+      const unlistenReady = await listenCameraPopoutReady(() => {
         if (videoPopoutReadyRef.current) return;
         videoPopoutReadyRef.current = true;
         syncVideoPopoutSnapshot(roomStateRef.current?.videoTilesById ?? {});
       });
       videoPopoutReadyUnlistenRef.current = unlistenReady;
 
-      const win = new WebviewWindow('camera-popout', {
-        url: `/camera-popout#${hash}`,
-        title: `Camera — ${rs.channelName}`,
-        width: 960,
-        height: 540,
-        minWidth: 480,
-        minHeight: 320,
-        resizable: true,
-        decorations: false,
-        center: true,
-      });
+      const win = openCameraPopoutWindow(rs.channelName);
 
-      win.once('tauri://error', (event) => {
+      win.onceError((event) => {
         console.error('[wavis:active-room] video popout window error:', event);
         closeVideoPopoutWindow(true);
       });
 
-      win.once('tauri://destroyed', () => {
+      win.onceDestroyed(() => {
         closeVideoPopoutWindow(true);
       });
 
@@ -1960,9 +1907,6 @@ export default function ActiveRoom() {
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
 
-    const params = { channelName: roomState.channelName };
-    const hash = encodeURIComponent(JSON.stringify(params));
-
     try {
       // Await the ready listener registration so it's guaranteed to be
       // active before the child window can emit watch-all:ready.
@@ -1970,7 +1914,7 @@ export default function ActiveRoom() {
       // await meant the listener wasn't registered yet when the child
       // window mounted and emitted the ready event.
       watchAllReadyRef.current = false;
-      const unlistenReady = await listen('watch-all:ready', () => {
+      const unlistenReady = await listenWatchAllReady(() => {
         console.log(
           '[wavis:active-room] watch-all:ready received, readyRef was:',
           watchAllReadyRef.current,
@@ -1993,14 +1937,14 @@ export default function ActiveRoom() {
         for (const [pid, stream] of scope.streams) {
           const participant = scope.participants.find((p) => p.id === pid);
           if (participant) {
-            emit('watch-all:share-added', {
+            emitWatchAllShareAdded({
               participantId: pid,
               liveKitIdentity: liveKitIdentityForParticipant(pid),
               displayName: participant.displayName,
               color: participant.color,
               canvasFallback: stream === null,
             });
-            emitWatchAllRestoreVolume(pid);
+            restoreWatchAllVolumeForParticipant(pid);
           }
         }
         // Seed the dynamic tracking ref so the useEffect doesn't
@@ -2019,7 +1963,7 @@ export default function ActiveRoom() {
             return next;
           });
           setScreenShareAudioVolume(identity, 0);
-          void emit('watch-all:audio-share-added', {
+          emitWatchAllAudioShareAdded({
             participantId: identity,
             displayName: participant.displayName,
             color: participant.color,
@@ -2031,24 +1975,14 @@ export default function ActiveRoom() {
       });
       watchAllReadyUnlistenRef.current = unlistenReady;
 
-      const win = new WebviewWindow('watch-all', {
-        url: `/watch-all#${hash}`,
-        title: `Watch All — ${roomState.channelName}`,
-        width: 960,
-        height: 540,
-        minWidth: 480,
-        minHeight: 320,
-        resizable: true,
-        decorations: false,
-        center: true,
-      });
+      const win = openWatchAllGridWindow(roomState.channelName);
 
-      win.once('tauri://error', (e) => {
+      win.onceError((e) => {
         console.error('[wavis:active-room] watch-all window error:', e);
       });
 
       // Defense-in-depth: tauri://destroyed fires even if watch-all:closed doesn't
-      win.once('tauri://destroyed', () => {
+      win.onceDestroyed(() => {
         closeWatchAllWindow();
       });
 
@@ -2150,9 +2084,7 @@ export default function ActiveRoom() {
       focusMainHotkeyRef.current = hotkey;
       registerFocusMainHotkey(hotkey, () => {
         console.log('[wavis:focus-main] hotkey fired');
-        void invoke('show_main_window').catch((e) =>
-          console.error('[wavis:focus-main] hotkey error:', e),
-        );
+        void showMainWindow().catch((e) => console.error('[wavis:focus-main] hotkey error:', e));
       });
     });
 
@@ -2251,17 +2183,17 @@ export default function ActiveRoom() {
 
   useEffect(() => {
     if (!roomState) return;
-    void emit('share:user-state', shareUserStateRef.current);
+    emitShareUserState(shareUserStateRef.current);
   }, [roomState, selfP?.isMuted, roomState?.isDeafened, selfSharing, shareEnabled]);
 
   useEffect(() => {
     if (!roomState) return;
-    void emit('share:voice-participants', voiceParticipantsRef.current);
+    emitShareVoiceParticipants(voiceParticipantsRef.current);
   }, [roomState, roomState?.participants, roomState?.selfParticipantId]);
 
   useEffect(() => {
     if (!roomState) return;
-    void emit('watch-all:voice-participants', watchAllVoiceParticipantsRef.current);
+    emitWatchAllVoiceParticipants(watchAllVoiceParticipantsRef.current);
   }, [
     roomState,
     roomState?.participants,
@@ -2285,11 +2217,7 @@ export default function ActiveRoom() {
         //   capture pipeline (inline SharePicker → WinCapture → startNativeCapture
         //   + startWasapiAudioBridge). getDisplayMedia() is never called on Windows.
         if (isMacPlatform) {
-          const access = await invoke<{
-            authorized: boolean;
-            promptShown: boolean;
-            restartRequired: boolean;
-          }>('ensure_screen_recording_access');
+          const access = await ensureScreenRecordingAccess();
 
           if (!access.authorized) {
             const msg =
@@ -2330,7 +2258,7 @@ export default function ActiveRoom() {
           setWinSharePicker({ enumResult: null, occupied });
           setSharePickerLoading(false);
           try {
-            const enumResult = await invoke<EnumerationResult>('list_share_sources');
+            const enumResult = await listShareSources();
             setWinSharePicker((current) => (current ? { ...current, enumResult } : current));
           } catch (err) {
             setWinSharePicker(null);
@@ -2384,18 +2312,7 @@ export default function ActiveRoom() {
         enumResult: { sources: [], warnings: [], fallback_reason: null },
         occupied,
       });
-      const pickerPayload = encodeURIComponent(JSON.stringify({ enumResult: null, occupied }));
-      new WebviewWindow('share-picker', {
-        url: `/share-picker#${pickerPayload}`,
-        title: 'Wavis — Share Picker',
-        width: 640,
-        height: 480,
-        minWidth: 360,
-        minHeight: 320,
-        resizable: true,
-        decorations: false,
-        center: true,
-      });
+      openSharePickerWindow({ enumResult: null, occupied });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showTransientScreenShareError(msg);
@@ -3497,8 +3414,7 @@ export default function ActiveRoom() {
                                     initialWithAudio,
                                   });
                                   try {
-                                    const enumResult =
-                                      await invoke<EnumerationResult>('list_share_sources');
+                                    const enumResult = await listShareSources();
                                     setWinSharePicker((current) =>
                                       current ? { ...current, enumResult } : current,
                                     );
