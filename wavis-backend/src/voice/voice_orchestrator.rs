@@ -437,6 +437,18 @@ async fn evict_stale_session(
         );
     }
 
+    // 1b. Reclaim the stale peer's hidden viewer identities (screen-share
+    // viewer windows) so LiveKit drops those connections as well.
+    let mut stale_viewer_ids: Vec<String> = Vec::new();
+    room_state.update_room_info(room_id, |info| {
+        stale_viewer_ids = info.take_viewer_identities(&stale_peer_id);
+    });
+    if let Some(ref handle) = sfu_handle {
+        for viewer_id in &stale_viewer_ids {
+            let _ = sfu_room_manager.remove_participant(handle, viewer_id).await;
+        }
+    }
+
     // 2. Clean up any active screen share owned by the stale peer.
     let share_signals =
         super::screen_share::cleanup_share_on_disconnect(room_state, room_id, &stale_peer_id);

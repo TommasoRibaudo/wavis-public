@@ -52,10 +52,11 @@ import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge'
 import { playNotificationSound, prewarmAudioContext, updateCachedNotificationVolume, updateCachedSoundVolumes } from './notification-sounds';
 import { toast } from 'sonner';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const LOG = '[wavis:voice-room]';
 const DEBUG_WASAPI = import.meta.env.VITE_DEBUG_WASAPI === 'true';
+const DEBUG_VIEWER_CONNECTION = import.meta.env.VITE_DEBUG_VIEWER_CONNECTION === 'true';
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
 const DEBUG_VIDEO_FEED = import.meta.env.VITE_DEBUG_VIDEO_FEED === 'true';
 const windowsWgcFailedSourceKinds = new Set<'screen' | 'window'>();
@@ -1388,6 +1389,10 @@ let cameraToggleChain: Promise<void> = Promise.resolve();
 type MediaModule = LiveKitModule | NativeMediaModule;
 
 let lkModule: MediaModule | null = null;
+// Settled promise of the most recent session-end media teardown. Awaited
+// (bounded) by the updater so the installer never kills the process while the
+// mic capture device is still open — see waitForMediaTeardown().
+let lastMediaTeardown: Promise<void> = Promise.resolve();
 let reusePatchGuardCheckedForSession = false;
 let reusePatchGuardPassedForSession = false;
 interface PendingWasapiResume {
@@ -1862,6 +1867,9 @@ let unlistenExternalShareStopped: UnlistenFn | null = null;
 let unlistenExternalShareError: UnlistenFn | null = null;
 let unlistenLinuxCaptureFallback: UnlistenFn | null = null;
 let unlistenViewerJoined: UnlistenFn | null = null;
+let unlistenViewerTokenRequest: UnlistenFn | null = null;
+/** Broker correlation for viewer-token requests: windowId → windowLabel. */
+const pendingViewerTokenRequests = new Map<string, string>();
 
 export function setPendingSharePickerData(data: PendingSharePickerData | null): void {
   pendingSharePickerData = data;
@@ -2082,6 +2090,11 @@ function cleanupPublishedMediaForSessionEnd(): void {
     } finally {
       suppressMediaDisconnectedReconnect = false;
     }
+    // Retain the teardown promise so waitForMediaTeardown() (the updater path)
+    // can wait for the mic capture device to actually be released. The `in`
+    // guard keeps NativeMediaModule and test doubles working without it.
+    lastMediaTeardown =
+      'waitForTeardown' in lkModule ? lkModule.waitForTeardown().catch(() => {}) : Promise.resolve();
     lkModule = null;
   }
   resetCameraRuntimeState();
@@ -2089,6 +2102,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   bufferedMediaToken = null;
   latestMediaToken = null;
   bufferedIceConfig = null;
+  pendingViewerTokenRequests.clear();
   externalShareHelperActive = false;
   reusePatchGuardCheckedForSession = false;
   reusePatchGuardPassedForSession = false;
@@ -2096,6 +2110,25 @@ function cleanupPublishedMediaForSessionEnd(): void {
   stopColdStartRetry();
   stopPeriodicMediaRetry();
   setActiveLiveKitModule(null);
+}
+
+/**
+ * Wait for the most recent session-end media teardown to release its capture
+ * devices, bounded by `timeoutMs`. The auto-updater awaits this after
+ * leaveRoom(): installing an update kills the process, and killing it while
+ * the mic capture is still open can wedge Bluetooth/USB headsets until they
+ * are reconnected (issue #230).
+ */
+export async function waitForMediaTeardown(timeoutMs = 2000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  try {
+    await Promise.race([lastMediaTeardown, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function visibleRemoteCameraSet(): { ids: Set<string>; tiles: Record<string, RemoteCameraTileRuntimeState> } {
@@ -4276,6 +4309,28 @@ function dispatchMessage(raw: unknown): void {
       break;
     }
 
+    case 'viewer_token': {
+      const windowId = msg.windowId as string;
+      const windowLabel = pendingViewerTokenRequests.get(windowId);
+      if (!windowLabel) {
+        if (DEBUG_VIEWER_CONNECTION) {
+          console.log(LOG, `viewer_token for unknown windowId ${windowId} — ignoring`);
+        }
+        break;
+      }
+      pendingViewerTokenRequests.delete(windowId);
+      if (DEBUG_VIEWER_CONNECTION) {
+        console.log(LOG, `viewer_token relayed to ${windowLabel} (windowId ${windowId})`);
+      }
+      void emitTo(windowLabel, 'viewer-token:response', {
+        windowId,
+        token: msg.token as string,
+        sfuUrl: msg.sfuUrl as string,
+        identity: msg.identity as string,
+      });
+      break;
+    }
+
     case 'chat_message': {
       const participant = state.participants.find(
         (p) => p.id === (msg.participantId as string)
@@ -4372,6 +4427,7 @@ export function initSession(
   bufferedMediaToken = null;
   latestMediaToken = null;
   bufferedIceConfig = null;
+  pendingViewerTokenRequests.clear();
 
   // Push initial state to the component
   notify();
@@ -4389,6 +4445,24 @@ export function initSession(
       }
     }).then((unlisten) => {
       unlistenViewerJoined = unlisten;
+    });
+  }
+
+  // Broker viewer-token requests from child viewer windows: forward to the
+  // signaling server over this window's WS and relay the response back to the
+  // requesting window (children have no WS of their own).
+  if (!unlistenViewerTokenRequest) {
+    listen<{ windowId: string; windowLabel: string }>('viewer-token:request', ({ payload }) => {
+      if (!payload?.windowId || !payload?.windowLabel) return;
+      pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
+      if (DEBUG_VIEWER_CONNECTION) {
+        console.log(LOG, `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`);
+      }
+      if (client) {
+        client.send({ type: 'request_viewer_token', windowId: payload.windowId });
+      }
+    }).then((unlisten) => {
+      unlistenViewerTokenRequest = unlisten;
     });
   }
 
@@ -4604,6 +4678,11 @@ export function leaveRoom(): void {
     unlistenViewerJoined();
     unlistenViewerJoined = null;
   }
+  if (unlistenViewerTokenRequest) {
+    unlistenViewerTokenRequest();
+    unlistenViewerTokenRequest = null;
+  }
+  pendingViewerTokenRequests.clear();
 
   // Notify before clearing callback (so component gets the idle state)
   notify();
