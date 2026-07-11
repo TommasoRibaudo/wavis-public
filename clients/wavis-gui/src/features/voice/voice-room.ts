@@ -22,12 +22,9 @@ import {
   type ShareProfileId,
 } from './livekit-media';
 import {
-  CAMERA_QUALITY_HIGH,
-  CAMERA_QUALITY_LOW,
   type CameraQuality,
   type CameraStartError,
   type CameraStartWarning,
-  type PanelTabInput,
   type VideoTileViewModel,
 } from './camera-types';
 import { MotionDetector, DEFAULT_MOTION_DETECTOR_CONFIG } from './motion-detector';
@@ -74,7 +71,6 @@ import {
 import {
   canStartShare,
   planStopCommands,
-  screenShareActiveInRoom,
   type ActiveAudioShare,
   type ActiveVideoShare,
 } from './share-slot-policy';
@@ -86,6 +82,13 @@ import {
   type VoicePassthroughState,
   type VoiceSubRoom,
 } from './participant-volume-model';
+import {
+  buildVideoTilesById,
+  computeRoomPanelTab,
+  desiredCameraQualityForState,
+  type CameraPublicationState,
+  type RemoteCameraTileRuntimeState,
+} from './video-tile-model';
 import { lookupLinuxCapability, type LinuxCapabilityRow } from './linux-capability-matrix';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
@@ -312,7 +315,7 @@ export interface VoiceRoomState {
   /** Authoritative active passthrough pair, if any. */
   passthrough: VoicePassthroughState | null;
   cameraIntent: boolean;
-  cameraPublication: 'idle' | 'opening' | 'publishing' | 'published' | 'failing';
+  cameraPublication: CameraPublicationState;
   cameraSelectedDeviceId: string | null;
   videoTilesById: Record<string, VideoTileViewModel>;
   roomPanelManualOverride: 'logs' | 'video' | null;
@@ -331,11 +334,6 @@ export const MAX_EVENTS = 100;
 export const MAX_PARTICIPANTS = 6;
 const WS_RATE_LIMIT_ERROR_MESSAGE = 'rate limit exceeded';
 
-interface RemoteCameraTileRuntimeState {
-  track: MediaStreamTrack | null;
-  isMuted: boolean;
-  hasError: boolean;
-}
 const RATE_LIMIT_RECONNECT_MESSAGE =
   "Connection closed — you're sending messages too fast. Reconnecting";
 
@@ -748,59 +746,6 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
   }
   clearSelfAudioActivity(self);
   setLocalMicPublishing(shouldPublishLocalMic(self));
-}
-
-/* ─── Pure Share Helpers (exported for property testing) ─────────── */
-
-export function computeRoomPanelTab(input: PanelTabInput): 'logs' | 'video' {
-  if (!input.anyVideoActive) {
-    return 'logs';
-  }
-  if (input.manualOverride !== null) {
-    return input.manualOverride;
-  }
-  return 'video';
-}
-
-export function buildVideoTilesById(input: {
-  participants: Array<Pick<RoomParticipant, 'id' | 'displayName' | 'color'>>;
-  selfParticipantId: string | null;
-  cameraPublication: VoiceRoomState['cameraPublication'];
-  localTrack: MediaStreamTrack | null;
-  remoteTilesById: Record<string, RemoteCameraTileRuntimeState>;
-}): Record<string, VideoTileViewModel> {
-  const tilesById: Record<string, VideoTileViewModel> = {};
-  const participantsById = new Map(
-    input.participants.map((participant) => [participant.id, participant]),
-  );
-
-  for (const [participantId, remoteTile] of Object.entries(input.remoteTilesById)) {
-    const participant = participantsById.get(participantId);
-    tilesById[participantId] = {
-      participantId,
-      displayName: participant?.displayName || participantId,
-      color: participant?.color || colorFor({ id: participantId }),
-      track: remoteTile.track,
-      isSelf: false,
-      isMuted: remoteTile.isMuted,
-      hasError: remoteTile.hasError,
-    };
-  }
-
-  if (input.cameraPublication === 'published' && input.selfParticipantId) {
-    const participant = participantsById.get(input.selfParticipantId);
-    tilesById[input.selfParticipantId] = {
-      participantId: input.selfParticipantId,
-      displayName: participant?.displayName || input.selfParticipantId,
-      color: participant?.color || colorFor({ id: input.selfParticipantId }),
-      track: input.localTrack,
-      isSelf: true,
-      isMuted: false,
-      hasError: false,
-    };
-  }
-
-  return tilesById;
 }
 
 /**
@@ -2192,10 +2137,6 @@ export function appendSystemEvent(message: string): void {
     message,
   });
   notify();
-}
-
-function desiredCameraQualityForState(currentState: VoiceRoomState): CameraQuality {
-  return screenShareActiveInRoom(currentState) ? CAMERA_QUALITY_LOW : CAMERA_QUALITY_HIGH;
 }
 
 const CAMERA_QUALITY_RETRY_INTERVAL_MS = 1_000;
