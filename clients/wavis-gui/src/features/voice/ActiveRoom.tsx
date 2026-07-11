@@ -72,9 +72,6 @@ import { setCurrentWindowSize } from '@shared/window-bridge';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import {
   closeNativeScreenShareViewer,
-  emitCameraPopoutTileAdded,
-  emitCameraPopoutTileRemoved,
-  emitCameraPopoutTileUpdated,
   emitShareRestoreVolume,
   emitShareUserState,
   emitShareVoiceParticipants,
@@ -87,9 +84,7 @@ import {
   emitWatchAllVoiceParticipants,
   ensureScreenRecordingAccess,
   listShareSources,
-  listenCameraPopoutReady,
   listenWatchAllReady,
-  onCameraPopoutClosed,
   onNativeShareError,
   onScreenShareChangeSource,
   onScreenShareClosed,
@@ -111,7 +106,6 @@ import {
   onWatchAllMuteChange,
   onWatchAllPopOut,
   onWatchAllVolumeChange,
-  openCameraPopoutWindow,
   openNativeScreenShareViewer,
   openScreenShareViewerWindow,
   openSharePickerWindow,
@@ -119,12 +113,6 @@ import {
   requestScreenShareWindowClose,
 } from '@features/screen-share/share-window-bridge';
 import type { ChildWindowHandle } from '@features/screen-share/share-window-bridge';
-import {
-  startSending,
-  stopSending,
-  stopSendingForWindow,
-  resendStream,
-} from '@features/screen-share/screen-share-viewer';
 import { setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
@@ -137,6 +125,7 @@ import { useTransientChatError } from './useTransientChatError';
 import { useCliFocusShortcut } from './useCliFocusShortcut';
 import { useMainWindowLifecycle } from './useMainWindowLifecycle';
 import { useRoomHotkeys } from './useRoomHotkeys';
+import { useVideoPopoutWindow } from './useVideoPopoutWindow';
 import { useAutoScrollAnchor } from '@shared/hooks/useAutoScrollAnchor';
 import { useDebug } from '@shared/debug-context';
 import { connectionModeBadgeText } from '@shared/helpers';
@@ -160,7 +149,6 @@ import {
 import { participantNameVisualState } from './active-room-participant-row';
 import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
-import type { VideoTileSnapshot, VideoTileViewModel } from './camera-types';
 import { chatLinkTarget } from './chat-links';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -308,32 +296,6 @@ type ShareViewerScope = 'direct' | 'watch-all';
 interface ShareViewerWindow {
   scope: ShareViewerScope;
   window: ChildWindowHandle;
-}
-
-function buildVideoTileSnapshot(tile: VideoTileViewModel): VideoTileSnapshot {
-  return {
-    participantId: tile.participantId,
-    liveKitIdentity: liveKitIdentityForParticipant(tile.participantId),
-    displayName: tile.displayName,
-    color: tile.color,
-    hasTrack: tile.track !== null,
-    isSelf: tile.isSelf,
-    isMuted: tile.isMuted,
-    hasError: tile.hasError,
-  };
-}
-
-function areVideoTileSnapshotsEqual(a: VideoTileSnapshot, b: VideoTileSnapshot): boolean {
-  return (
-    a.participantId === b.participantId &&
-    a.liveKitIdentity === b.liveKitIdentity &&
-    a.displayName === b.displayName &&
-    a.color === b.color &&
-    a.hasTrack === b.hasTrack &&
-    a.isSelf === b.isSelf &&
-    a.isMuted === b.isMuted &&
-    a.hasError === b.hasError
-  );
 }
 
 /* ─── Sub-components ────────────────────────────────────────────── */
@@ -567,10 +529,6 @@ export default function ActiveRoom() {
   const watchAllReadyUnlistenRef = useRef<(() => void) | null>(null);
   const [watchAllOpen, setWatchAllOpen] = useState(false);
   const watchAllReadyRef = useRef(false);
-  const videoPopoutWindowRef = useRef<ChildWindowHandle | null>(null);
-  const videoPopoutReadyUnlistenRef = useRef<(() => void) | null>(null);
-  const [videoPopoutOpen, setVideoPopoutOpen] = useState(false);
-  const videoPopoutReadyRef = useRef(false);
   const toggleWatchAllRef = useRef<() => void>(() => {});
   const groupedPanelVideoActivityKey = roomState
     ? Object.entries(roomState.videoTilesById)
@@ -590,11 +548,6 @@ export default function ActiveRoom() {
       return current === 'video' ? 'chat' : current;
     });
   }, [groupedPanelVideoActivityKey]);
-
-  useEffect(() => {
-    if (!videoPopoutOpen) return;
-    setGroupedPanelTab((current) => (current === 'video' ? 'chat' : current));
-  }, [videoPopoutOpen]);
 
   // Screen share window state (multi-window: one per sharer)
   const [watchingShareIds, setWatchingShareIds] = useState<Set<string>>(new Set());
@@ -717,10 +670,6 @@ export default function ActiveRoom() {
     }
     prevStreamsRef.current = new Map(roomState.screenShareStreams);
   }, [watchingShareIds, roomState?.screenShareStreams]);
-
-  useEffect(() => {
-    return onCameraPopoutClosed(() => closeVideoPopoutWindow(true));
-  }, []);
 
   const getSavedShareVolume = useCallback((participantId: string) => {
     // watchAllVolumesRef is updated synchronously by syncScreenShareVolume;
@@ -1509,117 +1458,17 @@ export default function ActiveRoom() {
   // Ref to latest roomState so the ready callback always reads fresh data
   const roomStateRef = useRef(roomState);
   roomStateRef.current = roomState;
-  const prevVideoPopoutTracksRef = useRef<Map<string, MediaStreamTrack | null>>(new Map());
-  const prevVideoPopoutTilesRef = useRef<Map<string, VideoTileSnapshot>>(new Map());
 
-  const closeVideoPopoutWindow = (alreadyDestroyed = false) => {
-    if (!videoPopoutWindowRef.current) return;
-    if (videoPopoutReadyUnlistenRef.current) {
-      videoPopoutReadyUnlistenRef.current();
-      videoPopoutReadyUnlistenRef.current = null;
-    }
-    videoPopoutReadyRef.current = false;
-    stopSendingForWindow('camera-popout');
-    if (!alreadyDestroyed) {
-      videoPopoutWindowRef.current.close().catch(() => {});
-    }
-    videoPopoutWindowRef.current = null;
-    setVideoPopoutOpen(false);
-    prevVideoPopoutTracksRef.current = new Map();
-    prevVideoPopoutTilesRef.current = new Map();
-  };
+  const { videoPopoutOpen, openVideoPopoutWindow, closeVideoPopoutWindow } = useVideoPopoutWindow({
+    videoTilesById: roomState?.videoTilesById,
+    getRoomSnapshot: () => roomStateRef.current,
+  });
 
-  const syncVideoPopoutSnapshot = useCallback(
-    (nextTilesById: Record<string, VideoTileViewModel>) => {
-      const prevTracks = prevVideoPopoutTracksRef.current;
-      const prevTiles = prevVideoPopoutTilesRef.current;
-      const nextTracks = new Map<string, MediaStreamTrack | null>();
-      const nextTiles = new Map<string, VideoTileSnapshot>();
-
-      for (const tile of Object.values(nextTilesById)) {
-        const snapshot = buildVideoTileSnapshot(tile);
-        const sendableTrack =
-          snapshot.hasTrack && !snapshot.isMuted && !snapshot.hasError ? tile.track : null;
-        nextTracks.set(tile.participantId, sendableTrack);
-        nextTiles.set(tile.participantId, snapshot);
-
-        const prevSnapshot = prevTiles.get(tile.participantId);
-        if (!prevSnapshot) {
-          emitCameraPopoutTileAdded(snapshot);
-        } else if (!areVideoTileSnapshotsEqual(prevSnapshot, snapshot)) {
-          emitCameraPopoutTileUpdated(snapshot);
-        }
-
-        const prevTrack = prevTracks.get(tile.participantId) ?? null;
-        if (sendableTrack && !prevTrack) {
-          void startSending(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
-        } else if (sendableTrack && prevTrack !== sendableTrack) {
-          void resendStream(tile.participantId, 'camera-popout', new MediaStream([sendableTrack]));
-        } else if (!sendableTrack && prevTrack) {
-          stopSending(tile.participantId, 'camera-popout');
-        }
-      }
-
-      for (const participantId of prevTiles.keys()) {
-        if (!nextTiles.has(participantId)) {
-          stopSending(participantId, 'camera-popout');
-          emitCameraPopoutTileRemoved(participantId);
-        }
-      }
-
-      prevVideoPopoutTracksRef.current = nextTracks;
-      prevVideoPopoutTilesRef.current = nextTiles;
-    },
-    [],
-  );
-
-  const openVideoPopoutWindow = useCallback(async () => {
-    if (videoPopoutWindowRef.current) {
-      videoPopoutWindowRef.current.setFocus().catch(() => {});
-      return;
-    }
-
-    const rs = roomStateRef.current;
-    if (!rs) return;
-
-    try {
-      videoPopoutReadyRef.current = false;
-      const unlistenReady = await listenCameraPopoutReady(() => {
-        if (videoPopoutReadyRef.current) return;
-        videoPopoutReadyRef.current = true;
-        syncVideoPopoutSnapshot(roomStateRef.current?.videoTilesById ?? {});
-      });
-      videoPopoutReadyUnlistenRef.current = unlistenReady;
-
-      const win = openCameraPopoutWindow(rs.channelName);
-
-      win.onceError((event) => {
-        console.error('[wavis:active-room] video popout window error:', event);
-        closeVideoPopoutWindow(true);
-      });
-
-      win.onceDestroyed(() => {
-        closeVideoPopoutWindow(true);
-      });
-
-      videoPopoutWindowRef.current = win;
-      setVideoPopoutOpen(true);
-      // Switch away from the video tab — it's now in the pop-out window
-      selectRoomPanelTab('logs');
-    } catch (err) {
-      console.error('[wavis:active-room] failed to open video popout window:', err);
-    }
-  }, [syncVideoPopoutSnapshot]);
-
+  // The grouped panel loses its video tab while the pop-out owns the grid.
   useEffect(() => {
-    if (!videoPopoutOpen) {
-      prevVideoPopoutTracksRef.current = new Map();
-      prevVideoPopoutTilesRef.current = new Map();
-      return;
-    }
-    if (!videoPopoutReadyRef.current) return;
-    syncVideoPopoutSnapshot(roomState?.videoTilesById ?? {});
-  }, [roomState?.videoTilesById, syncVideoPopoutSnapshot, videoPopoutOpen]);
+    if (!videoPopoutOpen) return;
+    setGroupedPanelTab((current) => (current === 'video' ? 'chat' : current));
+  }, [videoPopoutOpen]);
 
   /** Open the Watch All window showing all active screen shares in a grid. */
   const openWatchAllWindow = async () => {
