@@ -1,0 +1,8 @@
+# Thresholds for the non-blocking "clippy metrics" CI pass (workspace-ci.yml),
+# which runs with -W clippy::cognitive_complexity -W clippy::too_many_lines.
+# Both lints are allow-by-default, so these thresholds never affect the
+# blocking Clippy gate. Do NOT set too-many-arguments-threshold or
+# type-complexity-threshold here: those lints are warn-by-default, so a
+# stricter threshold would turn the blocking -D warnings gate red.
+cognitive-complexity-threshold = 20
+too-many-lines-threshold = 120
