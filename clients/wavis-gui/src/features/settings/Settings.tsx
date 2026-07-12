@@ -204,7 +204,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const handleNavigateAway = useCallback(
     (path: string) => {
       if (onNavigateAway) onNavigateAway(path);
-      else navigate(path);
+      else void navigate(path);
     },
     [onNavigateAway, navigate],
   );
@@ -212,7 +212,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const handleAuthNavigateAway = useCallback(
     (path: string) => {
       if (onNavigateAway) onNavigateAway(path);
-      else navigate(path, { replace: true });
+      else void navigate(path, { replace: true });
     },
     [onNavigateAway, navigate],
   );
@@ -298,27 +298,27 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     : null;
 
   useEffect(() => {
-    getServerUrl().then(setServerUrl);
-    getDeviceId().then(setDeviceId);
-    getUsername().then((name) => setUsernameState(name ?? ''));
-    getProfileColor().then(setSelectedColor);
-    getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
-    getDefaultVolume().then(setVolume);
-    getStoreValue<string>(STORE_KEYS.audioInputDevice, '').then(setSelectedInputDevice);
-    getStoreValue<string>(STORE_KEYS.audioOutputDevice, '').then(setSelectedOutputDevice);
-    getAccessToken().then(setAccessTokenVal);
-    getMinimizeToTray().then(setMinimizeToTrayState);
-    getNotificationToggles().then(setNotifyToggles);
+    void getServerUrl().then(setServerUrl);
+    void getDeviceId().then(setDeviceId);
+    void getUsername().then((name) => setUsernameState(name ?? ''));
+    void getProfileColor().then(setSelectedColor);
+    void getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
+    void getDefaultVolume().then(setVolume);
+    void getStoreValue<string>(STORE_KEYS.audioInputDevice, '').then(setSelectedInputDevice);
+    void getStoreValue<string>(STORE_KEYS.audioOutputDevice, '').then(setSelectedOutputDevice);
+    void getAccessToken().then(setAccessTokenVal);
+    void getMinimizeToTray().then(setMinimizeToTrayState);
+    void getNotificationToggles().then(setNotifyToggles);
     setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
     setPassthroughFiltersEnabledState(getVoiceRoomState().passthroughFiltersEnabled);
     setPassthroughFilterStrengthState(getVoiceRoomState().passthroughFilterStrength);
-    getMuteHotkey().then(setMuteHotkeyState);
-    getWatchAllHotkey().then(setWatchAllHotkeyState);
-    getFocusMainHotkey().then(setFocusMainHotkeyState);
-    getDenoiseEnabled().then(setDenoiseEnabledState);
-    getInputVolume().then(setInputVolumeState);
-    getNotificationVolume().then(setNotificationVolumeState);
-    getSoundVolumes().then(setSoundVolumesState);
+    void getMuteHotkey().then(setMuteHotkeyState);
+    void getWatchAllHotkey().then(setWatchAllHotkeyState);
+    void getFocusMainHotkey().then(setFocusMainHotkeyState);
+    void getDenoiseEnabled().then(setDenoiseEnabledState);
+    void getInputVolume().then(setInputVolumeState);
+    void getNotificationVolume().then(setNotificationVolumeState);
+    void getSoundVolumes().then(setSoundVolumesState);
     getVersion()
       .then(setAppVersion)
       .catch(() => {});
@@ -333,7 +333,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     invoke<AudioDevice[]>('list_audio_devices')
       .then(setAudioDevices)
       .catch(() => setAudioError('Failed to load audio devices'));
-    getVideoInputDevice().then(setSelectedVideoDevice);
+    void getVideoInputDevice().then(setSelectedVideoDevice);
     if (supportedCapturePlatform) {
       navigator.mediaDevices
         .enumerateDevices()
@@ -344,7 +344,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   // Startup sync: emit minimize-to-tray-changed to Rust after store loads
   useEffect(() => {
-    getMinimizeToTray().then((enabled) => {
+    void getMinimizeToTray().then((enabled) => {
       emit('minimize-to-tray-changed', { enabled }).catch(() => {});
     });
   }, []);
@@ -365,7 +365,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   const handleMinimizeToTrayChange = useCallback((checked: boolean) => {
     setMinimizeToTrayState(checked);
-    setMinimizeToTray(checked);
+    void setMinimizeToTray(checked);
     emit('minimize-to-tray-changed', { enabled: checked }).catch(() => {});
   }, []);
 
@@ -478,7 +478,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
       // Persist and register
       const oldHotkey = muteHotkey;
       setMuteHotkeyState(combo);
-      setMuteHotkey(combo);
+      void setMuteHotkey(combo);
 
       // Try to re-register if currently registered (active session)
       isHotkeyRegistered(oldHotkey)
@@ -537,7 +537,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
       const oldHotkey = watchAllHotkey;
       setWatchAllHotkeyState(combo);
-      setWatchAllHotkey(combo);
+      void setWatchAllHotkey(combo);
 
       isHotkeyRegistered(oldHotkey)
         .then(async (wasRegistered) => {
@@ -594,7 +594,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
       const oldHotkey = focusMainHotkey;
       setFocusMainHotkeyState(combo);
-      setFocusMainHotkey(combo);
+      void setFocusMainHotkey(combo);
 
       isHotkeyRegistered(oldHotkey)
         .then(async (wasRegistered) => {
@@ -605,7 +605,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               // best effort
             }
             // Re-register new hotkey immediately so it works without reconnecting
-            registerFocusMainHotkey(combo, () => {
+            void registerFocusMainHotkey(combo, () => {
               void getCurrentWindow()
                 .unminimize()
                 .then(() => getCurrentWindow().setFocus());
@@ -647,7 +647,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             </button>
           ) : (
             <button
-              onClick={() => navigate('/')}
+              onClick={() => {
+                void navigate('/');
+              }}
               className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
             >
               ← /channels
@@ -807,7 +809,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               </button>
             ) : !channelId ? (
               <button
-                onClick={() => navigate('/')}
+                onClick={() => {
+                  void navigate('/');
+                }}
                 className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
               >
                 ← /channels
@@ -869,7 +873,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 </button>
                 <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
                   <button
-                    onClick={handleLogout}
+                    onClick={() => {
+                      void handleLogout();
+                    }}
                     disabled={loggingOut}
                     className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -930,7 +936,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         style={{ backgroundColor: color }}
                         onClick={() => {
                           setSelectedColor(color);
-                          setProfileColor(color);
+                          void setProfileColor(color);
                           updateSessionProfileColor(color);
                         }}
                         aria-label={`Select color ${color}`}
@@ -962,7 +968,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         checked={tlsEnabled}
                         onCheckedChange={(checked: boolean) => {
                           setTlsEnabled(checked);
-                          setStoreValue(STORE_KEYS.tlsEnabled, checked);
+                          void setStoreValue(STORE_KEYS.tlsEnabled, checked);
                         }}
                         aria-label="Toggle TLS verification"
                       />
@@ -997,7 +1003,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         onChange={(e) => {
                           const deviceId = e.target.value;
                           setSelectedInputDevice(deviceId);
-                          setStoreValue(STORE_KEYS.audioInputDevice, deviceId);
+                          void setStoreValue(STORE_KEYS.audioInputDevice, deviceId);
                           setAudioDevice(deviceId, 'input').catch(() => {});
                         }}
                         className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
@@ -1020,7 +1026,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                             value={inputVolume}
                             onChange={(v) => {
                               setInputVolumeState(v);
-                              setInputVolume(v);
+                              void setInputVolume(v);
                               setAudioInputVolume(v).catch(() => {});
                             }}
                           />
@@ -1043,7 +1049,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         onChange={(e) => {
                           const deviceId = e.target.value;
                           setSelectedOutputDevice(deviceId);
-                          setStoreValue(STORE_KEYS.audioOutputDevice, deviceId);
+                          void setStoreValue(STORE_KEYS.audioOutputDevice, deviceId);
                           setAudioDevice(deviceId, 'output').catch(() => {});
                         }}
                         className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
@@ -1094,7 +1100,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         value={notificationVolume}
                         onChange={(v) => {
                           setNotificationVolumeState(v);
-                          setNotificationVolume(v);
+                          void setNotificationVolume(v);
                           updateCachedNotificationVolume(v);
                         }}
                       />
@@ -1128,7 +1134,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                   onChange={(next_v) => {
                                     const next = { ...soundVolumes, [key]: next_v };
                                     setSoundVolumesState(next);
-                                    setSoundVolumes(next);
+                                    void setSoundVolumes(next);
                                     updateCachedSoundVolumes(next);
                                   }}
                                 />
@@ -1147,7 +1153,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">Noise Suppression (RNNoise)</span>
                   <Switch
                     checked={denoiseEnabled}
-                    onCheckedChange={handleDenoiseToggle}
+                    onCheckedChange={(checked) => {
+                      void handleDenoiseToggle(checked);
+                    }}
                     aria-label="Toggle noise suppression"
                   />
                 </div>
@@ -1331,7 +1339,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                       checked={notifyToggles[key]}
                       onCheckedChange={(checked: boolean) => {
                         setNotifyToggles((prev) => ({ ...prev, [key]: checked }));
-                        setNotificationToggle(key, checked);
+                        void setNotificationToggle(key, checked);
                       }}
                     />
                   </div>
@@ -1447,7 +1455,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">sounds: </span>
                   <span>Universfield, floraphonic, humordome, pixabay, SoundReality - </span>
                   <button
-                    onClick={() => open('https://pixabay.com')}
+                    onClick={() => {
+                      void open('https://pixabay.com');
+                    }}
                     className="hover:text-wavis-accent hover:underline"
                   >
                     pixabay.com
@@ -1457,7 +1467,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">icons: </span>
                   <span>video camera by Kiranshastry — </span>
                   <button
-                    onClick={() => open('https://www.flaticon.com/free-icons/video-camera')}
+                    onClick={() => {
+                      void open('https://www.flaticon.com/free-icons/video-camera');
+                    }}
                     className="hover:text-wavis-accent hover:underline"
                   >
                     flaticon.com
@@ -1492,7 +1504,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     requiredText="RESET"
                     busy={resetting}
                     busyLabel="resetting..."
-                    onConfirm={handleReset}
+                    onConfirm={() => {
+                      void handleReset();
+                    }}
                     onCancel={() => setShowConfirm(false)}
                   />
                 )}
