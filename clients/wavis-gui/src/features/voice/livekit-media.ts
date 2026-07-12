@@ -300,12 +300,18 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
   if (payload) {
     const iceServers: RTCIceServer[] = [];
 
+    // stunUrls/turnUrls are typed as required string[] on TurnIceConfigPayload,
+    // but that type describes a signaling payload from the wire, not something
+    // validated at runtime here — a malformed or older server response could
+    // genuinely omit them.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (payload.stunUrls && payload.stunUrls.length > 0) {
       iceServers.push({ urls: payload.stunUrls });
       console.log(LOG, 'ICE config: added STUN servers:', payload.stunUrls);
     }
 
     if (
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       payload.turnUrls &&
       payload.turnUrls.length > 0 &&
       payload.turnUsername &&
@@ -337,7 +343,7 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
       'iceServersCount=',
       rtcConfig.iceServers?.length ?? 0,
       'turnUrls.length=',
-      payload?.turnUrls?.length ?? 0,
+      payload?.turnUrls.length ?? 0,
     );
   }
 
@@ -415,7 +421,7 @@ function isInactiveVideoLeakCandidate(transceiver: RTCRtpTransceiver): boolean {
     stopped !== true &&
     transceiver.direction === 'inactive' &&
     transceiver.sender.track == null &&
-    transceiver.receiver.track?.kind === 'video'
+    transceiver.receiver.track.kind === 'video'
   );
 }
 
@@ -1200,7 +1206,13 @@ class MicAudioProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcess
   }
 
   async init({ track, audioContext }: AudioProcessorOptions): Promise<void> {
+    // AudioProcessorOptions is a livekit-client SDK type, and init() is invoked
+    // by the SDK's internal pipeline, not our own code — even if the SDK's .d.ts
+    // declares audioContext required, we don't control whether its runtime
+    // behavior actually honors that.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     const ctx = audioContext ?? this.audioCtx;
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!ctx) throw new Error('MicAudioProcessor: no AudioContext available');
     this.audioCtx = ctx;
     await this.ensureWorkletModule(ctx);
@@ -1209,9 +1221,9 @@ class MicAudioProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcess
       outputChannelCount: [1],
     });
     this.denoiseNode.port.onmessage = (event: MessageEvent<{ type: string; payload: unknown }>) => {
-      if (event.data?.type === 'stats') {
+      if (event.data.type === 'stats') {
         this.onStats?.(event.data.payload as NoiseSuppressionStats);
-      } else if (event.data?.type === 'state') {
+      } else if (event.data.type === 'state') {
         this.onState?.(event.data.payload as NoiseSuppressionStatePayload);
       }
     };
@@ -8166,7 +8178,13 @@ export class LiveKitModule {
     this.nativeCaptureFailureReject = null;
     this.nativeCaptureFailureListenerPromise = null;
     if (leakSession) {
+      // Self-verification, not dead code: cleanupFlags exists so the share-leak
+      // diagnostic reflects what actually happened, not an assumption. This reads
+      // as always-true today, but stays live so a future edit to the cleanup
+      // logic above (an early return, a reordered step) can't silently make the
+      // diagnostic lie.
       leakSession.summary.cleanupFlags.pollIntervalCleared =
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         this.nativeCapturePollInterval === null;
     }
 
@@ -8183,7 +8201,9 @@ export class LiveKitModule {
     this.nativeBridgeCadenceStats = null;
     this.nativeBridgeReportBaseline = null;
     if (leakSession) {
+      // Self-verification, not dead code — see the pollIntervalCleared comment above.
       leakSession.summary.cleanupFlags.frameHandlerCleared =
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         this.nativeCaptureFrameHandler === null;
       leakSession.summary.cleanupFlags.earlyFramesCleared =
         this.nativeCaptureEarlyFrames.length === 0;
@@ -8194,6 +8214,8 @@ export class LiveKitModule {
     const pub = this.nativeCapturePublication;
     this.nativeCapturePublication = null;
     if (leakSession) {
+      // Self-verification, not dead code — see the pollIntervalCleared comment above.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       leakSession.summary.cleanupFlags.publicationCleared = this.nativeCapturePublication === null;
     }
     if (pub && this.room) {
@@ -8247,6 +8269,8 @@ export class LiveKitModule {
       this.nativeCaptureCanvas = null;
     }
     if (leakSession) {
+      // Self-verification, not dead code — see the pollIntervalCleared comment above.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       leakSession.summary.cleanupFlags.canvasRemoved = this.nativeCaptureCanvas === null;
     }
 
