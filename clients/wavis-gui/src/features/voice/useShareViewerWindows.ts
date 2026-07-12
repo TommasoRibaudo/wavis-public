@@ -714,9 +714,10 @@ export function useShareViewerWindows({
   // own direct LiveKit subscription and recover on their own.
   const prevStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   useEffect(() => {
-    if (!roomState) return;
+    const screenShareStreams = roomState?.screenShareStreams;
+    if (!screenShareStreams) return;
     for (const id of watchingShareIds) {
-      const current = roomState.screenShareStreams.get(id) ?? null;
+      const current = screenShareStreams.get(id) ?? null;
       const prev = prevStreamsRef.current.get(id) ?? null;
       if (current && current !== prev) {
         attachScreenShareAudio(id);
@@ -729,7 +730,7 @@ export function useShareViewerWindows({
         setScreenShareAudioVolume(id, muted ? 0 : volume);
       }
     }
-    prevStreamsRef.current = new Map(roomState.screenShareStreams);
+    prevStreamsRef.current = new Map(screenShareStreams);
   }, [watchingShareIds, roomState?.screenShareStreams]);
 
   // Listen for child windows closing themselves
@@ -918,16 +919,20 @@ export function useShareViewerWindows({
     roomState?.joinedSubRoomId,
     roomState?.subRooms,
     roomState?.passthrough,
+    applySavedScreenShareAudio,
+    restoreWatchAllVolumeForParticipant,
   ]);
 
   // Watch All: sync audio-only sharer additions/removals
   useEffect(() => {
-    if (!roomState) return;
-    const curr = roomState.audioOnlySharers;
+    const audioOnlySharers = roomState?.audioOnlySharers;
+    const participants = roomState?.participants;
+    if (!audioOnlySharers || !participants) return;
+    const curr = audioOnlySharers;
     const prev = prevAudioOnlySharersRef.current;
     for (const identity of curr) {
       if (prev.has(identity)) continue;
-      const participant = roomState.participants.find((p) => p.id === identity);
+      const participant = participants.find((p) => p.id === identity);
       if (!participant) continue;
       const vol = getSavedShareVolume(identity);
       // Always start audio shares muted; preserve the last-set volume for restore.
