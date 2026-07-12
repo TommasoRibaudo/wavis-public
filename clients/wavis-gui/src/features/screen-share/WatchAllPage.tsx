@@ -6,10 +6,7 @@ import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { ViewerRoomConnection } from './viewer-connection';
 import { computeWatchAllLayout } from './watch-all-grid';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
-import {
-  isPlaybackHealthyWithoutFreshFrames,
-  STATIC_CONTENT_HEALTH_PING_MS,
-} from './useVideoStallDetector';
+import { useVideoStallDetector } from './useVideoStallDetector';
 import {
   WATCH_ALL_TEST_READY_EVENT,
   WATCH_ALL_TEST_STATE_EVENT,
@@ -390,46 +387,6 @@ const ShareTile = memo(function ShareTile({
     };
   }, [canvasFallback, isDiagnosticTest, participantId, liveKitIdentity]);
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !stream || canvasFallback || isDiagnosticTest) return;
-
-    let disposed = false;
-    const hasRvfc = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
-    let timeupdateHandler: (() => void) | null = null;
-    const healthInterval = setInterval(() => {
-      if (disposed) return;
-      if (isPlaybackHealthyWithoutFreshFrames(video, stream)) {
-        markFrameRendered();
-      }
-    }, STATIC_CONTENT_HEALTH_PING_MS);
-
-    if (hasRvfc) {
-      const scheduleRvfc = () => {
-        if (disposed) return;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (video as any).requestVideoFrameCallback(() => {
-          markFrameRendered();
-          scheduleRvfc();
-        });
-      };
-      scheduleRvfc();
-    } else {
-      timeupdateHandler = () => {
-        markFrameRendered();
-      };
-      video.addEventListener('timeupdate', timeupdateHandler);
-    }
-
-    return () => {
-      disposed = true;
-      clearInterval(healthInterval);
-      if (timeupdateHandler) {
-        video.removeEventListener('timeupdate', timeupdateHandler);
-      }
-    };
-  }, [canvasFallback, isDiagnosticTest, markFrameRendered, stream]);
-
   /* ── Retry handler ── */
 
   const handleRetry = useCallback(() => {
@@ -440,6 +397,17 @@ const ShareTile = memo(function ShareTile({
     viewerConn?.forceReconnect();
     setRetryCount((c) => c + 1);
   }, [viewerConn]);
+
+  // Frame-health + dead-track recovery. Canvas-fallback/diagnostic-test tiles
+  // don't use a real <video> element, so pass stream: null to no-op the hook
+  // for them (mirrors the previous effect's early-return guard).
+  useVideoStallDetector({
+    videoRef,
+    stream: canvasFallback || isDiagnosticTest ? null : stream,
+    onFrameDetected: markFrameRendered,
+    onDeadTrack: handleRetry,
+    onReattach: markFrameRendered,
+  });
 
   /* ── Double-click → pop out ── */
 
