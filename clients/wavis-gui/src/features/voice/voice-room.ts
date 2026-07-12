@@ -2830,7 +2830,7 @@ function dispatchMessage(raw: unknown): void {
           LOG,
           `auth_failed — refreshing token (attempt ${authRefreshRetries}/${MAX_AUTH_REFRESH_RETRIES})`,
         );
-        refreshTokens().then((result) => {
+        void refreshTokens().then((result) => {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
             state.error = (msg.reason as string) || 'Authentication failed';
@@ -2840,7 +2840,7 @@ function dispatchMessage(raw: unknown): void {
             notify();
             return;
           }
-          getServerUrl().then((serverUrl) => {
+          void getServerUrl().then((serverUrl) => {
             if (!serverUrl || !client) return;
             client.reconnectWithNewToken(toWsUrl(serverUrl)).catch((err) => {
               console.error(LOG, 'reconnect after refresh failed:', err);
@@ -3474,7 +3474,7 @@ function dispatchMessage(raw: unknown): void {
           p.isSpeaking = false;
           p.rmsLevel = 0;
         }
-        lkModule?.setMicEnabled(false);
+        void lkModule?.setMicEnabled(false);
         appendEvent({
           id: makeEventId(),
           timestamp: timestamp(),
@@ -3950,7 +3950,7 @@ function dispatchMessage(raw: unknown): void {
 
       // When media is in failed state, check if auto-reconnect retries remain
       if (state.mediaState === 'failed') {
-        getReconnectConfig().then((config) => {
+        void getReconnectConfig().then((config) => {
           if (state.mediaReconnectFailures < config.maxRetries) {
             connectMedia(sfuUrl, token, iceConfig);
           } else {
