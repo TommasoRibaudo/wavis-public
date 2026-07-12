@@ -26,6 +26,14 @@ import type {
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { NativeMicBridge } from './native-mic-bridge';
+import {
+  toStatsEntries,
+  isCandidatePairEntry,
+  isLocalCandidateEntry,
+  isInboundRtpAudioEntry,
+  isInboundRtpVideoEntry,
+  type RtcStatsEntry,
+} from './rtc-stats';
 import type { CameraMediaCallbacks, CameraQuality, CameraStartError } from './camera-types';
 import {
   getAudioOutputDevice,
@@ -872,26 +880,27 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
   let availableBandwidthKbps = 0;
 
   for (const report of reports) {
+    const entries = toStatsEntries(report);
     // Build a local id→entry map to resolve candidate-pair → local-candidate references
-    const entryById = new Map<string, RTCStats>();
-    report.forEach((entry) => {
+    const entryById = new Map<string, RtcStatsEntry>();
+    for (const entry of entries) {
       entryById.set(entry.id, entry);
-    });
+    }
 
-    report.forEach((entry) => {
+    for (const entry of entries) {
       // Nominated ICE candidate pair: RTT, available outgoing bandwidth, local candidate type
-      if (entry.type === 'candidate-pair' && entry.nominated) {
+      if (isCandidatePairEntry(entry) && entry.nominated) {
         if (rttMs === 0 && typeof entry.currentRoundTripTime === 'number') {
           rttMs = Math.round(entry.currentRoundTripTime * 1000);
         }
         if (availableBandwidthKbps === 0 && typeof entry.availableOutgoingBitrate === 'number') {
           availableBandwidthKbps = Math.round(entry.availableOutgoingBitrate / 1000);
         }
-        if (candidateType === 'unknown' && entry.localCandidateId) {
-          const local = entryById.get(entry.localCandidateId) as
-            Record<string, unknown> | undefined;
-          if (local) {
-            const ct = typeof local.candidateType === 'string' ? local.candidateType : undefined;
+        const localCandidateId = entry.localCandidateId;
+        if (candidateType === 'unknown' && localCandidateId) {
+          const local = entryById.get(localCandidateId);
+          if (local && isLocalCandidateEntry(local)) {
+            const ct = local.candidateType;
             if (ct === 'host' || ct === 'srflx' || ct === 'relay') {
               candidateType = ct;
             } else if (ct === 'prflx') {
@@ -901,7 +910,7 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
         }
       }
       // Inbound audio RTP: packet loss, jitter, jitter buffer delay, concealment events
-      if (entry.type === 'inbound-rtp' && entry.kind === 'audio') {
+      if (isInboundRtpAudioEntry(entry)) {
         if (typeof entry.jitter === 'number') {
           jitterMs = Math.round(entry.jitter * 1000);
         }
@@ -936,7 +945,7 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
           concealmentEventsTotal += entry.concealmentEvents;
         }
       }
-    });
+    }
   }
 
   const packetLossPercent =
@@ -4978,8 +4987,8 @@ export class LiveKitModule {
     let framesDecoded = 0;
     let hasVideo = false;
 
-    report.forEach((entry) => {
-      if (entry.type !== 'inbound-rtp' || entry.kind !== 'video') return;
+    for (const entry of toStatsEntries(report)) {
+      if (!isInboundRtpVideoEntry(entry)) continue;
       hasVideo = true;
       if (typeof entry.framesPerSecond === 'number') fps = entry.framesPerSecond;
       if (typeof entry.frameWidth === 'number') frameWidth = entry.frameWidth;
@@ -5017,7 +5026,7 @@ export class LiveKitModule {
       if (typeof entry.nackCount === 'number') nackCountCum = entry.nackCount;
       if (typeof entry.totalDecodeTime === 'number') totalDecodeTimeSec = entry.totalDecodeTime;
       if (typeof entry.framesDecoded === 'number') framesDecoded = entry.framesDecoded;
-    });
+    }
 
     if (!hasVideo) {
       // No remote video track — nothing to report
