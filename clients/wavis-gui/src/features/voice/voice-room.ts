@@ -95,6 +95,7 @@ import {
   normalizeLinuxCompositor,
   normalizeLinuxDesktopEnv,
 } from './linux-capability-normalize';
+import { parseSignalingMessage } from './signaling/parse';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
   playNotificationSound,
@@ -2782,8 +2783,17 @@ function connectMedia(
 /* ─── Signaling Dispatcher ──────────────────────────────────────── */
 
 function dispatchMessage(raw: unknown): void {
-  const msg = raw as Record<string, unknown>;
-  const type = msg.type as string;
+  const parsed = parseSignalingMessage(raw);
+  if (parsed.kind === 'invalid') {
+    console.warn(LOG, 'invalid message received:', raw);
+    return;
+  }
+  if (parsed.kind === 'unknown') {
+    console.warn(LOG, 'unknown message type:', parsed.type);
+    return;
+  }
+  const msg = parsed.msg;
+  const type = msg.type;
 
   // Diagnostic: log media_token arrival
   if (type === 'media_token' || type === 'joined') {
@@ -2833,7 +2843,7 @@ function dispatchMessage(raw: unknown): void {
         void refreshTokens().then((result) => {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
-            state.error = (msg.reason as string) || 'Authentication failed';
+            state.error = msg.reason || 'Authentication failed';
             playLocalDisconnectSoundOnce();
             cleanupPublishedMediaForSessionEnd();
             state.machineState = 'idle';
@@ -2855,7 +2865,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      state.error = (msg.reason as string) || 'Authentication failed';
+      state.error = msg.reason || 'Authentication failed';
       if (client) {
         client.disconnect();
       }
@@ -2871,49 +2881,39 @@ function dispatchMessage(raw: unknown): void {
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
       state.lastRateLimitError = null;
-      state.selfParticipantId = msg.peerId as string;
-      state.roomId = msg.roomId as string;
-      bufferedIceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ?? null;
+      state.selfParticipantId = msg.peerId;
+      state.roomId = msg.roomId;
+      bufferedIceConfig = msg.iceConfig ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
       }
       syncDerivedSubRoomState();
       syncDesiredSubRoomPreference();
-      state.sharePermission =
-        (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
-      const participants = (msg.participants as Array<Record<string, unknown>>) || [];
+      state.sharePermission = msg.sharePermission === 'host_only' ? 'host_only' : 'anyone';
+      const participants = msg.participants || [];
       const incomingParticipants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const pUserId = p.userId as string | undefined;
+        const pUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: pUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: pUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: pUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
         };
@@ -2974,7 +2974,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'join_rejected': {
-      const rawReason = (msg.reason as string) || 'unknown';
+      const rawReason = msg.reason || 'unknown';
       console.warn(LOG, `join_rejected reason=${rawReason} channelId=${state.channelId}`);
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
@@ -2982,7 +2982,7 @@ function dispatchMessage(raw: unknown): void {
         cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
-        state.rejectionReason = (msg.reason as string) || 'Server failed to start';
+        state.rejectionReason = msg.reason || 'Server failed to start';
         notify();
         break;
       }
@@ -3010,15 +3010,15 @@ function dispatchMessage(raw: unknown): void {
 
     case 'participant_joined': {
       if (state.participants.length >= MAX_PARTICIPANTS) return;
-      const pjId = msg.participantId as string;
-      const pjName = msg.displayName as string;
-      const pjUserId = msg.userId as string | undefined;
+      const pjId = msg.participantId;
+      const pjName = msg.displayName;
+      const pjUserId = msg.userId;
       displayNameCache.set(pjId, pjName);
       const newParticipant: RoomParticipant = {
         id: pjId,
         userId: pjUserId,
         displayName: pjName,
-        color: (msg.profileColor as string | undefined) ?? colorFor({ userId: pjUserId, id: pjId }),
+        color: msg.profileColor ?? colorFor({ userId: pjUserId, id: pjId }),
         role: 'guest',
         isSpeaking: false,
         isMuted: false,
@@ -3045,7 +3045,7 @@ function dispatchMessage(raw: unknown): void {
     case 'participant_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const leftId = msg.participantId as string;
+      const leftId = msg.participantId;
       const leftP = state.participants.find((p) => p.id === leftId);
       mediaConnectedParticipantIds.delete(leftId);
       suppressReconnectJoinForParticipantIds.delete(leftId);
@@ -3093,10 +3093,10 @@ function dispatchMessage(raw: unknown): void {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const previousPassthrough = state.passthrough;
-      const rooms = ((msg.rooms as Array<Record<string, unknown>>) || [])
+      const rooms = (msg.rooms || [])
         .map((room) => ({
-          id: room.subRoomId as string,
-          roomNumber: room.roomNumber as number,
+          id: room.subRoomId,
+          roomNumber: room.roomNumber,
           isDefault: Boolean(room.isDefault),
           participantIds: Array.isArray(room.participantIds)
             ? (room.participantIds as string[]).slice()
@@ -3105,7 +3105,7 @@ function dispatchMessage(raw: unknown): void {
         }))
         .sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
-      const passthrough = msg.passthrough as Record<string, unknown> | null | undefined;
+      const passthrough = msg.passthrough;
       state.passthrough =
         passthrough &&
         typeof passthrough.sourceSubRoomId === 'string' &&
@@ -3186,11 +3186,11 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'sub_room_created': {
-      const room = msg.room as Record<string, unknown> | undefined;
+      const room = msg.room;
       if (!room) break;
       const createdRoom: VoiceSubRoom = {
-        id: room.subRoomId as string,
-        roomNumber: room.roomNumber as number,
+        id: room.subRoomId,
+        roomNumber: room.roomNumber,
         isDefault: Boolean(room.isDefault),
         participantIds: Array.isArray(room.participantIds)
           ? (room.participantIds as string[]).slice()
@@ -3212,9 +3212,9 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_joined': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
-      const source = (msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
+      const source = msg.source === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
       state.subRooms = state.subRooms.map((room) => {
         if (room.id === subRoomId) {
           return room.participantIds.includes(participantId)
@@ -3275,8 +3275,8 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
       const srlRoom = state.subRooms.find((r) => r.id === subRoomId);
       const srlRoomLabel = srlRoom ? `Room ${srlRoom.roomNumber}` : 'a room';
       state.subRooms = state.subRooms.map((room) =>
@@ -3319,7 +3319,7 @@ function dispatchMessage(raw: unknown): void {
 
     case 'sub_room_deleted': {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const subRoomId = msg.subRoomId as string;
+      const subRoomId = msg.subRoomId;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
@@ -3340,30 +3340,29 @@ function dispatchMessage(raw: unknown): void {
       // room_state contains only pre-join participants (excludes the joiner).
       // Merge with existing list to preserve self and any participants already
       // added via participant_joined that arrived before this snapshot.
-      const rsParticipants = (msg.participants as Array<Record<string, unknown>>) || [];
+      const rsParticipants = msg.participants || [];
       const incoming = rsParticipants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const rsUserId = p.userId as string | undefined;
+        const rsUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: rsUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: rsUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: rsUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
         };
@@ -3400,7 +3399,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_kicked': {
-      const kickedId = msg.participantId as string;
+      const kickedId = msg.participantId;
       const kickedP = state.participants.find((p) => p.id === kickedId);
       mediaConnectedParticipantIds.delete(kickedId);
       suppressReconnectJoinForParticipantIds.delete(kickedId);
@@ -3463,7 +3462,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_muted': {
-      const mutedId = msg.participantId as string;
+      const mutedId = msg.participantId;
       const p = state.participants.find((pp) => pp.id === mutedId);
       if (p) {
         p.isMuted = true;
@@ -3496,7 +3495,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_unmuted': {
-      const unmutedId = msg.participantId as string;
+      const unmutedId = msg.participantId;
       const up = state.participants.find((pp) => pp.id === unmutedId);
       if (up) {
         up.isHostMuted = false;
@@ -3524,7 +3523,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_muted': {
-      const selfMutedId = msg.participantId as string;
+      const selfMutedId = msg.participantId;
       console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
       const smp = state.participants.find((pp) => pp.id === selfMutedId);
       if (smp) {
@@ -3548,7 +3547,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_unmuted': {
-      const selfUnmutedId = msg.participantId as string;
+      const selfUnmutedId = msg.participantId;
       console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
       const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
       if (sup) {
@@ -3570,7 +3569,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_deafened': {
-      const deafId = msg.participantId as string;
+      const deafId = msg.participantId;
       const dp = state.participants.find((pp) => pp.id === deafId);
       if (dp) {
         dp.isDeafened = true;
@@ -3591,7 +3590,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_undeafened': {
-      const undeafId = msg.participantId as string;
+      const undeafId = msg.participantId;
       const udp = state.participants.find((pp) => pp.id === undeafId);
       if (udp) {
         udp.isDeafened = false;
@@ -3612,10 +3611,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_color_updated': {
-      const coloredId = msg.participantId as string;
+      const coloredId = msg.participantId;
       const cp = state.participants.find((pp) => pp.id === coloredId);
       if (cp) {
-        cp.color = msg.profileColor as string;
+        cp.color = msg.profileColor;
       }
       rebuildVideoTiles();
       notify();
@@ -3623,8 +3622,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_username_updated': {
-      const participantId = msg.participantId as string;
-      const username = msg.username as string;
+      const participantId = msg.participantId;
+      const username = msg.username;
       const participant = state.participants.find((pp) => pp.id === participantId);
       if (participant) {
         participant.displayName = username;
@@ -3636,8 +3635,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_started': {
-      const shareStartId = msg.participantId as string;
-      const shareStartName = msg.displayName as string | undefined;
+      const shareStartId = msg.participantId;
+      const shareStartName = msg.displayName;
       const remoteShareType = parseRemoteShareType(msg.shareType);
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
@@ -3696,8 +3695,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_stopped': {
-      const shareStopId = msg.participantId as string;
-      const shareStopName = msg.displayName as string | undefined;
+      const shareStopId = msg.participantId;
+      const shareStopName = msg.displayName;
       const ssp = state.participants.find((pp) => pp.id === shareStopId);
       if (ssp) {
         ssp.isSharing = false;
@@ -3742,9 +3741,9 @@ function dispatchMessage(raw: unknown): void {
 
     case 'share_state': {
       // share_state is an authoritative snapshot — reconcile all participants
-      const shareIds = new Set((msg.participantIds as string[]) || []);
+      const shareIds = new Set(msg.participantIds || []);
       const typedShares = new Map<string, RemoteShareType | undefined>(
-        ((msg.activeShares as Array<{ participantId: string; shareType?: unknown }>) || []).map(
+        (msg.activeShares || []).map(
           (share) =>
             [share.participantId, parseRemoteShareType(share.shareType)] as [
               string,
@@ -3808,7 +3807,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_permission_changed': {
-      const newPerm = (msg.permission as string) === 'host_only' ? 'host_only' : 'anyone';
+      const newPerm = msg.permission === 'host_only' ? 'host_only' : 'anyone';
       const oldPerm = state.sharePermission;
       state.sharePermission = newPerm;
       if (newPerm !== oldPerm) {
@@ -3825,7 +3824,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'error': {
-      const errorMessage = (msg.message as string) || 'Unknown error';
+      const errorMessage = msg.message || 'Unknown error';
       appendEvent({
         id: makeEventId(),
         timestamp: timestamp(),
@@ -3841,7 +3840,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'peer_left': {
-      const peerId = (msg.participantId as string) || (msg.peerId as string);
+      const peerId = msg.participantId || msg.peerId;
       if (peerId) {
         const peerP = state.participants.find((p) => p.id === peerId);
         state.participants = state.participants.filter((p) => p.id !== peerId);
@@ -3866,20 +3865,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'media_token': {
-      const token = msg.token as string;
-      const sfuUrl = msg.sfuUrl as string;
+      const token = msg.token;
+      const sfuUrl = msg.sfuUrl;
       // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
-      const iceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ??
-        bufferedIceConfig ??
-        undefined;
+      const iceConfig = msg.iceConfig ?? bufferedIceConfig ?? undefined;
 
       console.log(LOG, 'media_token received:', {
         hasToken: !!token,
@@ -3972,7 +3961,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'viewer_token': {
-      const windowId = msg.windowId as string;
+      const windowId = msg.windowId;
       const windowLabel = pendingViewerTokenRequests.get(windowId);
       if (!windowLabel) {
         if (DEBUG_VIEWER_CONNECTION) {
@@ -3986,24 +3975,24 @@ function dispatchMessage(raw: unknown): void {
       }
       void emitTo(windowLabel, 'viewer-token:response', {
         windowId,
-        token: msg.token as string,
-        sfuUrl: msg.sfuUrl as string,
-        identity: msg.identity as string,
+        token: msg.token,
+        sfuUrl: msg.sfuUrl,
+        identity: msg.identity,
       });
       break;
     }
 
     case 'chat_message': {
-      const participant = state.participants.find((p) => p.id === (msg.participantId as string));
+      const participant = state.participants.find((p) => p.id === msg.participantId);
       const chatMsg: ChatMessage = {
         id: makeEventId(),
-        messageId: (msg.messageId as string) || undefined,
-        timestamp: msg.timestamp as string,
-        participantId: msg.participantId as string,
-        userId: (msg.userId as string) || undefined,
-        displayName: msg.displayName as string,
+        messageId: msg.messageId || undefined,
+        timestamp: msg.timestamp,
+        participantId: msg.participantId,
+        userId: msg.userId || undefined,
+        displayName: msg.displayName,
         color: participant?.color ?? '',
-        text: msg.text as string,
+        text: msg.text,
       };
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
@@ -4017,14 +4006,14 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'chat_history_response': {
-      const messages = (msg.messages as Array<Record<string, unknown>>) || [];
+      const messages = msg.messages || [];
       const historyPayload = messages.map((m) => ({
-        messageId: m.messageId as string,
-        participantId: m.participantId as string,
-        userId: (m.userId as string) || undefined,
-        displayName: m.displayName as string,
-        text: m.text as string,
-        timestamp: m.timestamp as string,
+        messageId: m.messageId,
+        participantId: m.participantId,
+        userId: m.userId || undefined,
+        displayName: m.displayName,
+        text: m.text,
+        timestamp: m.timestamp,
       }));
       state.chatMessages = mergeHistoryMessages(historyPayload, state.chatMessages);
       state.historyLoaded = true;
