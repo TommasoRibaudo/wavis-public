@@ -204,6 +204,9 @@ const ShareTile = memo(function ShareTile({
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
+      // Without noUncheckedIndexedAccess, TS types entries[0] as always-defined even
+      // though the ResizeObserverEntry array could theoretically be empty.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!entry) return;
       updateViewport(entry.contentRect.width, entry.contentRect.height);
     });
@@ -326,6 +329,11 @@ const ShareTile = memo(function ShareTile({
           identity: nativeIdentity,
           lastSeq,
         });
+        // TS narrows cancelled/mjpegActive to false from the early-return guard above and
+        // doesn't see that the effect cleanup (a separate closure over the same variables)
+        // can flip them to true while this invoke() call was in flight. Real re-check, not
+        // dead code — do not remove.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (frame && !cancelled) {
           lastSeq = frame.seq;
           await handleFrame(frame);
@@ -333,6 +341,8 @@ const ShareTile = memo(function ShareTile({
       } catch {
         // Non-Linux builds and older builds may not expose the polling command.
       } finally {
+        // Same post-await re-check as above.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!cancelled && !mjpegActive) {
           pollFrameId = requestAnimationFrame(() => {
             void pollLatestFrame();
@@ -823,6 +833,10 @@ export default function WatchAllPage() {
             found = true;
             return { ...tile, volume, muted };
           });
+          // ESLint's narrowing doesn't see `found` mutated inside the prev.map()
+          // callback above — if no tile matches, found genuinely stays false and
+          // this branch is how a not-yet-created tile's volume gets queued.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (!found) {
             pendingRestoreVolumesRef.current.set(participantId, { volume, muted });
           }
@@ -952,6 +966,9 @@ export default function WatchAllPage() {
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
+      // Without noUncheckedIndexedAccess, TS types entries[0] as always-defined even
+      // though the ResizeObserverEntry array could theoretically be empty.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!entry) return;
 
       setGridSize((current) => {
@@ -988,6 +1005,9 @@ export default function WatchAllPage() {
       });
       return handled ? next : prev;
     });
+    // Same ESLint narrowing gap as above: `handled` is mutated inside the
+    // setTiles updater's prev.map() callback.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!handled) {
       setAudioTiles((prev) =>
         prev.map((t) => {

@@ -86,6 +86,10 @@ function preferH264(transceiver: RTCRtpTransceiver): void {
       typeof transceiver.setCodecPreferences !== 'function'
     )
       return;
+    // TS's lib.dom types getCapabilities as always-present, but some runtimes (test
+    // environments) genuinely lack it despite typeof RTCRtpSender !== 'undefined'.
+    // Do not remove this optional chain.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     const caps = RTCRtpSender.getCapabilities?.('video');
     if (!caps) return;
     const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
@@ -326,6 +330,10 @@ export async function resendStream(
   if (existing && existing.pc.connectionState === 'connected') {
     const newVideoTrack = stream.getVideoTracks()[0];
     const videoSender = existing.pc.getSenders().find((s) => s.track?.kind === 'video');
+    // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always-defined
+    // even though an empty track array (stream with no video) makes it genuinely
+    // undefined at runtime.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (newVideoTrack && videoSender) {
       try {
         applyScreenContentHint(newVideoTrack);
@@ -520,6 +528,10 @@ export class StreamReceiver {
           ]);
           if (
             this.startGeneration !== startGeneration ||
+            // this.pc is a mutable field that stop() can null out concurrently while this
+            // async listener registration was in flight (unlike `pc`, the local const
+            // captured just above, which can never change). Real staleness guard.
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             !this.pc ||
             this.pc !== pc ||
             pc.connectionState === 'closed'

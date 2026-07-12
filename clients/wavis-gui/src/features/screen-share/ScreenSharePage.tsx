@@ -226,6 +226,11 @@ export default function ScreenSharePage() {
               lastSeq,
             },
           );
+          // TS narrows cancelled/mjpegActive to false from the early-return guard above and
+          // doesn't see that the effect cleanup (a separate closure over the same variables)
+          // can flip them to true while this invoke() call was in flight. Real re-check, not
+          // dead code — do not remove.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (frame && !cancelled) {
             lastSeq = frame.seq;
             await handleFrame(frame);
@@ -233,6 +238,8 @@ export default function ScreenSharePage() {
         } catch {
           // Non-Linux builds and older builds may not expose the polling command.
         } finally {
+          // Same post-await re-check as above.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (!cancelled && !mjpegActive) {
             pollFrameId = requestAnimationFrame(() => {
               void pollLatestFrame();
@@ -314,20 +321,26 @@ export default function ScreenSharePage() {
       });
       void emit('viewer-subscribed', { targetId: p.participantId });
 
+      // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always-defined
+      // even though an audio-only stream (no video track) makes it genuinely undefined —
+      // every `vt`/`!vt` check below guards a real case, not dead code.
       const vt = s.getVideoTracks()[0];
       const updateDebug = () => {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (cancelled || !vt) return;
         setDebugInfo(`viewer: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`);
       };
       updateDebug();
       // Poll track state every second to detect muted→unmuted transitions
       const pollId = setInterval(updateDebug, 1000);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (vt) {
         vt.addEventListener('unmute', updateDebug);
         vt.addEventListener('mute', updateDebug);
       }
       debugCleanup = () => {
         clearInterval(pollId);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (vt) {
           vt.removeEventListener('unmute', updateDebug);
           vt.removeEventListener('mute', updateDebug);
