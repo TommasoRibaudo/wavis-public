@@ -85,7 +85,7 @@ function parseHashParams(): WatchAllParams | null {
   try {
     const hash = window.location.hash.slice(1);
     if (!hash) return null;
-    return JSON.parse(decodeURIComponent(hash));
+    return JSON.parse(decodeURIComponent(hash)) as WatchAllParams;
   } catch {
     return null;
   }
@@ -334,11 +334,15 @@ const ShareTile = memo(function ShareTile({
         // Non-Linux builds and older builds may not expose the polling command.
       } finally {
         if (!cancelled && !mjpegActive) {
-          pollFrameId = requestAnimationFrame(pollLatestFrame);
+          pollFrameId = requestAnimationFrame(() => {
+            void pollLatestFrame();
+          });
         }
       }
     };
-    pollFrameId = requestAnimationFrame(pollLatestFrame);
+    pollFrameId = requestAnimationFrame(() => {
+      void pollLatestFrame();
+    });
 
     invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
       .then((url) => {
@@ -381,9 +385,9 @@ const ShareTile = memo(function ShareTile({
     return () => {
       cancelled = true;
       if (pollFrameId !== null) cancelAnimationFrame(pollFrameId);
-      unlistenLinux.then((fn) => fn());
-      unlistenGenericLinux.then((fn) => fn());
-      unlistenGenericWin.then((fn) => fn());
+      void unlistenLinux.then((fn) => fn());
+      void unlistenGenericLinux.then((fn) => fn());
+      void unlistenGenericWin.then((fn) => fn());
     };
   }, [canvasFallback, isDiagnosticTest, participantId, liveKitIdentity]);
 
@@ -856,7 +860,7 @@ export default function WatchAllPage() {
 
       // All listeners registered — signal readiness to ActiveRoom
       console.log('[wavis:watch-all] emitting watch-all:ready');
-      emit('watch-all:ready', {});
+      void emit('watch-all:ready', {});
 
       return [
         unlistenAdded,
@@ -869,7 +873,7 @@ export default function WatchAllPage() {
     };
 
     let cleanups: Array<() => void> = [];
-    setup().then((fns) => {
+    void setup().then((fns) => {
       cleanups = fns;
     });
 
@@ -887,7 +891,7 @@ export default function WatchAllPage() {
       });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [isDiagnosticsTestMode]);
 
@@ -900,7 +904,7 @@ export default function WatchAllPage() {
       },
     );
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [isDiagnosticsTestMode]);
 
@@ -910,10 +914,10 @@ export default function WatchAllPage() {
   useEffect(() => {
     if (isDiagnosticsTestMode) return;
     const unlisten = listen('watch-all:close', () => {
-      getCurrentWindow().close();
+      void getCurrentWindow().close();
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [isDiagnosticsTestMode]);
 
@@ -921,10 +925,10 @@ export default function WatchAllPage() {
   useEffect(() => {
     if (isDiagnosticsTestMode) return;
     const unlisten = listen('voice-session:ended', () => {
-      getCurrentWindow().close();
+      void getCurrentWindow().close();
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [isDiagnosticsTestMode]);
 
@@ -936,7 +940,7 @@ export default function WatchAllPage() {
       await emit('watch-all:closed', {});
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [isDiagnosticsTestMode]);
 
@@ -979,7 +983,7 @@ export default function WatchAllPage() {
         if (t.participantId !== participantId) return t;
         handled = true;
         const nextMuted = !t.muted;
-        emit('watch-all:mute-change', { participantId, muted: nextMuted });
+        void emit('watch-all:mute-change', { participantId, muted: nextMuted });
         return { ...t, muted: nextMuted };
       });
       return handled ? next : prev;
@@ -989,7 +993,7 @@ export default function WatchAllPage() {
         prev.map((t) => {
           if (t.participantId !== participantId) return t;
           const nextMuted = !t.muted;
-          emit('watch-all:mute-change', { participantId, muted: nextMuted });
+          void emit('watch-all:mute-change', { participantId, muted: nextMuted });
           return { ...t, muted: nextMuted };
         }),
       );
@@ -1007,7 +1011,7 @@ export default function WatchAllPage() {
         t.participantId === participantId ? { ...t, volume, muted: volume === 0 } : t,
       ),
     );
-    emit('watch-all:volume-change', { participantId, volume });
+    void emit('watch-all:volume-change', { participantId, volume });
   }, []);
 
   const handleAspectRatioDetected = useCallback((participantId: string, ratio: number) => {
@@ -1028,7 +1032,7 @@ export default function WatchAllPage() {
           : participant,
       ),
     );
-    emit('share:voice-volume-change', { participantId, volume });
+    void emit('share:voice-volume-change', { participantId, volume });
   }, []);
 
   const handleVoiceMuteToggle = useCallback((participantId: string) => {
@@ -1040,7 +1044,7 @@ export default function WatchAllPage() {
             ? participant.volume
             : 50
           : 0;
-        emit('share:voice-volume-change', { participantId, volume: nextVolume });
+        void emit('share:voice-volume-change', { participantId, volume: nextVolume });
         return { ...participant, volume: nextVolume, muted: nextVolume === 0 };
       }),
     );
@@ -1088,13 +1092,13 @@ export default function WatchAllPage() {
   /* ── Pop-out ── */
 
   const handlePopOut = useCallback((participantId: string, volume: number, muted: boolean) => {
-    emit('watch-all:pop-out', { participantId, volume, muted });
+    void emit('watch-all:pop-out', { participantId, volume, muted });
   }, []);
 
   /* ── Close button ── */
 
   const handleClose = useCallback(() => {
-    getCurrentWindow().close();
+    void getCurrentWindow().close();
   }, []);
 
   /* ── Compute layout ── */
