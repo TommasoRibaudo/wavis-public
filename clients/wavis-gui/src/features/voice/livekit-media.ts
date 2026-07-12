@@ -6547,7 +6547,7 @@ export class LiveKitModule {
    * subscribers never see a TrackUnpublished/TrackPublished cycle.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private nativeCaptureTrackWriter: any = null;
+  private nativeCaptureTrackWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
   /** Buffered frames received between prepareNativeCapture and startNativeCapture. */
   private nativeCaptureEarlyFrames: NativeJpegBridgeFrame[] = [];
   /**
@@ -7044,23 +7044,20 @@ export class LiveKitModule {
     // VideoFrames directly into a MediaStreamTrack without canvas quirks.
     // Falls back to a DOM-attached canvas + captureStream if unavailable.
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hasTrackGenerator = typeof (globalThis as any).MediaStreamTrackGenerator === 'function';
+    const hasTrackGenerator = typeof MediaStreamTrackGenerator === 'function';
 
     let videoTrack: MediaStreamTrack;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let trackWriter: any = null; // WritableStreamDefaultWriter<VideoFrame>
+    let trackWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
     let canvas: HTMLCanvasElement | null = null;
     let ctx: CanvasRenderingContext2D | null = null;
     let canvasStream: MediaStream | null = null;
 
     if (hasTrackGenerator) {
       // ── Primary path: MediaStreamTrackGenerator ──
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const generator = new (globalThis as any).MediaStreamTrackGenerator({ kind: 'video' });
+      const generator = new MediaStreamTrackGenerator({ kind: 'video' });
       trackWriter = generator.writable.getWriter();
       this.nativeCaptureTrackWriter = trackWriter; // retained for replaceNativeCaptureSource()
-      videoTrack = generator as MediaStreamTrack;
+      videoTrack = generator;
       console.log(LOG, 'native capture: using MediaStreamTrackGenerator');
     } else {
       // ── Fallback: canvas.captureStream ──
@@ -7140,8 +7137,7 @@ export class LiveKitModule {
       frameWorkInFlight = true;
       const writeStartedAt = performance.now();
       if (trackWriter) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const vf = new (globalThis as any).VideoFrame(bitmap, {
+        const vf = new VideoFrame(bitmap, {
           timestamp: performance.now() * 1000,
         });
         let writePromise: Promise<void>;
@@ -7989,8 +7985,7 @@ export class LiveKitModule {
         .then((bitmap) => {
           this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
           this.replaceNativeCaptureDecodedCache(bitmap, width, height);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const vf = new (globalThis as any).VideoFrame(bitmap, {
+          const vf = new VideoFrame(bitmap, {
             timestamp: performance.now() * 1000,
           });
           let writePromise: Promise<void>;
