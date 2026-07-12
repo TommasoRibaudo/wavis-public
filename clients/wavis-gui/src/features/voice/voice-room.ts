@@ -438,6 +438,10 @@ function makeShareSessionId(): string {
   return `share-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+interface MediaTokenPayload {
+  sub?: unknown;
+}
+
 /** Decode the `sub` (LiveKit participant identity) claim from a media JWT without verifying it. */
 function decodeMediaTokenIdentity(token: string): string | null {
   try {
@@ -445,7 +449,7 @@ function decodeMediaTokenIdentity(token: string): string | null {
     if (parts.length !== 3) return null;
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded));
+    const payload = JSON.parse(atob(padded)) as MediaTokenPayload;
     return typeof payload.sub === 'string' ? payload.sub : null;
   } catch {
     return null;
@@ -689,7 +693,7 @@ function clearSelfAudioActivity(self: RoomParticipant): void {
 }
 
 function setLocalMicPublishing(enabled: boolean): void {
-  lkModule?.setMicEnabled(enabled);
+  void lkModule?.setMicEnabled(enabled);
 }
 
 function detachAllScreenShareAudioPlayback(): void {
@@ -997,12 +1001,14 @@ async function applyProfileSwitch(
  */
 function startAutoSwitchPoll(): () => void {
   let stopped = false;
-  const id = setInterval(async () => {
-    if (stopped || !_motionDetector) return;
-    const recommendation = _motionDetector.currentRecommendation();
-    if (recommendation === _currentShareProfile) return;
-    const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
-    await applyProfileSwitch(recommendation, reason).catch(() => {});
+  const id = setInterval(() => {
+    void (async () => {
+      if (stopped || !_motionDetector) return;
+      const recommendation = _motionDetector.currentRecommendation();
+      if (recommendation === _currentShareProfile) return;
+      const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
+      await applyProfileSwitch(recommendation, reason).catch(() => {});
+    })();
   }, 1_000);
   return () => {
     stopped = true;
@@ -1062,6 +1068,9 @@ function shouldUseNativeMedia(): boolean {
   const hasRtc = 'RTCPeerConnection' in window;
   const hasGetUserMedia =
     'mediaDevices' in navigator &&
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices !== undefined &&
     typeof navigator.mediaDevices.getUserMedia === 'function';
 
@@ -1081,7 +1090,7 @@ function isLinuxPlatform(): boolean {
 }
 
 function getWindowsSharePathOverride(): WindowsSharePath | null {
-  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH;
+  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH as string | undefined;
   return value === 'browser' || value === 'native' ? value : null;
 }
 
@@ -1394,9 +1403,9 @@ export function getPendingSharePickerData(): PendingSharePickerData | null {
 
 function setupSharePickerListener(): void {
   if (unlistenSharePickerRequest) return; // already listening
-  listen('share-picker:request-sources', () => {
+  void listen('share-picker:request-sources', () => {
     if (pendingSharePickerData) {
-      emit('share-picker:sources', pendingSharePickerData);
+      void emit('share-picker:sources', pendingSharePickerData);
     }
   }).then((unlisten) => {
     unlistenSharePickerRequest = unlisten;
@@ -1413,7 +1422,7 @@ function teardownSharePickerListener(): void {
 
 function setupLinuxCaptureFallbackListener(): void {
   if (unlistenLinuxCaptureFallback) return;
-  listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
+  void listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
     emitTelemetryEvent({
       name: 'capture.fallback.activated',
       os: 'linux',
@@ -1438,7 +1447,7 @@ function setupExternalShareHelperListeners(): void {
   if (unlistenExternalShareStarted || unlistenExternalShareStopped || unlistenExternalShareError)
     return;
 
-  listen<{ sessionId: string }>('external-share-started', () => {
+  void listen<{ sessionId: string }>('external-share-started', () => {
     if (state.joinedSubRoomId === null) {
       invoke('external_share_stop').catch(() => {});
       return;
@@ -1457,7 +1466,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStarted = unlisten;
   });
 
-  listen<{ sessionId: string }>('external-share-stopped', () => {
+  void listen<{ sessionId: string }>('external-share-stopped', () => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1474,7 +1483,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStopped = unlisten;
   });
 
-  listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
+  void listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1582,7 +1591,6 @@ function cleanupPublishedMediaForSessionEnd(): void {
     externalShareHelperActive = false;
     if (!sentStopShare && client && client.status === 'connected') {
       client.send({ type: 'stop-share' });
-      sentStopShare = true;
     }
   }
 
@@ -1783,6 +1791,9 @@ async function enumerateVideoInputs(): Promise<MediaDeviceInfo[]> {
   if (
     typeof navigator === 'undefined' ||
     !('mediaDevices' in navigator) ||
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices === undefined ||
     typeof navigator.mediaDevices.enumerateDevices !== 'function'
   ) {
@@ -2509,25 +2520,34 @@ function connectMedia(
       }
     },
     onAudioLevels: (levels) => {
+      // Audio levels arrive at ~20Hz per participant, but only the isSpeaking
+      // transition is rendered (see voiceIcon in ActiveRoom.tsx) — notifying
+      // on every tick forces a full re-render of the room UI for no visible
+      // change. Only broadcast when a participant's speaking state flips.
+      let changed = false;
       for (const [identity, data] of levels) {
         const participantId = participantIdForLiveKitIdentity(identity);
         const p = state.participants.find((pp) => pp.id === participantId);
         if (p) {
           p.rmsLevel = data.rmsLevel;
+          const wasSpeaking = p.isSpeaking;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
+          if (p.isSpeaking !== wasSpeaking) changed = true;
         } else {
           warnUnknownIdentity(identity);
         }
       }
-      notify();
+      if (changed) notify();
     },
     onLocalAudioLevel: (level) => {
       updateSelfRms(level);
     },
     onActiveSpeakers: (speakerIdentities) => {
       const speakerParticipantIds = speakerIdentities.map(participantIdForLiveKitIdentity);
+      let changed = false;
       for (const p of state.participants) {
         const isSpeaker = speakerParticipantIds.includes(p.id);
+        const wasSpeaking = p.isSpeaking;
         if (isSpeaker && !p.isMuted) {
           // Boost the smoothed RMS in the tracker so the debounce logic
           // converges to speaking within 1–2 frames instead of fighting
@@ -2548,8 +2568,9 @@ function connectMedia(
           // so the EMA + debounce handles the off-transition smoothly.
           p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
         }
+        if (p.isSpeaking !== wasSpeaking) changed = true;
       }
-      notify();
+      if (changed) notify();
     },
     onConnectionQuality: (stats) => {
       state.networkStats = stats;
@@ -2628,7 +2649,7 @@ function connectMedia(
         if (state.joinedSubRoomId === null) {
           clearSelfAudioActivity(p);
           if (!isMuted) {
-            lkModule?.setMicEnabled(false);
+            void lkModule?.setMicEnabled(false);
           }
           notify();
           return;
@@ -2680,6 +2701,9 @@ function connectMedia(
     onRemoteCameraMutedChanged: (identity, muted) => {
       const participantId = participantIdForLiveKitIdentity(identity);
       const current = remoteCameraTilesById[participantId];
+      // Without noUncheckedIndexedAccess, TS types Record index access as always
+      // defined even though a missing key makes it genuinely undefined at runtime.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!current) {
         return;
       }
@@ -4088,7 +4112,7 @@ export function initSession(
 
   // Forward viewer-subscribed events from WatchAllPage/ScreenSharePage to the signaling server
   if (!unlistenViewerJoined) {
-    listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
+    void listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
       if (client) {
         client.send({ type: 'viewer_subscribed', targetId: payload.targetId });
       }
@@ -4101,19 +4125,22 @@ export function initSession(
   // signaling server over this window's WS and relay the response back to the
   // requesting window (children have no WS of their own).
   if (!unlistenViewerTokenRequest) {
-    listen<{ windowId: string; windowLabel: string }>('viewer-token:request', ({ payload }) => {
-      if (!payload?.windowId || !payload?.windowLabel) return;
-      pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
-      if (DEBUG_VIEWER_CONNECTION) {
-        console.log(
-          LOG,
-          `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
-        );
-      }
-      if (client) {
-        client.send({ type: 'request_viewer_token', windowId: payload.windowId });
-      }
-    }).then((unlisten) => {
+    void listen<{ windowId: string; windowLabel: string }>(
+      'viewer-token:request',
+      ({ payload }) => {
+        if (!payload.windowId || !payload.windowLabel) return;
+        pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
+        if (DEBUG_VIEWER_CONNECTION) {
+          console.log(
+            LOG,
+            `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
+          );
+        }
+        if (client) {
+          client.send({ type: 'request_viewer_token', windowId: payload.windowId });
+        }
+      },
+    ).then((unlisten) => {
       unlistenViewerTokenRequest = unlisten;
     });
   }
@@ -4185,14 +4212,14 @@ export function initSession(
   });
 
   // Connect with auth
-  getServerUrl().then((serverUrl) => {
+  void getServerUrl().then((serverUrl) => {
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
     // Load display name, default volume, profile color, persisted channel volumes,
     // notification volumes, and the Windows share-path preference before connecting.
     // Notification volumes are pre-cached here so playNotificationSound() on the
     // first join does not make IPC calls that break the user-activation chain.
-    Promise.all([
+    void Promise.all([
       getUsername(),
       getDefaultVolume(),
       getProfileColor(),
@@ -4299,6 +4326,10 @@ export function leaveRoom(): void {
     clearTimeout(volumeSaveTimer);
     volumeSaveTimer = null;
     const flushParticipantVols: Record<string, number> = {
+      // channelVolumePrefs is deserialized from a Tauri-persisted JSON store
+      // with no runtime validation — older/malformed persisted data can
+      // genuinely lack `participants` despite the type declaring it required.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       ...(channelVolumePrefs.participants ?? {}),
     };
     for (const p of state.participants) {
@@ -4406,7 +4437,7 @@ function startPeriodicMediaRetry(): void {
     console.log(LOG, 'periodic media retry attempt');
     state.mediaReconnectFailures = 0;
     lastReconnectMediaTime = 0;
-    reconnectMedia();
+    void reconnectMedia();
   }, PERIODIC_MEDIA_RETRY_MS);
 }
 
@@ -4502,11 +4533,11 @@ export function toggleSelfMute(): void {
   }
   if (state.joinedSubRoomId === null) {
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     notify();
     return;
   }
-  lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+  void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
   client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
@@ -4539,11 +4570,11 @@ export function toggleSelfDeafen(): void {
     }
     clearSelfAudioActivity(self);
     if (state.joinedSubRoomId === null) {
-      lkModule?.setMicEnabled(false);
+      void lkModule?.setMicEnabled(false);
       notify();
       return;
     }
-    lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+    void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
       id: makeEventId(),
@@ -4565,7 +4596,7 @@ export function toggleSelfDeafen(): void {
       self.isMuted = true;
     }
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     if (state.joinedSubRoomId === null) {
       notify();
       return;
@@ -4954,7 +4985,7 @@ export async function startCustomShare(
           console.log(
             LOG,
             '[wasapi] lkModule:',
-            lkModule?.constructor?.name,
+            lkModule?.constructor.name,
             'is LiveKitModule:',
             lkModule instanceof LiveKitModule,
           );
@@ -5267,7 +5298,7 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
     console.log(LOG, '[share-audio] toggleShareAudio called', {
       withAudio,
       hasLkModule: !!lkModule,
-      lkModuleType: lkModule?.constructor?.name,
+      lkModuleType: lkModule?.constructor.name,
       userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } })
         .userActivation?.isActive,
     });
@@ -5567,8 +5598,13 @@ export function updateSelfRms(level: number): void {
   const p = state.participants.find((pp) => pp.id === state.selfParticipantId);
   if (!p) return;
   p.rmsLevel = level;
+  // The local mic monitor polls every 50ms for the lifetime of the call, but
+  // rmsLevel itself isn't rendered — only the isSpeaking transition is. Skip
+  // the broadcast (and the full ActiveRoom re-render it triggers) on ticks
+  // that don't actually flip speaking state.
+  const wasSpeaking = p.isSpeaking;
   p.isSpeaking = updateSpeakingTracker(p.id, level, p.isSpeaking, p.isMuted);
-  notify();
+  if (p.isSpeaking !== wasSpeaking) notify();
 }
 
 /* ─── Screen Share Audio ─────────────────────────────────────────── */
