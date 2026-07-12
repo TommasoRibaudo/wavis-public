@@ -137,7 +137,7 @@ export type RemoteShareType = ShareMode | 'browser';
  */
 async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTrack> {
   let timedOut = false;
-  let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+  const timer = setTimeout(() => {
     timedOut = true;
   }, CAMERA_CAPTURE_TIMEOUT_MS);
 
@@ -149,20 +149,23 @@ async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTra
       video: deviceId === null ? true : { deviceId },
     });
   } catch (error) {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
+    clearTimeout(timer);
+    // timedOut is set from the setTimeout callback above, a separate closure
+    // that can fire while getUserMedia's await is in flight — TS's local
+    // control-flow analysis can't see that mutation, so it treats this as
+    // always false. It genuinely isn't: this is the race the timeout exists
+    // to detect.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (timedOut) {
       throw { kind: 'timeout' } satisfies CameraStartError;
     }
     throw error;
   }
-  if (timer !== null) {
-    clearTimeout(timer);
-    timer = null;
-  }
+  clearTimeout(timer);
 
+  // Same cross-closure race as above: timedOut can flip true during the
+  // getUserMedia await, invisible to TS's control-flow analysis here.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (timedOut) {
     // Late-resolve race: the browser handed us a live stream after we already
     // rejected. Stop every track so the camera LED goes off and the device is
@@ -172,6 +175,10 @@ async function openCameraDevice(deviceId: string | null): Promise<MediaStreamTra
   }
 
   const track = stream.getVideoTracks()[0] ?? null;
+  // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always
+  // defined even though an empty track array makes it genuinely undefined
+  // at runtime (e.g. the device produced no video track).
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!track) {
     throw { kind: 'device_unavailable' } satisfies CameraStartError;
   }
@@ -1236,6 +1243,9 @@ class MicAudioProcessor implements TrackProcessor<Track.Kind.Audio, AudioProcess
     oldDest?.disconnect();
   }
 
+  // Stays async even without an await: call sites (e.g. this.micAudioProcessor
+  // ?.destroy().catch(() => {})) depend on the Promise-returning contract.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async destroy(): Promise<void> {
     this.source?.disconnect();
     this.denoiseNode?.disconnect();
@@ -2105,9 +2115,14 @@ export class LiveKitModule {
       // Also register a gesture listener as fallback in case resume() fails
       if (!this.gestureListener) {
         const resume = () => {
-          this.audioContext?.resume().then(() => {
-            this.callbacks.onSystemEvent('audio context resumed');
-          });
+          this.audioContext
+            ?.resume()
+            .then(() => {
+              this.callbacks.onSystemEvent('audio context resumed');
+            })
+            .catch(() => {
+              /* ignore — best-effort resume from a user gesture */
+            });
           document.removeEventListener('click', resume);
           document.removeEventListener('keydown', resume);
           this.gestureListener = null;
@@ -2495,7 +2510,7 @@ export class LiveKitModule {
           })
           .catch(() => {});
       }
-      this.applyAudioOutputDevice();
+      void this.applyAudioOutputDevice();
     };
     navigator.mediaDevices.addEventListener('devicechange', handler);
     this.deviceChangeListener = handler;
@@ -2571,8 +2586,8 @@ export class LiveKitModule {
           // hasn't run yet and setSinkId requires an active audio permission grant.
           if (DEBUG_AUDIO_OUTPUT)
             console.log(LOG, '[audio-output] checkReady — mic ready, applying output device');
-          this.applyAudioOutputDevice();
-          this.applyAudioInputDevice();
+          void this.applyAudioOutputDevice();
+          void this.applyAudioInputDevice();
         }
       };
 
@@ -2633,8 +2648,8 @@ export class LiveKitModule {
         // audio elements are recreated and lose the previous sinkId.
         if (DEBUG_AUDIO_OUTPUT)
           console.log(LOG, '[audio-output] RoomEvent.Reconnected — re-applying output device');
-        this.applyAudioOutputDevice();
-        this.applyAudioInputDevice();
+        void this.applyAudioOutputDevice();
+        void this.applyAudioInputDevice();
       });
 
       // e0. TrackPublished — diagnostic (debug only): log all publications to trace
@@ -3213,106 +3228,109 @@ export class LiveKitModule {
       // RTT, loss, jitter are carried forward so they don't oscillate between cycles.
       if (this.statsInterval !== null) clearInterval(this.statsInterval);
       let pollPublisher = true; // start with a publisher poll on first tick
-      this.statsInterval = setInterval(async () => {
-        if (this.disposed || !this.room) return;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const engine = (this.room as any).engine;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const pubTransport: any = engine?.pcManager?.publisher ?? engine?.publisher;
-
-          // Per-receiver stats: call receiver.getStats() directly on each remote track.
-          // This bypasses PC topology entirely — works regardless of whether LiveKit
-          // uses single-PC (publisher-only) or dual-PC (subscriber-primary/publisher-primary) mode.
-          // The subscriber PCTransport is optional and may be absent; per-track receivers are always present.
-          let audioReceiverReport: RTCStatsReport | null = null;
-          let videoReceiverReport: RTCStatsReport | null = null;
-          for (const participant of this.room.remoteParticipants.values()) {
-            for (const pub of participant.trackPublications.values()) {
-              const remoteTrack = pub.track;
-              if (!remoteTrack?.receiver) continue;
-              // First remote microphone audio track → jitter buffer, concealment, loss, jitter
-              if (
-                !audioReceiverReport &&
-                pub.kind === Track.Kind.Audio &&
-                pub.source !== Track.Source.ScreenShareAudio
-              ) {
-                try {
-                  audioReceiverReport = await remoteTrack.receiver.getStats();
-                } catch {
-                  /* ignore */
-                }
-              }
-              // Screen share video track → video receive stats (fps, decode time, freeze, etc.)
-              if (
-                !videoReceiverReport &&
-                pub.source === Track.Source.ScreenShare &&
-                pub.kind === Track.Kind.Video
-              ) {
-                try {
-                  videoReceiverReport = await remoteTrack.receiver.getStats();
-                } catch {
-                  /* ignore */
-                }
-              }
-            }
-          }
-          if (this.disposed) return;
-
-          if (audioReceiverReport) {
-            const sub = extractStatsFromReports([audioReceiverReport]);
-            if (sub.jitterBufferDelayMs > 0) this.lastJitterBufferDelayMs = sub.jitterBufferDelayMs;
-            const concDelta = sub.concealmentEventsTotal - this.prevConcealmentEventsTotal;
-            this.lastConcealmentEventsPerInterval = Math.max(0, concDelta);
-            this.prevConcealmentEventsTotal = sub.concealmentEventsTotal;
-            if (sub.rttMs > 0) this.lastRttMs = sub.rttMs;
-            if (sub.packetLossPercent > 0) this.lastPacketLossPercent = sub.packetLossPercent;
-            if (sub.jitterMs > 0) this.lastJitterMs = sub.jitterMs;
-          }
-
-          if (videoReceiverReport) {
-            this.extractVideoReceiveStats(videoReceiverReport);
-          }
-
-          // Poll publisher every other cycle — candidate-pair RTT + bandwidth are most reliable
-          // on the publisher PC (always present, always has an active ICE candidate pair).
-          if (pollPublisher) {
+      this.statsInterval = setInterval(() => {
+        void (async () => {
+          if (this.disposed || !this.room) return;
+          try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            async function resolveStats(transport: any): Promise<RTCStatsReport | null> {
-              if (!transport) return null;
-              if (typeof transport.getStats === 'function')
-                return transport.getStats() as Promise<RTCStatsReport>;
-              const pc = transport.pc ?? transport._pc;
-              if (pc && typeof pc.getStats === 'function')
-                return pc.getStats() as Promise<RTCStatsReport>;
-              return null;
-            }
-            const pubReport = await resolveStats(pubTransport);
-            if (this.disposed) return;
-            if (pubReport) {
-              const pub = extractStatsFromReports([pubReport]);
-              if (pub.candidateType !== 'unknown') this.lastCandidateType = pub.candidateType;
-              if (pub.availableBandwidthKbps > 0)
-                this.lastAvailableBandwidthKbps = pub.availableBandwidthKbps;
-              if (pub.rttMs > 0) this.lastRttMs = pub.rttMs;
-              if (pub.packetLossPercent > 0) this.lastPacketLossPercent = pub.packetLossPercent;
-              if (pub.jitterMs > 0) this.lastJitterMs = pub.jitterMs;
-            }
-          }
-          pollPublisher = !pollPublisher;
+            const engine = (this.room as any).engine;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const pubTransport: any = engine?.pcManager?.publisher ?? engine?.publisher;
 
-          this.callbacks.onConnectionQuality({
-            rttMs: this.lastRttMs,
-            packetLossPercent: this.lastPacketLossPercent,
-            jitterMs: this.lastJitterMs,
-            jitterBufferDelayMs: this.lastJitterBufferDelayMs,
-            concealmentEventsPerInterval: this.lastConcealmentEventsPerInterval,
-            candidateType: this.lastCandidateType,
-            availableBandwidthKbps: this.lastAvailableBandwidthKbps,
-          });
-        } catch {
-          // ignore stats errors
-        }
+            // Per-receiver stats: call receiver.getStats() directly on each remote track.
+            // This bypasses PC topology entirely — works regardless of whether LiveKit
+            // uses single-PC (publisher-only) or dual-PC (subscriber-primary/publisher-primary) mode.
+            // The subscriber PCTransport is optional and may be absent; per-track receivers are always present.
+            let audioReceiverReport: RTCStatsReport | null = null;
+            let videoReceiverReport: RTCStatsReport | null = null;
+            for (const participant of this.room.remoteParticipants.values()) {
+              for (const pub of participant.trackPublications.values()) {
+                const remoteTrack = pub.track;
+                if (!remoteTrack?.receiver) continue;
+                // First remote microphone audio track → jitter buffer, concealment, loss, jitter
+                if (
+                  !audioReceiverReport &&
+                  pub.kind === Track.Kind.Audio &&
+                  pub.source !== Track.Source.ScreenShareAudio
+                ) {
+                  try {
+                    audioReceiverReport = await remoteTrack.receiver.getStats();
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                // Screen share video track → video receive stats (fps, decode time, freeze, etc.)
+                if (
+                  !videoReceiverReport &&
+                  pub.source === Track.Source.ScreenShare &&
+                  pub.kind === Track.Kind.Video
+                ) {
+                  try {
+                    videoReceiverReport = await remoteTrack.receiver.getStats();
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }
+            }
+            if (this.disposed) return;
+
+            if (audioReceiverReport) {
+              const sub = extractStatsFromReports([audioReceiverReport]);
+              if (sub.jitterBufferDelayMs > 0)
+                this.lastJitterBufferDelayMs = sub.jitterBufferDelayMs;
+              const concDelta = sub.concealmentEventsTotal - this.prevConcealmentEventsTotal;
+              this.lastConcealmentEventsPerInterval = Math.max(0, concDelta);
+              this.prevConcealmentEventsTotal = sub.concealmentEventsTotal;
+              if (sub.rttMs > 0) this.lastRttMs = sub.rttMs;
+              if (sub.packetLossPercent > 0) this.lastPacketLossPercent = sub.packetLossPercent;
+              if (sub.jitterMs > 0) this.lastJitterMs = sub.jitterMs;
+            }
+
+            if (videoReceiverReport) {
+              this.extractVideoReceiveStats(videoReceiverReport);
+            }
+
+            // Poll publisher every other cycle — candidate-pair RTT + bandwidth are most reliable
+            // on the publisher PC (always present, always has an active ICE candidate pair).
+            if (pollPublisher) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              async function resolveStats(transport: any): Promise<RTCStatsReport | null> {
+                if (!transport) return null;
+                if (typeof transport.getStats === 'function')
+                  return transport.getStats() as Promise<RTCStatsReport>;
+                const pc = transport.pc ?? transport._pc;
+                if (pc && typeof pc.getStats === 'function')
+                  return pc.getStats() as Promise<RTCStatsReport>;
+                return null;
+              }
+              const pubReport = await resolveStats(pubTransport);
+              if (this.disposed) return;
+              if (pubReport) {
+                const pub = extractStatsFromReports([pubReport]);
+                if (pub.candidateType !== 'unknown') this.lastCandidateType = pub.candidateType;
+                if (pub.availableBandwidthKbps > 0)
+                  this.lastAvailableBandwidthKbps = pub.availableBandwidthKbps;
+                if (pub.rttMs > 0) this.lastRttMs = pub.rttMs;
+                if (pub.packetLossPercent > 0) this.lastPacketLossPercent = pub.packetLossPercent;
+                if (pub.jitterMs > 0) this.lastJitterMs = pub.jitterMs;
+              }
+            }
+            pollPublisher = !pollPublisher;
+
+            this.callbacks.onConnectionQuality({
+              rttMs: this.lastRttMs,
+              packetLossPercent: this.lastPacketLossPercent,
+              jitterMs: this.lastJitterMs,
+              jitterBufferDelayMs: this.lastJitterBufferDelayMs,
+              concealmentEventsPerInterval: this.lastConcealmentEventsPerInterval,
+              candidateType: this.lastCandidateType,
+              availableBandwidthKbps: this.lastAvailableBandwidthKbps,
+            });
+          } catch {
+            // ignore stats errors
+          }
+        })();
       }, 10_000);
 
       // 7. Connect to SFU
@@ -5690,13 +5708,15 @@ export class LiveKitModule {
     this.wasapiFrameUnlisten = await listen<string>('wasapi_audio_frame', (event) => {
       this.onWasapiAudioFrame(event.payload);
     });
-    this.wasapiStoppedUnlisten = await listen('wasapi_audio_stopped', async () => {
-      console.warn(
-        LOG,
-        '[wasapi] wasapi_audio_stopped event received — tearing down bridge (framesReceived=%d)',
-        this.wasapiFrameCount,
-      );
-      await this.stopWasapiAudioBridge();
+    this.wasapiStoppedUnlisten = await listen('wasapi_audio_stopped', () => {
+      void (async () => {
+        console.warn(
+          LOG,
+          '[wasapi] wasapi_audio_stopped event received — tearing down bridge (framesReceived=%d)',
+          this.wasapiFrameCount,
+        );
+        await this.stopWasapiAudioBridge();
+      })();
     });
     console.log(LOG, '[wasapi] Tauri event listeners registered');
 
@@ -6546,7 +6566,6 @@ export class LiveKitModule {
    * the encoder naturally sends a keyframe when the content changes and
    * subscribers never see a TrackUnpublished/TrackPublished cycle.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private nativeCaptureTrackWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
   /** Buffered frames received between prepareNativeCapture and startNativeCapture. */
   private nativeCaptureEarlyFrames: NativeJpegBridgeFrame[] = [];
@@ -7050,7 +7069,7 @@ export class LiveKitModule {
     let trackWriter: WritableStreamDefaultWriter<VideoFrame> | null = null;
     let canvas: HTMLCanvasElement | null = null;
     let ctx: CanvasRenderingContext2D | null = null;
-    let canvasStream: MediaStream | null = null;
+    let canvasStream: MediaStream;
 
     if (hasTrackGenerator) {
       // ── Primary path: MediaStreamTrackGenerator ──
