@@ -83,7 +83,6 @@ import {
 import { redactToken } from '@shared/helpers';
 import { useDebug } from '@shared/debug-context';
 import {
-  formatHotkeyCombination,
   unregisterMuteHotkey,
   unregisterWatchAllHotkey,
   unregisterFocusMainHotkey,
@@ -94,6 +93,7 @@ import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
 import ChannelDetail from '@features/channels/ChannelDetail';
+import { useHotkeyRecorder } from './useHotkeyRecorder';
 
 /* ─── Audio Types ───────────────────────────────────────────────── */
 interface AudioDevice {
@@ -269,19 +269,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [notificationVolume, setNotificationVolumeState] = useState<number>(50);
   const [soundVolumes, setSoundVolumesState] = useState<Record<string, number>>({});
   const [showSoundVolumes, setShowSoundVolumes] = useState(false);
-  const [recordingHotkey, setRecordingHotkey] = useState(false);
-  const [recordedModifiers, setRecordedModifiers] = useState<string[]>([]);
-  const [_recordedKey, setRecordedKey] = useState<string | null>(null);
-  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  const [recordingWatchAllHotkey, setRecordingWatchAllHotkey] = useState(false);
-  const [recordedWatchAllModifiers, setRecordedWatchAllModifiers] = useState<string[]>([]);
-  const [_recordedWatchAllKey, setRecordedWatchAllKey] = useState<string | null>(null);
-  const [watchAllHotkeyError, setWatchAllHotkeyError] = useState<string | null>(null);
   const [focusMainHotkey, setFocusMainHotkeyState] = useState<string>(DEFAULT_FOCUS_MAIN_HOTKEY);
-  const [recordingFocusMainHotkey, setRecordingFocusMainHotkey] = useState(false);
-  const [recordedFocusMainModifiers, setRecordedFocusMainModifiers] = useState<string[]>([]);
-  const [_recordedFocusMainKey, setRecordedFocusMainKey] = useState<string | null>(null);
-  const [focusMainHotkeyError, setFocusMainHotkeyError] = useState<string | null>(null);
   const denoiseStatus = describeDenoiseStatus({
     denoiseEnabled,
     connectionMode: getVoiceRoomState().connectionMode,
@@ -435,189 +423,39 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     }
   }, [username]);
 
-  // Hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+  const muteRecorder = useHotkeyRecorder({
+    hotkey: muteHotkey,
+    setHotkeyState: setMuteHotkeyState,
+    persist: setMuteHotkey,
+    unregister: unregisterMuteHotkey,
+    isRegistered: isHotkeyRegistered,
+  });
 
-      // Escape cancels recording
-      if (e.key === 'Escape') {
-        setRecordingHotkey(false);
-        setRecordedModifiers([]);
-        setRecordedKey(null);
-        setHotkeyError(null);
-        return;
-      }
+  const watchAllRecorder = useHotkeyRecorder({
+    hotkey: watchAllHotkey,
+    setHotkeyState: setWatchAllHotkeyState,
+    persist: setWatchAllHotkey,
+    unregister: unregisterWatchAllHotkey,
+    isRegistered: isHotkeyRegistered,
+  });
 
-      // Collect modifiers
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
+  // Re-register new hotkey immediately so it works without reconnecting
+  const handleFocusMainReRegistered = useCallback((combo: string) => {
+    void registerFocusMainHotkey(combo, () => {
+      void getCurrentWindow()
+        .unminimize()
+        .then(() => getCurrentWindow().setFocus());
+    });
+  }, []);
 
-      // Ignore bare modifier presses
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedModifiers(mods);
-        return;
-      }
-
-      // We have a main key — finalize the combo
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedModifiers(mods);
-      setRecordedKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingHotkey(false);
-      setRecordedModifiers([]);
-      setRecordedKey(null);
-      setHotkeyError(null);
-
-      // Persist and register
-      const oldHotkey = muteHotkey;
-      setMuteHotkeyState(combo);
-      void setMuteHotkey(combo);
-
-      // Try to re-register if currently registered (active session)
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterMuteHotkey(oldHotkey);
-              // Re-registration will happen via voice-room's hotkey change detection
-            } catch {
-              // best effort
-            }
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingHotkey, muteHotkey]);
-
-  // Watch All hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingWatchAllHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        setRecordingWatchAllHotkey(false);
-        setRecordedWatchAllModifiers([]);
-        setRecordedWatchAllKey(null);
-        setWatchAllHotkeyError(null);
-        return;
-      }
-
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
-
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedWatchAllModifiers(mods);
-        return;
-      }
-
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedWatchAllModifiers(mods);
-      setRecordedWatchAllKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingWatchAllHotkey(false);
-      setRecordedWatchAllModifiers([]);
-      setRecordedWatchAllKey(null);
-      setWatchAllHotkeyError(null);
-
-      const oldHotkey = watchAllHotkey;
-      setWatchAllHotkeyState(combo);
-      void setWatchAllHotkey(combo);
-
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterWatchAllHotkey(oldHotkey);
-            } catch {
-              // best effort
-            }
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingWatchAllHotkey, watchAllHotkey]);
-
-  // Focus Main hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingFocusMainHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        setRecordingFocusMainHotkey(false);
-        setRecordedFocusMainModifiers([]);
-        setRecordedFocusMainKey(null);
-        setFocusMainHotkeyError(null);
-        return;
-      }
-
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
-
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedFocusMainModifiers(mods);
-        return;
-      }
-
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedFocusMainModifiers(mods);
-      setRecordedFocusMainKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingFocusMainHotkey(false);
-      setRecordedFocusMainModifiers([]);
-      setRecordedFocusMainKey(null);
-      setFocusMainHotkeyError(null);
-
-      const oldHotkey = focusMainHotkey;
-      setFocusMainHotkeyState(combo);
-      void setFocusMainHotkey(combo);
-
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterFocusMainHotkey(oldHotkey);
-            } catch {
-              // best effort
-            }
-            // Re-register new hotkey immediately so it works without reconnecting
-            void registerFocusMainHotkey(combo, () => {
-              void getCurrentWindow()
-                .unminimize()
-                .then(() => getCurrentWindow().setFocus());
-            });
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingFocusMainHotkey, focusMainHotkey]);
+  const focusMainRecorder = useHotkeyRecorder({
+    hotkey: focusMainHotkey,
+    setHotkeyState: setFocusMainHotkeyState,
+    persist: setFocusMainHotkey,
+    unregister: unregisterFocusMainHotkey,
+    isRegistered: isHotkeyRegistered,
+    onReRegistered: handleFocusMainReRegistered,
+  });
 
   return (
     <div className="h-full flex flex-col min-w-0 bg-wavis-bg font-mono text-wavis-text">
@@ -1240,79 +1078,66 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">Mute toggle hotkey</label>
                   <button
-                    onClick={() => {
-                      setRecordingHotkey(true);
-                      setRecordedModifiers([]);
-                      setRecordedKey(null);
-                      setHotkeyError(null);
-                    }}
+                    onClick={muteRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record mute hotkey"
                   >
-                    {recordingHotkey
-                      ? recordedModifiers.length > 0
-                        ? `${recordedModifiers.join('+')}+...`
+                    {muteRecorder.recording
+                      ? muteRecorder.modifiers.length > 0
+                        ? `${muteRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : muteHotkey}
                   </button>
                 </div>
-                {recordingHotkey && (
+                {muteRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {hotkeyError && <p className="text-wavis-danger text-xs">{hotkeyError}</p>}
+                {muteRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{muteRecorder.error}</p>
+                )}
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">
                     Watch All toggle hotkey
                   </label>
                   <button
-                    onClick={() => {
-                      setRecordingWatchAllHotkey(true);
-                      setRecordedWatchAllModifiers([]);
-                      setRecordedWatchAllKey(null);
-                      setWatchAllHotkeyError(null);
-                    }}
+                    onClick={watchAllRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record watch all hotkey"
                   >
-                    {recordingWatchAllHotkey
-                      ? recordedWatchAllModifiers.length > 0
-                        ? `${recordedWatchAllModifiers.join('+')}+...`
+                    {watchAllRecorder.recording
+                      ? watchAllRecorder.modifiers.length > 0
+                        ? `${watchAllRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : watchAllHotkey}
                   </button>
                 </div>
-                {recordingWatchAllHotkey && (
+                {watchAllRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {watchAllHotkeyError && (
-                  <p className="text-wavis-danger text-xs">{watchAllHotkeyError}</p>
+                {watchAllRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{watchAllRecorder.error}</p>
                 )}
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">
                     Focus main window hotkey
                   </label>
                   <button
-                    onClick={() => {
-                      setRecordingFocusMainHotkey(true);
-                      setRecordedFocusMainModifiers([]);
-                      setRecordedFocusMainKey(null);
-                      setFocusMainHotkeyError(null);
-                    }}
+                    onClick={focusMainRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record focus main hotkey"
                   >
-                    {recordingFocusMainHotkey
-                      ? recordedFocusMainModifiers.length > 0
-                        ? `${recordedFocusMainModifiers.join('+')}+...`
+                    {focusMainRecorder.recording
+                      ? focusMainRecorder.modifiers.length > 0
+                        ? `${focusMainRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : focusMainHotkey}
                   </button>
                 </div>
-                {recordingFocusMainHotkey && (
+                {focusMainRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {focusMainHotkeyError && (
-                  <p className="text-wavis-danger text-xs">{focusMainHotkeyError}</p>
+                {focusMainRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{focusMainRecorder.error}</p>
                 )}
               </div>
             </div>
