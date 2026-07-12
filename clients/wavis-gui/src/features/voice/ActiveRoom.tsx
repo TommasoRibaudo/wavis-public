@@ -200,7 +200,7 @@ function renderChatText(text: string): ReactNode[] {
 
   for (const match of text.matchAll(CHAT_LINK_RE)) {
     const raw = match[0];
-    const index = match.index ?? 0;
+    const index = match.index;
     if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
 
     const { hrefText, trailingText } = splitChatLink(raw);
@@ -381,8 +381,13 @@ export default function ActiveRoom() {
   const hotkeys = useHotkeys();
   const location = useLocation();
   const navigate = useNavigate();
-  const { channelId, channelName, channelRole } =
+  // react-router types location.state as `unknown`; the cast below tells TS it's always our
+  // shape, but navigating here directly (no state, e.g. a bookmark/reload) makes it genuinely
+  // null at runtime.
+  const locationState =
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     (location.state as { channelId: string; channelName: string; channelRole: ChannelRole }) ?? {};
+  const { channelId, channelName, channelRole } = locationState;
 
   const [roomState, setRoomState] = useState<VoiceRoomState | null>(null);
   const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
@@ -563,7 +568,7 @@ export default function ActiveRoom() {
     cleanups.push(
       onScreenShareQuality((quality) => {
         setShareQualityState(quality);
-        setShareQuality(quality);
+        void setShareQuality(quality);
       }),
     );
     cleanups.push(
@@ -580,7 +585,7 @@ export default function ActiveRoom() {
           return;
         }
         setShareAudioOn(withAudio);
-        toggleShareAudio(withAudio);
+        void toggleShareAudio(withAudio);
       }),
     );
     cleanups.push(
@@ -662,7 +667,7 @@ export default function ActiveRoom() {
     // Share indicator stop button (now with target: 'video' | 'audio' | 'all')
     cleanups.push(
       onShareIndicatorStop((target) => {
-        stopCustomShare(target);
+        void stopCustomShare(target);
       }),
     );
 
@@ -763,7 +768,7 @@ export default function ActiveRoom() {
       // Stop only the video share when video is active — audio-only share stays running.
       // Stopping both is handled by /stop-audio for the audio slot.
       void stopCustomShare(roomState?.activeVideoShare !== null ? 'video' : 'audio');
-    } else if (route === 'stop_fallback') stopShare();
+    } else if (route === 'stop_fallback') void stopShare();
   };
   const {
     watchingShareIds,
@@ -798,7 +803,9 @@ export default function ActiveRoom() {
   });
 
   // Keep ref in sync so hotkey callback never captures a stale closure
-  toggleWatchAllRef.current = toggleWatchAllWindow;
+  toggleWatchAllRef.current = () => {
+    void toggleWatchAllWindow();
+  };
 
   /** Open custom share picker or invoke getDisplayMedia fallback based on platform. */
   const handleStartShare = async () => {
@@ -1075,7 +1082,9 @@ export default function ActiveRoom() {
     setChannelSwitcherOpen(false);
     allowNavigationRef.current = true;
     leaveRoom();
-    navigate('/room', { state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role } });
+    void navigate('/room', {
+      state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
+    });
   };
 
   const handleSendChat = () => {
@@ -1211,7 +1220,7 @@ export default function ActiveRoom() {
           shareErrorTimerRef.current = null;
         }, 5000);
       } else {
-        handleStartShare();
+        void handleStartShare();
       }
     } else if (raw === '/stopshare') {
       stopShareAction();
@@ -1237,11 +1246,11 @@ export default function ActiveRoom() {
         if (p && !isNaN(v)) setParticipantVolume(p.id, v);
       }
     } else if (raw === '/watch-all') {
-      toggleWatchAllWindow();
+      void toggleWatchAllWindow();
     } else if (raw === '/leave') {
       handleLeave();
     } else if (raw === '/reconnect-media') {
-      reconnectMedia();
+      void reconnectMedia();
     }
   };
 
@@ -1315,7 +1324,7 @@ export default function ActiveRoom() {
           className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs text-center shrink-0"
           onClick={() => {
             resetMediaReconnectFailures();
-            reconnectMedia();
+            void reconnectMedia();
           }}
         >
           /retry
@@ -1344,6 +1353,9 @@ export default function ActiveRoom() {
     const isSelf = p.id === roomState.selfParticipantId;
     const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
     const videoTile = roomState.videoTilesById[p.id];
+    // Without noUncheckedIndexedAccess, TS types this index access as always-defined even
+    // though a participant with no video tile entry makes it genuinely undefined.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
     const nameVisual = participantNameVisualState(p, isSelf);
 
@@ -1482,7 +1494,7 @@ export default function ActiveRoom() {
                       if (isWatching) {
                         closeShareWindow(p.id);
                       } else {
-                        openShareWindow(p.id, p, roomState.screenShareStreams.get(p.id)!);
+                        void openShareWindow(p.id, p, roomState.screenShareStreams.get(p.id)!);
                       }
                     }}
                     className="text-sm leading-none"
@@ -1658,7 +1670,11 @@ export default function ActiveRoom() {
         const canClearPassthrough =
           activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
         const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
+        // activePassthroughInvolvesRoom being true doesn't narrow activePassthrough's type here
+        // (it's a separately-computed boolean) — activePassthrough is still genuinely
+        // VoicePassthroughState | null at this point, so the ?. is load-bearing.
         const passthroughLabel =
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           activePassthroughInvolvesRoom && activePassthrough?.label
             ? `“${activePassthrough.label}”`
             : '“ ”';
@@ -1773,7 +1789,9 @@ export default function ActiveRoom() {
                     {showEnabledWatchAll && (
                       <button
                         type="button"
-                        onClick={toggleWatchAllWindow}
+                        onClick={() => {
+                          void toggleWatchAllWindow();
+                        }}
                         title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${hotkeys.watchAll})`}
                         className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                       >
@@ -1873,7 +1891,9 @@ export default function ActiveRoom() {
                   │
                 </span>
                 <button
-                  onClick={toggleCameraIntent}
+                  onClick={() => {
+                    void toggleCameraIntent();
+                  }}
                   disabled={cameraButtonDisabled}
                   className="px-1.5 h-5 flex items-center justify-center hover:opacity-70 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{
@@ -1945,7 +1965,9 @@ export default function ActiveRoom() {
             </div>
             {showCameraButton && (
               <button
-                onClick={toggleCameraIntent}
+                onClick={() => {
+                  void toggleCameraIntent();
+                }}
                 disabled={cameraButtonDisabled}
                 className={`w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed ${roomState.cameraIntent ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
@@ -2022,11 +2044,13 @@ export default function ActiveRoom() {
                             const companionDisabled = isMacPlatform || companionBlocked;
                             return (
                               <button
-                                onClick={async () => {
-                                  if (companionDisabled) return;
-                                  const next = !shareAudioOn;
-                                  const ok = await toggleShareAudio(next);
-                                  if (ok) setShareAudioOn(next);
+                                onClick={() => {
+                                  void (async () => {
+                                    if (companionDisabled) return;
+                                    const next = !shareAudioOn;
+                                    const ok = await toggleShareAudio(next);
+                                    if (ok) setShareAudioOn(next);
+                                  })();
                                 }}
                                 disabled={companionDisabled}
                                 title={
@@ -2052,7 +2076,7 @@ export default function ActiveRoom() {
                           onChange={(e) => {
                             const q = e.target.value as 'low' | 'high' | 'max';
                             setShareQualityState(q);
-                            setShareQuality(q);
+                            void setShareQuality(q);
                             e.currentTarget.blur();
                           }}
                           onClick={(e) => {
@@ -2094,7 +2118,9 @@ export default function ActiveRoom() {
               return (
                 <>
                   <button
-                    onClick={handleStartShare}
+                    onClick={() => {
+                      void handleStartShare();
+                    }}
                     disabled={shareDisabled}
                     className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg"
                   >
@@ -2115,7 +2141,9 @@ export default function ActiveRoom() {
             })()}
             {roomState.activeVideoShare !== null && roomState.activeAudioShare === null && (
               <button
-                onClick={handleStartShare}
+                onClick={() => {
+                  void handleStartShare();
+                }}
                 disabled={
                   !shareEnabled || sharePickerLoading || !!roomState.activeVideoShare.withAudio
                 }
@@ -2240,8 +2268,8 @@ export default function ActiveRoom() {
     </div>
   );
 
-  const currentPanelTab = roomState?.roomPanelTab ?? 'logs';
-  const videoTilesById = roomState?.videoTilesById ?? {};
+  const currentPanelTab = roomState.roomPanelTab;
+  const videoTilesById = roomState.videoTilesById;
 
   const logsContent = (
     <>
@@ -2369,7 +2397,9 @@ export default function ActiveRoom() {
         />
       ) : channelSwitcherOpen ? (
         <ChannelSwitcherPanel
-          onChannelSelect={handleChannelSwitch}
+          onChannelSelect={(ch) => {
+            void handleChannelSwitch(ch);
+          }}
           onClose={() => setChannelSwitcherOpen(false)}
           currentChannelId={channelId}
         />
@@ -2507,7 +2537,9 @@ export default function ActiveRoom() {
             />
           ) : channelSwitcherOpen ? (
             <ChannelSwitcherPanel
-              onChannelSelect={handleChannelSwitch}
+              onChannelSelect={(ch) => {
+                void handleChannelSwitch(ch);
+              }}
               onClose={() => setChannelSwitcherOpen(false)}
               currentChannelId={channelId}
             />
@@ -2559,7 +2591,9 @@ export default function ActiveRoom() {
             />
           ) : channelSwitcherOpen ? (
             <ChannelSwitcherPanel
-              onChannelSelect={handleChannelSwitch}
+              onChannelSelect={(ch) => {
+                void handleChannelSwitch(ch);
+              }}
               onClose={() => setChannelSwitcherOpen(false)}
               currentChannelId={channelId}
             />
@@ -2601,39 +2635,41 @@ export default function ActiveRoom() {
               occupied={winSharePicker.occupied}
               modeScope={winSharePicker.isChangingSource ? 'video_only' : 'all'}
               initialWithAudio={winSharePicker.initialWithAudio}
-              onSelect={async (selection) => {
-                const wasChangingSource = winSharePicker.isChangingSource ?? false;
-                const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
-                setWinSharePicker(null);
-                const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
-                if (showStartingIndicator) setShareStarting(true);
-                try {
-                  const nextSelection = wasChangingSource
-                    ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
-                    : selection;
-                  if (wasChangingSource) {
-                    // keepPublication=true: skip unpublishTrack so the LiveKit
-                    // publication stays alive for replaceNativeCaptureSource().
-                    // Viewers never see a TrackUnpublished/TrackPublished cycle.
-                    await stopCustomShare('video', {
-                      suppressSignaling: true,
-                      keepPublication: true,
-                    });
+              onSelect={(selection) => {
+                void (async () => {
+                  const wasChangingSource = winSharePicker.isChangingSource ?? false;
+                  const previousVideoShare = roomStateRef.current?.activeVideoShare ?? null;
+                  setWinSharePicker(null);
+                  const showStartingIndicator = isVideoShareSelectionMode(selection.mode);
+                  if (showStartingIndicator) setShareStarting(true);
+                  try {
+                    const nextSelection = wasChangingSource
+                      ? preserveVideoShareSelectionForSourceChange(selection, previousVideoShare)
+                      : selection;
+                    if (wasChangingSource) {
+                      // keepPublication=true: skip unpublishTrack so the LiveKit
+                      // publication stays alive for replaceNativeCaptureSource().
+                      // Viewers never see a TrackUnpublished/TrackPublished cycle.
+                      await stopCustomShare('video', {
+                        suppressSignaling: true,
+                        keepPublication: true,
+                      });
+                    }
+                    await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
+                    setShowPostShareAudioPrompt(false);
+                    if (nextSelection.mode !== 'audio_only') {
+                      setShareAudioOn(nextSelection.withAudio);
+                    } else {
+                      setShareAudioOn(false);
+                    }
+                  } catch (err) {
+                    const detail = err instanceof Error ? err.message : String(err);
+                    showTransientScreenShareError(`Screen sharing failed: ${detail}`);
+                    toast.error(`Screen sharing failed: ${detail}`);
+                  } finally {
+                    if (showStartingIndicator) setShareStarting(false);
                   }
-                  await startCustomShare(nextSelection, { isSourceChange: wasChangingSource });
-                  setShowPostShareAudioPrompt(false);
-                  if (nextSelection.mode !== 'audio_only') {
-                    setShareAudioOn(nextSelection.withAudio);
-                  } else {
-                    setShareAudioOn(false);
-                  }
-                } catch (err) {
-                  const detail = err instanceof Error ? err.message : String(err);
-                  showTransientScreenShareError(`Screen sharing failed: ${detail}`);
-                  toast.error(`Screen sharing failed: ${detail}`);
-                } finally {
-                  if (showStartingIndicator) setShareStarting(false);
-                }
+                })();
               }}
               onCancel={() => setWinSharePicker(null)}
             />
