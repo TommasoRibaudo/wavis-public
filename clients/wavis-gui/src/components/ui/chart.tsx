@@ -126,10 +126,13 @@ function ChartTooltipContent({
     }
 
     const [item] = payload;
-    const key = `${labelKey || item?.dataKey || item?.name || 'value'}`;
+    const key = `${labelKey || item.dataKey || item.name || 'value'}`;
     const itemConfig = getPayloadConfigFromPayload(config, item, key);
     const value =
-      !labelKey && typeof label === 'string' ? config[label]?.label || label : itemConfig?.label;
+      !labelKey && typeof label === 'string'
+        ? // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `label` is caller-supplied and not guaranteed to be a ChartConfig key at runtime (no noUncheckedIndexedAccess)
+          config[label]?.label || label
+        : itemConfig?.label;
 
     if (labelFormatter) {
       return (
@@ -162,7 +165,11 @@ function ChartTooltipContent({
         {payload.map((item, index) => {
           const key = `${nameKey || item.name || item.dataKey || 'value'}`;
           const itemConfig = getPayloadConfigFromPayload(config, item, key);
-          const indicatorColor = color || item.payload.fill || item.color;
+          // recharts types `Payload.payload` as `any` (the raw per-datapoint
+          // shape is caller-determined); `fill` is its documented per-point
+          // color override convention.
+          const itemPayload = item.payload as { fill?: string } | undefined;
+          const indicatorColor = color || itemPayload?.fill || item.color;
 
           return (
             <div
@@ -172,7 +179,13 @@ function ChartTooltipContent({
                 indicator === 'dot' && 'items-center',
               )}
             >
-              {formatter && item?.value !== undefined && item.name ? (
+              {formatter && item.value !== undefined && item.name ? (
+                // recharts' Formatter type declares its 5th param as the full
+                // Payload[] array, but this passes the single raw datapoint
+                // (`item.payload`, typed `any` by recharts itself); this
+                // component has no consumers in this codebase to verify
+                // intended behavior against, so left as-is rather than guessed.
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                 formatter(item.value, item.name, item, index, item.payload)
               ) : (
                 <>
@@ -261,7 +274,7 @@ function ChartLegendContent({
 
         return (
           <div
-            key={item.value}
+            key={String(item.value)}
             className={cn(
               '[&>svg]:text-muted-foreground flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3',
             )}
