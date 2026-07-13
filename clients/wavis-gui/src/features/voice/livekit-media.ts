@@ -5662,6 +5662,10 @@ export class LiveKitModule {
         'track:',
         audioTrack,
       );
+    // Without noUncheckedIndexedAccess, TS types getAudioTracks()[0] as always
+    // defined even though an empty track array is a real worklet-destination
+    // edge case.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!audioTrack) throw new Error('no audio track from WASAPI worklet destination');
 
     // Snapshot transceivers before publish so we can identify the new one by set-difference.
@@ -5701,15 +5705,26 @@ export class LiveKitModule {
       );
     if (DEBUG_MAC_SHARE_AUDIO) {
       const pub = this.wasapiAudioPublication;
-      const mst = pub?.track?.mediaStreamTrack;
+      // pub itself is never undefined here — unconditionally assigned from the
+      // publishTrack() await a few synchronous lines above with no intervening
+      // await — but trackSid/source/isMuted below are genuinely absent on the
+      // partial mock this file's own WASAPI tests use for the publish result
+      // (see livekit-media.test.ts's addPublishTrack() helper), despite the SDK
+      // declaring them non-optional.
+      const mst = pub.track?.mediaStreamTrack;
       console.log(
         LOG,
         '[mac-share-audio] ScreenShareAudio published — trackSid=%s source=%s muted=%s readyState=%s enabled=%s ctxState=%s',
+        /* eslint-disable @typescript-eslint/no-unnecessary-condition */
         pub?.trackSid ?? 'null',
         pub?.source ?? 'null',
         pub?.isMuted ?? 'null',
+        /* eslint-enable @typescript-eslint/no-unnecessary-condition */
         mst?.readyState ?? 'null',
         mst?.enabled ?? 'null',
+        // wasapiAudioCtx is nulled by stopWasapiAudioBridge()/disconnectOrdered()
+        // on a separate call path that can race this function's awaits above.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         this.wasapiAudioCtx?.state ?? 'null',
       );
     }
@@ -7162,6 +7177,9 @@ export class LiveKitModule {
       // captureStream(0) + requestFrame() has known Chromium bugs in WebView2.
       canvasStream = canvas.captureStream(bridgeTransportFps);
       videoTrack = canvasStream.getVideoTracks()[0];
+      // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always
+      // defined even though an empty track array is a real captureStream edge case.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!videoTrack) throw new Error('canvas captureStream produced no video track');
       console.log(
         LOG,
@@ -7517,6 +7535,10 @@ export class LiveKitModule {
     }
 
     // Mark as prepared if not already.
+    // nativeCaptureUnlisten is a session-active sentinel that stopNativeCapture()/
+    // disconnectOrdered() can null on a separate call path while this function is
+    // mid-flight — a real concurrent-stop race, not dead code.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!this.nativeCaptureUnlisten) {
       this.nativeCaptureUnlisten = () => {
         /* no-op */
@@ -7713,6 +7735,10 @@ export class LiveKitModule {
             { cause: error },
           );
         }
+        // firstFrameResolved is set by resolveFirstFrame(), called synchronously
+        // from noteNewRustFrame() a few lines above in this same loop iteration —
+        // a nested-function mutation this lint rule's local narrowing can't see.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!firstFrameResolved) {
           await sleep(POLL_INTERVAL_MS);
         }
@@ -7900,6 +7926,7 @@ export class LiveKitModule {
     });
 
     // Check if stopNativeCapture() was called during the first-frame await
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!this.nativeCaptureUnlisten) {
       console.log(LOG, 'native capture: aborted — stopNativeCapture called during startup');
       return;
