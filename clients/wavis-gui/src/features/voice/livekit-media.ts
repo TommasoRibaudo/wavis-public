@@ -5655,7 +5655,9 @@ export class LiveKitModule {
     this.wasapiWorkletNode = new AudioWorkletNode(ctx, 'wasapi-audio-processor', {
       outputChannelCount: [1],
     });
-    this.wasapiWorkletNode.port.onmessage = (event: MessageEvent<{ type: string; payload: unknown }>) => {
+    this.wasapiWorkletNode.port.onmessage = (
+      event: MessageEvent<{ type: string; payload: unknown }>,
+    ) => {
       if (DEBUG_WASAPI && event.data.type === 'stats') {
         console.log(LOG, '[wasapi] worklet stats:', event.data.payload);
       }
