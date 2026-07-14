@@ -5,38 +5,168 @@ on:
     - cron: '0 3 * * *' # 3 AM UTC daily
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  contents: read
+  issues: write # notify-failure files/updates an issue on scheduled failures
+
 env:
   CARGO_TERM_COLOR: always
+  # Parity with workspace-ci.yml so the shared rust-cache is reusable and the
+  # backend link fits in runner memory (see the comments there).
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_BUILD_JOBS: 1
+  CARGO_NET_RETRY: 10
+  CARGO_HTTP_TIMEOUT: 120
 
 jobs:
   nightly-stress:
-    name: full stress run (in-process, local)
+    name: full stress run (in-process, CI scale)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wavis
+          POSTGRES_PASSWORD: wavis
+          POSTGRES_DB: wavis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wavis"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     env:
       TEST_METRICS_TOKEN: ci-dummy-token
       SFU_JWT_SECRET: ci-dummy-secret-at-least-32-bytes!!
+      # Enables the DB-dependent auth scenarios (auth-state-machine-race,
+      # cross-secret-token-confusion, refresh-token-reuse) that otherwise skip.
+      DATABASE_URL: postgres://wavis:wavis@localhost:5432/wavis
 
     steps:
       - uses: actions/checkout@v5
 
+      # Same as workspace-ci.yml: keeps the rust-cache key identical so this
+      # job can restore the cache that Workspace CI saves on main pushes.
+      - name: Remove Tauri GUI crate from workspace
+        run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@1.93.1
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Restore-only: Workspace CI owns the save (same shared-key).
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          shared-key: rust-${{ runner.os }}
+          save-if: 'false'
 
-      - name: Run stress harness (full local suite)
-        run: cargo run -p stress -- --in-process --local
-        # Runs all registered scenarios at local scale (longer duration than CI subset).
-        # Uses --local flag for full scenario coverage with extended iterations.
+      - name: Run stress harness (in-process, CI scale)
+        run: cargo run -p stress-harness -- --in-process --ci
+        # --in-process --ci is the documented CI invocation (tools/README.md).
         # Exit code 1 on any invariant violation.
-        # Requirements: 2.5
+
+  gui-surface:
+    name: GUI surface tests (REST, real backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wavis
+          POSTGRES_PASSWORD: wavis
+          POSTGRES_DB: wavis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wavis"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_METRICS_TOKEN: ci-dummy-token
+      DATABASE_URL: postgres://wavis:wavis@localhost:5432/wavis
+      # The full suite registers more users than the default 5/hour per-IP
+      # limit allows; the harness only resets limiters between scenarios.
+      AUTH_REGISTER_RATE_LIMIT: '200'
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Remove Tauri GUI crate from workspace
+        run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ runner.os }}
+          save-if: 'false'
+
+      - name: Build backend and harness
+        run: |
+          cargo build -p wavis-backend --features test-metrics
+          cargo build -p gui-surface-test
+
+      # Debug builds default every secret and fall back to the dev stub SFU,
+      # so only DATABASE_URL / TEST_METRICS_TOKEN need to be provided.
+      - name: Start backend
+        run: |
+          cargo run -p wavis-backend --features test-metrics > backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/health > /dev/null 2>&1; then
+              echo "backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend failed to become ready within 60s"
+          cat backend.log
+          exit 1
+
+      - name: Run GUI surface tests
+        run: cargo run -p gui-surface-test -- --url http://127.0.0.1:3000
+
+      - name: Show backend log on failure
+        if: failure()
+        run: cat backend.log
+
+  # Scheduled runs fail silently otherwise — this workflow was red for 6+
+  # weeks before anyone noticed. Files one issue and comments on it while
+  # it stays open, rather than opening a new issue per night.
+  notify-failure:
+    name: File issue on failure
+    runs-on: ubuntu-latest
+    needs: [nightly-stress, gui-surface]
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - name: Create or update failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly stress workflow failing"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "Nightly run failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "The scheduled Nightly Stress workflow failed: $RUN_URL"
+          fi
