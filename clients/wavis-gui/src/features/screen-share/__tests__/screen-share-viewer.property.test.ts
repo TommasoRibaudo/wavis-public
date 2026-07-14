@@ -31,8 +31,12 @@ globalThis.RTCPeerConnection = MockRTCPeerConnection as unknown as typeof RTCPee
 
 class MockMediaStream {
   private tracks: unknown[] = [];
-  getTracks() { return this.tracks; }
-  addTrack(t: unknown) { this.tracks.push(t); }
+  getTracks() {
+    return this.tracks;
+  }
+  addTrack(t: unknown) {
+    this.tracks.push(t);
+  }
 }
 globalThis.MediaStream = MockMediaStream as unknown as typeof MediaStream;
 
@@ -46,8 +50,15 @@ import {
 
 /* ─── Arbitraries ───────────────────────────────────────────────── */
 
-const participantIdArb = fc.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
-const windowLabelArb = fc.constantFrom('watch-all', 'screen-share-a', 'screen-share-b', 'screen-share-c');
+const participantIdArb = fc.stringMatching(
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+);
+const windowLabelArb = fc.constantFrom(
+  'watch-all',
+  'screen-share-a',
+  'screen-share-b',
+  'screen-share-c',
+);
 
 /** Generate a non-empty list of unique (participantId, windowLabel) pairs. */
 const pairsArb = fc
@@ -71,7 +82,7 @@ function populateSenders(pairs: [string, string][]): void {
   for (const [pid, wl] of pairs) {
     const key = compositeKey(pid, wl);
     senders.set(key, {
-      pc: new RTCPeerConnection() as unknown as RTCPeerConnection,
+      pc: new RTCPeerConnection(),
       cleanups: [],
       offerSdp: null,
     });
@@ -116,7 +127,6 @@ describe('Property 3: Window-scoped sender cleanup', () => {
   });
 });
 
-
 describe('Property 4: Composite key allows concurrent senders per participant', () => {
   // Feature: watch-all-streams, Property 4: Composite key allows concurrent senders per participant
   // **Validates: Requirements 7.2, 12.1**
@@ -128,7 +138,10 @@ describe('Property 4: Composite key allows concurrent senders per participant', 
         fc.tuple(windowLabelArb, windowLabelArb).filter(([a, b]) => a !== b),
         (pid, [wl1, wl2]) => {
           stopAllSending();
-          populateSenders([[pid, wl1], [pid, wl2]]);
+          populateSenders([
+            [pid, wl1],
+            [pid, wl2],
+          ]);
 
           const senders = _getSendersForTest();
           const key1 = compositeKey(pid, wl1);

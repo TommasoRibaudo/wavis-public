@@ -79,9 +79,7 @@ const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION ===
 
 // ─── Console Log Buffer Singleton ──────────────────────────────────
 
-export const consoleLogBuffer = new RingBuffer<ConsoleLogEntry>(
-  DEFAULT_CONSOLE_BUFFER_CAPACITY,
-);
+export const consoleLogBuffer = new RingBuffer<ConsoleLogEntry>(DEFAULT_CONSOLE_BUFFER_CAPACITY);
 
 // ─── Console Monkey-Patching ───────────────────────────────────────
 
@@ -99,9 +97,7 @@ export const _originals = {
 } as const;
 
 function formatArgs(args: unknown[]): string {
-  return args
-    .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
-    .join(' ');
+  return args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
 }
 
 export function _shouldForwardForTest(level: ConsoleLogEntry['level'], args: unknown[]): boolean {

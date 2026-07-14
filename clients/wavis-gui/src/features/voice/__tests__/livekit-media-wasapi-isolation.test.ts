@@ -134,10 +134,13 @@ beforeEach(() => {
     createElement: vi.fn((tag: string) => ({ tagName: tag })),
     body: { appendChild: vi.fn() },
   });
-  vi.stubGlobal('MediaStream', function MediaStreamMock(this: { tracks?: MediaStreamTrack[] }, tracks?: MediaStreamTrack[]) {
-    this.tracks = tracks ?? [];
-    return this;
-  });
+  vi.stubGlobal(
+    'MediaStream',
+    function MediaStreamMock(this: { tracks?: MediaStreamTrack[] }, tracks?: MediaStreamTrack[]) {
+      this.tracks = tracks ?? [];
+      return this;
+    },
+  );
   function AudioContextMock(this: MockAudioContext, options?: { sampleRate?: number }) {
     return createMockAudioContext(options);
   }
@@ -154,14 +157,19 @@ beforeEach(() => {
   vi.stubGlobal('AudioContext', vi.fn(AudioContextMock));
   vi.stubGlobal('AudioWorkletNode', vi.fn(AudioWorkletNodeMock));
 
-  const trackPublications = new Map<string, { track: MediaStreamTrack; source: string; stream?: string }>();
+  const trackPublications = new Map<
+    string,
+    { track: MediaStreamTrack; source: string; stream?: string }
+  >();
   mockRoom = {
     localParticipant: {
-      publishTrack: vi.fn(async (track: MediaStreamTrack, opts: { source: string; stream?: string }) => {
-        const publication = { track, source: opts.source, stream: opts.stream };
-        trackPublications.set('screen-share-audio', publication);
-        return publication;
-      }),
+      publishTrack: vi.fn(
+        async (track: MediaStreamTrack, opts: { source: string; stream?: string }) => {
+          const publication = { track, source: opts.source, stream: opts.stream };
+          trackPublications.set('screen-share-audio', publication);
+          return publication;
+        },
+      ),
       unpublishTrack: vi.fn(async (track: MediaStreamTrack) => {
         for (const [key, publication] of trackPublications.entries()) {
           if (publication.track === track) trackPublications.delete(key);
@@ -177,7 +185,9 @@ describe('LiveKitModule WASAPI audio isolation', () => {
     const { LiveKitModule } = await import('../livekit-media');
 
     const mod = new LiveKitModule(createCallbacks());
-    const mainAudioContext = (mod as unknown as { ensureAudioContext: () => MockAudioContext }).ensureAudioContext();
+    const mainAudioContext = (
+      mod as unknown as { ensureAudioContext: () => MockAudioContext }
+    ).ensureAudioContext();
     (mod as unknown as { room: typeof mockRoom }).room = mockRoom;
 
     await mod.startWasapiAudioBridge();
@@ -185,7 +195,9 @@ describe('LiveKitModule WASAPI audio isolation', () => {
     expect(audioContexts).toHaveLength(2);
     expect(workletContexts).toHaveLength(1);
     expect(workletContexts[0]).not.toBe(mainAudioContext);
-    expect((mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx).toBe(workletContexts[0]);
+    expect((mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx).toBe(
+      workletContexts[0],
+    );
   });
 
   it('publishes synthetic screen share audio with a stable logical stream name', async () => {
@@ -210,25 +222,32 @@ describe('LiveKitModule WASAPI audio isolation', () => {
     const { LiveKitModule } = await import('../livekit-media');
 
     const mod = new LiveKitModule(createCallbacks());
-    const mainAudioContext = (mod as unknown as { ensureAudioContext: () => MockAudioContext }).ensureAudioContext();
+    const mainAudioContext = (
+      mod as unknown as { ensureAudioContext: () => MockAudioContext }
+    ).ensureAudioContext();
     (mod as unknown as { room: typeof mockRoom }).room = mockRoom;
 
     await mod.startWasapiAudioBridge();
 
-    const wasapiAudioContext = (mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx;
+    const wasapiAudioContext = (mod as unknown as { wasapiAudioCtx: MockAudioContext | null })
+      .wasapiAudioCtx;
     await mod.stopWasapiAudioBridge();
 
     expect(wasapiAudioContext).not.toBeNull();
     expect(wasapiAudioContext?.close).toHaveBeenCalledTimes(1);
     expect(mainAudioContext.close).not.toHaveBeenCalled();
-    expect((mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx).toBeNull();
+    expect(
+      (mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx,
+    ).toBeNull();
   });
 
   it('closes the dedicated AudioContext during disconnect()', async () => {
     const { LiveKitModule } = await import('../livekit-media');
 
     const mod = new LiveKitModule(createCallbacks());
-    const mainAudioContext = (mod as unknown as { ensureAudioContext: () => MockAudioContext }).ensureAudioContext();
+    const mainAudioContext = (
+      mod as unknown as { ensureAudioContext: () => MockAudioContext }
+    ).ensureAudioContext();
     (mod as unknown as { room: typeof mockRoom; disposed: boolean }).room = {
       ...mockRoom,
       disconnect: vi.fn(),
@@ -237,12 +256,15 @@ describe('LiveKitModule WASAPI audio isolation', () => {
 
     await mod.startWasapiAudioBridge();
 
-    const wasapiAudioContext = (mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx;
+    const wasapiAudioContext = (mod as unknown as { wasapiAudioCtx: MockAudioContext | null })
+      .wasapiAudioCtx;
     mod.disconnect();
 
     expect(wasapiAudioContext).not.toBeNull();
     expect(wasapiAudioContext?.close).toHaveBeenCalledTimes(1);
     expect(mainAudioContext.close).toHaveBeenCalledTimes(1);
-    expect((mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx).toBeNull();
+    expect(
+      (mod as unknown as { wasapiAudioCtx: MockAudioContext | null }).wasapiAudioCtx,
+    ).toBeNull();
   });
 });

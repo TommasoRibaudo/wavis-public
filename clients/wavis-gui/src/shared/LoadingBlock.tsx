@@ -7,9 +7,5 @@ export function LoadingBlock({
   message = 'loading...',
   className = 'p-4 text-center',
 }: LoadingBlockProps) {
-  return (
-    <div className={`text-wavis-text-secondary ${className}`}>
-      {message}
-    </div>
-  );
+  return <div className={`text-wavis-text-secondary ${className}`}>{message}</div>;
 }

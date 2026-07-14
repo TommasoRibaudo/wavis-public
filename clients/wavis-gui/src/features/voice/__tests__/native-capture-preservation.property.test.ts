@@ -22,15 +22,14 @@ const mockUnlisten = vi.fn();
 let nativeCaptureFailureHandler: ((event: { payload: { reason: string } }) => void) | null = null;
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async (
-    eventName: string,
-    handler: (event: { payload: { reason: string } }) => void,
-  ) => {
-    if (eventName === 'windows-native-capture-failed') {
-      nativeCaptureFailureHandler = handler;
-    }
-    return mockUnlisten;
-  }),
+  listen: vi.fn(
+    async (eventName: string, handler: (event: { payload: { reason: string } }) => void) => {
+      if (eventName === 'windows-native-capture-failed') {
+        nativeCaptureFailureHandler = handler;
+      }
+      return mockUnlisten;
+    },
+  ),
 }));
 
 // ─── Mock: @tauri-apps/api/core (invoke for polling) ───────────────
@@ -122,7 +121,6 @@ const mockCaptureStream = vi.fn();
 const mockAppendChild = vi.fn();
 let mockGetContext: ReturnType<typeof vi.fn>;
 
-
 // Canvas mock factory — returns a fresh canvas mock for each test
 function createMockCanvas() {
   const ctxMock = {
@@ -192,7 +190,13 @@ vi.stubGlobal('MediaStream', function MockMediaStream(this: Record<string, unkno
   return this;
 });
 
-vi.stubGlobal('requestAnimationFrame', vi.fn((cb: () => void) => { cb(); return 1; }));
+vi.stubGlobal(
+  'requestAnimationFrame',
+  vi.fn((cb: () => void) => {
+    cb();
+    return 1;
+  }),
+);
 vi.stubGlobal('cancelAnimationFrame', vi.fn());
 vi.stubGlobal('Image', function MockImage(this: Record<string, unknown>) {
   this.onload = null;
@@ -200,7 +204,9 @@ vi.stubGlobal('Image', function MockImage(this: Record<string, unknown>) {
   // Auto-fire onload when src is set — simulates successful image decode
   let _src = '';
   Object.defineProperty(this, 'src', {
-    get() { return _src; },
+    get() {
+      return _src;
+    },
     set(v: string) {
       _src = v;
       if (v && typeof this.onload === 'function') {
@@ -211,9 +217,12 @@ vi.stubGlobal('Image', function MockImage(this: Record<string, unknown>) {
   return this;
 });
 
-vi.stubGlobal('fetch', vi.fn(async () => ({
-  arrayBuffer: async () => new ArrayBuffer(100),
-})));
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => ({
+    arrayBuffer: async () => new ArrayBuffer(100),
+  })),
+);
 
 vi.stubGlobal('navigator', {
   userAgent: '',
@@ -224,11 +233,14 @@ vi.stubGlobal('navigator', {
   },
 });
 
-vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
-  width: 1920,
-  height: 1080,
-  close: vi.fn(),
-})));
+vi.stubGlobal(
+  'createImageBitmap',
+  vi.fn(async () => ({
+    width: 1920,
+    height: 1080,
+    close: vi.fn(),
+  })),
+);
 
 // ─── Import module under test ──────────────────────────────────────
 
@@ -256,7 +268,7 @@ function createMockCallbacks(): MediaCallbacks {
 /** Drive a LiveKitModule to connected state so this.room is set. */
 async function driveToConnected(mod: LiveKitModule): Promise<void> {
   await mod.connect('wss://sfu.test', 'test-token');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const room = (mod as any).room;
   if (room && room.on.mock) {
     for (const call of room.on.mock.calls) {
@@ -266,7 +278,6 @@ async function driveToConnected(mod: LiveKitModule): Promise<void> {
     }
   }
 }
-
 
 // ─── Test Suite ────────────────────────────────────────────────────
 
@@ -343,7 +354,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
               await driveToConnected(mod);
 
               // Set the quality preset — syncProfileFromPreset() will derive fps
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
               (mod as any).currentQuality = quality;
 
               // Start capture — don't await yet; we need to advance timers
@@ -505,7 +516,6 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
             const mod = new LiveKitModule(cbs);
             await driveToConnected(mod);
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const modAny = mod as any;
 
             // Manually set private properties to simulate various cleanup states
@@ -582,7 +592,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
 
             if (testNullRoom) {
               // Room is null — should throw
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
               expect((mod as any).room).toBeNull();
               await expect(mod.startNativeCapture()).rejects.toThrow('not connected to a room');
               // No side effects
@@ -590,7 +600,7 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
             } else {
               // Drive to connected, then set nativeCapturePublication to simulate active capture
               await driveToConnected(mod);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
               (mod as any).nativeCapturePublication = {
                 track: { mediaStreamTrack: { stop: vi.fn() } },
               };
@@ -676,7 +686,6 @@ describe('Property 2: Preservation — Non-Race Paths Unchanged', () => {
               // Wait for capturePromise to settle
               await capturePromise;
 
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const modAny = mod as any;
 
               // ── Assertions ──

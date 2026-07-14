@@ -3,10 +3,13 @@ import { Volume2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { StreamReceiver } from './screen-share-viewer';
+import { ViewerRoomConnection } from './viewer-connection';
 import { computeWatchAllLayout } from './watch-all-grid';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
-import { isPlaybackHealthyWithoutFreshFrames, STATIC_CONTENT_HEALTH_PING_MS } from './useVideoStallDetector';
+import {
+  isPlaybackHealthyWithoutFreshFrames,
+  STATIC_CONTENT_HEALTH_PING_MS,
+} from './useVideoStallDetector';
 import {
   WATCH_ALL_TEST_READY_EVENT,
   WATCH_ALL_TEST_STATE_EVENT,
@@ -40,14 +43,14 @@ interface PolledScreenShareFrame {
 const TITLE_BAR_HEIGHT = 32;
 const LABEL_FADE_DELAY_MS = 3000;
 const GLOBAL_BAR_FADE_DELAY_MS = 5000;
-// Delay before auto-retrying after a bridge failure. Gives the main window
-// time to call resendStream() after LiveKit reconnects the screen share track.
-const AUTO_RETRY_DELAY_MS = 1500;
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 
 interface ShareTileState {
   participantId: string;
+  /** LiveKit identity the Rust side keys native share frames by. Newer
+   *  backends use the durable userId, which differs from participantId. */
+  liveKitIdentity?: string;
   displayName: string;
   color: string;
   kind: 'live' | 'test';
@@ -95,6 +98,7 @@ function parseHashParams(): WatchAllParams | null {
 
 interface ShareTileProps {
   participantId: string;
+  liveKitIdentity?: string;
   displayName: string;
   color: string;
   kind: 'live' | 'test';
@@ -104,6 +108,8 @@ interface ShareTileProps {
   nativeWidth: number | null;
   nativeHeight: number | null;
   aspectRatio: number;
+  /** Window-wide direct LiveKit viewer connection (null in diagnostics test mode). */
+  viewerConn: ViewerRoomConnection | null;
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
   onPopOut: (participantId: string, volume: number, muted: boolean) => void;
@@ -112,6 +118,7 @@ interface ShareTileProps {
 
 const ShareTile = memo(function ShareTile({
   participantId,
+  liveKitIdentity,
   displayName,
   color,
   kind,
@@ -121,6 +128,7 @@ const ShareTile = memo(function ShareTile({
   nativeWidth,
   nativeHeight,
   aspectRatio,
+  viewerConn,
   onToggleMute,
   onVolumeChange,
   onPopOut,
@@ -128,7 +136,6 @@ const ShareTile = memo(function ShareTile({
 }: ShareTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const receiverRef = useRef<StreamReceiver | null>(null);
   const diagnosticViewportRef = useRef<HTMLDivElement>(null);
   const onAspectRatioDetectedRef = useRef(onAspectRatioDetected);
   onAspectRatioDetectedRef.current = onAspectRatioDetected;
@@ -138,7 +145,9 @@ const ShareTile = memo(function ShareTile({
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
   const [diagnosticViewport, setDiagnosticViewport] = useState({ width: 0, height: 0 });
-  const { isVisible: labelVisible, resetTimer: revealLabel } = useAutoHide({ delayMs: LABEL_FADE_DELAY_MS });
+  const { isVisible: labelVisible, resetTimer: revealLabel } = useAutoHide({
+    delayMs: LABEL_FADE_DELAY_MS,
+  });
   const { isSwitching, hasRenderedFrame, markFrameRendered } = useShareTransitionOverlay({
     hasSurface: isDiagnosticTest || canvasFallback || Boolean(stream),
     hasError: Boolean(error),
@@ -182,10 +191,7 @@ const ShareTile = memo(function ShareTile({
 
     const updateViewport = (width: number, height: number) => {
       setDiagnosticViewport((current) => {
-        if (
-          Math.abs(current.width - width) < 0.5 &&
-          Math.abs(current.height - height) < 0.5
-        ) {
+        if (Math.abs(current.width - width) < 0.5 && Math.abs(current.height - height) < 0.5) {
           return current;
         }
         return { width, height };
@@ -212,88 +218,41 @@ const ShareTile = memo(function ShareTile({
   /* ── Stream lifecycle ── */
 
   const [retryCount, setRetryCount] = useState(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestSenderResync = useCallback(() => {
-    void emitTo('main', 'watch-all:request-resend', { participantId });
-  }, [participantId]);
-
-  // Called by StreamReceiver when the RTCPeerConnection transitions to 'failed'.
-  // Sets error state and schedules an automatic bridge reconnect after a short
-  // delay to give the main window time to call resendStream() once LiveKit
-  // finishes reconnecting the screen share track.
-  const scheduleRetry = useCallback(() => {
-    if (DEBUG_SHARE_VIEW) console.warn(LOG, `scheduleRetry — participantId: ${participantId}, retryCount: ${retryCount}, timestamp: ${Date.now()}`);
-    requestSenderResync();
-    setError('connection failed');
-    if (retryTimerRef.current !== null) return; // already scheduled
-    retryTimerRef.current = setTimeout(() => {
-      retryTimerRef.current = null;
-      setRetryCount((c) => c + 1);
-    }, AUTO_RETRY_DELAY_MS);
-  }, [participantId, requestSenderResync, retryCount]);
 
   useEffect(() => {
-    if (canvasFallback || isDiagnosticTest) return;
+    if (canvasFallback || isDiagnosticTest || !viewerConn) return;
     let cancelled = false;
-
-    // Stop the previous receiver before creating a fresh one (handles
-    // both the initial mount and every auto-retry / manual-retry cycle).
-    if (receiverRef.current) {
-      receiverRef.current.stop();
-      receiverRef.current = null;
-    }
-
     setError(null);
-    const receiver = new StreamReceiver(participantId, 'watch-all');
-    receiverRef.current = receiver;
 
-    // Pass scheduleRetry as onConnectionFailed so it is wired to
-    // pc.onconnectionstatechange synchronously — before any await — which
-    // closes the race window where a failure could arrive before the
-    // manual pc.addEventListener() call after start() resolved (old code).
-    //
-    // requestSenderResync is passed as onListenersReady: the main window's
-    // resendStream() fires only after this receiver has registered its offer +
-    // ICE listeners. Calling it before start() (old pattern) created a race —
-    // startSending() in main raced to register its receiver-ready listener
-    // while the receiver was still registering its offer listener, and with 2
-    // concurrent streams the double-miss probability was high enough to cause
-    // persistent blank screens.
-    receiver.start(scheduleRetry, requestSenderResync)
-      .then((s) => {
-        if (cancelled) return;
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver.start() resolved — participantId: ${participantId}, retryCount: ${retryCount}`);
-        setStream(s);
-        void emitTo('main', 'screen-share-viewer:ready', {
-          participantId,
-          windowLabel: 'watch-all',
-        });
-        void emitTo('main', 'viewer-subscribed', { targetId: participantId });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (DEBUG_SHARE_VIEW) console.error(LOG, `receiver.start() rejected — participantId: ${participantId}, error:`, err);
-        const message = err instanceof Error ? err.message : 'connection failed';
-        if (message === 'Timed out waiting for screen share stream') {
-          scheduleRetry();
-          return;
-        }
-        setError(message);
+    // Direct LiveKit subscription over the window-wide viewer connection.
+    // Reconnection/backoff live inside ViewerRoomConnection — a tile only
+    // registers interest in its identity and renders whatever arrives.
+    const identity = liveKitIdentity ?? participantId;
+    const unwatch = viewerConn.watch(identity, (s) => {
+      if (cancelled) return;
+      if (DEBUG_SHARE_VIEW)
+        console.log(
+          LOG,
+          `viewer stream ${s ? 'delivered' : 'ended'} — participantId: ${participantId}, retryCount: ${retryCount}`,
+        );
+      if (!s) {
+        setStream(null);
+        return;
+      }
+      setError(null);
+      setStream(s);
+      void emitTo('main', 'screen-share-viewer:ready', {
+        participantId,
+        windowLabel: 'watch-all',
       });
+      void emitTo('main', 'viewer-subscribed', { targetId: participantId });
+    });
 
     return () => {
       cancelled = true;
-      // Cancel any pending auto-retry timer on cleanup/unmount.
-      if (retryTimerRef.current !== null) {
-        clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-      if (receiverRef.current) {
-        receiverRef.current.stop();
-        receiverRef.current = null;
-      }
+      unwatch();
     };
-  }, [canvasFallback, isDiagnosticTest, participantId, requestSenderResync, retryCount, scheduleRetry]);
+  }, [canvasFallback, isDiagnosticTest, liveKitIdentity, participantId, retryCount, viewerConn]);
 
   // Attach stream to video element and detect aspect ratio from metadata
   useEffect(() => {
@@ -319,10 +278,18 @@ const ShareTile = memo(function ShareTile({
     if (!canvasFallback || isDiagnosticTest) return;
     let cancelled = false;
     setMjpegUrl(null);
+    // Native frame events and polling commands are keyed by LiveKit identity,
+    // which on newer backends differs from the signaling participantId.
+    const nativeIdentity = liveKitIdentity ?? participantId;
 
-    const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
+    const handleFrame = (payload: {
+      identity?: string;
+      frame: string;
+      width?: number;
+      height?: number;
+    }): Promise<boolean> => {
       if (cancelled) return Promise.resolve(false);
-      if (payload.identity && payload.identity !== participantId) return Promise.resolve(false);
+      if (payload.identity && payload.identity !== nativeIdentity) return Promise.resolve(false);
 
       const canvas = canvasRef.current;
       if (!canvas) return Promise.resolve(false);
@@ -359,7 +326,7 @@ const ShareTile = memo(function ShareTile({
       if (cancelled || mjpegActive) return;
       try {
         const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
-          identity: participantId,
+          identity: nativeIdentity,
           lastSeq,
         });
         if (frame && !cancelled) {
@@ -376,7 +343,7 @@ const ShareTile = memo(function ShareTile({
     };
     pollFrameId = requestAnimationFrame(pollLatestFrame);
 
-    invoke<string>('media_get_screen_share_stream_url', { identity: participantId })
+    invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
       .then((url) => {
         if (cancelled) return;
         mjpegActive = true;
@@ -391,17 +358,23 @@ const ShareTile = memo(function ShareTile({
       });
 
     const unlistenLinux = listen<{ identity: string; frame: string }>(
-      `ss-frame:${participantId}`,
-      (event) => { void handleFrame(event.payload); },
+      `ss-frame:${nativeIdentity}`,
+      (event) => {
+        void handleFrame(event.payload);
+      },
     );
     // Also listen for the generic event names (cross-platform compat)
     const unlistenGenericLinux = listen<{ identity: string; frame: string }>(
       'screen_share_frame',
-      (event) => { void handleFrame(event.payload); },
+      (event) => {
+        void handleFrame(event.payload);
+      },
     );
     const unlistenGenericWin = listen<{ frame: string; width: number; height: number }>(
       'screen-share-frame',
-      (event) => { void handleFrame(event.payload); },
+      (event) => {
+        void handleFrame(event.payload);
+      },
     );
     void emitTo('main', 'screen-share-viewer:ready', {
       participantId,
@@ -415,7 +388,7 @@ const ShareTile = memo(function ShareTile({
       unlistenGenericLinux.then((fn) => fn());
       unlistenGenericWin.then((fn) => fn());
     };
-  }, [canvasFallback, isDiagnosticTest, participantId]);
+  }, [canvasFallback, isDiagnosticTest, participantId, liveKitIdentity]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -460,21 +433,13 @@ const ShareTile = memo(function ShareTile({
   /* ── Retry handler ── */
 
   const handleRetry = useCallback(() => {
-    // Cancel any scheduled auto-retry so we don't double-reconnect.
-    if (retryTimerRef.current !== null) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
     setStream(null);
     setError(null);
-    requestSenderResync();
-    // Increment retryCount — the bridge useEffect re-runs, stops the old
-    // receiver, creates a new StreamReceiver, and emits receiver-ready.
-    // The main window's sender (re-established by resendStream() in ActiveRoom)
-    // will respond with the current offer. No resendStream() call here: that
-    // must only be called by the MAIN window which owns the sender entry.
+    // Rebuild the viewer Room (dead-transport escape hatch), then bump
+    // retryCount so the watch effect re-registers cleanly.
+    viewerConn?.forceReconnect();
     setRetryCount((c) => c + 1);
-  }, [requestSenderResync]);
+  }, [viewerConn]);
 
   /* ── Double-click → pop out ── */
 
@@ -536,8 +501,10 @@ const ShareTile = memo(function ShareTile({
                 ].join(', '),
               }}
             >
-              <div className="absolute inset-x-0 top-0 h-8 border-b flex items-center justify-between px-3 text-[0.65rem]"
-                style={{ borderColor: `${color}40`, backgroundColor: 'rgba(2, 6, 23, 0.62)' }}>
+              <div
+                className="absolute inset-x-0 top-0 h-8 border-b flex items-center justify-between px-3 text-[0.65rem]"
+                style={{ borderColor: `${color}40`, backgroundColor: 'rgba(2, 6, 23, 0.62)' }}
+              >
                 <span className="uppercase tracking-[0.25em] text-wavis-text-secondary">test</span>
                 <span className="font-mono tabular-nums text-wavis-text-secondary">
                   {nativeWidth}x{nativeHeight}
@@ -572,10 +539,7 @@ const ShareTile = memo(function ShareTile({
           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
         />
       ) : canvasFallback ? (
-        <canvas
-          ref={canvasRef}
-          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-        />
+        <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
       ) : stream ? (
         <video
           ref={videoRef}
@@ -590,13 +554,18 @@ const ShareTile = memo(function ShareTile({
         </div>
       )}
       {isSwitching && <ShareSwitchingOverlay compact displayName={displayName} />}
-      {!isDiagnosticTest && shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && <ShareLoadingOverlay compact />}
+      {!isDiagnosticTest && shouldShowShareLoadingOverlay(hasRenderedFrame, Boolean(error)) && (
+        <ShareLoadingOverlay compact />
+      )}
 
       {/* Pop-out icon (top-right on hover) */}
       {hovered && !isDiagnosticTest && (
         <button
           className="absolute top-1 right-1 text-wavis-text hover:text-wavis-accent text-xs bg-wavis-overlay-base/60 px-1 py-0.5 rounded"
-          onClick={(e) => { e.stopPropagation(); onPopOut(participantId, volume, muted); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPopOut(participantId, volume, muted);
+          }}
           aria-label={`Pop out ${displayName}`}
           title="Pop out window"
         >
@@ -612,7 +581,9 @@ const ShareTile = memo(function ShareTile({
           pointerEvents: labelVisible ? 'auto' : 'none',
         }}
       >
-        <span className="truncate" style={{ color }}>{displayName}</span>
+        <span className="truncate" style={{ color }}>
+          {displayName}
+        </span>
 
         {/* Mute toggle (hidden on canvas fallback — no audio available) */}
         {!canvasFallback && !isDiagnosticTest && (
@@ -637,7 +608,10 @@ const ShareTile = memo(function ShareTile({
             <button
               className="shrink-0 hover:opacity-70 transition-opacity"
               style={{ color: muted ? 'var(--wavis-text-secondary)' : color }}
-              onClick={(e) => { e.stopPropagation(); onToggleMute(participantId); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleMute(participantId);
+              }}
               aria-label={muted ? `Unmute ${displayName}` : `Mute ${displayName}`}
               title="Mute stream"
             >
@@ -683,10 +657,16 @@ const AudioOnlyTile = memo(function AudioOnlyTile({
         onClick={() => onToggleMute(participantId)}
         aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
         title={muted ? 'click to unmute' : 'click to mute'}
-      >{"♪"}</button>
-      <span className="truncate min-w-0" style={{ color }}>{displayName}</span>
+      >
+        {'♪'}
+      </button>
+      <span className="truncate min-w-0" style={{ color }}>
+        {displayName}
+      </span>
       <div className="flex items-center gap-2 ml-auto shrink-0">
-        <span className="text-wavis-text-secondary whitespace-nowrap hidden sm:block">audio vol</span>
+        <span className="text-wavis-text-secondary whitespace-nowrap hidden sm:block">
+          audio vol
+        </span>
         <div
           className="w-20"
           onPointerDown={(e) => e.stopPropagation()}
@@ -721,7 +701,9 @@ export default function WatchAllPage() {
   const params = useRef(parseHashParams());
   const [tiles, setTiles] = useState<ShareTileState[]>([]);
   const [audioTiles, setAudioTiles] = useState<AudioTileState[]>([]);
-  const pendingRestoreVolumesRef = useRef<Map<string, { volume: number; muted: boolean }>>(new Map());
+  const pendingRestoreVolumesRef = useRef<Map<string, { volume: number; muted: boolean }>>(
+    new Map(),
+  );
   const gridRef = useRef<HTMLDivElement>(null);
   const [gridSize, setGridSize] = useState({ width: 0, height: 0 });
   const [userState, setUserState] = useState<ShareUserState>({
@@ -742,6 +724,18 @@ export default function WatchAllPage() {
   const diagnosticsTestSessionId = p?.testSessionId ?? null;
   const isDiagnosticsTestMode = diagnosticsTestSessionId !== null;
 
+  // One direct LiveKit viewer connection for the whole window — every live
+  // tile subscribes over this single Room. Constructor is side-effect free;
+  // the Room only connects once the first tile calls watch().
+  const viewerConn = useMemo(
+    () => (isDiagnosticsTestMode ? null : new ViewerRoomConnection({ windowLabel: 'watch-all' })),
+    [isDiagnosticsTestMode],
+  );
+  useEffect(() => {
+    if (!viewerConn) return;
+    return () => viewerConn.dispose();
+  }, [viewerConn]);
+
   /* ── Tile event listeners ── */
 
   useEffect(() => {
@@ -751,18 +745,20 @@ export default function WatchAllPage() {
 
       void listen<WatchAllTestState>(WATCH_ALL_TEST_STATE_EVENT, (event) => {
         if (event.payload.sessionId !== diagnosticsTestSessionId) return;
-        setTiles(event.payload.tiles.map((tile) => ({
-          participantId: tile.participantId,
-          displayName: tile.displayName,
-          color: tile.color,
-          kind: 'test',
-          canvasFallback: false,
-          muted: false,
-          volume: 70,
-          nativeWidth: tile.width,
-          nativeHeight: tile.height,
-          aspectRatio: tile.width / tile.height,
-        })));
+        setTiles(
+          event.payload.tiles.map((tile) => ({
+            participantId: tile.participantId,
+            displayName: tile.displayName,
+            color: tile.color,
+            kind: 'test',
+            canvasFallback: false,
+            muted: false,
+            volume: 70,
+            nativeWidth: tile.width,
+            nativeHeight: tile.height,
+            aspectRatio: tile.width / tile.height,
+          })),
+        );
       }).then((unlisten) => {
         if (!mounted) {
           unlisten();
@@ -782,38 +778,47 @@ export default function WatchAllPage() {
     // ActiveRoom waits for watch-all:ready before emitting share-added events,
     // avoiding the race where events fire before listeners are registered.
     const setup = async () => {
-      const unlistenAdded = await listen<{ participantId: string; displayName: string; color: string; canvasFallback: boolean }>(
-        'watch-all:share-added',
-        (event) => {
-          console.log('[wavis:watch-all] share-added received:', event.payload.participantId, event.payload.displayName);
-          const { participantId, displayName, color, canvasFallback } = event.payload;
-          setTiles((prev) => {
-            if (prev.some((t) => t.participantId === participantId)) return prev;
-            const restored = pendingRestoreVolumesRef.current.get(participantId);
-            if (restored !== undefined) {
-              pendingRestoreVolumesRef.current.delete(participantId);
-            }
-            const baseTile = {
-              participantId,
-              displayName,
-              color,
-              kind: 'live' as const,
-              canvasFallback,
-              muted: false,
-              volume: 70,
-              nativeWidth: null,
-              nativeHeight: null,
-              aspectRatio: 16 / 9,
-            };
-            return [
-              ...prev,
-              restored === undefined
-                ? baseTile
-                : { ...baseTile, muted: restored.muted, volume: restored.volume },
-            ];
-          });
-        },
-      );
+      const unlistenAdded = await listen<{
+        participantId: string;
+        liveKitIdentity?: string;
+        displayName: string;
+        color: string;
+        canvasFallback: boolean;
+      }>('watch-all:share-added', (event) => {
+        console.log(
+          '[wavis:watch-all] share-added received:',
+          event.payload.participantId,
+          event.payload.displayName,
+        );
+        const { participantId, liveKitIdentity, displayName, color, canvasFallback } =
+          event.payload;
+        setTiles((prev) => {
+          if (prev.some((t) => t.participantId === participantId)) return prev;
+          const restored = pendingRestoreVolumesRef.current.get(participantId);
+          if (restored !== undefined) {
+            pendingRestoreVolumesRef.current.delete(participantId);
+          }
+          const baseTile = {
+            participantId,
+            liveKitIdentity,
+            displayName,
+            color,
+            kind: 'live' as const,
+            canvasFallback,
+            muted: false,
+            volume: 70,
+            nativeWidth: null,
+            nativeHeight: null,
+            aspectRatio: 16 / 9,
+          };
+          return [
+            ...prev,
+            restored === undefined
+              ? baseTile
+              : { ...baseTile, muted: restored.muted, volume: restored.volume },
+          ];
+        });
+      });
 
       const unlistenRemoved = await listen<{ participantId: string }>(
         'watch-all:share-removed',
@@ -822,61 +827,62 @@ export default function WatchAllPage() {
         },
       );
 
-      const unlistenUpdated = await listen<{ participantId: string; displayName: string; color: string }>(
-        'watch-all:share-updated',
-        (event) => {
-          const { participantId, displayName, color } = event.payload;
-          setTiles((prev) =>
-            prev.map((t) =>
-              t.participantId === participantId
-                ? { ...t, displayName, color }
-                : t,
-            ),
-          );
-        },
-      );
+      const unlistenUpdated = await listen<{
+        participantId: string;
+        displayName: string;
+        color: string;
+      }>('watch-all:share-updated', (event) => {
+        const { participantId, displayName, color } = event.payload;
+        setTiles((prev) =>
+          prev.map((t) => (t.participantId === participantId ? { ...t, displayName, color } : t)),
+        );
+      });
 
-      const unlistenRestoreVolume = await listen<{ participantId: string; volume: number; muted: boolean }>(
-        'watch-all:restore-volume',
-        (event) => {
-          const { participantId, volume, muted } = event.payload;
-          setTiles((prev) => {
-            let found = false;
-            const next = prev.map((tile) => {
-              if (tile.participantId !== participantId) return tile;
-              found = true;
-              return { ...tile, volume, muted };
-            });
-            if (!found) {
-              pendingRestoreVolumesRef.current.set(participantId, { volume, muted });
-            }
-            return next;
+      const unlistenRestoreVolume = await listen<{
+        participantId: string;
+        volume: number;
+        muted: boolean;
+      }>('watch-all:restore-volume', (event) => {
+        const { participantId, volume, muted } = event.payload;
+        setTiles((prev) => {
+          let found = false;
+          const next = prev.map((tile) => {
+            if (tile.participantId !== participantId) return tile;
+            found = true;
+            return { ...tile, volume, muted };
           });
-          setAudioTiles((prev) =>
-            prev.map((tile) =>
-              tile.participantId === participantId
-                ? { ...tile, volume, muted }
-                : tile,
-            ),
-          );
-        },
-      );
+          if (!found) {
+            pendingRestoreVolumesRef.current.set(participantId, { volume, muted });
+          }
+          return next;
+        });
+        setAudioTiles((prev) =>
+          prev.map((tile) =>
+            tile.participantId === participantId ? { ...tile, volume, muted } : tile,
+          ),
+        );
+      });
 
-      const unlistenAudioAdded = await listen<{ participantId: string; displayName: string; color: string; volume: number; muted: boolean }>(
-        'watch-all:audio-share-added',
-        (event) => {
-          const { participantId, displayName, color, volume, muted } = event.payload;
-          setAudioTiles((prev) => {
-            if (prev.some((t) => t.participantId === participantId)) return prev;
-            return [...prev, { participantId, displayName, color, muted, volume }];
-          });
-        },
-      );
+      const unlistenAudioAdded = await listen<{
+        participantId: string;
+        displayName: string;
+        color: string;
+        volume: number;
+        muted: boolean;
+      }>('watch-all:audio-share-added', (event) => {
+        const { participantId, displayName, color, volume, muted } = event.payload;
+        setAudioTiles((prev) => {
+          if (prev.some((t) => t.participantId === participantId)) return prev;
+          return [...prev, { participantId, displayName, color, muted, volume }];
+        });
+      });
 
       const unlistenAudioRemoved = await listen<{ participantId: string }>(
         'watch-all:audio-share-removed',
         (event) => {
-          setAudioTiles((prev) => prev.filter((t) => t.participantId !== event.payload.participantId));
+          setAudioTiles((prev) =>
+            prev.filter((t) => t.participantId !== event.payload.participantId),
+          );
         },
       );
 
@@ -884,11 +890,20 @@ export default function WatchAllPage() {
       console.log('[wavis:watch-all] emitting watch-all:ready');
       emit('watch-all:ready', {});
 
-      return [unlistenAdded, unlistenRemoved, unlistenUpdated, unlistenRestoreVolume, unlistenAudioAdded, unlistenAudioRemoved];
+      return [
+        unlistenAdded,
+        unlistenRemoved,
+        unlistenUpdated,
+        unlistenRestoreVolume,
+        unlistenAudioAdded,
+        unlistenAudioRemoved,
+      ];
     };
 
     let cleanups: Array<() => void> = [];
-    setup().then((fns) => { cleanups = fns; });
+    setup().then((fns) => {
+      cleanups = fns;
+    });
 
     return () => {
       for (const fn of cleanups) fn();
@@ -903,15 +918,22 @@ export default function WatchAllPage() {
         isDeafened: Boolean(event.payload.isDeafened),
       });
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isDiagnosticsTestMode]);
 
   useEffect(() => {
     if (isDiagnosticsTestMode) return;
-    const unlisten = listen<{ participants: MixerParticipant[] }>('watch-all:voice-participants', (event) => {
-      setVoiceParticipants(event.payload.participants);
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    const unlisten = listen<{ participants: MixerParticipant[] }>(
+      'watch-all:voice-participants',
+      (event) => {
+        setVoiceParticipants(event.payload.participants);
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isDiagnosticsTestMode]);
 
   /* ── Window close / self-close listeners ── */
@@ -922,7 +944,9 @@ export default function WatchAllPage() {
     const unlisten = listen('watch-all:close', () => {
       getCurrentWindow().close();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isDiagnosticsTestMode]);
 
   // Defense-in-depth: self-close when voice session ends
@@ -931,7 +955,9 @@ export default function WatchAllPage() {
     const unlisten = listen('voice-session:ended', () => {
       getCurrentWindow().close();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isDiagnosticsTestMode]);
 
   // Notify ActiveRoom when this window closes
@@ -941,7 +967,9 @@ export default function WatchAllPage() {
     const unlisten = win.onCloseRequested(async () => {
       await emit('watch-all:closed', {});
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [isDiagnosticsTestMode]);
 
   /* ── Grid resize tracking ── */
@@ -1003,27 +1031,25 @@ export default function WatchAllPage() {
   const handleVolumeChange = useCallback((participantId: string, volume: number) => {
     setTiles((prev) =>
       prev.map((t) =>
-        t.participantId === participantId
-          ? { ...t, volume, muted: volume === 0 }
-          : t,
+        t.participantId === participantId ? { ...t, volume, muted: volume === 0 } : t,
       ),
     );
     setAudioTiles((prev) =>
       prev.map((t) =>
-        t.participantId === participantId
-          ? { ...t, volume, muted: volume === 0 }
-          : t,
+        t.participantId === participantId ? { ...t, volume, muted: volume === 0 } : t,
       ),
     );
     emit('watch-all:volume-change', { participantId, volume });
   }, []);
 
   const handleAspectRatioDetected = useCallback((participantId: string, ratio: number) => {
-    setTiles((prev) => prev.map((t) =>
-      t.participantId === participantId && Math.abs(t.aspectRatio - ratio) > 0.01
-        ? { ...t, aspectRatio: ratio }
-        : t,
-    ));
+    setTiles((prev) =>
+      prev.map((t) =>
+        t.participantId === participantId && Math.abs(t.aspectRatio - ratio) > 0.01
+          ? { ...t, aspectRatio: ratio }
+          : t,
+      ),
+    );
   }, []);
 
   const handleVoiceVolumeChange = useCallback((participantId: string, volume: number) => {
@@ -1041,7 +1067,11 @@ export default function WatchAllPage() {
     setVoiceParticipants((prev) =>
       prev.map((participant) => {
         if (participant.id !== participantId) return participant;
-        const nextVolume = participant.muted ? (participant.volume > 0 ? participant.volume : 50) : 0;
+        const nextVolume = participant.muted
+          ? participant.volume > 0
+            ? participant.volume
+            : 50
+          : 0;
         emit('share:voice-volume-change', { participantId, volume: nextVolume });
         return { ...participant, volume: nextVolume, muted: nextVolume === 0 };
       }),
@@ -1061,9 +1091,21 @@ export default function WatchAllPage() {
     }
   }, []);
 
-  const toggleMixerPanel = useCallback((panel: MixerPanel) => {
-    if (panel === 'voice') {
-      setVoiceMixerOpen((open) => {
+  const toggleMixerPanel = useCallback(
+    (panel: MixerPanel) => {
+      if (panel === 'voice') {
+        setVoiceMixerOpen((open) => {
+          if (open) {
+            setMixerPanelOrder((prev) => prev.filter((item) => item !== panel));
+            return false;
+          }
+          openMixerPanel(panel);
+          return true;
+        });
+        return;
+      }
+
+      setMixerOpen((open) => {
         if (open) {
           setMixerPanelOrder((prev) => prev.filter((item) => item !== panel));
           return false;
@@ -1071,18 +1113,9 @@ export default function WatchAllPage() {
         openMixerPanel(panel);
         return true;
       });
-      return;
-    }
-
-    setMixerOpen((open) => {
-      if (open) {
-        setMixerPanelOrder((prev) => prev.filter((item) => item !== panel));
-        return false;
-      }
-      openMixerPanel(panel);
-      return true;
-    });
-  }, [openMixerPanel]);
+    },
+    [openMixerPanel],
+  );
 
   /* ── Pop-out ── */
 
@@ -1122,9 +1155,13 @@ export default function WatchAllPage() {
     };
   }, [gridSize, isDiagnosticsTestMode, tiles]);
   const tilePositions = useMemo(() => {
-    if (!layout) return new Map<string, { left: string; top: string; width: string; height: string }>();
+    if (!layout)
+      return new Map<string, { left: string; top: string; width: string; height: string }>();
 
-    const positions = new Map<string, { left: string; top: string; width: string; height: string }>();
+    const positions = new Map<
+      string,
+      { left: string; top: string; width: string; height: string }
+    >();
     const totalRowFlex = layout.rows.reduce((sum, row) => sum + row.flexGrow, 0);
     let top = 0;
 
@@ -1153,11 +1190,10 @@ export default function WatchAllPage() {
   const activeMixerPanelOrder = mixerPanelOrder.filter((panel) =>
     panel === 'voice' ? voiceMixerOpen : mixerOpen,
   );
-  const mixerPositionClass = (panel: MixerPanel) => (
+  const mixerPositionClass = (panel: MixerPanel) =>
     activeMixerPanelOrder.indexOf(panel) <= 0
       ? 'absolute bottom-full right-0 mb-1'
-      : 'absolute bottom-full right-[228px] mb-1'
-  );
+      : 'absolute bottom-full right-[228px] mb-1';
 
   /* ── Render ── */
 
@@ -1175,22 +1211,24 @@ export default function WatchAllPage() {
       <div
         data-tauri-drag-region
         className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
-        style={isFullscreen ? {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          zIndex: 20,
-          height: TITLE_BAR_HEIGHT,
-          opacity: bottomBarVisible ? 1 : 0,
-          pointerEvents: bottomBarVisible ? 'auto' : 'none',
-        } : { height: TITLE_BAR_HEIGHT }}
+        style={
+          isFullscreen
+            ? {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 20,
+                height: TITLE_BAR_HEIGHT,
+                opacity: bottomBarVisible ? 1 : 0,
+                pointerEvents: bottomBarVisible ? 'auto' : 'none',
+              }
+            : { height: TITLE_BAR_HEIGHT }
+        }
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
-          <span className="truncate text-wavis-text">
-            Watch All — {p.channelName}
-          </span>
+          <span className="truncate text-wavis-text">Watch All — {p.channelName}</span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
           <FixedBugReportButton captureScreenshot={false} />
@@ -1228,6 +1266,7 @@ export default function WatchAllPage() {
                 >
                   <ShareTile
                     participantId={tile.participantId}
+                    liveKitIdentity={tile.liveKitIdentity}
                     displayName={tile.displayName}
                     color={tile.color}
                     kind={tile.kind}
@@ -1237,6 +1276,7 @@ export default function WatchAllPage() {
                     nativeWidth={tile.nativeWidth}
                     nativeHeight={tile.nativeHeight}
                     aspectRatio={tile.aspectRatio}
+                    viewerConn={viewerConn}
                     onToggleMute={handleToggleMute}
                     onVolumeChange={handleVolumeChange}
                     onPopOut={handlePopOut}
@@ -1282,90 +1322,108 @@ export default function WatchAllPage() {
           </span>
           <div className="flex-1" />
           <FocusMainButton
-            onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
+            onClick={() => {
+              console.log('[wavis:focus-main] button clicked in watch-all');
+              void emitTo('main', 'focus-main-window', {})
+                .then(() => console.log('[wavis:focus-main] emitTo resolved'))
+                .catch((e) => console.error('[wavis:focus-main] emitTo failed', e));
+            }}
           />
         </div>
       ) : (
-      <div
-        className="bg-wavis-panel border-t border-wavis-text-secondary/20 px-3 py-1.5 flex items-center gap-1 relative text-xs leading-none transition-opacity duration-700"
-        style={{
-          opacity: bottomBarActive ? 1 : 0,
-          pointerEvents: bottomBarActive ? 'auto' : 'none',
-        }}
-      >
-        <QuickActionButtons
-          isMuted={userState.isMuted}
-          isDeafened={userState.isDeafened}
-          onToggleMute={() => { void emit('share:toggle-mute'); }}
-          onToggleDeafen={() => { void emit('share:toggle-deafen'); }}
-        />
-        <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">│</span>
-        <FocusMainButton
-          onClick={() => { console.log('[wavis:focus-main] button clicked in watch-all'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
-        />
-        <div className="flex-1" />
-        <div className="relative flex items-center gap-1 shrink-0">
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleMixerPanel('voice');
+        <div
+          className="bg-wavis-panel border-t border-wavis-text-secondary/20 px-3 py-1.5 flex items-center gap-1 relative text-xs leading-none transition-opacity duration-700"
+          style={{
+            opacity: bottomBarActive ? 1 : 0,
+            pointerEvents: bottomBarActive ? 'auto' : 'none',
+          }}
+        >
+          <QuickActionButtons
+            isMuted={userState.isMuted}
+            isDeafened={userState.isDeafened}
+            onToggleMute={() => {
+              void emit('share:toggle-mute');
             }}
-            className="h-5 w-5 flex items-center justify-center text-wavis-text-secondary hover:opacity-70 transition-opacity"
-            aria-label="Open voice volume"
-            title="voice volume"
-          >
-            <Volume2 size={14} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-          {voiceMixerOpen && (
-            <ParticipantMixer
-              participants={voiceParticipants}
-              onVolumeChange={handleVoiceVolumeChange}
-              onToggleMute={handleVoiceMuteToggle}
-              onClose={() => closeMixerPanel('voice')}
+            onToggleDeafen={() => {
+              void emit('share:toggle-deafen');
+            }}
+          />
+          <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">
+            │
+          </span>
+          <FocusMainButton
+            onClick={() => {
+              console.log('[wavis:focus-main] button clicked in watch-all');
+              void emitTo('main', 'focus-main-window', {})
+                .then(() => console.log('[wavis:focus-main] emitTo resolved'))
+                .catch((e) => console.error('[wavis:focus-main] emitTo failed', e));
+            }}
+          />
+          <div className="flex-1" />
+          <div className="relative flex items-center gap-1 shrink-0">
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMixerPanel('voice');
+              }}
+              className="h-5 w-5 flex items-center justify-center text-wavis-text-secondary hover:opacity-70 transition-opacity"
+              aria-label="Open voice volume"
               title="voice volume"
-              emptyMessage="no voice participants"
-              positionClassName={mixerPositionClass('voice')}
-            />
-          )}
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleMixerPanel('share');
-            }}
-            className="h-5 w-5 flex items-center justify-center text-wavis-text-secondary hover:opacity-70 transition-opacity"
-            aria-label="Open stream volume"
-            title="stream volume"
-          >
-            <span className="relative block h-4 w-4 leading-none">
-              <span className="absolute inset-0 flex items-center justify-center">{MIXER_ICON}</span>
-              <Volume2
-                className="absolute -bottom-1 -right-1.5 text-wavis-text"
-                size={11}
-                strokeWidth={2.5}
-                aria-hidden="true"
+            >
+              <Volume2 size={14} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+            {voiceMixerOpen && (
+              <ParticipantMixer
+                participants={voiceParticipants}
+                onVolumeChange={handleVoiceVolumeChange}
+                onToggleMute={handleVoiceMuteToggle}
+                onClose={() => closeMixerPanel('voice')}
+                title="voice volume"
+                emptyMessage="no voice participants"
+                positionClassName={mixerPositionClass('voice')}
               />
-            </span>
-          </button>
-          {mixerOpen && (
-            <ParticipantMixer
-              participants={tiles.map((tile) => ({
-                id: tile.participantId,
-                name: tile.displayName,
-                color: tile.color,
-                volume: tile.volume,
-                muted: tile.muted,
-              }))}
-              onVolumeChange={handleVolumeChange}
-              onToggleMute={handleToggleMute}
-              onClose={() => closeMixerPanel('share')}
+            )}
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMixerPanel('share');
+              }}
+              className="h-5 w-5 flex items-center justify-center text-wavis-text-secondary hover:opacity-70 transition-opacity"
+              aria-label="Open stream volume"
               title="stream volume"
-              positionClassName={mixerPositionClass('share')}
-            />
-          )}
+            >
+              <span className="relative block h-4 w-4 leading-none">
+                <span className="absolute inset-0 flex items-center justify-center">
+                  {MIXER_ICON}
+                </span>
+                <Volume2
+                  className="absolute -bottom-1 -right-1.5 text-wavis-text"
+                  size={11}
+                  strokeWidth={2.5}
+                  aria-hidden="true"
+                />
+              </span>
+            </button>
+            {mixerOpen && (
+              <ParticipantMixer
+                participants={tiles.map((tile) => ({
+                  id: tile.participantId,
+                  name: tile.displayName,
+                  color: tile.color,
+                  volume: tile.volume,
+                  muted: tile.muted,
+                }))}
+                onVolumeChange={handleVolumeChange}
+                onToggleMute={handleToggleMute}
+                onClose={() => closeMixerPanel('share')}
+                title="stream volume"
+                positionClassName={mixerPositionClass('share')}
+              />
+            )}
+          </div>
         </div>
-      </div>
       )}
     </div>
   );

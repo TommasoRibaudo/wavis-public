@@ -18,11 +18,11 @@
 
 import { createHmac } from 'node:crypto';
 
-const ROOM   = process.env.WAVIS_SHOOTOUT_ROOM_NAME ?? 'shootout-room';
-const INDEX  = process.env.WAVIS_SHOOTOUT_SUBSCRIBER_INDEX ?? '1';
-const CELL   = process.env.WAVIS_SHOOTOUT_CELL_ID ?? 'unknown';
+const ROOM = process.env.WAVIS_SHOOTOUT_ROOM_NAME ?? 'shootout-room';
+const INDEX = process.env.WAVIS_SHOOTOUT_SUBSCRIBER_INDEX ?? '1';
+const CELL = process.env.WAVIS_SHOOTOUT_CELL_ID ?? 'unknown';
 const LK_URL = process.env.WAVIS_LIVEKIT_URL ?? '';
-const API_KEY    = process.env.WAVIS_LIVEKIT_API_KEY ?? '';
+const API_KEY = process.env.WAVIS_LIVEKIT_API_KEY ?? '';
 const API_SECRET = process.env.WAVIS_LIVEKIT_API_SECRET ?? '';
 const IDENTITY = `shootout-sub-${INDEX}`;
 
@@ -34,16 +34,16 @@ if (!LK_URL || !API_KEY || !API_SECRET) {
 function buildAccessToken(apiKey, apiSecret, roomName, identity) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
-  const payload = Buffer.from(JSON.stringify({
-    iss: apiKey,
-    sub: identity,
-    exp: now + 3600,
-    nbf: now,
-    video: { roomJoin: true, room: roomName, canSubscribe: true, canPublish: false },
-  })).toString('base64url');
-  const sig = createHmac('sha256', apiSecret)
-    .update(`${header}.${payload}`)
-    .digest('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      iss: apiKey,
+      sub: identity,
+      exp: now + 3600,
+      nbf: now,
+      video: { roomJoin: true, room: roomName, canSubscribe: true, canPublish: false },
+    }),
+  ).toString('base64url');
+  const sig = createHmac('sha256', apiSecret).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${sig}`;
 }
 
@@ -55,9 +55,11 @@ let pingInterval;
 
 async function connect() {
   // Node.js 22 has WebSocket globally; fall back to the 'ws' package for older nodes.
-  const WS = globalThis.WebSocket ?? (await import('ws').then(m => m.default).catch(() => null));
+  const WS = globalThis.WebSocket ?? (await import('ws').then((m) => m.default).catch(() => null));
   if (!WS) {
-    console.error(`[sub-${INDEX}] No WebSocket implementation found. Requires Node.js 22+ or 'ws' package.`);
+    console.error(
+      `[sub-${INDEX}] No WebSocket implementation found. Requires Node.js 22+ or 'ws' package.`,
+    );
     process.exit(1);
   }
 
@@ -70,7 +72,9 @@ async function connect() {
     }, 10_000);
   });
 
-  ws.addEventListener('message', () => { /* ignore incoming signals — subscriber only */ });
+  ws.addEventListener('message', () => {
+    /* ignore incoming signals — subscriber only */
+  });
 
   ws.addEventListener('close', (event) => {
     console.log(`[sub-${INDEX}] disconnected (code ${event.code})`);

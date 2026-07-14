@@ -49,4 +49,10 @@ ignore = [
 
     # fxhash unmaintained — transitive dep. Consider rustc-hash when upstream migrates.
     "RUSTSEC-2025-0057",
+
+    # quick-xml quadratic/runtime DoS advisories — the remaining instance is
+    # quick-xml 0.39.4 via wayland-scanner 0.31.10, a proc-macro/codegen path.
+    # wayland-scanner has no published release using quick-xml >= 0.41 yet.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

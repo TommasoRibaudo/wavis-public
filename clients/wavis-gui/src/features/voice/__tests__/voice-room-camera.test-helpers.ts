@@ -40,7 +40,11 @@ export type MockVoiceRoomCameraLiveKitModule = {
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
-  getActiveScreenShares: () => Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
+  getActiveScreenShares: () => Array<{
+    identity: string;
+    stream: MediaStream;
+    startedAtMs: number;
+  }>;
 };
 
 type HarnessState = {
@@ -51,18 +55,27 @@ type HarnessState = {
   videoInputDevice: string | null;
   enumeratedVideoDevices: string[];
   publishCameraImpl:
-    | ((module: MockVoiceRoomCameraLiveKitModule, opts: {
-      deviceId: string | null;
-      quality: { tier: string };
-    }) => Promise<{ trackId: string }>)
+    | ((
+        module: MockVoiceRoomCameraLiveKitModule,
+        opts: {
+          deviceId: string | null;
+          quality: { tier: string };
+        },
+      ) => Promise<{ trackId: string }>)
     | null;
   setCameraQualityImpl:
-    | ((module: MockVoiceRoomCameraLiveKitModule, quality: {
-      tier: string;
-    }) => Promise<void>)
+    | ((
+        module: MockVoiceRoomCameraLiveKitModule,
+        quality: {
+          tier: string;
+        },
+      ) => Promise<void>)
     | null;
   replaceCameraDeviceImpl:
-    | ((module: MockVoiceRoomCameraLiveKitModule, deviceId: string | null) => Promise<{ trackId: string }>)
+    | ((
+        module: MockVoiceRoomCameraLiveKitModule,
+        deviceId: string | null,
+      ) => Promise<{ trackId: string }>)
     | null;
 };
 
@@ -184,7 +197,7 @@ export async function setupVoiceRoomCameraHarness(): Promise<VoiceRoomCameraHarn
     ) {
       const module = createMockLiveKitModule(state, callbacks);
       state.lastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));
@@ -196,7 +209,7 @@ export async function setupVoiceRoomCameraHarness(): Promise<VoiceRoomCameraHarn
     ) {
       const module = createMockLiveKitModule(state, callbacks);
       state.lastLiveKitModule = module;
-      Object.assign(this as Record<string, unknown>, module);
+      Object.assign(this, module);
       return this;
     }),
   }));

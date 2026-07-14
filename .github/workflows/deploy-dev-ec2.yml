@@ -31,7 +31,7 @@ jobs:
   #   name: CI gate (pre-deploy tests)
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v5
   #     - name: Remove Tauri GUI crate from workspace
   #       run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
   #     - name: Install system dependencies
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Mask deployment values
         run: |
@@ -293,7 +293,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Mask smoke values
         env:

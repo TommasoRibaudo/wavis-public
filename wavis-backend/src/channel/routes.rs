@@ -712,7 +712,12 @@ pub async fn get_batch_voice_status(
     Query(query): Query<BatchVoiceStatusQuery>,
 ) -> Result<Json<std::collections::HashMap<String, BatchVoiceStatusItem>>, ChannelErrorResponse> {
     let mut channel_ids = Vec::new();
-    for raw_id in query.ids.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+    for raw_id in query
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         let channel_id = raw_id.parse::<Uuid>().map_err(|_| {
             ChannelErrorResponse(Box::new((
                 StatusCode::BAD_REQUEST,

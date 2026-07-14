@@ -40,9 +40,7 @@ export class NativeMicBridge {
     const ctx = this.audioCtx;
 
     if (ctx.state === 'suspended') {
-      await ctx.resume().catch((e) =>
-        console.warn(LOG, 'AudioContext resume failed:', e),
-      );
+      await ctx.resume().catch((e) => console.warn(LOG, 'AudioContext resume failed:', e));
     }
 
     // Load the worklet processor.

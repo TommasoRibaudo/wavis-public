@@ -56,9 +56,7 @@ export class WsMessageBuffer {
     }
 
     const type = (message as { type?: unknown }).type;
-    return typeof type === 'string' && type.length > 0
-      ? type
-      : UNKNOWN_MESSAGE_TYPE;
+    return typeof type === 'string' && type.length > 0 ? type : UNKNOWN_MESSAGE_TYPE;
   }
 }
 

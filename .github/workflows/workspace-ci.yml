@@ -72,7 +72,7 @@ jobs:
       screen: ${{ steps.filter.outputs.screen }}
       core: ${{ steps.filter.outputs.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -143,7 +143,7 @@ jobs:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install gitleaks
@@ -167,7 +167,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
@@ -180,7 +180,15 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      # Cheap gates first: formatting and architecture boundaries fail in
+      # seconds, before any compilation.
+      - name: Rustfmt check
+        run: cargo fmt --all --check
+
+      - name: Architecture boundary check
+        run: node scripts/arch-check.mjs
 
       # Caches ~/.cargo/registry, ~/.cargo/git, and target/ — shared key
       # means test-db job can restore from this job's saved cache.
@@ -197,6 +205,12 @@ jobs:
 
       - name: Clippy (livekit feature)
         run: cargo clippy -p wavis-client-shared --features livekit,real-backends -p wavis-client --features livekit -p wavis-cli-test --features livekit -- -D warnings
+
+      # Non-blocking complexity metrics (clippy.toml thresholds). Review
+      # triggers only — never a gate. See CLAUDE.md "Code Standards & Gates".
+      - name: Clippy metrics (non-blocking)
+        continue-on-error: true
+        run: cargo clippy $CI_PACKAGES -- -W clippy::cognitive_complexity -W clippy::too_many_lines
 
       # cargo test builds implicitly — no separate cargo build step needed.
       - name: Full workspace tests
@@ -249,7 +263,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -265,6 +279,18 @@ jobs:
 
       - name: Install GUI dependencies
         run: npm install --no-audit --no-fund
+        working-directory: clients/wavis-gui
+
+      - name: GUI Prettier check
+        run: npm run format:check
+        working-directory: clients/wavis-gui
+
+      - name: GUI ESLint
+        run: npm run lint
+        working-directory: clients/wavis-gui
+
+      - name: GUI dependency-cruiser
+        run: npm run lint:deps
         working-directory: clients/wavis-gui
 
       - name: GUI release config check
@@ -332,7 +358,7 @@ jobs:
       AUTH_JWT_SECRET: ci-auth-secret-at-least-32-bytes!!
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml

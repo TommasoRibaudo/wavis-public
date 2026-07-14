@@ -76,9 +76,16 @@ export default function RecoverAccount() {
     setRecovering(true);
     setLogs([]);
 
-    const result = await recoverAccount(serverUrl, trimmedRecoveryId, phrase, trimmedName, insecureTls, (entry) => {
-      setLogs((prev) => [...prev, entry]);
-    });
+    const result = await recoverAccount(
+      serverUrl,
+      trimmedRecoveryId,
+      phrase,
+      trimmedName,
+      insecureTls,
+      (entry) => {
+        setLogs((prev) => [...prev, entry]);
+      },
+    );
 
     setRecovering(false);
     setPhrase('');
@@ -206,7 +213,9 @@ export default function RecoverAccount() {
         )}
 
         <button
-          onClick={() => { void handleSubmit(); }}
+          onClick={() => {
+            void handleSubmit();
+          }}
           disabled={recovering}
           className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
         >
@@ -218,7 +227,9 @@ export default function RecoverAccount() {
             <p className="text-wavis-danger text-sm">{recoverError}</p>
             {showRetry && (
               <button
-                onClick={() => { void handleSubmit(); }}
+                onClick={() => {
+                  void handleSubmit();
+                }}
                 disabled={recovering}
                 className="border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors px-3 py-0.5 mt-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
               >

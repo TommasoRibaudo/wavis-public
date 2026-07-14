@@ -8,6 +8,9 @@
 	<!-- Required for microphone access (voice chat) -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Required for camera access (video chat) -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
 	<!-- Required for AudioHardwareCreateProcessTap (system audio capture with process exclusion) -->
 	<!-- This grants TCC permission for the "System Audio Recording" capability -->
 	<key>com.apple.security.cs.disable-library-validation</key>

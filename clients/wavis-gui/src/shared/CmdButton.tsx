@@ -7,14 +7,7 @@ interface CmdButtonProps {
   className?: string;
 }
 
-export function CmdButton({
-  label,
-  onClick,
-  active,
-  danger,
-  disabled,
-  className,
-}: CmdButtonProps) {
+export function CmdButton({ label, onClick, active, danger, disabled, className }: CmdButtonProps) {
   return (
     <button
       onClick={onClick}

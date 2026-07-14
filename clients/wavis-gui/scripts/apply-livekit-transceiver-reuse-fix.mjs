@@ -866,15 +866,17 @@ export function applyLivekitTransceiverReuseFix(esm) {
 }
 
 export function verifyPatchMarkers(esm) {
-  const missing = REQUIRED_POST_PATCH_MARKERS.filter(m => !esm.includes(m));
+  const missing = REQUIRED_POST_PATCH_MARKERS.filter((m) => !esm.includes(m));
   if (missing.length > 0) {
     throw new Error(
-      `[livekit-fix] post-patch verification failed — missing markers:\n${missing.map(m => `  - ${m}`).join('\n')}`
+      `[livekit-fix] post-patch verification failed — missing markers:\n${missing.map((m) => `  - ${m}`).join('\n')}`,
     );
   }
 }
 
-export function patchLivekitBundleFile(esmPath = path.resolve('node_modules/livekit-client/dist/livekit-client.esm.mjs')) {
+export function patchLivekitBundleFile(
+  esmPath = path.resolve('node_modules/livekit-client/dist/livekit-client.esm.mjs'),
+) {
   if (!fs.existsSync(esmPath)) {
     console.warn('[livekit-fix] skipped: livekit-client ESM bundle not found');
     return false;
@@ -896,8 +898,7 @@ export function patchLivekitBundleFile(esmPath = path.resolve('node_modules/live
 }
 
 const isMainModule =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (isMainModule) {
   patchLivekitBundleFile();

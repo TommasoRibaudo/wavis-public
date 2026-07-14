@@ -63,7 +63,7 @@ function createMockWs(): typeof WebSocket {
     constructor(url: string) {
       wsConstructorCalls.push(url);
       this.readyState = MockWsClass.CONNECTING;
-      lastWsInstance = this as unknown as MockWsInstance;
+      lastWsInstance = this;
     }
 
     simulate(event: WsEventName, data?: unknown) {

@@ -29,8 +29,7 @@ const API_KEY_PATTERN =
 const UUID_VALUE_PATTERN =
   '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
 
-const PHRASE_VALUE_PATTERN =
-  '[A-Za-z]{2,}(?:[ -][A-Za-z]{2,}){2,23}';
+const PHRASE_VALUE_PATTERN = '[A-Za-z]{2,}(?:[ -][A-Za-z]{2,}){2,23}';
 
 const INVITE_VALUE_PATTERN = '[A-Za-z0-9_-]{22}';
 
@@ -108,17 +107,11 @@ const LITERAL_RULES: LiteralRedactionRule[] = [
   { pattern: IPV6_PATTERN, replacement: '[REDACTED_IP]' },
 ];
 
-function applyLiteralRule(
-  text: string,
-  rule: LiteralRedactionRule,
-): string {
+function applyLiteralRule(text: string, rule: LiteralRedactionRule): string {
   return text.replace(rule.pattern, rule.replacement);
 }
 
-function applyContextualRule(
-  text: string,
-  rule: ContextualRedactionRule,
-): string {
+function applyContextualRule(text: string, rule: ContextualRedactionRule): string {
   return text.replace(
     rule.pattern,
     (_match: string, prefix: string, _value: string, suffix?: string) =>

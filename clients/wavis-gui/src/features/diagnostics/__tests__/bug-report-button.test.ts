@@ -29,7 +29,7 @@ vi.mock('@features/settings/settings-store', () => ({
   DEFAULT_PASSTHROUGH_VOLUME: 20,
   STORE_KEYS: { bugReportButtonPos: 'wavis_bug_report_button_pos' },
   getStoreValue: vi.fn(async <T>(key: string, defaultValue: T): Promise<T> => {
-    return (storeMap.has(key) ? storeMap.get(key) as T : defaultValue);
+    return storeMap.has(key) ? (storeMap.get(key) as T) : defaultValue;
   }),
   setStoreValue: vi.fn(async <T>(key: string, value: T): Promise<void> => {
     storeMap.set(key, value);
@@ -145,7 +145,6 @@ describe('Feature: in-app-bug-report, Property 7: Button snap produces edge-alig
   });
 });
 
-
 // ─── Property 8: Button position round-trip via settings store ─────
 
 describe('Feature: in-app-bug-report, Property 8: Button position round-trip via settings store', () => {
@@ -177,23 +176,22 @@ describe('Feature: in-app-bug-report, Property 8: Button position round-trip via
 describe('BugReportButton — chromeless window exclusion', () => {
   const CHROMELESS_LABELS = ['screen-share', 'share-picker', 'share-indicator', 'watch-all'];
 
-  it.each(CHROMELESS_LABELS)(
-    'renders null for chromeless label "%s"',
-    (label) => {
-      // The component checks getCurrent().label.startsWith(chromelessLabel)
-      // Simulate the same logic used in BugReportButton
-      const isChromeless = CHROMELESS_LABELS.some((l) => label.startsWith(l));
-      expect(isChromeless).toBe(true);
-    },
-  );
+  it.each(CHROMELESS_LABELS)('renders null for chromeless label "%s"', (label) => {
+    // The component checks getCurrent().label.startsWith(chromelessLabel)
+    // Simulate the same logic used in BugReportButton
+    const isChromeless = CHROMELESS_LABELS.some((l) => label.startsWith(l));
+    expect(isChromeless).toBe(true);
+  });
 
-  it.each(['screen-share-viewer-123', 'share-picker-abc', 'share-indicator-xyz', 'watch-all-streams'])(
-    'renders null for prefixed chromeless label "%s"',
-    (label) => {
-      const isChromeless = CHROMELESS_LABELS.some((l) => label.startsWith(l));
-      expect(isChromeless).toBe(true);
-    },
-  );
+  it.each([
+    'screen-share-viewer-123',
+    'share-picker-abc',
+    'share-indicator-xyz',
+    'watch-all-streams',
+  ])('renders null for prefixed chromeless label "%s"', (label) => {
+    const isChromeless = CHROMELESS_LABELS.some((l) => label.startsWith(l));
+    expect(isChromeless).toBe(true);
+  });
 
   it('renders for main window label', () => {
     const label = 'main';

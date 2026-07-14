@@ -21,8 +21,8 @@ export function AudioDriverInstallPrompt({
         {(state === 'not_installed' || state === 'checking') && (
           <>
             <p className="text-sm text-wavis-text leading-relaxed">
-              Wavis needs <strong>BlackHole 2ch</strong> to prevent echo during screen share.
-              It's a free, open-source virtual audio device — click below to open the download page.
+              Wavis needs <strong>BlackHole 2ch</strong> to prevent echo during screen share. It's a
+              free, open-source virtual audio device — click below to open the download page.
               <span className="text-wavis-text-secondary"> After installing, restart Wavis.</span>
             </p>
             <div className="flex gap-2 justify-end">
@@ -45,8 +45,8 @@ export function AudioDriverInstallPrompt({
         {state === 'browser_opened' && (
           <>
             <p className="text-sm text-wavis-text leading-relaxed">
-              The BlackHole download page has been opened in your browser.
-              Install <strong>BlackHole 2ch</strong>, then restart Wavis to enable echo-free sharing.
+              The BlackHole download page has been opened in your browser. Install{' '}
+              <strong>BlackHole 2ch</strong>, then restart Wavis to enable echo-free sharing.
             </p>
             <div className="flex gap-2 justify-end">
               <button

@@ -168,7 +168,6 @@ fn error_response(status: StatusCode, error: &str) -> AuthErrorResponse {
     )
 }
 
-
 #[allow(clippy::result_large_err)]
 fn validate_username(username: &str) -> Result<&str, AuthErrorResponse> {
     let username = username.trim();

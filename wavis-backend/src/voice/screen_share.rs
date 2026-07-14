@@ -791,7 +791,10 @@ mod tests {
             SignalingMessage::ShareState(payload) => {
                 assert_eq!(payload.active_shares.len(), 1);
                 assert_eq!(payload.active_shares[0].participant_id, "peer-a");
-                assert_eq!(payload.active_shares[0].share_type, Some(WireShareType::AudioOnly));
+                assert_eq!(
+                    payload.active_shares[0].share_type,
+                    Some(WireShareType::AudioOnly)
+                );
             }
             _ => panic!("expected ShareState message"),
         }

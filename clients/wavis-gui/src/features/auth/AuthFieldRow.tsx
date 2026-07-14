@@ -53,9 +53,7 @@ export function AuthFieldRow({
           autoComplete={type === 'password' ? 'off' : undefined}
         />
       </div>
-      {error && (
-        <p className="text-wavis-danger text-sm mt-1 pl-6">{error}</p>
-      )}
+      {error && <p className="text-wavis-danger text-sm mt-1 pl-6">{error}</p>}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { startReceiving, stopReceiving } from './screen-share-viewer';
+import { ViewerRoomConnection } from './viewer-connection';
 import type { ShareQuality } from '@features/voice/voice-room';
 import { shouldShowShareLoadingOverlay, useShareTransitionOverlay } from './share-transition';
 import { useVideoStallDetector } from './useVideoStallDetector';
@@ -26,6 +26,10 @@ const ZOOM_STEP = 0.15;
 
 interface ShareWindowParams {
   participantId: string;
+  /** LiveKit identity the Rust side keys native share frames by. Newer
+   *  backends use the durable userId here, which differs from the signaling
+   *  participantId; older payloads omit it (identity == participantId). */
+  liveKitIdentity?: string;
   username: string;
   userColor: string;
   isOwner: boolean;
@@ -72,7 +76,7 @@ export default function ScreenSharePage() {
   const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [volume, setVolume] = useState(initialVolume);
-  const [muted, setMuted] = useState(shareParams?.initialMuted ?? (initialVolume === 0));
+  const [muted, setMuted] = useState(shareParams?.initialMuted ?? initialVolume === 0);
   const [quality, setQuality] = useState<ShareQuality>('high');
   const [sharingAudio, setSharingAudio] = useState(false);
   const [userState, setUserState] = useState<ShareUserState>({
@@ -91,8 +95,10 @@ export default function ScreenSharePage() {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef<{
-    startX: number; startY: number;
-    origPanX: number; origPanY: number;
+    startX: number;
+    startY: number;
+    origPanX: number;
+    origPanY: number;
   } | null>(null);
 
   // Auto-hide controls on mouse idle
@@ -108,12 +114,51 @@ export default function ScreenSharePage() {
     },
   });
 
-  /* ── Receive stream from main window via WebRTC bridge (primary) or
+  /* ── Direct LiveKit viewer connection (one Room per pop-out window) ── */
+
+  const connRef = useRef<ViewerRoomConnection | null>(null);
+  const connectionErrorCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!p || p.canvasFallback) return;
+    const conn = new ViewerRoomConnection({
+      windowLabel: `screen-share-${p.participantId}`,
+      onConnectionError: () => {
+        connectionErrorCountRef.current += 1;
+        setDebugInfo(
+          `viewer: connect failed (attempt ${connectionErrorCountRef.current}) — retrying`,
+        );
+        // Surface the error UI only after sustained failure; the connection
+        // keeps retrying with backoff either way.
+        if (connectionErrorCountRef.current >= 3) {
+          setError('connection failed');
+        }
+      },
+    });
+    connRef.current = conn;
+    return () => {
+      conn.dispose();
+      connRef.current = null;
+    };
+  }, [p]);
+
+  // Dead video track: the subscriber transport is broken — rebuild the viewer
+  // Room, then bump retryCount so the watch effect re-registers cleanly.
+  const handleDeadTrack = useCallback(() => {
+    connRef.current?.forceReconnect();
+    triggerReconnect();
+  }, [triggerReconnect]);
+
+  /* ── Receive stream via direct LiveKit subscription (primary) or
        listen for screen_share_frame events directly (canvas fallback) ── */
 
   useEffect(() => {
     if (!p) return;
     let cancelled = false;
+
+    // Native frame events and polling commands are keyed by LiveKit identity,
+    // which on newer backends differs from the signaling participantId.
+    const nativeIdentity = p.liveKitIdentity ?? p.participantId;
 
     if (p.canvasFallback) {
       setMjpegUrl(null);
@@ -126,14 +171,21 @@ export default function ScreenSharePage() {
       // Subscribe to both so the fallback works cross-platform.
       let frameCount = 0;
       setDebugInfo('canvas-fallback: listening');
-      const handleFrame = (payload: { identity?: string; frame: string; width?: number; height?: number }): Promise<boolean> => {
+      const handleFrame = (payload: {
+        identity?: string;
+        frame: string;
+        width?: number;
+        height?: number;
+      }): Promise<boolean> => {
         if (cancelled) return Promise.resolve(false);
-        // If identity is present (Linux path), filter by participant
-        if (payload.identity && payload.identity !== p.participantId) return Promise.resolve(false);
+        // If identity is present (Linux path), filter by LiveKit identity
+        if (payload.identity && payload.identity !== nativeIdentity) return Promise.resolve(false);
 
         frameCount++;
         if (frameCount <= 3 || frameCount % 30 === 0) {
-          setDebugInfo(`canvas: frame #${frameCount} (${payload.width ?? '?'}x${payload.height ?? '?'})`);
+          setDebugInfo(
+            `canvas: frame #${frameCount} (${payload.width ?? '?'}x${payload.height ?? '?'})`,
+          );
         }
 
         const canvas = canvasRef.current;
@@ -167,10 +219,13 @@ export default function ScreenSharePage() {
       const pollLatestFrame = async () => {
         if (cancelled || mjpegActive) return;
         try {
-          const frame = await invoke<PolledScreenShareFrame | null>('media_poll_screen_share_frame', {
-            identity: p.participantId,
-            lastSeq,
-          });
+          const frame = await invoke<PolledScreenShareFrame | null>(
+            'media_poll_screen_share_frame',
+            {
+              identity: nativeIdentity,
+              lastSeq,
+            },
+          );
           if (frame && !cancelled) {
             lastSeq = frame.seq;
             await handleFrame(frame);
@@ -185,7 +240,7 @@ export default function ScreenSharePage() {
       };
       pollFrameId = requestAnimationFrame(pollLatestFrame);
 
-      invoke<string>('media_get_screen_share_stream_url', { identity: p.participantId })
+      invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
         .then((url) => {
           if (cancelled) return;
           mjpegActive = true;
@@ -203,11 +258,15 @@ export default function ScreenSharePage() {
       // Subscribe to both event name variants
       const unlistenLinux = listen<{ identity: string; frame: string }>(
         'screen_share_frame',
-        (event) => { void handleFrame(event.payload); },
+        (event) => {
+          void handleFrame(event.payload);
+        },
       );
       const unlistenWindows = listen<{ frame: string; width: number; height: number }>(
         'screen-share-frame',
-        (event) => { void handleFrame(event.payload); },
+        (event) => {
+          void handleFrame(event.payload);
+        },
       );
 
       // Mark as "connected" immediately — frames will arrive as they come
@@ -225,63 +284,60 @@ export default function ScreenSharePage() {
       };
     }
 
-    // Primary path: receive stream via WebRTC loopback bridge
-    setDebugInfo('bridge: connecting...');
-    startReceiving(p.participantId, `screen-share-${p.participantId}`, () => {
-      if (!cancelled) {
-        console.warn('[wavis:screen-share] bridge connection failed, triggering reconnect');
-        triggerReconnect();
+    // Primary path: subscribe to the sharer's ScreenShare track over this
+    // window's own LiveKit viewer connection (no loopback bridge, no re-encode).
+    const conn = connRef.current;
+    if (!conn) return;
+    setDebugInfo('viewer: connecting...');
+
+    let debugCleanup: (() => void) | null = null;
+    const unwatch = conn.watch(nativeIdentity, (s) => {
+      if (cancelled) return;
+      debugCleanup?.();
+      debugCleanup = null;
+
+      if (!s) {
+        setDebugInfo('viewer: stream ended — waiting for restart');
+        setStream(null);
+        return;
       }
-    })
-      .then((s) => {
-        if (!cancelled) {
-          void emitTo('main', 'screen-share-viewer:ready', {
-            participantId: p.participantId,
-            windowLabel: `screen-share-${p.participantId}`,
-          });
-          void emit('viewer-subscribed', { targetId: p.participantId });
-          const tracks = s.getVideoTracks();
-          const vt = tracks[0];
-          const updateDebug = () => {
-            if (cancelled || !vt) return;
-            setDebugInfo(
-              `bridge: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`,
-            );
-          };
-          updateDebug();
-          // Poll track state every second to detect muted→unmuted transitions
-          const pollId = setInterval(updateDebug, 1000);
-          // Also listen for unmute event
-          if (vt) {
-            vt.addEventListener('unmute', updateDebug);
-            vt.addEventListener('mute', updateDebug);
-          }
-          // Store cleanup in a ref-accessible way via the cancelled flag
-          const origCancel = () => {
-            clearInterval(pollId);
-            if (vt) {
-              vt.removeEventListener('unmute', updateDebug);
-              vt.removeEventListener('mute', updateDebug);
-            }
-          };
-          // Attach to the stream so the cleanup effect can find it
-          (s as unknown as Record<string, unknown>).__debugCleanup = origCancel;
-          setStream(s);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          const msg = err instanceof Error ? err.message : 'Failed to receive stream';
-          setDebugInfo(`bridge: error — ${msg}`);
-          setError(msg);
-        }
+
+      connectionErrorCountRef.current = 0;
+      setError(null);
+      void emitTo('main', 'screen-share-viewer:ready', {
+        participantId: p.participantId,
+        windowLabel: `screen-share-${p.participantId}`,
       });
+      void emit('viewer-subscribed', { targetId: p.participantId });
+
+      const vt = s.getVideoTracks()[0];
+      const updateDebug = () => {
+        if (cancelled || !vt) return;
+        setDebugInfo(`viewer: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`);
+      };
+      updateDebug();
+      // Poll track state every second to detect muted→unmuted transitions
+      const pollId = setInterval(updateDebug, 1000);
+      if (vt) {
+        vt.addEventListener('unmute', updateDebug);
+        vt.addEventListener('mute', updateDebug);
+      }
+      debugCleanup = () => {
+        clearInterval(pollId);
+        if (vt) {
+          vt.removeEventListener('unmute', updateDebug);
+          vt.removeEventListener('mute', updateDebug);
+        }
+      };
+      setStream(s);
+    });
 
     return () => {
       cancelled = true;
-      stopReceiving();
+      debugCleanup?.();
+      unwatch();
     };
-  }, [p, retryCount, triggerReconnect]); // retryCount increments trigger a fresh bridge connection
+  }, [p, retryCount]); // retryCount increments re-register the watch
 
   // Attach stream to video element
   useEffect(() => {
@@ -295,7 +351,7 @@ export default function ScreenSharePage() {
     videoRef,
     stream,
     onFrameDetected: markFrameRendered,
-    onDeadTrack: triggerReconnect,
+    onDeadTrack: handleDeadTrack,
     onReattach: markFrameRendered,
   });
 
@@ -305,7 +361,9 @@ export default function ScreenSharePage() {
     const unlisten = listen('screen-share:close', () => {
       getCurrentWindow().close();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   // Defense-in-depth: self-close when the voice session ends (e.g. main
@@ -314,7 +372,9 @@ export default function ScreenSharePage() {
     const unlisten = listen('voice-session:ended', () => {
       getCurrentWindow().close();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   // Notify main window when this window closes
@@ -323,17 +383,24 @@ export default function ScreenSharePage() {
     const unlisten = win.onCloseRequested(async () => {
       await emit('screen-share:closed', { participantId: p?.participantId });
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [p]);
 
   useEffect(() => {
     if (!p) return;
-    const unlisten = listen<{ participantId: string; volume: number; muted: boolean }>('screen-share:restore-volume', (event) => {
-      if (event.payload.participantId !== p.participantId) return;
-      setVolume(event.payload.volume);
-      setMuted(event.payload.muted);
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    const unlisten = listen<{ participantId: string; volume: number; muted: boolean }>(
+      'screen-share:restore-volume',
+      (event) => {
+        if (event.payload.participantId !== p.participantId) return;
+        setVolume(event.payload.volume);
+        setMuted(event.payload.muted);
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [p]);
 
   useEffect(() => {
@@ -343,30 +410,34 @@ export default function ScreenSharePage() {
         isDeafened: Boolean(event.payload.isDeafened),
       });
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<{ participants: MixerParticipant[] }>('share:voice-participants', (event) => {
-      setVoiceParticipants(event.payload.participants);
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    const unlisten = listen<{ participants: MixerParticipant[] }>(
+      'share:voice-participants',
+      (event) => {
+        setVoiceParticipants(event.payload.participants);
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   /* ── Zoom (scroll wheel) + Pan (drag when zoomed) ── */
 
-  const clampPan = useCallback(
-    (px: number, py: number, z: number, w: number, h: number) => {
-      if (z <= 1) return { x: 0, y: 0 };
-      const maxPanX = (w * (z - 1)) / 2;
-      const maxPanY = (h * (z - 1)) / 2;
-      return {
-        x: Math.max(-maxPanX, Math.min(maxPanX, px)),
-        y: Math.max(-maxPanY, Math.min(maxPanY, py)),
-      };
-    },
-    [],
-  );
+  const clampPan = useCallback((px: number, py: number, z: number, w: number, h: number) => {
+    if (z <= 1) return { x: 0, y: 0 };
+    const maxPanX = (w * (z - 1)) / 2;
+    const maxPanY = (h * (z - 1)) / 2;
+    return {
+      x: Math.max(-maxPanX, Math.min(maxPanX, px)),
+      y: Math.max(-maxPanY, Math.min(maxPanY, py)),
+    };
+  }, []);
 
   const resetZoom = useCallback(() => {
     setZoom(1);
@@ -410,8 +481,10 @@ export default function ScreenSharePage() {
       if (zoom <= 1) return;
       if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
       panRef.current = {
-        startX: e.clientX, startY: e.clientY,
-        origPanX: pan.x, origPanY: pan.y,
+        startX: e.clientX,
+        startY: e.clientY,
+        origPanX: pan.x,
+        origPanY: pan.y,
       };
       e.preventDefault();
     };
@@ -430,7 +503,9 @@ export default function ScreenSharePage() {
         ),
       );
     };
-    const onUp = () => { panRef.current = null; };
+    const onUp = () => {
+      panRef.current = null;
+    };
 
     area.addEventListener('mousedown', onDown);
     window.addEventListener('mousemove', onMove);
@@ -459,12 +534,15 @@ export default function ScreenSharePage() {
     emit('screen-share:change-source', {});
   };
 
-  const handleVolumeChange = useCallback((nextVolume: number) => {
-    if (!p) return;
-    setVolume(nextVolume);
-    setMuted(nextVolume === 0);
-    emit('screen-share:volume-change', { participantId: p.participantId, volume: nextVolume });
-  }, [p]);
+  const handleVolumeChange = useCallback(
+    (nextVolume: number) => {
+      if (!p) return;
+      setVolume(nextVolume);
+      setMuted(nextVolume === 0);
+      emit('screen-share:volume-change', { participantId: p.participantId, volume: nextVolume });
+    },
+    [p],
+  );
 
   const handleToggleMute = useCallback(() => {
     if (!p) return;
@@ -490,7 +568,11 @@ export default function ScreenSharePage() {
     setVoiceParticipants((prev) =>
       prev.map((participant) => {
         if (participant.id !== participantId) return participant;
-        const nextVolume = participant.muted ? (participant.volume > 0 ? participant.volume : 50) : 0;
+        const nextVolume = participant.muted
+          ? participant.volume > 0
+            ? participant.volume
+            : 50
+          : 0;
         void emit('share:voice-volume-change', { participantId, volume: nextVolume });
         return { ...participant, volume: nextVolume, muted: nextVolume === 0 };
       }),
@@ -508,11 +590,14 @@ export default function ScreenSharePage() {
   /** Double-click on video area: request pop-back-in to Watch All grid.
    *  ActiveRoom handles this — it only acts if Watch All is open.
    *  Ignore clicks that land on control overlays. */
-  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
-    if (!p) return;
-    emit('screen-share:pop-back-in', { participantId: p.participantId });
-  }, [p]);
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
+      if (!p) return;
+      emit('screen-share:pop-back-in', { participantId: p.participantId });
+    },
+    [p],
+  );
 
   /* ── Render ── */
 
@@ -551,9 +636,7 @@ export default function ScreenSharePage() {
           }}
           className="hover:opacity-70 transition-opacity"
           style={{
-            color: quality === q
-              ? 'var(--wavis-accent)'
-              : 'var(--wavis-text-secondary)',
+            color: quality === q ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
           }}
         >
           {qualityLabel[q]}
@@ -567,9 +650,7 @@ export default function ScreenSharePage() {
         }}
         className="hover:opacity-70 transition-opacity"
         style={{
-          color: sharingAudio
-            ? 'var(--wavis-accent)'
-            : 'var(--wavis-text-secondary)',
+          color: sharingAudio ? 'var(--wavis-accent)' : 'var(--wavis-text-secondary)',
         }}
       >
         {sharingAudio ? 'audio on' : 'audio off'}
@@ -577,9 +658,7 @@ export default function ScreenSharePage() {
       {zoom > 1 && (
         <>
           <span className="text-wavis-text-secondary opacity-30 select-none">|</span>
-          <span className="text-wavis-text-secondary">
-            {Math.round(zoom * 100)}%
-          </span>
+          <span className="text-wavis-text-secondary">{Math.round(zoom * 100)}%</span>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -600,23 +679,27 @@ export default function ScreenSharePage() {
       <div
         data-tauri-drag-region
         className="flex items-center justify-between px-2 border-b border-wavis-text-secondary bg-wavis-panel text-xs shrink-0 transition-opacity duration-300"
-        style={isFullscreen ? {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          zIndex: 20,
-          height: 32,
-          opacity: controlsVisible ? 1 : 0,
-          pointerEvents: controlsVisible ? 'auto' : 'none',
-        } : { height: 32 }}
+        style={
+          isFullscreen
+            ? {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 20,
+                height: 32,
+                opacity: controlsVisible ? 1 : 0,
+                pointerEvents: controlsVisible ? 'auto' : 'none',
+              }
+            : { height: 32 }
+        }
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ color: 'var(--wavis-purple)' }}>▲</span>
-          <span className="truncate" style={{ color: p.userColor }}>{p.username}</span>
-          <span className="text-wavis-text-secondary">
-            {p.isOwner ? '(you)' : 'screen share'}
+          <span className="truncate" style={{ color: p.userColor }}>
+            {p.username}
           </span>
+          <span className="text-wavis-text-secondary">{p.isOwner ? '(you)' : 'screen share'}</span>
         </div>
         <div data-no-drag className="flex items-center shrink-0">
           <FixedBugReportButton captureScreenshot={false} />
@@ -702,9 +785,7 @@ export default function ScreenSharePage() {
             }}
           >
             <div className="flex items-center gap-2 px-2 py-1 bg-wavis-panel/90">
-              <span className="text-wavis-text-secondary">
-                {Math.round(zoom * 100)}%
-              </span>
+              <span className="text-wavis-text-secondary">{Math.round(zoom * 100)}%</span>
               <button
                 onClick={resetZoom}
                 className="text-wavis-text-secondary hover:opacity-70 transition-opacity"
@@ -730,7 +811,12 @@ export default function ScreenSharePage() {
           onVoiceVolumeChange={handleVoiceVolumeChange}
           onVoiceMuteToggle={handleVoiceMuteToggle}
           ownerControls={ownerControls}
-          onFocusMain={() => { console.log('[wavis:focus-main] button clicked in screen-share'); void emitTo('main', 'focus-main-window', {}).then(() => console.log('[wavis:focus-main] emitTo resolved')).catch((e) => console.error('[wavis:focus-main] emitTo failed', e)); }}
+          onFocusMain={() => {
+            console.log('[wavis:focus-main] button clicked in screen-share');
+            void emitTo('main', 'focus-main-window', {})
+              .then(() => console.log('[wavis:focus-main] emitTo resolved'))
+              .catch((e) => console.error('[wavis:focus-main] emitTo failed', e));
+          }}
         />
 
         {import.meta.env.VITE_DEBUG_SHOW_STREAM_OVERLAY === 'true' && (
@@ -738,7 +824,8 @@ export default function ScreenSharePage() {
             className="absolute top-1 left-1 text-[0.5rem] text-wavis-warn font-mono pointer-events-none"
             style={{ backgroundColor: 'rgba(0,0,0,0.7)', padding: '2px 4px' }}
           >
-            {debugInfo} | fallback={String(!!p.canvasFallback)} | stream={String(!!stream)} | owner={String(p.isOwner)}
+            {debugInfo} | fallback={String(!!p.canvasFallback)} | stream={String(!!stream)} | owner=
+            {String(p.isOwner)}
           </div>
         )}
       </div>

@@ -5,7 +5,12 @@ import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 /* ─── Helpers ───────────────────────────────────────────────────── */
 const appWindow = getCurrentWindow();
 
-function WindowButton({ onClick, danger, label, children }: {
+function WindowButton({
+  onClick,
+  danger,
+  label,
+  children,
+}: {
   onClick: () => void;
   danger?: boolean;
   label: string;

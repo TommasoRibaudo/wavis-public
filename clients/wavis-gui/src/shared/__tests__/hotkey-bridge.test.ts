@@ -28,7 +28,23 @@ describe('Property 17: Hotkey combination formatting', () => {
   const allModifiers = ['Ctrl', 'Shift', 'Alt', 'Meta'] as const;
 
   it('joins modifiers in canonical order (Ctrl → Shift → Alt → Meta) + key', () => {
-    const arbKey = fc.constantFrom('A','B','C','D','E','F','G','M','X','Z','1','2','F1','F2','Space');
+    const arbKey = fc.constantFrom(
+      'A',
+      'B',
+      'C',
+      'D',
+      'E',
+      'F',
+      'G',
+      'M',
+      'X',
+      'Z',
+      '1',
+      '2',
+      'F1',
+      'F2',
+      'Space',
+    );
     fc.assert(
       fc.property(
         fc.subarray([...allModifiers], { minLength: 0, maxLength: 4 }),
@@ -41,7 +57,9 @@ describe('Property 17: Hotkey combination formatting', () => {
           // Preceding parts are modifiers in canonical order
           const resultMods = parts.slice(0, -1);
           const canonicalOrder = ['Ctrl', 'Shift', 'Alt', 'Meta'];
-          const expected = canonicalOrder.filter((m) => (modifiers as readonly string[]).includes(m));
+          const expected = canonicalOrder.filter((m) =>
+            (modifiers as readonly string[]).includes(m),
+          );
           expect(resultMods).toEqual(expected);
         },
       ),
@@ -50,7 +68,7 @@ describe('Property 17: Hotkey combination formatting', () => {
   });
 
   it('output is deterministic regardless of modifier input order', () => {
-    const arbKey = fc.constantFrom('A','B','C','M','X','Z','1','F1','Space');
+    const arbKey = fc.constantFrom('A', 'B', 'C', 'M', 'X', 'Z', '1', 'F1', 'Space');
     fc.assert(
       fc.property(
         fc.shuffledSubarray([...allModifiers], { minLength: 1, maxLength: 4 }),
@@ -71,8 +89,9 @@ describe('Property 17: Hotkey combination formatting', () => {
   });
 
   it('all modifiers produces canonical order', () => {
-    expect(formatHotkeyCombination(['Meta', 'Alt', 'Ctrl', 'Shift'], 'M'))
-      .toBe('Ctrl+Shift+Alt+Meta+M');
+    expect(formatHotkeyCombination(['Meta', 'Alt', 'Ctrl', 'Shift'], 'M')).toBe(
+      'Ctrl+Shift+Alt+Meta+M',
+    );
   });
 
   it('single modifier + key', () => {

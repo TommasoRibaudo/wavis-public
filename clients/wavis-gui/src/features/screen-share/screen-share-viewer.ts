@@ -45,9 +45,87 @@ export function compositeKey(participantId: string, windowLabel: string): string
  * triggering a full bridge reconnect.
  */
 export function isVideoTrackAlive(stream: MediaStream): boolean {
-  return stream.getVideoTracks().some(
-    (t) => t.readyState === 'live',
-  );
+  return stream.getVideoTracks().some((t) => t.readyState === 'live');
+}
+
+/* ─── Loopback Encoder Caps ─────────────────────────────────────── */
+
+// The bridge re-encodes each piped stream inside the main window. With
+// default addTrack(), Chromium negotiates VP8 and encodes at full source
+// resolution in software (libvpx) — one such encode per open viewer window,
+// which is the dominant CPU cost when several shares are watched at once.
+// The caps below bound that encode, and the H.264 preference moves it to
+// the GPU's dedicated encode block (Media Foundation on Windows).
+const BRIDGE_MAX_BITRATE_BPS = 8_000_000; // matches the publisher-side 6-8 Mbps ceiling
+const BRIDGE_MAX_FRAMERATE = 30;
+
+/**
+ * Mark a bridged video track as screen content so the encoder preserves
+ * text sharpness and sheds framerate (not resolution) under pressure.
+ */
+function applyScreenContentHint(track: MediaStreamTrack): void {
+  try {
+    if ('contentHint' in track && !track.contentHint) {
+      track.contentHint = 'detail';
+    }
+  } catch {
+    // non-fatal — runtime without contentHint support
+  }
+}
+
+/**
+ * Reorder codec preferences so H.264 is negotiated first. On Windows
+ * WebView2, H.264 encodes/decodes through Media Foundation (GPU), while
+ * VP8 is software libvpx. No-ops silently when capabilities are
+ * unavailable (e.g. test environments).
+ */
+function preferH264(transceiver: RTCRtpTransceiver): void {
+  try {
+    if (
+      typeof RTCRtpSender === 'undefined' ||
+      typeof transceiver.setCodecPreferences !== 'function'
+    )
+      return;
+    const caps = RTCRtpSender.getCapabilities?.('video');
+    if (!caps) return;
+    const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
+    if (h264.length === 0) return;
+    const rest = caps.codecs.filter((c) => c.mimeType.toLowerCase() !== 'video/h264');
+    transceiver.setCodecPreferences([...h264, ...rest]);
+  } catch (err) {
+    console.warn(LOG, 'setCodecPreferences(H.264) failed — keeping default codec order:', err);
+  }
+}
+
+/**
+ * Debug-only: report which encoder implementation the bridge sender ended up
+ * with ("libvpx"/"SimulcastEncoderAdapter" = software; Media Foundation
+ * names = GPU). Sampled once, shortly after the connection is established.
+ */
+function logEncoderStats(key: string, pc: RTCPeerConnection): void {
+  setTimeout(async () => {
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((s) => {
+        const stat = s as {
+          type?: string;
+          kind?: string;
+          encoderImplementation?: string;
+          frameWidth?: number;
+          frameHeight?: number;
+          framesPerSecond?: number;
+        };
+        if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
+          console.log(
+            LOG,
+            `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`,
+          );
+        }
+      });
+    } catch {
+      // stats are best-effort diagnostics
+    }
+  }, 2000);
 }
 
 /* ─── Sender (main window) ──────────────────────────────────────── */
@@ -76,7 +154,8 @@ export async function startSending(
   stream: MediaStream,
 ): Promise<void> {
   const key = compositeKey(participantId, windowLabel);
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] startSending — tracks: ${stream.getTracks().length}`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `sender[${key}] startSending — tracks: ${stream.getTracks().length}`);
   stopSending(participantId, windowLabel);
 
   const pc = new RTCPeerConnection();
@@ -92,7 +171,17 @@ export async function startSending(
   }
 
   for (const track of stream.getTracks()) {
-    pc.addTrack(track, stream);
+    if (track.kind === 'video') {
+      applyScreenContentHint(track);
+      const transceiver = pc.addTransceiver(track, {
+        direction: 'sendonly',
+        streams: [stream],
+        sendEncodings: [{ maxBitrate: BRIDGE_MAX_BITRATE_BPS, maxFramerate: BRIDGE_MAX_FRAMERATE }],
+      });
+      preferH264(transceiver);
+    } else {
+      pc.addTrack(track, stream);
+    }
   }
 
   pc.onicecandidate = (e) => {
@@ -136,13 +225,17 @@ export async function startSending(
       // Guard: only accept an answer when we have a local offer pending.
       // Duplicate offers can cause duplicate answers — ignore if already stable.
       if (processingAnswer || e.pc.signalingState !== 'have-local-offer') {
-        console.warn(LOG, `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`);
+        console.warn(
+          LOG,
+          `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`,
+        );
         return;
       }
       processingAnswer = true;
       try {
         await e.pc.setRemoteDescription({ type: 'answer', sdp: event.payload.sdp });
         console.log(LOG, `sender[${key}] got answer, connection established`);
+        if (DEBUG_SHARE_VIEW) logEncoderStats(key, e.pc);
       } catch (err) {
         console.warn(LOG, `sender[${key}] setRemoteDescription(answer) failed:`, err);
       } finally {
@@ -159,13 +252,15 @@ export async function startSending(
   // Guard: if a concurrent startSending call replaced our entry and closed
   // this PC (e.g. watch-all:ready fired twice), bail out silently.
   if (senders.get(key)?.pc !== pc || pc.signalingState === 'closed') {
-    if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] PC replaced or closed before createOffer — bailing`);
+    if (DEBUG_SHARE_VIEW)
+      console.log(LOG, `sender[${key}] PC replaced or closed before createOffer — bailing`);
     return;
   }
 
   // Create offer and store it, then emit
   const offer = await pc.createOffer();
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `sender[${key}] offer created, sdp length: ${offer.sdp?.length}`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `sender[${key}] offer created, sdp length: ${offer.sdp?.length}`);
   await pc.setLocalDescription(offer);
   entry.offerSdp = offer.sdp ?? null;
   sendOffer();
@@ -229,20 +324,27 @@ export async function resendStream(
     const videoSender = existing.pc.getSenders().find((s) => s.track?.kind === 'video');
     if (newVideoTrack && videoSender) {
       try {
+        applyScreenContentHint(newVideoTrack);
         await videoSender.replaceTrack(newVideoTrack);
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — replaceTrack succeeded (no bridge rebuild)`);
+        if (DEBUG_SHARE_VIEW)
+          console.log(LOG, `resendStream(${key}) — replaceTrack succeeded (no bridge rebuild)`);
         return;
       } catch (e) {
-        if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — replaceTrack failed, falling back to full rebuild`, e);
+        if (DEBUG_SHARE_VIEW)
+          console.log(
+            LOG,
+            `resendStream(${key}) — replaceTrack failed, falling back to full rebuild`,
+            e,
+          );
       }
     }
   }
 
-  if (DEBUG_SHARE_VIEW) console.log(LOG, `resendStream(${key}) — full rebuild (stopSending + startSending)`);
+  if (DEBUG_SHARE_VIEW)
+    console.log(LOG, `resendStream(${key}) — full rebuild (stopSending + startSending)`);
   stopSending(participantId, windowLabel);
   await startSending(participantId, windowLabel, stream);
 }
-
 
 /* ─── Receiver (child window) ───────────────────────────────────── */
 
@@ -272,13 +374,16 @@ export class StreamReceiver {
    *   Not fired for 'disconnected' — that state may recover on its own; the
    *   stall detector handles it if video frames stop arriving.
    */
-  async start(onConnectionFailed?: () => void, onListenersReady?: () => void): Promise<MediaStream> {
+  async start(
+    onConnectionFailed?: () => void,
+    onListenersReady?: () => void,
+  ): Promise<MediaStream> {
     this.stop();
     const key = compositeKey(this.participantId, this.windowLabel);
     const startGeneration = ++this.startGeneration;
     if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] start()`);
 
-    return new Promise<MediaStream>(async (resolve, reject) => {
+    return new Promise<MediaStream>((resolve, reject) => {
       let settled = false;
       const clearStartTimeout = () => {
         if (this.startTimeout !== null) {
@@ -296,120 +401,147 @@ export class StreamReceiver {
         if (settled || this.startGeneration !== startGeneration) return;
         settled = true;
         clearStartTimeout();
-        reject(err);
+        reject(err instanceof Error ? err : new Error(String(err)));
       };
-      try {
-        this.pc = new RTCPeerConnection();
+      // Async work lives in an IIFE so the executor itself stays synchronous
+      // (an async executor would swallow throws instead of rejecting).
+      void (async () => {
+        try {
+          this.pc = new RTCPeerConnection();
 
-        if (DEBUG_SHARE_VIEW) {
-          this.pc.oniceconnectionstatechange = () => {
-            console.log(LOG, `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`);
-          };
-          this.pc.onicegatheringstatechange = () => {
-            console.log(LOG, `receiver[${key}] iceGatheringState → ${this.pc?.iceGatheringState}`);
-          };
-        }
-
-        // Detect permanent bridge failure early so the consumer can reconnect
-        // without waiting for the 3-second stall detector cycle.
-        this.pc.onconnectionstatechange = () => {
-          if (this.startGeneration !== startGeneration) return;
-          if (this.pc?.connectionState === 'failed') {
-            console.warn(LOG, `receiver[${key}] connection failed`);
-            onConnectionFailed?.();
+          if (DEBUG_SHARE_VIEW) {
+            this.pc.oniceconnectionstatechange = () => {
+              console.log(
+                LOG,
+                `receiver[${key}] iceConnectionState → ${this.pc?.iceConnectionState}`,
+              );
+            };
+            this.pc.onicegatheringstatechange = () => {
+              console.log(
+                LOG,
+                `receiver[${key}] iceGatheringState → ${this.pc?.iceGatheringState}`,
+              );
+            };
           }
-        };
 
-        const remoteStream = new MediaStream();
-        this.pc.ontrack = (e: RTCTrackEvent) => {
-          if (this.startGeneration !== startGeneration) return;
-          if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`);
-          if (e.streams[0]) {
-            for (const t of e.streams[0].getTracks()) {
-              remoteStream.addTrack(t);
-            }
-          } else {
-            remoteStream.addTrack(e.track);
-          }
-          if (remoteStream.getTracks().length > 0) {
-            resolveOnce(remoteStream);
-          }
-        };
-
-        this.pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            emit(`ss-bridge:ice-receiver:${key}`, { candidate: JSON.stringify(e.candidate) });
-          }
-        };
-
-        // Capture pc reference for use in closures (avoid `this` binding issues)
-        const pc = this.pc;
-
-        // Serialise offer processing: two offers arriving simultaneously both
-        // see signalingState==='stable' before either calls setRemoteDescription,
-        // so the plain signalingState guard is insufficient — use an explicit flag.
-        let processingOffer = false;
-
-        // Register both listeners in parallel before emitting receiver-ready
-        const [unlistenIce, unlistenOffer] = await Promise.all([
-          listen<{ candidate: string }>(`ss-bridge:ice-sender:${key}`, (event) => {
+          // Detect permanent bridge failure early so the consumer can reconnect
+          // without waiting for the 3-second stall detector cycle.
+          this.pc.onconnectionstatechange = () => {
             if (this.startGeneration !== startGeneration) return;
-            if (!pc || pc.connectionState === 'closed') return;
-            const candidate = JSON.parse(event.payload.candidate);
-            pc.addIceCandidate(candidate).catch((err) => {
-              console.warn(LOG, `receiver[${key}] addIceCandidate failed:`, err);
-            });
-          }),
-          listen<{ sdp: string }>(`ss-bridge:offer:${key}`, async (event) => {
+            if (this.pc?.connectionState === 'failed') {
+              console.warn(LOG, `receiver[${key}] connection failed`);
+              onConnectionFailed?.();
+            }
+          };
+
+          const remoteStream = new MediaStream();
+          this.pc.ontrack = (e: RTCTrackEvent) => {
             if (this.startGeneration !== startGeneration) return;
-            if (!pc || pc.connectionState === 'closed') return;
-            // Guard: only accept an offer when in 'stable' state and not already
-            // processing one. The sender fires the offer both on creation and on
-            // receiver-ready, so two offers can arrive before either async handler
-            // has had time to change signalingState — the processingOffer flag
-            // closes that TOCTOU window.
-            if (processingOffer || pc.signalingState !== 'stable') {
-              console.warn(LOG, `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`);
-              return;
+            if (DEBUG_SHARE_VIEW)
+              console.log(
+                LOG,
+                `receiver[${key}] ontrack — kind: ${e.track.kind}, readyState: ${e.track.readyState}, muted: ${e.track.muted}`,
+              );
+            if (e.streams[0]) {
+              for (const t of e.streams[0].getTracks()) {
+                remoteStream.addTrack(t);
+              }
+            } else {
+              remoteStream.addTrack(e.track);
             }
-            processingOffer = true;
-            try {
-              await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
-              if (DEBUG_SHARE_VIEW) console.log(LOG, `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`);
-              console.log(LOG, `receiver[${key}] got offer, answer sent`);
-            } finally {
-              processingOffer = false;
+            if (remoteStream.getTracks().length > 0) {
+              resolveOnce(remoteStream);
             }
-          }),
-        ]);
-        if (this.startGeneration !== startGeneration || !this.pc || this.pc !== pc || pc.connectionState === 'closed') {
-          unlistenIce();
-          unlistenOffer();
-          return;
-        }
-        this.cleanups.push(unlistenIce, unlistenOffer);
+          };
 
-        // Notify caller that offer + ICE listeners are registered. The caller
-        // should trigger resendStream() here — not before — so the sender's
-        // initial offer arrives after this receiver can already handle it.
-        onListenersReady?.();
+          this.pc.onicecandidate = (e) => {
+            if (e.candidate) {
+              emit(`ss-bridge:ice-receiver:${key}`, { candidate: JSON.stringify(e.candidate) });
+            }
+          };
 
-        // Signal readiness — sender will (re-)send the offer
-        emit(`ss-bridge:receiver-ready:${key}`, {});
-        console.log(LOG, `receiver[${key}] started, waiting for offer`);
+          // Capture pc reference for use in closures (avoid `this` binding issues)
+          const pc = this.pc;
 
-        this.startTimeout = setTimeout(() => {
-          if (!settled && this.startGeneration === startGeneration) {
-            if (DEBUG_SHARE_VIEW) console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
-            rejectOnce(new Error('Timed out waiting for screen share stream'));
+          // Serialise offer processing: two offers arriving simultaneously both
+          // see signalingState==='stable' before either calls setRemoteDescription,
+          // so the plain signalingState guard is insufficient — use an explicit flag.
+          let processingOffer = false;
+
+          // Register both listeners in parallel before emitting receiver-ready
+          const [unlistenIce, unlistenOffer] = await Promise.all([
+            listen<{ candidate: string }>(`ss-bridge:ice-sender:${key}`, (event) => {
+              if (this.startGeneration !== startGeneration) return;
+              if (!pc || pc.connectionState === 'closed') return;
+              const candidate = JSON.parse(event.payload.candidate);
+              pc.addIceCandidate(candidate).catch((err) => {
+                console.warn(LOG, `receiver[${key}] addIceCandidate failed:`, err);
+              });
+            }),
+            listen<{ sdp: string }>(`ss-bridge:offer:${key}`, async (event) => {
+              if (this.startGeneration !== startGeneration) return;
+              if (!pc || pc.connectionState === 'closed') return;
+              // Guard: only accept an offer when in 'stable' state and not already
+              // processing one. The sender fires the offer both on creation and on
+              // receiver-ready, so two offers can arrive before either async handler
+              // has had time to change signalingState — the processingOffer flag
+              // closes that TOCTOU window.
+              if (processingOffer || pc.signalingState !== 'stable') {
+                console.warn(
+                  LOG,
+                  `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
+                );
+                return;
+              }
+              processingOffer = true;
+              try {
+                await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
+                if (DEBUG_SHARE_VIEW)
+                  console.log(
+                    LOG,
+                    `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`,
+                  );
+                console.log(LOG, `receiver[${key}] got offer, answer sent`);
+              } finally {
+                processingOffer = false;
+              }
+            }),
+          ]);
+          if (
+            this.startGeneration !== startGeneration ||
+            !this.pc ||
+            this.pc !== pc ||
+            pc.connectionState === 'closed'
+          ) {
+            unlistenIce();
+            unlistenOffer();
+            return;
           }
-        }, 15000);
-      } catch (err) {
-        rejectOnce(err);
-      }
+          this.cleanups.push(unlistenIce, unlistenOffer);
+
+          // Notify caller that offer + ICE listeners are registered. The caller
+          // should trigger resendStream() here — not before — so the sender's
+          // initial offer arrives after this receiver can already handle it.
+          onListenersReady?.();
+
+          // Signal readiness — sender will (re-)send the offer
+          emit(`ss-bridge:receiver-ready:${key}`, {});
+          console.log(LOG, `receiver[${key}] started, waiting for offer`);
+
+          this.startTimeout = setTimeout(() => {
+            if (!settled && this.startGeneration === startGeneration) {
+              if (DEBUG_SHARE_VIEW)
+                console.warn(LOG, `receiver[${key}] TIMEOUT — stream never resolved after 15s`);
+              rejectOnce(new Error('Timed out waiting for screen share stream'));
+            }
+          }, 15000);
+        } catch (err) {
+          rejectOnce(err);
+        }
+      })();
     });
   }
 

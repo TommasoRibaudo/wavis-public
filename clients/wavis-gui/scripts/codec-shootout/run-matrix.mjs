@@ -31,7 +31,10 @@ const REPO_ROOT = path.resolve(GUI_DIR, '../..');
 
 const MATRIX_PATH = path.resolve(__dirname, 'matrix.json');
 const LK_MEDIA_SRC = path.resolve(GUI_DIR, 'src/features/voice/livekit-media.ts');
-const LK_ESM_PATH = path.resolve(GUI_DIR, 'node_modules/livekit-client/dist/livekit-client.esm.mjs');
+const LK_ESM_PATH = path.resolve(
+  GUI_DIR,
+  'node_modules/livekit-client/dist/livekit-client.esm.mjs',
+);
 
 const ARTIFACTS_BASE = path.resolve(GUI_DIR, 'artifacts/codec-shootout');
 const FIXTURES_DIR = path.resolve(ARTIFACTS_BASE, 'fixtures');
@@ -54,15 +57,33 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
-      case '--app-binary':         args.appBinary = argv[++i]; break;
-      case '--livekit-url':        args.livekitUrl = argv[++i]; break;
-      case '--livekit-api-key':    args.livekitApiKey = argv[++i]; break;
-      case '--livekit-api-secret': args.livekitApiSecret = argv[++i]; break;
-      case '--cells':              args.cellFilter = new Set(argv[++i].split(',')); break;
-      case '--run-id':             args.runId = argv[++i]; break;
-      case '--dry-run':            args.dryRun = true; break;
-      case '--skip-w2-gate':       args.skipW2Gate = true; break;
-      case '--skip-fixture-check': args.skipFixtureCheck = true; break;
+      case '--app-binary':
+        args.appBinary = argv[++i];
+        break;
+      case '--livekit-url':
+        args.livekitUrl = argv[++i];
+        break;
+      case '--livekit-api-key':
+        args.livekitApiKey = argv[++i];
+        break;
+      case '--livekit-api-secret':
+        args.livekitApiSecret = argv[++i];
+        break;
+      case '--cells':
+        args.cellFilter = new Set(argv[++i].split(','));
+        break;
+      case '--run-id':
+        args.runId = argv[++i];
+        break;
+      case '--dry-run':
+        args.dryRun = true;
+        break;
+      case '--skip-w2-gate':
+        args.skipW2Gate = true;
+        break;
+      case '--skip-fixture-check':
+        args.skipFixtureCheck = true;
+        break;
     }
   }
   return args;
@@ -85,7 +106,9 @@ function checkEntryConditions(skipW2Gate) {
   const required = skipW2Gate
     ? REQUIRED_ENTRY_WORKSTREAMS.filter((w) => w !== 'W2')
     : REQUIRED_ENTRY_WORKSTREAMS;
-  log(`Checking workstream entry conditions (${required.join('/')})${skipW2Gate ? ' [W2 skipped]' : ''}...`);
+  log(
+    `Checking workstream entry conditions (${required.join('/')})${skipW2Gate ? ' [W2 skipped]' : ''}...`,
+  );
   let status;
   try {
     status = readWorkstreamStatus(REPO_ROOT);
@@ -107,7 +130,7 @@ function assertDynacaseDisabledInMatrix(cells) {
   if (violations.length > 0) {
     fail(
       `dynacast must be false in every cell (R11.6, R17.2). Violations:\n` +
-      violations.map((c) => `  ${c.cellId}: dynacast=${c.dynacast}`).join('\n'),
+        violations.map((c) => `  ${c.cellId}: dynacast=${c.dynacast}`).join('\n'),
     );
   }
   log(`dynacast:false verified in all ${cells.length} cells`);
@@ -134,8 +157,8 @@ function assertNoSetVideoQualityOnVp9(sourceFile) {
     });
     fail(
       `setVideoQuality() found in ${path.relative(GUI_DIR, sourceFile)} (R11.7, R17.1).\n` +
-      `setVideoQuality is a no-op on VP9 SVC tracks and must not be called:\n` +
-      hitLines.join('\n'),
+        `setVideoQuality is a no-op on VP9 SVC tracks and must not be called:\n` +
+        hitLines.join('\n'),
     );
   }
   log('No setVideoQuality calls found in livekit-media.ts');
@@ -145,7 +168,7 @@ function assertTransceiverReusePatchPresent() {
   if (!fs.existsSync(LK_ESM_PATH)) {
     fail(
       `livekit-client ESM not found at ${LK_ESM_PATH}.\n` +
-      `Run 'npm install' in clients/wavis-gui to install dependencies.`,
+        `Run 'npm install' in clients/wavis-gui to install dependencies.`,
     );
   }
   const esm = fs.readFileSync(LK_ESM_PATH, 'utf8');
@@ -154,8 +177,8 @@ function assertTransceiverReusePatchPresent() {
   } catch (err) {
     fail(
       `Transceiver-reuse patch not applied to bundled livekit-client (R7.3, R17.5).\n` +
-      `Run 'npm run patch:livekit' in clients/wavis-gui before starting the runner.\n` +
-      `Details: ${err.message}`,
+        `Run 'npm run patch:livekit' in clients/wavis-gui before starting the runner.\n` +
+        `Details: ${err.message}`,
     );
   }
   log('Transceiver-reuse patch markers verified in bundled livekit-client');
@@ -167,17 +190,20 @@ function assertFixturesPresent(cells, skipFixtureCheck) {
     const fixturePath = path.resolve(FIXTURES_DIR, source);
     if (!fs.existsSync(fixturePath)) {
       if (skipFixtureCheck) {
-        log(`WARN: fixture directory missing (${fixturePath}) — skipped via --skip-fixture-check. You must manually set up ${source} content during each cell.`);
+        log(
+          `WARN: fixture directory missing (${fixturePath}) — skipped via --skip-fixture-check. You must manually set up ${source} content during each cell.`,
+        );
       } else {
         fail(
           `Content corpus fixture missing: ${fixturePath}\n` +
-          `See artifacts/codec-shootout/fixtures/README.md for setup instructions.\n` +
-          `Use --skip-fixture-check to run with manual content instead.`,
+            `See artifacts/codec-shootout/fixtures/README.md for setup instructions.\n` +
+            `Use --skip-fixture-check to run with manual content instead.`,
         );
       }
     }
   }
-  if (!skipFixtureCheck) log(`Content corpus fixtures verified for sources: ${requiredSources.join(', ')}`);
+  if (!skipFixtureCheck)
+    log(`Content corpus fixtures verified for sources: ${requiredSources.join(', ')}`);
 }
 
 /* ─── Run-directory setup ────────────────────────────────────────── */
@@ -270,15 +296,15 @@ async function createLiveKitRoom(args, roomName) {
 function buildLiveKitAdminToken(apiKey, apiSecret) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
-  const payload = Buffer.from(JSON.stringify({
-    iss: apiKey,
-    exp: now + 600,
-    nbf: now,
-    video: { roomCreate: true, roomList: true, roomAdmin: true },
-  })).toString('base64url');
-  const sig = createHmac('sha256', apiSecret)
-    .update(`${header}.${payload}`)
-    .digest('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      iss: apiKey,
+      exp: now + 600,
+      nbf: now,
+      video: { roomCreate: true, roomList: true, roomAdmin: true },
+    }),
+  ).toString('base64url');
+  const sig = createHmac('sha256', apiSecret).update(`${header}.${payload}`).digest('base64url');
   return `Bearer ${header}.${payload}.${sig}`;
 }
 
@@ -352,7 +378,9 @@ async function runCell(args, cell, runId, runDir) {
   const roomName = `shootout-${runId}-${cell.cellId}`;
   log(`\n── Cell ${cell.cellId} ──────────────────────────`);
   log(`  Codec: ${JSON.stringify(cell.codecPolicy)}`);
-  log(`  Profile: ${cell.profile}, Content: ${cell.contentSource}, Participants: ${cell.participants}`);
+  log(
+    `  Profile: ${cell.profile}, Content: ${cell.contentSource}, Participants: ${cell.participants}`,
+  );
   log(`  Duration: ${cell.durationSeconds}s (excluding ${15}s ramp)`);
 
   if (args.dryRun) {
@@ -393,7 +421,9 @@ async function runCell(args, cell, runId, runDir) {
 
   // Wait for cell duration (ramp + steady-state)
   const totalMs = (cell.durationSeconds + 15) * 1000;
-  log(`  Waiting ${cell.durationSeconds + 15}s (15s ramp + ${cell.durationSeconds}s steady state)...`);
+  log(
+    `  Waiting ${cell.durationSeconds + 15}s (15s ramp + ${cell.durationSeconds}s steady state)...`,
+  );
   await sleep(totalMs);
 
   // Write cell end marker
@@ -429,7 +459,18 @@ function buildAggregateCsv(runId, cellResults) {
   ];
   for (const r of cellResults) {
     rows.push(
-      [runId, r.cellId, r.codecPrimary ?? '', r.codecBackup ?? '', r.simulcast ?? '', r.participants ?? '', r.contentSource ?? '', r.profile ?? '', r.status, r.jsonlPath ?? ''].join(','),
+      [
+        runId,
+        r.cellId,
+        r.codecPrimary ?? '',
+        r.codecBackup ?? '',
+        r.simulcast ?? '',
+        r.participants ?? '',
+        r.contentSource ?? '',
+        r.profile ?? '',
+        r.status,
+        r.jsonlPath ?? '',
+      ].join(','),
     );
   }
   return rows.join('\n') + '\n';
@@ -482,7 +523,16 @@ async function main() {
   // Write run manifest
   fs.writeFileSync(
     path.resolve(runDir, 'manifest.json'),
-    JSON.stringify({ runId, startedAt: new Date().toISOString(), cells: cells.map((c) => c.cellId), args: { appBinary: args.appBinary, livekitUrl: args.livekitUrl, dryRun: args.dryRun } }, null, 2),
+    JSON.stringify(
+      {
+        runId,
+        startedAt: new Date().toISOString(),
+        cells: cells.map((c) => c.cellId),
+        args: { appBinary: args.appBinary, livekitUrl: args.livekitUrl, dryRun: args.dryRun },
+      },
+      null,
+      2,
+    ),
   );
 
   // 5. Generate subjective scoring template (§4.4 / R11.3)
@@ -516,7 +566,9 @@ async function main() {
   log(`\nAggregate CSV written to ${csvPath}`);
 
   // 8. Post-run summary
-  const completed = cellResults.filter((r) => r.status === 'complete' || r.status === 'dry_run').length;
+  const completed = cellResults.filter(
+    (r) => r.status === 'complete' || r.status === 'dry_run',
+  ).length;
   const errored = cellResults.filter((r) => r.status === 'error').length;
   log(`\n── Run complete ───────────────────────────────`);
   log(`  Run ID: ${runId}`);
@@ -524,7 +576,9 @@ async function main() {
   log(`  Artifacts: ${runDir}`);
   log(`  Subjective scoring: ${subjectivePath}`);
   log(`\nNext step: fill in ${path.basename(subjectivePath)} with blind Likert scores,`);
-  log(`then record the W4 codec-policy decision (vp9vp8 | vp8sim | av1vp9) per design.md §4.4 outcome handling.`);
+  log(
+    `then record the W4 codec-policy decision (vp9vp8 | vp8sim | av1vp9) per design.md §4.4 outcome handling.`,
+  );
 
   if (errored > 0) {
     process.exit(1);

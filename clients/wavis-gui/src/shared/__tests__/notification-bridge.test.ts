@@ -8,7 +8,9 @@ import type { NotificationToggles } from '@features/settings/settings-store';
 const mockStoreData = new Map<string, unknown>();
 const mockStoreInstance = {
   get: vi.fn(async (key: string) => mockStoreData.get(key) ?? null),
-  set: vi.fn(async (key: string, value: unknown) => { mockStoreData.set(key, value); }),
+  set: vi.fn(async (key: string, value: unknown) => {
+    mockStoreData.set(key, value);
+  }),
   save: vi.fn(async () => {}),
 };
 
@@ -17,10 +19,8 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 }));
 
 // Import after mocks
-const {
-  isNotificationEnabled,
-  setNotificationToggle,
-} = await import('@features/settings/settings-store');
+const { isNotificationEnabled, setNotificationToggle } =
+  await import('@features/settings/settings-store');
 
 beforeEach(() => {
   mockStoreData.clear();
@@ -42,65 +42,52 @@ const TOGGLE_KEYS: Array<keyof NotificationToggles> = [
 describe('Property 5: Notification suppression when toggle disabled', () => {
   it('for any event type with toggle set to false, isNotificationEnabled returns false', () => {
     return fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...TOGGLE_KEYS),
-        async (key) => {
-          mockStoreData.clear();
-          await setNotificationToggle(key, false);
-          const enabled = await isNotificationEnabled(key);
-          expect(enabled).toBe(false);
-        },
-      ),
+      fc.asyncProperty(fc.constantFrom(...TOGGLE_KEYS), async (key) => {
+        mockStoreData.clear();
+        await setNotificationToggle(key, false);
+        const enabled = await isNotificationEnabled(key);
+        expect(enabled).toBe(false);
+      }),
       { numRuns: 50 },
     );
   });
 
   it('for any event type with toggle set to true, isNotificationEnabled returns true', () => {
     return fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...TOGGLE_KEYS),
-        async (key) => {
-          mockStoreData.clear();
-          await setNotificationToggle(key, true);
-          const enabled = await isNotificationEnabled(key);
-          expect(enabled).toBe(true);
-        },
-      ),
+      fc.asyncProperty(fc.constantFrom(...TOGGLE_KEYS), async (key) => {
+        mockStoreData.clear();
+        await setNotificationToggle(key, true);
+        const enabled = await isNotificationEnabled(key);
+        expect(enabled).toBe(true);
+      }),
       { numRuns: 50 },
     );
   });
 
   it('all toggles default to true (enabled) when no value is set', () => {
     return fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...TOGGLE_KEYS),
-        async (key) => {
-          mockStoreData.clear();
-          const enabled = await isNotificationEnabled(key);
-          expect(enabled).toBe(true);
-        },
-      ),
+      fc.asyncProperty(fc.constantFrom(...TOGGLE_KEYS), async (key) => {
+        mockStoreData.clear();
+        const enabled = await isNotificationEnabled(key);
+        expect(enabled).toBe(true);
+      }),
       { numRuns: 25 },
     );
   });
 
   it('toggling off then on restores enabled state', () => {
     return fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...TOGGLE_KEYS),
-        async (key) => {
-          mockStoreData.clear();
-          await setNotificationToggle(key, false);
-          expect(await isNotificationEnabled(key)).toBe(false);
-          await setNotificationToggle(key, true);
-          expect(await isNotificationEnabled(key)).toBe(true);
-        },
-      ),
+      fc.asyncProperty(fc.constantFrom(...TOGGLE_KEYS), async (key) => {
+        mockStoreData.clear();
+        await setNotificationToggle(key, false);
+        expect(await isNotificationEnabled(key)).toBe(false);
+        await setNotificationToggle(key, true);
+        expect(await isNotificationEnabled(key)).toBe(true);
+      }),
       { numRuns: 25 },
     );
   });
 });
-
 
 /* ─── Property 8: Tray notifications sent only when window is hidden ── */
 // Feature: gui-feature-completion, Property 8
@@ -169,7 +156,9 @@ describe('Property 8: Tray notifications sent only when window is hidden', () =>
     await new Promise((r) => setTimeout(r, 10));
 
     // Simulate window hidden event
-    const listeners = (eventModule as unknown as { __listeners: Map<string, Array<(e: unknown) => void>> }).__listeners;
+    const listeners = (
+      eventModule as unknown as { __listeners: Map<string, Array<(e: unknown) => void>> }
+    ).__listeners;
     const visListeners = listeners.get('window-visibility-changed') ?? [];
     for (const fn of visListeners) {
       fn({ payload: { visible: false } });
@@ -184,7 +173,9 @@ describe('Property 8: Tray notifications sent only when window is hidden', () =>
     await new Promise((r) => setTimeout(r, 10));
 
     // Hide window
-    const listeners = (eventModule as unknown as { __listeners: Map<string, Array<(e: unknown) => void>> }).__listeners;
+    const listeners = (
+      eventModule as unknown as { __listeners: Map<string, Array<(e: unknown) => void>> }
+    ).__listeners;
     const visListeners = listeners.get('window-visibility-changed') ?? [];
     for (const fn of visListeners) {
       fn({ payload: { visible: false } });

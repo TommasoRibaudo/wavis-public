@@ -86,11 +86,7 @@ function mockOkResponse(body: string) {
   };
 }
 
-function mockErrorResponse(
-  status: number,
-  body: string,
-  headers: Record<string, string> = {},
-) {
+function mockErrorResponse(status: number, body: string, headers: Record<string, string> = {}) {
   return {
     status,
     ok: false,
@@ -171,7 +167,13 @@ describe('apiFetch — server error message surfacing', () => {
 
   it('surfaces the Axum "message" field (built-in rejection format)', async () => {
     tauriFetchMock.mockResolvedValue(
-      mockErrorResponse(400, JSON.stringify({ message: 'Failed to deserialize the JSON body into the target type: missing field `title`' })),
+      mockErrorResponse(
+        400,
+        JSON.stringify({
+          message:
+            'Failed to deserialize the JSON body into the target type: missing field `title`',
+        }),
+      ),
     );
 
     await expect(apiFetch('/bug-report', { method: 'POST', body: '{}' })).rejects.toMatchObject({
@@ -278,7 +280,9 @@ describe('apiFetch — server error message surfacing', () => {
 
   it('replays a 401 response once after refresh succeeds', async () => {
     tauriFetchMock
-      .mockResolvedValueOnce(mockErrorResponse(401, JSON.stringify({ error: 'authentication failed' })))
+      .mockResolvedValueOnce(
+        mockErrorResponse(401, JSON.stringify({ error: 'authentication failed' })),
+      )
       .mockResolvedValueOnce(mockOkResponse(JSON.stringify({ ok: true })));
     refreshTokensMock.mockResolvedValue({ status: 'success' });
 
@@ -298,7 +302,10 @@ describe('apiFetch — server error message surfacing', () => {
       body,
     });
 
-    const [, init] = tauriFetchMock.mock.calls[tauriFetchMock.mock.calls.length - 1] as [string, RequestInit];
+    const [, init] = tauriFetchMock.mock.calls[tauriFetchMock.mock.calls.length - 1] as [
+      string,
+      RequestInit,
+    ];
     expect(init.body).toBeInstanceOf(Uint8Array);
     expect(Array.from(init.body as Uint8Array)).toEqual(Array.from(new TextEncoder().encode(body)));
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer test-token');
@@ -328,7 +335,13 @@ describe('apiPublicFetch — server error message surfacing', () => {
 
   it('surfaces the Axum "message" field (built-in rejection format)', async () => {
     tauriFetchMock.mockResolvedValue(
-      mockErrorResponse(400, JSON.stringify({ message: 'Failed to deserialize the JSON body into the target type: missing field `title`' })),
+      mockErrorResponse(
+        400,
+        JSON.stringify({
+          message:
+            'Failed to deserialize the JSON body into the target type: missing field `title`',
+        }),
+      ),
     );
 
     await expect(
@@ -384,7 +397,10 @@ describe('apiPublicFetch — server error message surfacing', () => {
       body,
     });
 
-    const [, init] = tauriFetchMock.mock.calls[tauriFetchMock.mock.calls.length - 1] as [string, RequestInit];
+    const [, init] = tauriFetchMock.mock.calls[tauriFetchMock.mock.calls.length - 1] as [
+      string,
+      RequestInit,
+    ];
     expect(init.body).toBeInstanceOf(Uint8Array);
     expect(Array.from(init.body as Uint8Array)).toEqual(Array.from(new TextEncoder().encode(body)));
     expect((init.headers as Headers).get('Authorization')).toBeNull();

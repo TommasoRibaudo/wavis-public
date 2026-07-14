@@ -84,7 +84,10 @@ function onViewerReady(
     if (state.shareWindows.has(event.participantId)) return;
     deps.attachScreenShareAudio(event.participantId);
     const volume = state.savedVolumes.get(event.participantId) ?? 70;
-    deps.setScreenShareAudioVolume(event.participantId, state.savedMuted.get(event.participantId) ? 0 : volume);
+    deps.setScreenShareAudioVolume(
+      event.participantId,
+      state.savedMuted.get(event.participantId) ? 0 : volume,
+    );
     state.watchAllAttachedAudio.add(event.participantId);
     return;
   }
@@ -94,7 +97,10 @@ function onViewerReady(
 
   deps.attachScreenShareAudio(event.participantId);
   const volume = state.savedVolumes.get(event.participantId) ?? 70;
-  deps.setScreenShareAudioVolume(event.participantId, state.savedMuted.get(event.participantId) ? 0 : volume);
+  deps.setScreenShareAudioVolume(
+    event.participantId,
+    state.savedMuted.get(event.participantId) ? 0 : volume,
+  );
 }
 
 function onDirectViewerStreamChanged(
@@ -174,10 +180,14 @@ describe('ActiveRoom viewer audio orchestration', () => {
       savedVolumes: new Map([['user-1', 55]]),
     });
 
-    onViewerReady(state, { participantId: 'user-1', windowLabel: 'screen-share-user-1' }, {
-      attachScreenShareAudio,
-      setScreenShareAudioVolume,
-    });
+    onViewerReady(
+      state,
+      { participantId: 'user-1', windowLabel: 'screen-share-user-1' },
+      {
+        attachScreenShareAudio,
+        setScreenShareAudioVolume,
+      },
+    );
 
     expect(attachScreenShareAudio).toHaveBeenCalledWith('user-1');
     expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 55);
@@ -191,10 +201,14 @@ describe('ActiveRoom viewer audio orchestration', () => {
       savedMuted: new Map([['user-1', true]]),
     });
 
-    onViewerReady(state, { participantId: 'user-1', windowLabel: 'screen-share-user-1' }, {
-      attachScreenShareAudio,
-      setScreenShareAudioVolume,
-    });
+    onViewerReady(
+      state,
+      { participantId: 'user-1', windowLabel: 'screen-share-user-1' },
+      {
+        attachScreenShareAudio,
+        setScreenShareAudioVolume,
+      },
+    );
 
     expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 0);
     expect(state.savedVolumes.get('user-1')).toBe(55);
@@ -206,10 +220,14 @@ describe('ActiveRoom viewer audio orchestration', () => {
       shareWindows: new Map(),
     });
 
-    onViewerReady(state, { participantId: 'user-1', windowLabel: 'screen-share-user-1' }, {
-      attachScreenShareAudio,
-      setScreenShareAudioVolume,
-    });
+    onViewerReady(
+      state,
+      { participantId: 'user-1', windowLabel: 'screen-share-user-1' },
+      {
+        attachScreenShareAudio,
+        setScreenShareAudioVolume,
+      },
+    );
 
     expect(attachScreenShareAudio).not.toHaveBeenCalled();
     expect(setScreenShareAudioVolume).not.toHaveBeenCalled();
@@ -247,10 +265,14 @@ describe('ActiveRoom viewer audio orchestration', () => {
       savedVolumes: new Map([['user-1', 33]]),
     });
 
-    onViewerReady(state, { participantId: 'user-1', windowLabel: 'watch-all' }, {
-      attachScreenShareAudio,
-      setScreenShareAudioVolume,
-    });
+    onViewerReady(
+      state,
+      { participantId: 'user-1', windowLabel: 'watch-all' },
+      {
+        attachScreenShareAudio,
+        setScreenShareAudioVolume,
+      },
+    );
 
     expect(attachScreenShareAudio).toHaveBeenCalledWith('user-1');
     expect(setScreenShareAudioVolume).toHaveBeenCalledWith('user-1', 33);
@@ -265,10 +287,14 @@ describe('ActiveRoom viewer audio orchestration', () => {
       watchAllReady: true,
     });
 
-    onViewerReady(state, { participantId: 'user-1', windowLabel: 'watch-all' }, {
-      attachScreenShareAudio,
-      setScreenShareAudioVolume,
-    });
+    onViewerReady(
+      state,
+      { participantId: 'user-1', windowLabel: 'watch-all' },
+      {
+        attachScreenShareAudio,
+        setScreenShareAudioVolume,
+      },
+    );
 
     expect(attachScreenShareAudio).not.toHaveBeenCalled();
     expect(setScreenShareAudioVolume).not.toHaveBeenCalled();
