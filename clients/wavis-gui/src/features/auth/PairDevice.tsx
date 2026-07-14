@@ -4,8 +4,13 @@ import { startPairing, approvePairing, finishPairing, setUsername, fetchMyUserna
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
 import { AuthShell } from './AuthShell';
 
-
-function ModeToggle({ mode, onToggle }: { mode: 'new' | 'approve'; onToggle: (m: 'new' | 'approve') => void }) {
+function ModeToggle({
+  mode,
+  onToggle,
+}: {
+  mode: 'new' | 'approve';
+  onToggle: (m: 'new' | 'approve') => void;
+}) {
   return (
     <div className="flex gap-2">
       <button
@@ -89,7 +94,7 @@ export default function PairDevice() {
       } catch {
         // Best-effort: pairing succeeded; local username sync can recover later.
       }
-      navigate('/', { replace: true });
+      void navigate('/', { replace: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to finish pairing';
       if (msg.includes('not yet approved') || msg.includes('pending')) {
@@ -130,7 +135,6 @@ export default function PairDevice() {
     }
   }, [approvePairingId, approveCode, approving]);
 
-
   const handleApproveKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === 'Enter') void handleApprove();
@@ -152,7 +156,11 @@ export default function PairDevice() {
 
   return (
     <AuthShell
-      subtitle={<div className="mt-3"><ModeToggle mode={mode} onToggle={handleModeToggle} /></div>}
+      subtitle={
+        <div className="mt-3">
+          <ModeToggle mode={mode} onToggle={handleModeToggle} />
+        </div>
+      }
     >
       {mode === 'new' && !pairingId && (
         <div className="px-4 sm:px-6 py-4">
@@ -160,18 +168,17 @@ export default function PairDevice() {
             Pair this device with an existing account
           </div>
 
-
           <button
-            onClick={() => { void handleStartPairing(); }}
+            onClick={() => {
+              void handleStartPairing();
+            }}
             disabled={starting}
             className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {starting ? 'starting...' : '/start-pairing'}
           </button>
 
-          {startError && (
-            <p className="text-wavis-danger text-sm mt-4">{startError}</p>
-          )}
+          {startError && <p className="text-wavis-danger text-sm mt-4">{startError}</p>}
         </div>
       )}
 
@@ -184,7 +191,9 @@ export default function PairDevice() {
                 {pairingCode}
               </code>
               <button
-                onClick={() => { void copyCode(pairingCode); }}
+                onClick={() => {
+                  void copyCode(pairingCode);
+                }}
                 className="border border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent transition-colors px-3 py-1 text-sm shrink-0"
               >
                 {codeCopied ? 'Copied!' : '/copy'}
@@ -199,7 +208,9 @@ export default function PairDevice() {
                 {pairingId}
               </code>
               <button
-                onClick={() => { void copyId(pairingId); }}
+                onClick={() => {
+                  void copyId(pairingId);
+                }}
                 className="border border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent transition-colors px-3 py-1 text-sm shrink-0"
               >
                 {idCopied ? 'Copied!' : '/copy'}
@@ -212,16 +223,16 @@ export default function PairDevice() {
           </p>
 
           <button
-            onClick={() => { void handleFinishPairing(); }}
+            onClick={() => {
+              void handleFinishPairing();
+            }}
             disabled={finishing}
             className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {finishing ? 'completing...' : '/complete-pairing'}
           </button>
 
-          {finishError && (
-            <p className="text-wavis-danger text-sm mt-4">{finishError}</p>
-          )}
+          {finishError && <p className="text-wavis-danger text-sm mt-4">{finishError}</p>}
         </div>
       )}
 
@@ -236,7 +247,7 @@ export default function PairDevice() {
             <div className="flex items-center gap-2">
               <span className="text-wavis-accent shrink-0">&gt;</span>
               <input
-                ref={mode === 'approve' ? inputRef : undefined}
+                ref={inputRef}
                 type="text"
                 placeholder="pairing ID from new device"
                 value={approvePairingId}
@@ -247,7 +258,9 @@ export default function PairDevice() {
                 onKeyDown={handleApproveKeyDown}
                 disabled={approving}
                 className={`flex-1 min-w-0 bg-transparent border-b outline-none px-2 py-1 font-mono text-wavis-text ${
-                  approveError && !approvePairingId.trim() ? 'border-wavis-danger' : 'border-wavis-text-secondary'
+                  approveError && !approvePairingId.trim()
+                    ? 'border-wavis-danger'
+                    : 'border-wavis-text-secondary'
                 } disabled:opacity-40 disabled:cursor-not-allowed`}
                 aria-label="Pairing ID"
                 autoFocus
@@ -270,7 +283,9 @@ export default function PairDevice() {
                 onKeyDown={handleApproveKeyDown}
                 disabled={approving}
                 className={`flex-1 min-w-0 bg-transparent border-b outline-none px-2 py-1 font-mono text-wavis-text ${
-                  approveError && !approveCode.trim() ? 'border-wavis-danger' : 'border-wavis-text-secondary'
+                  approveError && !approveCode.trim()
+                    ? 'border-wavis-danger'
+                    : 'border-wavis-text-secondary'
                 } disabled:opacity-40 disabled:cursor-not-allowed`}
                 aria-label="Pairing code"
               />
@@ -278,19 +293,21 @@ export default function PairDevice() {
           </div>
 
           <button
-            onClick={() => { void handleApprove(); }}
+            onClick={() => {
+              void handleApprove();
+            }}
             disabled={approving}
             className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {approving ? 'approving...' : '/approve'}
           </button>
 
-          {approveError && (
-            <p className="text-wavis-danger text-sm mt-4">{approveError}</p>
-          )}
+          {approveError && <p className="text-wavis-danger text-sm mt-4">{approveError}</p>}
 
           {approveSuccess && (
-            <p className="text-wavis-accent text-sm mt-4">Pairing approved — the new device can now complete pairing.</p>
+            <p className="text-wavis-accent text-sm mt-4">
+              Pairing approved — the new device can now complete pairing.
+            </p>
           )}
         </div>
       )}
@@ -298,7 +315,9 @@ export default function PairDevice() {
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between">
         <span>Device pairing</span>
         <button
-          onClick={() => navigate('/setup')}
+          onClick={() => {
+            void navigate('/setup');
+          }}
           className="hover:text-wavis-text transition-colors"
         >
           ← /setup

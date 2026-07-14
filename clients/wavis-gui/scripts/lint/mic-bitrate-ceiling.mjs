@@ -26,9 +26,9 @@ function collectNumericConstants(sourceFile) {
     if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
         if (
-          ts.isIdentifier(declaration.name)
-          && declaration.initializer
-          && ts.isNumericLiteral(declaration.initializer)
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer &&
+          ts.isNumericLiteral(declaration.initializer)
         ) {
           constants.set(declaration.name.text, Number(declaration.initializer.text));
         }
@@ -64,10 +64,10 @@ function getPropertyByName(objectLiteral, propertyName) {
 function unwrapExpression(expression) {
   let current = expression;
   while (
-    ts.isAsExpression(current)
-    || ts.isTypeAssertionExpression(current)
-    || ts.isParenthesizedExpression(current)
-    || ts.isSatisfiesExpression?.(current)
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isSatisfiesExpression?.(current)
   ) {
     current = current.expression;
   }
@@ -84,10 +84,10 @@ function getPublishTrackViolations(sourceFile, numericConstants) {
 
   function visit(node) {
     if (
-      ts.isCallExpression(node)
-      && ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === 'publishTrack'
-      && node.arguments.length >= 2
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'publishTrack' &&
+      node.arguments.length >= 2
     ) {
       const optionsArg = unwrapExpression(node.arguments[1]);
       if (!ts.isObjectLiteralExpression(optionsArg)) {
@@ -97,9 +97,9 @@ function getPublishTrackViolations(sourceFile, numericConstants) {
 
       const sourceProperty = getPropertyByName(optionsArg, 'source');
       if (
-        !sourceProperty
-        || !ts.isPropertyAssignment(sourceProperty)
-        || sourceProperty.initializer.getText(sourceFile) !== MIC_SOURCE_TEXT
+        !sourceProperty ||
+        !ts.isPropertyAssignment(sourceProperty) ||
+        sourceProperty.initializer.getText(sourceFile) !== MIC_SOURCE_TEXT
       ) {
         ts.forEachChild(node, visit);
         return;
@@ -116,9 +116,13 @@ function getPublishTrackViolations(sourceFile, numericConstants) {
 
       const bitrateValue = expressionToNumber(bitrateProperty.initializer, numericConstants);
       if (bitrateValue === null) {
-        violations.push(`unresolved audioBitrate expression "${bitrateProperty.initializer.getText(sourceFile)}" at line ${getLine(sourceFile, bitrateProperty.initializer)}`);
+        violations.push(
+          `unresolved audioBitrate expression "${bitrateProperty.initializer.getText(sourceFile)}" at line ${getLine(sourceFile, bitrateProperty.initializer)}`,
+        );
       } else if (bitrateValue > MIC_BITRATE_CEILING_BPS) {
-        violations.push(`audioBitrate ${bitrateValue} exceeds ${MIC_BITRATE_CEILING_BPS} at line ${getLine(sourceFile, bitrateProperty.initializer)}`);
+        violations.push(
+          `audioBitrate ${bitrateValue} exceeds ${MIC_BITRATE_CEILING_BPS} at line ${getLine(sourceFile, bitrateProperty.initializer)}`,
+        );
       }
     }
 

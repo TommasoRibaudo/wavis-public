@@ -17,13 +17,13 @@ npm install
 
 ## Commands
 
-| Command | What it does |
-|---------|-------------|
-| `npx tauri dev` | Dev mode — opens the app with hot reload (Vite + Rust) |
+| Command           | What it does                                                |
+| ----------------- | ----------------------------------------------------------- |
+| `npx tauri dev`   | Dev mode — opens the app with hot reload (Vite + Rust)      |
 | `npx tauri build` | Production build — compiles the app into a native installer |
-| `npm run build` | Frontend only — runs `tsc` + `vite build` (no Rust) |
-| `npm run dev` | Frontend only — starts Vite dev server (no Tauri shell) |
-| `npm run test` | Runs Vitest unit tests (single run) |
+| `npm run build`   | Frontend only — runs `tsc` + `vite build` (no Rust)         |
+| `npm run dev`     | Frontend only — starts Vite dev server (no Tauri shell)     |
+| `npm run test`    | Runs Vitest unit tests (single run)                         |
 
 ## Notes
 

@@ -10,7 +10,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
-import type { CameraQuality } from './camera-types';
+import type { CameraQuality, CameraStartError } from './camera-types';
 import {
   getAudioInputDevice,
   getAudioOutputDevice,
@@ -83,9 +83,16 @@ export type ActiveShareInfo = {
 
 /* ─── Event Types (must match Rust MediaEvent serde tags) ───────── */
 
-interface MediaEventConnected { type: 'connected' }
-interface MediaEventFailed { type: 'failed'; reason: string }
-interface MediaEventDisconnected { type: 'disconnected' }
+interface MediaEventConnected {
+  type: 'connected';
+}
+interface MediaEventFailed {
+  type: 'failed';
+  reason: string;
+}
+interface MediaEventDisconnected {
+  type: 'disconnected';
+}
 interface MediaEventAudioLevels {
   type: 'audio_levels';
   levels: Array<{ identity: string; rms_level: number; is_speaking: boolean }>;
@@ -158,17 +165,22 @@ export class NativeMediaModule {
     console.log(LOG, 'created (native Rust path)');
   }
 
-  private async applySavedAudioDevice(deviceId: string | null, kind: AudioDeviceKind): Promise<void> {
+  private async applySavedAudioDevice(
+    deviceId: string | null,
+    kind: AudioDeviceKind,
+  ): Promise<void> {
     if (!deviceId) return;
 
     try {
       await invoke('set_audio_device', { deviceId, kind });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.warn(LOG, `saved ${kind} device unavailable; falling back to system default:`, reason);
-      this.callbacks.onSystemEvent?.(
-        `${kind} device unavailable, using system default`,
+      console.warn(
+        LOG,
+        `saved ${kind} device unavailable; falling back to system default:`,
+        reason,
       );
+      this.callbacks.onSystemEvent(`${kind} device unavailable, using system default`);
       await setStoreValue(
         kind === 'input' ? STORE_KEYS.audioInputDevice : STORE_KEYS.audioOutputDevice,
         '',
@@ -252,10 +264,13 @@ export class NativeMediaModule {
 
     // 3. Subscribe to lightweight remote screen share availability events.
     // Linux stores frames in Rust and the native GTK viewer renders them.
-    this.unlistenAvailable = await listen<ScreenShareAvailablePayload>('screen_share_available', (event) => {
-      if (this.disposed) return;
-      this.handleScreenShareAvailable(event.payload.identity);
-    });
+    this.unlistenAvailable = await listen<ScreenShareAvailablePayload>(
+      'screen_share_available',
+      (event) => {
+        if (this.disposed) return;
+        this.handleScreenShareAvailable(event.payload.identity);
+      },
+    );
 
     // 4. Subscribe to remote screen share ended events
     this.unlistenEnded = await listen<ScreenShareEndedPayload>('screen_share_ended', (event) => {
@@ -267,23 +282,32 @@ export class NativeMediaModule {
     // native path can receive ScreenshareAudio without any video frames, so
     // this is the Linux/WebKit equivalent of LiveKitModule's audio-only
     // publication inference.
-    this.unlistenAudioAvailable = await listen<ScreenShareAudioPayload>('screen_share_audio_available', (event) => {
-      if (this.disposed) return;
-      this.handleScreenShareAudioAvailable(event.payload.identity);
-    });
+    this.unlistenAudioAvailable = await listen<ScreenShareAudioPayload>(
+      'screen_share_audio_available',
+      (event) => {
+        if (this.disposed) return;
+        this.handleScreenShareAudioAvailable(event.payload.identity);
+      },
+    );
 
-    this.unlistenAudioEnded = await listen<ScreenShareAudioPayload>('screen_share_audio_ended', (event) => {
-      if (this.disposed) return;
-      this.handleScreenShareAudioEnded(event.payload.identity);
-    });
+    this.unlistenAudioEnded = await listen<ScreenShareAudioPayload>(
+      'screen_share_audio_ended',
+      (event) => {
+        if (this.disposed) return;
+        this.handleScreenShareAudioEnded(event.payload.identity);
+      },
+    );
 
     // 6. Subscribe to remote camera availability events. The Rust native
     // LiveKit path decodes camera frames, and this module paints them into a
     // canvas-backed MediaStreamTrack so the existing VideoTile UI can render.
-    this.unlistenCameraAvailable = await listen<CameraAvailablePayload>('camera_available', (event) => {
-      if (this.disposed) return;
-      this.handleCameraAvailable(event.payload.identity);
-    });
+    this.unlistenCameraAvailable = await listen<CameraAvailablePayload>(
+      'camera_available',
+      (event) => {
+        if (this.disposed) return;
+        this.handleCameraAvailable(event.payload.identity);
+      },
+    );
 
     this.unlistenCameraEnded = await listen<CameraEndedPayload>('camera_ended', (event) => {
       if (this.disposed) return;
@@ -301,9 +325,7 @@ export class NativeMediaModule {
       await this.applySavedAudioDevice(outputDeviceId, 'output');
       await invoke('media_connect', { url: sfuUrl, token, denoiseEnabled });
     } catch (err) {
-      this.callbacks.onMediaFailed(
-        err instanceof Error ? err.message : String(err),
-      );
+      this.callbacks.onMediaFailed(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -313,14 +335,38 @@ export class NativeMediaModule {
     this.disposed = true;
 
     // Clean up all event listeners
-    if (this.unlistenMedia) { this.unlistenMedia(); this.unlistenMedia = null; }
-    if (this.unlistenFrame) { this.unlistenFrame(); this.unlistenFrame = null; }
-    if (this.unlistenAvailable) { this.unlistenAvailable(); this.unlistenAvailable = null; }
-    if (this.unlistenEnded) { this.unlistenEnded(); this.unlistenEnded = null; }
-    if (this.unlistenAudioAvailable) { this.unlistenAudioAvailable(); this.unlistenAudioAvailable = null; }
-    if (this.unlistenAudioEnded) { this.unlistenAudioEnded(); this.unlistenAudioEnded = null; }
-    if (this.unlistenCameraAvailable) { this.unlistenCameraAvailable(); this.unlistenCameraAvailable = null; }
-    if (this.unlistenCameraEnded) { this.unlistenCameraEnded(); this.unlistenCameraEnded = null; }
+    if (this.unlistenMedia) {
+      this.unlistenMedia();
+      this.unlistenMedia = null;
+    }
+    if (this.unlistenFrame) {
+      this.unlistenFrame();
+      this.unlistenFrame = null;
+    }
+    if (this.unlistenAvailable) {
+      this.unlistenAvailable();
+      this.unlistenAvailable = null;
+    }
+    if (this.unlistenEnded) {
+      this.unlistenEnded();
+      this.unlistenEnded = null;
+    }
+    if (this.unlistenAudioAvailable) {
+      this.unlistenAudioAvailable();
+      this.unlistenAudioAvailable = null;
+    }
+    if (this.unlistenAudioEnded) {
+      this.unlistenAudioEnded();
+      this.unlistenAudioEnded = null;
+    }
+    if (this.unlistenCameraAvailable) {
+      this.unlistenCameraAvailable();
+      this.unlistenCameraAvailable = null;
+    }
+    if (this.unlistenCameraEnded) {
+      this.unlistenCameraEnded();
+      this.unlistenCameraEnded = null;
+    }
 
     // Clean up all active shares
     for (const identity of [...this.activeShares.keys()]) {
@@ -404,7 +450,6 @@ export class NativeMediaModule {
         this.audioOnlySharers.add(participantIdentity);
         this.callbacks.onAudioOnlySharerAdded?.(participantIdentity);
       }
-      this.attachScreenShareAudio(participantIdentity);
       return;
     }
 
@@ -486,7 +531,7 @@ export class NativeMediaModule {
         kind: device.kind === 'input' ? 'audioinput' : 'audiooutput',
         label: device.name,
       }),
-    } as MediaDeviceInfo);
+    });
 
     return {
       inputs: devices.filter((device) => device.kind === 'input').map(toMediaDeviceInfo),
@@ -512,13 +557,16 @@ export class NativeMediaModule {
   }): Promise<{ trackId: string }> {
     const entry = this.createCameraCanvasEntry('local');
     if (!entry) {
-      throw { kind: 'device_unavailable' };
+      throw { kind: 'device_unavailable' } satisfies CameraStartError;
     }
 
     const track = entry.stream.getVideoTracks()[0] ?? null;
+    // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always
+    // defined even though an empty track array makes it genuinely undefined.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!track) {
       this.disposeCameraCanvasEntry(entry);
-      throw { kind: 'device_unavailable' };
+      throw { kind: 'device_unavailable' } satisfies CameraStartError;
     }
 
     try {
@@ -669,7 +717,10 @@ export class NativeMediaModule {
     const entry = this.createCameraCanvasEntry(identity);
     const track = entry?.stream.getVideoTracks()[0] ?? null;
     if (!entry || !track) {
-      console.warn(LOG, `remote camera unavailable: canvas captureStream unsupported for ${identity}`);
+      console.warn(
+        LOG,
+        `remote camera unavailable: canvas captureStream unsupported for ${identity}`,
+      );
       return;
     }
     entry.pollInterval = setInterval(() => {
@@ -694,7 +745,7 @@ export class NativeMediaModule {
     const entry = this.activeCameras.get(identity);
     if (!entry) return;
 
-    let payload: PolledCameraFrame | null = null;
+    let payload: PolledCameraFrame | null;
     try {
       payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
         identity,
@@ -711,7 +762,7 @@ export class NativeMediaModule {
   private async pollLocalCameraFrame(): Promise<void> {
     if (this.disposed || !this.localCamera) return;
     const entry = this.localCamera;
-    let payload: PolledCameraFrame | null = null;
+    let payload: PolledCameraFrame | null;
     try {
       payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
         lastSeq: entry.lastSeq,
@@ -730,11 +781,10 @@ export class NativeMediaModule {
     const canvas = document.createElement('canvas');
     canvas.width = 320;
     canvas.height = 240;
-    canvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    canvas.style.cssText =
+      'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
     const context = canvas.getContext('2d');
-    const stream = typeof canvas.captureStream === 'function'
-      ? canvas.captureStream(15)
-      : null;
+    const stream = typeof canvas.captureStream === 'function' ? canvas.captureStream(15) : null;
     if (!context || !stream || stream.getVideoTracks().length === 0) {
       return null;
     }
@@ -797,8 +847,13 @@ export class NativeMediaModule {
     }
   }
 
-  private classifyNativeCameraError(err: unknown): { kind: string } {
-    const message = String(err ?? '').toLowerCase();
+  private classifyNativeCameraError(err: unknown): CameraStartError {
+    // Tauri invoke rejections are strings or structured objects, never
+    // reliably Error instances — stringify objects so their fields still
+    // participate in the keyword classification below.
+    const message = (
+      err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')
+    ).toLowerCase();
     if (message.includes('no camera') || message.includes('/dev/video')) {
       return { kind: 'no_camera_configured' };
     }

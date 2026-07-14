@@ -21,12 +21,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_capture;
-#[cfg(target_os = "windows")]
-mod taskbar_toolbar;
 #[cfg(target_os = "linux")]
 mod external_share_helper;
 #[cfg(target_os = "linux")]
 mod linux_mic;
+#[cfg(target_os = "windows")]
+mod taskbar_toolbar;
 #[cfg(not(target_os = "linux"))]
 mod external_share_helper {
     pub struct ExternalShareHelperState;
@@ -387,6 +387,45 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInstallContext {
+    version: String,
+    current_binary: Option<UpdateBinaryInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBinaryInfo {
+    path: String,
+    size: Option<u64>,
+    modified_ms: Option<u128>,
+}
+
+#[tauri::command]
+fn get_update_install_context(app: tauri::AppHandle) -> UpdateInstallContext {
+    let version = app.package_info().version.to_string();
+    let current_binary = tauri::process::current_binary(&app.env()).ok().map(|path| {
+        let metadata = std::fs::metadata(&path).ok();
+        let modified_ms = metadata
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis());
+
+        UpdateBinaryInfo {
+            path: path.display().to_string(),
+            size: metadata.as_ref().map(|meta| meta.len()),
+            modified_ms,
+        }
+    });
+
+    UpdateInstallContext {
+        version,
+        current_binary,
+    }
+}
+
 fn main() {
     // Load .env in debug builds so WAVIS_* vars work without manually exporting them.
     // dotenvy searches from CWD upward, so it finds clients/wavis-gui/.env from src-tauri/.
@@ -425,13 +464,12 @@ fn main() {
                 .level(log::LevelFilter::Info)
                 .clear_targets()
                 .target(
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
-                        .filter({
-                            let min = debug_env::tauri_log_level()
-                                .to_level()
-                                .unwrap_or(log::Level::Warn);
-                            move |metadata| metadata.level() <= min
-                        }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout).filter({
+                        let min = debug_env::tauri_log_level()
+                            .to_level()
+                            .unwrap_or(log::Level::Warn);
+                        move |metadata| metadata.level() <= min
+                    }),
                 )
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Dispatch(log_layer),
@@ -568,6 +606,7 @@ fn main() {
             get_linux_desktop_context,
             bug_report::get_rust_log_buffer,
             bug_report::capture_window_screenshot,
+            get_update_install_context,
             media::media_connect,
             media::media_disconnect,
             media::media_set_mic_enabled,
@@ -866,6 +905,13 @@ fn parse_pactl_devices(
 
 const KEYRING_SERVICE: &str = "com.wavis.gui";
 
+/// Overridable so live-backend e2e runs (clients/wavis-gui/e2e-tooling) use a
+/// keychain service distinct from a developer's real persisted session on the
+/// same machine — driver.mjs sets WAVIS_KEYRING_SERVICE per-launch.
+fn keyring_service() -> String {
+    std::env::var("WAVIS_KEYRING_SERVICE").unwrap_or_else(|_| KEYRING_SERVICE.to_string())
+}
+
 /// In-memory cache for keyring values.
 ///
 /// Each keyring read on macOS triggers a system "allow" prompt. By caching
@@ -911,9 +957,9 @@ async fn store_token(
 ) -> Result<(), String> {
     let key_for_keyring = key.clone();
     let value_for_keyring = value.clone();
+    let service = keyring_service();
     run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         entry
             .set_password(&value_for_keyring)
             .map_err(|e| e.to_string())?;
@@ -938,9 +984,9 @@ async fn get_token(
     }
     // Cache miss — read from keychain once and populate the cache.
     let key_for_keyring = key.clone();
+    let service = keyring_service();
     let result = run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(val) => Ok(Some(val)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -958,9 +1004,9 @@ async fn get_token(
 async fn delete_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<(), String> {
     cache.0.lock().unwrap().remove(&key);
     let key_for_keyring = key.clone();
+    let service = keyring_service();
     run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent

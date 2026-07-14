@@ -13,7 +13,12 @@ import { computeTrayMenuState, deafenMenuLabel, muteMenuLabel } from '../tray-br
 /* ─── TrayAction exhaustive check ─────────────────────────────────── */
 
 describe('Feature: video-feed — Quick_Actions has no video controls (Req 4.5, 4.6, 8.1–8.4)', () => {
-  const PRE_VIDEO_FEED_ACTIONS: readonly TrayAction[] = ['toggle-mute', 'toggle-deafen', 'leave', 'show'];
+  const PRE_VIDEO_FEED_ACTIONS: readonly TrayAction[] = [
+    'toggle-mute',
+    'toggle-deafen',
+    'leave',
+    'show',
+  ];
 
   it('TrayAction set is exactly the pre-video-feed set', () => {
     const actions: TrayAction[] = ['toggle-mute', 'toggle-deafen', 'leave', 'show'];

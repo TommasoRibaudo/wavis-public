@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
@@ -10,9 +11,9 @@ const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig(({ command, mode }) => {
   if (
-    command === 'build'
-    && mode === 'production'
-    && Object.prototype.hasOwnProperty.call(process.env, WINDOWS_SHARE_PATH_OVERRIDE_KEY)
+    command === 'build' &&
+    mode === 'production' &&
+    Object.prototype.hasOwnProperty.call(process.env, WINDOWS_SHARE_PATH_OVERRIDE_KEY)
   ) {
     throw new Error(`${WINDOWS_SHARE_PATH_OVERRIDE_KEY} must be unset for production builds`);
   }
@@ -61,6 +62,9 @@ export default defineConfig(({ command, mode }) => {
       env: {
         VITE_ALLOW_INSECURE_TLS: 'true',
       },
+      // e2e-tooling has its own Playwright Test runner and *.spec.mjs files —
+      // exclude it or vitest's default glob tries to collect them too.
+      exclude: [...configDefaults.exclude, 'e2e-tooling/**'],
     },
   };
 });

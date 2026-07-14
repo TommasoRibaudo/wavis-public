@@ -218,17 +218,19 @@ pub async fn submit_bug_report(
 
     // --- Ban check: reject banned users ---
     if let Some(ref auth_user) = user {
-        let is_banned: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM bug_report_bans WHERE user_id = $1)",
-        )
-        .bind(auth_user.user_id)
-        .fetch_one(&state.db_pool)
-        .await
-        .unwrap_or(false);
+        let is_banned: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM bug_report_bans WHERE user_id = $1)")
+                .bind(auth_user.user_id)
+                .fetch_one(&state.db_pool)
+                .await
+                .unwrap_or(false);
 
         if is_banned {
             warn!(user_id = %auth_user.user_id, "bug report blocked: user is banned");
-            return Err(error_response(StatusCode::FORBIDDEN, "bug report submission blocked"));
+            return Err(error_response(
+                StatusCode::FORBIDDEN,
+                "bug report submission blocked",
+            ));
         }
     }
 

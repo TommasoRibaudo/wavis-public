@@ -72,7 +72,7 @@ jobs:
       screen: ${{ steps.filter.outputs.screen }}
       core: ${{ steps.filter.outputs.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -143,7 +143,7 @@ jobs:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install gitleaks
@@ -167,7 +167,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
@@ -178,9 +178,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.1
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      # Cheap gates first: formatting and architecture boundaries fail in
+      # seconds, before any compilation.
+      - name: Rustfmt check
+        run: cargo fmt --all --check
+
+      - name: Architecture boundary check
+        run: node scripts/arch-check.mjs
 
       # Caches ~/.cargo/registry, ~/.cargo/git, and target/ — shared key
       # means test-db job can restore from this job's saved cache.
@@ -197,6 +205,22 @@ jobs:
 
       - name: Clippy (livekit feature)
         run: cargo clippy -p wavis-client-shared --features livekit,real-backends -p wavis-client --features livekit -p wavis-cli-test --features livekit -- -D warnings
+
+      # Non-blocking complexity + audit metrics. Review triggers only — never
+      # a gate. See CLAUDE.md "Code Standards & Gates" and code_standards.md
+      # "Workspace lint inheritance": these lints stay CLI-only (not in
+      # [workspace.lints]) until their violation count is verified zero,
+      # because a manifest "warn" gets promoted to a hard error by the
+      # blocking step's `-D warnings` the moment it's added.
+      - name: Clippy metrics (non-blocking)
+        continue-on-error: true
+        run: >-
+          cargo clippy $CI_PACKAGES --
+          -W clippy::cognitive_complexity -W clippy::too_many_lines
+          -W clippy::undocumented_unsafe_blocks
+          -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic
+          -W clippy::await_holding_lock -W clippy::large_futures -W clippy::large_stack_arrays
+          -W clippy::redundant_clone -W clippy::needless_pass_by_value -W clippy::mutex_atomic
 
       # cargo test builds implicitly — no separate cargo build step needed.
       - name: Full workspace tests
@@ -249,7 +273,7 @@ jobs:
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -265,6 +289,18 @@ jobs:
 
       - name: Install GUI dependencies
         run: npm install --no-audit --no-fund
+        working-directory: clients/wavis-gui
+
+      - name: GUI Prettier check
+        run: npm run format:check
+        working-directory: clients/wavis-gui
+
+      - name: GUI ESLint
+        run: npm run lint
+        working-directory: clients/wavis-gui
+
+      - name: GUI dependency-cruiser
+        run: npm run lint:deps
         working-directory: clients/wavis-gui
 
       - name: GUI release config check
@@ -332,7 +368,7 @@ jobs:
       AUTH_JWT_SECRET: ci-auth-secret-at-least-32-bytes!!
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Remove Tauri GUI crate from workspace
         run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
@@ -343,7 +379,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.1
 
       # Restores the cache saved by rust-test (same shared-key).
       # save-if: false — rust-test owns the save, this job only reads.

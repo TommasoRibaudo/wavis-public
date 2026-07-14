@@ -20,7 +20,7 @@ use crate::chat::chat_persistence;
 use crate::chat::chat_rate_limiter::ChatRateLimiter;
 use crate::connections::ConnectionManager;
 use crate::ec2_control::Ec2InstanceState;
-use crate::state::{InMemoryRoomState, RoomType};
+use crate::state::{InMemoryRoomState, RoomInfo, RoomType};
 use crate::voice::relay::{self, P2PJoinResult, RelayResult, RoomState, handle_p2p_join};
 use crate::voice::screen_share::{
     ShareResult, handle_set_share_permission, handle_start_share_with_type, handle_stop_all_shares,
@@ -30,6 +30,7 @@ use crate::voice::sfu_bridge::SfuHealth;
 use crate::voice::sfu_relay::{
     OutboundSignal, ParticipantRole, SignalTarget, determine_room_type, handle_create_room,
     handle_kick, handle_mute, handle_sfu_ice, handle_sfu_join, handle_sfu_offer, handle_unmute,
+    handle_viewer_token_request,
 };
 use crate::voice::turn_cred::{build_ice_config_payload, generate_turn_credentials};
 use crate::voice::voice_orchestrator;
@@ -39,9 +40,10 @@ use crate::ws::ws_session::{SignalingSession, close_socket};
 use axum::extract::ws::WebSocket;
 use shared::signaling::{
     self, AnswerPayload, ErrorPayload, IceCandidatePayload, JoinRejectedPayload,
-    ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantSelfMutedPayload,
-    ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload, ParticipantUsernameUpdatedPayload,
-    SessionDescription, SfuColdStartingPayload, SignalingMessage, ViewerJoinedPayload,
+    ParticipantColorUpdatedPayload, ParticipantDeafenedPayload, ParticipantInfo,
+    ParticipantSelfMutedPayload, ParticipantSelfUnmutedPayload, ParticipantUndeafenedPayload,
+    ParticipantUsernameUpdatedPayload, SessionDescription, SfuColdStartingPayload,
+    SignalingMessage, ViewerJoinedPayload,
 };
 use std::env;
 use std::net::IpAddr;
@@ -262,6 +264,216 @@ async fn require_host_role(
     Ok(())
 }
 
+/// Gate an action on the per-connection action rate limit.
+///
+/// On denial: logs `warn_msg`, bumps `action_rate_limit_rejections`, sends
+/// `Error(MSG_ACTION_RATE_LIMIT_EXCEEDED)` to the caller, and returns `Err(())` — the
+/// arm should then `return DispatchOutcome::Continue`.
+///
+/// Takes the `DispatchContext` fields it needs individually rather than `&mut DispatchContext`,
+/// so callers can keep a borrow of `ctx.session` (e.g. `sender_id`) alive across the call.
+fn check_action_rate_limit(
+    rate_limiter: &mut WsRateLimiter,
+    app_state: &AppState,
+    peer_id: &str,
+    caller_id: &str,
+    warn_msg: &str,
+) -> Result<(), ()> {
+    if rate_limiter.action_allow() {
+        return Ok(());
+    }
+    warn!(peer_id = %peer_id, "{}", warn_msg);
+    app_state
+        .abuse_metrics
+        .increment(&app_state.abuse_metrics.action_rate_limit_rejections);
+    app_state.connections.send_to(
+        caller_id,
+        &SignalingMessage::Error(ErrorPayload {
+            message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+        }),
+    );
+    Err(())
+}
+
+/// Resolve the room the caller is currently in.
+///
+/// The room always comes from the live peer→room mapping, never from the payload.
+/// On failure sends `Error("not in a room")` and returns `Err(())`.
+fn require_room(app_state: &AppState, caller_id: &str) -> Result<String, ()> {
+    match app_state.room_state.get_room_for_peer(caller_id) {
+        Some(room_id) => Ok(room_id),
+        None => {
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "not in a room".to_string(),
+                }),
+            );
+            Err(())
+        }
+    }
+}
+
+/// Like [`require_room`], but the room must be an SFU room; returns its info alongside the id.
+///
+/// Host actions (mute/unmute/kick) are SFU-only — P2P rooms (and rooms whose info has
+/// vanished) get `Error("action not supported in P2P mode")`.
+fn require_sfu_room(app_state: &AppState, caller_id: &str) -> Result<(String, RoomInfo), ()> {
+    let room_id = require_room(app_state, caller_id)?;
+    match app_state.room_state.get_room_info(&room_id) {
+        Some(info) if info.room_type == RoomType::Sfu => Ok((room_id, info)),
+        _ => {
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "action not supported in P2P mode".to_string(),
+                }),
+            );
+            Err(())
+        }
+    }
+}
+
+/// Determine the caller's effective role for a host action.
+///
+/// Channel-backed sessions re-query the DB (lazy enforcement: an admin demoted mid-session
+/// must lose host powers immediately); legacy room sessions fall back to the cached session
+/// role. On rejection sends the appropriate `Error` and returns `Err(())`; DB errors fail closed.
+///
+/// Takes only `&AppState` (not `&DispatchContext`) so the future stays `Send` across the await.
+async fn resolve_effective_role(
+    app_state: &AppState,
+    peer_id: &str,
+    caller_id: &str,
+    channel_id: Option<&str>,
+    user_id: Option<&str>,
+    cached_role: ParticipantRole,
+    op: &str,
+) -> Result<ParticipantRole, ()> {
+    let Some(channel_id) = channel_id else {
+        return Ok(cached_role);
+    };
+    let user_id_str = user_id.expect("channel session always has user_id");
+    let user_id_uuid =
+        Uuid::parse_str(user_id_str).expect("session user_id is always a valid UUID");
+    match voice_orchestrator::get_current_channel_role(
+        &app_state.db_pool,
+        channel_id,
+        &user_id_uuid,
+    )
+    .await
+    {
+        Ok(Some(channel_role)) => Ok(voice_orchestrator::map_channel_role(channel_role)),
+        Ok(None) => {
+            warn!(peer_id = %peer_id, channel_id = %channel_id, "{op} rejected: user no longer channel member");
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "not authorized".to_string(),
+                }),
+            );
+            Err(())
+        }
+        Err(e) => {
+            error!(peer_id = %peer_id, channel_id = %channel_id, error = %e, "{op} rejected: DB error during lazy role check");
+            app_state.connections.send_to(
+                caller_id,
+                &SignalingMessage::Error(ErrorPayload {
+                    message: "internal error".to_string(),
+                }),
+            );
+            Err(())
+        }
+    }
+}
+
+/// Require the caller to hold the Host role; sends `Error("unauthorized")` otherwise.
+fn require_host(app_state: &AppState, caller_id: &str, role: ParticipantRole) -> Result<(), ()> {
+    if role == ParticipantRole::Host {
+        return Ok(());
+    }
+    app_state.connections.send_to(
+        caller_id,
+        &SignalingMessage::Error(ErrorPayload {
+            message: "unauthorized".to_string(),
+        }),
+    );
+    Err(())
+}
+
+/// Require the target of a host action to be a current member of the caller's room.
+fn require_target_in_room(
+    app_state: &AppState,
+    caller_id: &str,
+    room_info: &RoomInfo,
+    target_id: &str,
+) -> Result<(), ()> {
+    if room_info
+        .participants
+        .iter()
+        .any(|p| p.participant_id == target_id)
+    {
+        return Ok(());
+    }
+    app_state.connections.send_to(
+        caller_id,
+        &SignalingMessage::Error(ErrorPayload {
+            message: "target not in room".to_string(),
+        }),
+    );
+    Err(())
+}
+
+/// Shared body of the four self-service flag toggles (SelfMute/SelfUnmute/SelfDeafen/SelfUndeafen).
+///
+/// Gates on the deafen rate limit, resolves the caller's room, applies `mutate` to the caller's
+/// own `ParticipantInfo`, then broadcasts `msg` to everyone in the room.
+fn handle_self_flag(
+    ctx: &mut DispatchContext<'_>,
+    warn_msg: &str,
+    mutate: impl FnOnce(&mut ParticipantInfo),
+    msg: impl FnOnce(&str) -> SignalingMessage,
+) -> DispatchOutcome {
+    // Session is guaranteed Some here (pre-join gate already handled above)
+    let sender_id = ctx.session.as_ref().unwrap().participant_id.clone();
+
+    if !ctx.rate_limiter.deafen_allow() {
+        warn!(peer_id = %ctx.peer_id, "{}", warn_msg);
+        ctx.app_state
+            .abuse_metrics
+            .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
+        ctx.app_state.connections.send_to(
+            &sender_id,
+            &SignalingMessage::Error(ErrorPayload {
+                message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
+            }),
+        );
+        return DispatchOutcome::Continue;
+    }
+
+    let Ok(room_id) = require_room(ctx.app_state, &sender_id) else {
+        return DispatchOutcome::Continue;
+    };
+
+    ctx.app_state.room_state.update_room_info(&room_id, |info| {
+        if let Some(participant) = info
+            .participants
+            .iter_mut()
+            .find(|p| p.participant_id == sender_id)
+        {
+            mutate(participant);
+        }
+    });
+
+    dispatch_signals(
+        vec![OutboundSignal::broadcast_all(msg(&sender_id))],
+        &room_id,
+        ctx.app_state.room_state.as_ref(),
+        ctx.app_state.connections.as_ref(),
+    );
+    DispatchOutcome::Continue
+}
+
 /// Route a parsed `SignalingMessage` to the appropriate domain function.
 ///
 /// Contains the entire `match message { ... }` block previously in `handle_socket`.
@@ -273,81 +485,36 @@ pub(crate) async fn dispatch_message(
     match message {
         SignalingMessage::Auth(payload) => {
             // Auth message dispatch (Req 6.1, 6.2, 6.3, 15.1, 15.2, 15.3)
-            // validate_state_transition already checked auth is allowed
-            match crate::auth::jwt::validate_access_token_with_rotation(
-                &payload.access_token,
+            // validate_state_transition already checked auth is allowed.
+            // All verification (JWT, device revocation, session epoch) lives in
+            // the auth layer; this arm only translates the result to signals.
+            match crate::auth::auth::authenticate_access_token(
+                &ctx.app_state.db_pool,
                 &ctx.app_state.auth_jwt_secret,
                 ctx.app_state
                     .auth_jwt_secret_previous
                     .as_ref()
                     .map(|s| s.as_slice()),
-            ) {
-                Ok((user_id, device_id, token_epoch)) => {
-                    // Verify session epoch against DB
-                    match crate::auth::auth::check_session_epoch(
-                        &ctx.app_state.db_pool,
-                        &user_id,
-                        token_epoch,
-                    )
-                    .await
+                &payload.access_token,
+            )
+            .await
+            {
+                Ok((user_id, device_id)) => {
+                    *ctx.authenticated_user_id = Some(user_id.to_string());
+                    #[allow(unused_assignments)]
                     {
-                        Ok(()) => {
-                            // Verify the device has not been revoked (Req 15.1, 15.2)
-                            let revoked_at: Option<Option<chrono::DateTime<chrono::Utc>>> =
-                                sqlx::query_scalar(
-                                    "SELECT revoked_at FROM devices WHERE device_id = $1",
-                                )
-                                .bind(device_id)
-                                .fetch_optional(&ctx.app_state.db_pool)
-                                .await
-                                .unwrap_or(None);
-
-                            match revoked_at {
-                                Some(None) => {
-                                    // Device exists and is not revoked — auth success
-                                    *ctx.authenticated_user_id = Some(user_id.to_string());
-                                    #[allow(unused_assignments)]
-                                    {
-                                        *ctx.authenticated_device_id = Some(device_id);
-                                    }
-                                    info!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth succeeded");
-                                    ctx.app_state.connections.send_to(
-                                        ctx.peer_id,
-                                        &SignalingMessage::AuthSuccess(
-                                            shared::signaling::AuthSuccessPayload {
-                                                user_id: user_id.to_string(),
-                                            },
-                                        ),
-                                    );
-                                }
-                                _ => {
-                                    // Device not found or revoked (Req 15.2)
-                                    warn!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth failed: device revoked or not found");
-                                    ctx.app_state.connections.send_to(
-                                        ctx.peer_id,
-                                        &SignalingMessage::AuthFailed(
-                                            shared::signaling::AuthFailedPayload {
-                                                reason: "authentication failed".to_string(),
-                                            },
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            warn!(peer_id = %ctx.peer_id, user_id = %user_id, error = %err, "ws auth epoch check failed");
-                            ctx.app_state.connections.send_to(
-                                ctx.peer_id,
-                                &SignalingMessage::AuthFailed(
-                                    shared::signaling::AuthFailedPayload {
-                                        reason: "authentication failed".to_string(),
-                                    },
-                                ),
-                            );
-                        }
+                        *ctx.authenticated_device_id = Some(device_id);
                     }
+                    info!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth succeeded");
+                    ctx.app_state.connections.send_to(
+                        ctx.peer_id,
+                        &SignalingMessage::AuthSuccess(shared::signaling::AuthSuccessPayload {
+                            user_id: user_id.to_string(),
+                        }),
+                    );
                 }
                 Err(err) => {
+                    // Rejection is opaque to the client; the log keeps the cause.
                     warn!(peer_id = %ctx.peer_id, error = %err, "ws auth failed");
                     ctx.app_state.connections.send_to(
                         ctx.peer_id,
@@ -1098,65 +1265,53 @@ pub(crate) async fn dispatch_message(
                 .map(|s| s.participant_id.as_str())
                 .unwrap_or(ctx.peer_id);
             // Req 1.2, 1.3, 11.1–11.4: generate invite for the room the peer is in
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            match room_id_opt {
-                None => {
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
+            };
+            let now = Instant::now();
+            match ctx.app_state.invite_store.generate(
+                &room_id,
+                ctx.issuer_id,
+                payload.max_uses,
+                now,
+            ) {
+                Ok(record) => {
+                    let expires_in_secs = ctx.app_state.invite_store.default_ttl_secs();
+                    // Req 13.3: do NOT log the invite code value
+                    debug!(peer_id = %sender_id, room_id = %room_id, "invite code generated");
                     ctx.app_state.connections.send_to(
                         sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
+                        &SignalingMessage::InviteCreated(shared::signaling::InviteCreatedPayload {
+                            invite_code: record.code,
+                            expires_in_secs,
+                            max_uses: record.remaining_uses,
                         }),
                     );
                 }
-                Some(room_id) => {
-                    let now = Instant::now();
-                    match ctx.app_state.invite_store.generate(
-                        &room_id,
-                        ctx.issuer_id,
-                        payload.max_uses,
-                        now,
-                    ) {
-                        Ok(record) => {
-                            let expires_in_secs = ctx.app_state.invite_store.default_ttl_secs();
-                            // Req 13.3: do NOT log the invite code value
-                            debug!(peer_id = %sender_id, room_id = %room_id, "invite code generated");
-                            ctx.app_state.connections.send_to(
-                                sender_id,
-                                &SignalingMessage::InviteCreated(
-                                    shared::signaling::InviteCreatedPayload {
-                                        invite_code: record.code,
-                                        expires_in_secs,
-                                        max_uses: record.remaining_uses,
-                                    },
-                                ),
-                            );
-                        }
-                        Err(crate::channel::invite::InviteError::RoomLimitReached { .. }) => {
-                            ctx.app_state.connections.send_to(
-                                sender_id,
-                                &SignalingMessage::Error(ErrorPayload {
-                                    message: "invite limit reached for room".to_string(),
-                                }),
-                            );
-                        }
-                        Err(crate::channel::invite::InviteError::GlobalLimitReached { .. }) => {
-                            ctx.app_state.connections.send_to(
-                                sender_id,
-                                &SignalingMessage::Error(ErrorPayload {
-                                    message: "global invite limit reached".to_string(),
-                                }),
-                            );
-                        }
-                        Err(crate::channel::invite::InviteError::NotFound) => {
-                            // unreachable from generate(), defensive
-                            ctx.app_state.connections.send_to(
-                                sender_id,
-                                &SignalingMessage::Error(ErrorPayload {
-                                    message: "invite code not found".to_string(),
-                                }),
-                            );
-                        }
-                    }
+                Err(crate::channel::invite::InviteError::RoomLimitReached { .. }) => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "invite limit reached for room".to_string(),
+                        }),
+                    );
+                }
+                Err(crate::channel::invite::InviteError::GlobalLimitReached { .. }) => {
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "global invite limit reached".to_string(),
+                        }),
+                    );
+                }
+                Err(crate::channel::invite::InviteError::NotFound) => {
+                    // unreachable from generate(), defensive
+                    ctx.app_state.connections.send_to(
+                        sender_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: "invite code not found".to_string(),
+                        }),
+                    );
                 }
             }
             DispatchOutcome::Continue
@@ -1206,121 +1361,132 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
+        SignalingMessage::RequestViewerToken(ref payload) => {
+            // Session is guaranteed Some here (pre-join gate already handled above)
+            let session_ref = ctx.session.as_ref().unwrap();
+            let requester_id = session_ref.participant_id.as_str();
+
+            // Action rate limit: token minting is security-sensitive (one
+            // request per viewer-window (re)connect is the expected cadence).
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                requester_id,
+                "ws peer exceeded action rate limit (viewer token)",
+            )
+            .is_err()
+            {
+                return DispatchOutcome::Continue;
+            }
+
+            // The requester must be a live member of a room.
+            let Ok(room_id) = require_room(ctx.app_state, requester_id) else {
+                return DispatchOutcome::Continue;
+            };
+
+            // Build token mode (same logic as Join/CreateRoom SFU paths)
+            let token_mode = if ctx.app_state.sfu_signaling_proxy.is_none() {
+                match (
+                    &ctx.sfu_config.livekit_api_key,
+                    &ctx.sfu_config.livekit_api_secret,
+                ) {
+                    (Some(key), Some(secret)) => crate::voice::sfu_relay::TokenMode::LiveKit {
+                        api_key: key.as_str(),
+                        api_secret: secret.as_str(),
+                        ttl_secs: crate::auth::jwt::LIVEKIT_TOKEN_TTL_SECS,
+                    },
+                    _ => crate::voice::sfu_relay::TokenMode::Custom {
+                        jwt_secret: &ctx.sfu_config.jwt_secret,
+                        issuer: &ctx.sfu_config.jwt_issuer,
+                        ttl_secs: ctx.sfu_config.token_ttl_secs,
+                    },
+                }
+            } else {
+                crate::voice::sfu_relay::TokenMode::Custom {
+                    jwt_secret: &ctx.sfu_config.jwt_secret,
+                    issuer: &ctx.sfu_config.jwt_issuer,
+                    ttl_secs: ctx.sfu_config.token_ttl_secs,
+                }
+            };
+
+            match handle_viewer_token_request(
+                ctx.app_state.room_state.as_ref(),
+                &room_id,
+                requester_id,
+                session_ref.user_id.as_deref(),
+                &payload.window_id,
+                &token_mode,
+                &ctx.app_state.sfu_url,
+            )
+            .await
+            {
+                Ok(signals) => {
+                    dispatch_signals(
+                        signals,
+                        &room_id,
+                        ctx.app_state.room_state.as_ref(),
+                        ctx.app_state.connections.as_ref(),
+                    );
+                }
+                Err(e) => {
+                    warn!(peer_id = %ctx.peer_id, error = %e, "viewer token request rejected");
+                    ctx.app_state.connections.send_to(
+                        requester_id,
+                        &SignalingMessage::Error(ErrorPayload {
+                            message: format!("viewer token request failed: {e}"),
+                        }),
+                    );
+                }
+            }
+            DispatchOutcome::Continue
+        }
         SignalingMessage::KickParticipant(ref payload) => {
             // Session is guaranteed Some here (pre-join gate already handled above)
             let session_ref = ctx.session.as_ref().unwrap();
             let kicker_id = session_ref.participant_id.as_str();
 
             // Action rate limit check (Req 3.1, 3.3)
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    kicker_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                kicker_id,
+                "ws peer exceeded action rate limit",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
             // Reject action messages in P2P rooms (Req 3.3)
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(kicker_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        kicker_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-            let room_info = ctx.app_state.room_state.get_room_info(&room_id);
-            let room_type = room_info.as_ref().map(|i| i.room_type);
-            if room_type != Some(RoomType::Sfu) {
-                ctx.app_state.connections.send_to(
-                    kicker_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "action not supported in P2P mode".to_string(),
-                    }),
-                );
+            let Ok((room_id, room_info)) = require_sfu_room(ctx.app_state, kicker_id) else {
                 return DispatchOutcome::Continue;
-            }
+            };
 
             // Determine effective role: lazy enforcement for channel sessions (Req 6.2, 6.5)
-            let effective_role = if let Some(ref channel_id) = session_ref.channel_id {
-                // Channel-based session: re-query current role from DB
-                let user_id_str = session_ref
-                    .user_id
-                    .as_ref()
-                    .expect("channel session always has user_id");
-                let user_id_uuid =
-                    Uuid::parse_str(user_id_str).expect("session user_id is always a valid UUID");
-                match voice_orchestrator::get_current_channel_role(
-                    &ctx.app_state.db_pool,
-                    channel_id,
-                    &user_id_uuid,
-                )
-                .await
-                {
-                    Ok(Some(channel_role)) => voice_orchestrator::map_channel_role(channel_role),
-                    Ok(None) => {
-                        // User no longer a member — reject action
-                        warn!(peer_id = %ctx.peer_id, channel_id = %channel_id, "kick rejected: user no longer channel member");
-                        ctx.app_state.connections.send_to(
-                            kicker_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "not authorized".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                    Err(e) => {
-                        // DB error — fail-closed, reject action
-                        error!(peer_id = %ctx.peer_id, channel_id = %channel_id, error = %e, "kick rejected: DB error during lazy role check");
-                        ctx.app_state.connections.send_to(
-                            kicker_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "internal error".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                }
-            } else {
-                // Legacy room-based session: use cached session.role
-                session_ref.role
+            let Ok(effective_role) = resolve_effective_role(
+                ctx.app_state,
+                ctx.peer_id,
+                kicker_id,
+                session_ref.channel_id.as_deref(),
+                session_ref.user_id.as_deref(),
+                session_ref.role,
+                "kick",
+            )
+            .await
+            else {
+                return DispatchOutcome::Continue;
             };
 
             // Check role is Host (Req 3.2, 3.3)
-            if effective_role != ParticipantRole::Host {
-                ctx.app_state.connections.send_to(
-                    kicker_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "unauthorized".to_string(),
-                    }),
-                );
+            if require_host(ctx.app_state, kicker_id, effective_role).is_err() {
                 return DispatchOutcome::Continue;
             }
 
             // Check target is in the same room (Req 3.6)
             let target_id = payload.target_participant_id.clone();
-            let target_in_room = room_info
-                .as_ref()
-                .map(|i| i.participants.iter().any(|p| p.participant_id == target_id))
-                .unwrap_or(false);
-            if !target_in_room {
-                ctx.app_state.connections.send_to(
-                    kicker_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "target not in room".to_string(),
-                    }),
-                );
+            if require_target_in_room(ctx.app_state, kicker_id, &room_info, &target_id).is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -1374,119 +1540,46 @@ pub(crate) async fn dispatch_message(
             let muter_id = session_ref.participant_id.as_str();
 
             // Action rate limit check (Req 3.1, 3.3)
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    muter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                muter_id,
+                "ws peer exceeded action rate limit",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
             // Reject action messages in P2P rooms (Req 3.3)
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(muter_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        muter_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-            let room_info = ctx.app_state.room_state.get_room_info(&room_id);
-            let room_type = room_info.as_ref().map(|i| i.room_type);
-            if room_type != Some(RoomType::Sfu) {
-                ctx.app_state.connections.send_to(
-                    muter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "action not supported in P2P mode".to_string(),
-                    }),
-                );
+            let Ok((room_id, room_info)) = require_sfu_room(ctx.app_state, muter_id) else {
                 return DispatchOutcome::Continue;
-            }
+            };
 
             // Determine effective role: lazy enforcement for channel sessions (Req 6.2, 6.5)
-            let effective_role = if let Some(ref channel_id) = session_ref.channel_id {
-                // Channel-based session: re-query current role from DB
-                let user_id_str = session_ref
-                    .user_id
-                    .as_ref()
-                    .expect("channel session always has user_id");
-                let user_id_uuid =
-                    Uuid::parse_str(user_id_str).expect("session user_id is always a valid UUID");
-                match voice_orchestrator::get_current_channel_role(
-                    &ctx.app_state.db_pool,
-                    channel_id,
-                    &user_id_uuid,
-                )
-                .await
-                {
-                    Ok(Some(channel_role)) => voice_orchestrator::map_channel_role(channel_role),
-                    Ok(None) => {
-                        // User no longer a member — reject action
-                        warn!(peer_id = %ctx.peer_id, channel_id = %channel_id, "mute rejected: user no longer channel member");
-                        ctx.app_state.connections.send_to(
-                            muter_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "not authorized".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                    Err(e) => {
-                        // DB error — fail-closed, reject action
-                        error!(peer_id = %ctx.peer_id, channel_id = %channel_id, error = %e, "mute rejected: DB error during lazy role check");
-                        ctx.app_state.connections.send_to(
-                            muter_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "internal error".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                }
-            } else {
-                // Legacy room-based session: use cached session.role
-                session_ref.role
+            let Ok(effective_role) = resolve_effective_role(
+                ctx.app_state,
+                ctx.peer_id,
+                muter_id,
+                session_ref.channel_id.as_deref(),
+                session_ref.user_id.as_deref(),
+                session_ref.role,
+                "mute",
+            )
+            .await
+            else {
+                return DispatchOutcome::Continue;
             };
 
             // Check role is Host (Req 3.2, 3.3)
-            if effective_role != ParticipantRole::Host {
-                ctx.app_state.connections.send_to(
-                    muter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "unauthorized".to_string(),
-                    }),
-                );
+            if require_host(ctx.app_state, muter_id, effective_role).is_err() {
                 return DispatchOutcome::Continue;
             }
 
             // Check target is in the same room (Req 3.6)
             let target_id = &payload.target_participant_id;
-            let target_in_room = room_info
-                .as_ref()
-                .map(|i| {
-                    i.participants
-                        .iter()
-                        .any(|p| &p.participant_id == target_id)
-                })
-                .unwrap_or(false);
-            if !target_in_room {
-                ctx.app_state.connections.send_to(
-                    muter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "target not in room".to_string(),
-                    }),
-                );
+            if require_target_in_room(ctx.app_state, muter_id, &room_info, target_id).is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -1526,115 +1619,46 @@ pub(crate) async fn dispatch_message(
             let unmuter_id = session_ref.participant_id.as_str();
 
             // Action rate limit check
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    unmuter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                unmuter_id,
+                "ws peer exceeded action rate limit",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
             // Reject action messages in P2P rooms
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(unmuter_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        unmuter_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-            let room_info = ctx.app_state.room_state.get_room_info(&room_id);
-            let room_type = room_info.as_ref().map(|i| i.room_type);
-            if room_type != Some(RoomType::Sfu) {
-                ctx.app_state.connections.send_to(
-                    unmuter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "action not supported in P2P mode".to_string(),
-                    }),
-                );
+            let Ok((room_id, room_info)) = require_sfu_room(ctx.app_state, unmuter_id) else {
                 return DispatchOutcome::Continue;
-            }
+            };
 
             // Determine effective role: lazy enforcement for channel sessions
-            let effective_role = if let Some(ref channel_id) = session_ref.channel_id {
-                let user_id_str = session_ref
-                    .user_id
-                    .as_ref()
-                    .expect("channel session always has user_id");
-                let user_id_uuid =
-                    Uuid::parse_str(user_id_str).expect("session user_id is always a valid UUID");
-                match voice_orchestrator::get_current_channel_role(
-                    &ctx.app_state.db_pool,
-                    channel_id,
-                    &user_id_uuid,
-                )
-                .await
-                {
-                    Ok(Some(channel_role)) => voice_orchestrator::map_channel_role(channel_role),
-                    Ok(None) => {
-                        warn!(peer_id = %ctx.peer_id, channel_id = %channel_id, "unmute rejected: user no longer channel member");
-                        ctx.app_state.connections.send_to(
-                            unmuter_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "not authorized".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                    Err(e) => {
-                        error!(peer_id = %ctx.peer_id, channel_id = %channel_id, error = %e, "unmute rejected: DB error during lazy role check");
-                        ctx.app_state.connections.send_to(
-                            unmuter_id,
-                            &SignalingMessage::Error(ErrorPayload {
-                                message: "internal error".to_string(),
-                            }),
-                        );
-                        return DispatchOutcome::Continue;
-                    }
-                }
-            } else {
-                session_ref.role
+            let Ok(effective_role) = resolve_effective_role(
+                ctx.app_state,
+                ctx.peer_id,
+                unmuter_id,
+                session_ref.channel_id.as_deref(),
+                session_ref.user_id.as_deref(),
+                session_ref.role,
+                "unmute",
+            )
+            .await
+            else {
+                return DispatchOutcome::Continue;
             };
 
             // Check role is Host
-            if effective_role != ParticipantRole::Host {
-                ctx.app_state.connections.send_to(
-                    unmuter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "unauthorized".to_string(),
-                    }),
-                );
+            if require_host(ctx.app_state, unmuter_id, effective_role).is_err() {
                 return DispatchOutcome::Continue;
             }
 
             // Check target is in the same room
             let target_id = &payload.target_participant_id;
-            let target_in_room = room_info
-                .as_ref()
-                .map(|i| {
-                    i.participants
-                        .iter()
-                        .any(|p| &p.participant_id == target_id)
-                })
-                .unwrap_or(false);
-            if !target_in_room {
-                ctx.app_state.connections.send_to(
-                    unmuter_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: "target not in room".to_string(),
-                    }),
-                );
+            if require_target_in_room(ctx.app_state, unmuter_id, &room_info, target_id).is_err() {
                 return DispatchOutcome::Continue;
             }
 
@@ -1668,252 +1692,65 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
-        SignalingMessage::SelfMute => {
-            let session_ref = ctx.session.as_ref().unwrap();
-            let sender_id = session_ref.participant_id.as_str();
-
-            if !ctx.rate_limiter.deafen_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfMute");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
-                return DispatchOutcome::Continue;
-            }
-
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-
-            ctx.app_state.room_state.update_room_info(&room_id, |info| {
-                if let Some(participant) = info
-                    .participants
-                    .iter_mut()
-                    .find(|p| p.participant_id == sender_id)
-                {
-                    participant.is_muted = true;
-                }
-            });
-
-            dispatch_signals(
-                vec![OutboundSignal::broadcast_all(
-                    SignalingMessage::ParticipantSelfMuted(ParticipantSelfMutedPayload {
-                        participant_id: sender_id.to_string(),
-                    }),
-                )],
-                &room_id,
-                ctx.app_state.room_state.as_ref(),
-                ctx.app_state.connections.as_ref(),
-            );
-            DispatchOutcome::Continue
-        }
-        SignalingMessage::SelfUnmute => {
-            let session_ref = ctx.session.as_ref().unwrap();
-            let sender_id = session_ref.participant_id.as_str();
-
-            if !ctx.rate_limiter.deafen_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfUnmute");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
-                return DispatchOutcome::Continue;
-            }
-
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-
-            ctx.app_state.room_state.update_room_info(&room_id, |info| {
-                if let Some(participant) = info
-                    .participants
-                    .iter_mut()
-                    .find(|p| p.participant_id == sender_id)
-                {
-                    participant.is_muted = participant.is_host_muted;
-                }
-            });
-
-            dispatch_signals(
-                vec![OutboundSignal::broadcast_all(
-                    SignalingMessage::ParticipantSelfUnmuted(ParticipantSelfUnmutedPayload {
-                        participant_id: sender_id.to_string(),
-                    }),
-                )],
-                &room_id,
-                ctx.app_state.room_state.as_ref(),
-                ctx.app_state.connections.as_ref(),
-            );
-            DispatchOutcome::Continue
-        }
-        SignalingMessage::SelfDeafen => {
-            let session_ref = ctx.session.as_ref().unwrap();
-            let sender_id = session_ref.participant_id.as_str();
-
-            if !ctx.rate_limiter.deafen_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfDeafen");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
-                return DispatchOutcome::Continue;
-            }
-
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-
-            ctx.app_state.room_state.update_room_info(&room_id, |info| {
-                if let Some(participant) = info
-                    .participants
-                    .iter_mut()
-                    .find(|p| p.participant_id == sender_id)
-                {
-                    participant.is_deafened = true;
-                }
-            });
-
-            dispatch_signals(
-                vec![OutboundSignal::broadcast_all(
-                    SignalingMessage::ParticipantDeafened(ParticipantDeafenedPayload {
-                        participant_id: sender_id.to_string(),
-                    }),
-                )],
-                &room_id,
-                ctx.app_state.room_state.as_ref(),
-                ctx.app_state.connections.as_ref(),
-            );
-            DispatchOutcome::Continue
-        }
-        SignalingMessage::SelfUndeafen => {
-            let session_ref = ctx.session.as_ref().unwrap();
-            let sender_id = session_ref.participant_id.as_str();
-
-            if !ctx.rate_limiter.deafen_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded deafen rate limit on SelfUndeafen");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
-                return DispatchOutcome::Continue;
-            }
-
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
-            };
-
-            ctx.app_state.room_state.update_room_info(&room_id, |info| {
-                if let Some(participant) = info
-                    .participants
-                    .iter_mut()
-                    .find(|p| p.participant_id == sender_id)
-                {
-                    participant.is_deafened = false;
-                }
-            });
-
-            dispatch_signals(
-                vec![OutboundSignal::broadcast_all(
-                    SignalingMessage::ParticipantUndeafened(ParticipantUndeafenedPayload {
-                        participant_id: sender_id.to_string(),
-                    }),
-                )],
-                &room_id,
-                ctx.app_state.room_state.as_ref(),
-                ctx.app_state.connections.as_ref(),
-            );
-            DispatchOutcome::Continue
-        }
+        SignalingMessage::SelfMute => handle_self_flag(
+            ctx,
+            "ws peer exceeded deafen rate limit on SelfMute",
+            |participant| participant.is_muted = true,
+            |id| {
+                SignalingMessage::ParticipantSelfMuted(ParticipantSelfMutedPayload {
+                    participant_id: id.to_string(),
+                })
+            },
+        ),
+        SignalingMessage::SelfUnmute => handle_self_flag(
+            ctx,
+            "ws peer exceeded deafen rate limit on SelfUnmute",
+            // Self-unmute cannot override a host mute — fall back to the host-mute state.
+            |participant| participant.is_muted = participant.is_host_muted,
+            |id| {
+                SignalingMessage::ParticipantSelfUnmuted(ParticipantSelfUnmutedPayload {
+                    participant_id: id.to_string(),
+                })
+            },
+        ),
+        SignalingMessage::SelfDeafen => handle_self_flag(
+            ctx,
+            "ws peer exceeded deafen rate limit on SelfDeafen",
+            |participant| participant.is_deafened = true,
+            |id| {
+                SignalingMessage::ParticipantDeafened(ParticipantDeafenedPayload {
+                    participant_id: id.to_string(),
+                })
+            },
+        ),
+        SignalingMessage::SelfUndeafen => handle_self_flag(
+            ctx,
+            "ws peer exceeded deafen rate limit on SelfUndeafen",
+            |participant| participant.is_deafened = false,
+            |id| {
+                SignalingMessage::ParticipantUndeafened(ParticipantUndeafenedPayload {
+                    participant_id: id.to_string(),
+                })
+            },
+        ),
         SignalingMessage::UpdateProfileColor(payload) => {
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
 
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit on UpdateProfileColor");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                sender_id,
+                "ws peer exceeded action rate limit on UpdateProfileColor",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             dispatch_signals(
@@ -1933,32 +1770,20 @@ pub(crate) async fn dispatch_message(
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
 
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit on UpdateUsername");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                sender_id,
+                "ws peer exceeded action rate limit on UpdateUsername",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             ctx.app_state.room_state.update_room_info(&room_id, |info| {
@@ -2010,18 +1835,8 @@ pub(crate) async fn dispatch_message(
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             match handle_start_share_with_type(
@@ -2066,18 +1881,8 @@ pub(crate) async fn dispatch_message(
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             match handle_stop_share(
@@ -2135,18 +1940,8 @@ pub(crate) async fn dispatch_message(
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             match handle_stop_all_shares(
@@ -2180,32 +1975,20 @@ pub(crate) async fn dispatch_message(
             let sender_id = session_ref.participant_id.as_str();
             let sender_role = session_ref.role;
 
-            if !ctx.rate_limiter.action_allow() {
-                warn!(peer_id = %ctx.peer_id, "ws peer exceeded action rate limit on SetSharePermission");
-                ctx.app_state
-                    .abuse_metrics
-                    .increment(&ctx.app_state.abuse_metrics.action_rate_limit_rejections);
-                ctx.app_state.connections.send_to(
-                    sender_id,
-                    &SignalingMessage::Error(ErrorPayload {
-                        message: MSG_ACTION_RATE_LIMIT_EXCEEDED.to_string(),
-                    }),
-                );
+            if check_action_rate_limit(
+                ctx.rate_limiter,
+                ctx.app_state,
+                ctx.peer_id,
+                sender_id,
+                "ws peer exceeded action rate limit on SetSharePermission",
+            )
+            .is_err()
+            {
                 return DispatchOutcome::Continue;
             }
 
-            let room_id_opt = ctx.app_state.room_state.get_room_for_peer(sender_id);
-            let room_id = match room_id_opt {
-                Some(ref r) => r.clone(),
-                None => {
-                    ctx.app_state.connections.send_to(
-                        sender_id,
-                        &SignalingMessage::Error(ErrorPayload {
-                            message: "not in a room".to_string(),
-                        }),
-                    );
-                    return DispatchOutcome::Continue;
-                }
+            let Ok(room_id) = require_room(ctx.app_state, sender_id) else {
+                return DispatchOutcome::Continue;
             };
 
             // Lazy role enforcement for channel sessions
@@ -3289,6 +3072,8 @@ pub(crate) fn handle_signaling_event(
         | SignalingMessage::ParticipantLeft(_)
         | SignalingMessage::RoomState(_)
         | SignalingMessage::MediaToken(_)
+        | SignalingMessage::RequestViewerToken(_)
+        | SignalingMessage::ViewerToken(_)
         | SignalingMessage::KickParticipant(_)
         | SignalingMessage::MuteParticipant(_)
         | SignalingMessage::UnmuteParticipant(_)

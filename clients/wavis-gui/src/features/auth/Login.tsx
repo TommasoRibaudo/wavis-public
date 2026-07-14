@@ -42,12 +42,18 @@ export default function Login() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       const [url, insecure, storedId] = await Promise.all([
         getServerUrl(),
         getInsecureTls(),
         getStoredRecoveryId(),
       ]);
+      // `cancelled` is flipped by this effect's cleanup closure below, which React
+      // runs independently while the Promise.all above is still in flight (on every
+      // dev mount, since StrictMode double-invokes effects). TS's control-flow
+      // analysis is local to this IIFE, so it wrongly sees `cancelled` as always
+      // false; the guard really does stop five setState calls after unmount.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (cancelled) return;
       if (url) setServerUrl(url);
       if (storedId) setRecoveryId(storedId);
@@ -117,7 +123,7 @@ export default function Login() {
       } catch {
         // Best-effort — proceed even if the sync fails; /settings can update later.
       }
-      navigate('/', { replace: true });
+      void navigate('/', { replace: true });
       return;
     }
 
@@ -130,7 +136,16 @@ export default function Login() {
       setLoginError('Login failed - please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, recoveryId, phrase, insecureTls, logging, navigate, trustedDevice, trustThisDevice]);
+  }, [
+    serverUrl,
+    recoveryId,
+    phrase,
+    insecureTls,
+    logging,
+    navigate,
+    trustedDevice,
+    trustThisDevice,
+  ]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -218,7 +233,9 @@ export default function Login() {
                   <span
                     className="border px-2 py-0.5 text-xs"
                     style={{
-                      borderColor: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
+                      borderColor: insecureTls
+                        ? 'var(--wavis-warn)'
+                        : 'var(--wavis-text-secondary)',
                       color: insecureTls ? 'var(--wavis-warn)' : 'var(--wavis-text-secondary)',
                       backgroundColor: insecureTls ? 'rgba(255, 166, 87, 0.08)' : 'transparent',
                     }}
@@ -247,8 +264,8 @@ export default function Login() {
             <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3">
               <div className="mb-2 text-sm font-bold">TRUST THIS DEVICE</div>
               <p className="text-sm text-wavis-text-secondary mb-4">
-                Your Wavis ID will be saved securely on this device. You'll only need your
-                password to log back in here.
+                Your Wavis ID will be saved securely on this device. You'll only need your password
+                to log back in here.
               </p>
               <label className="flex items-center gap-3 text-sm cursor-pointer select-none">
                 <input
@@ -270,7 +287,9 @@ export default function Login() {
         )}
 
         <button
-          onClick={() => { void handleSubmit(); }}
+          onClick={() => {
+            void handleSubmit();
+          }}
           disabled={logging}
           className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
         >
@@ -282,7 +301,9 @@ export default function Login() {
             <p className="text-wavis-danger text-sm">{loginError}</p>
             {showRetry && (
               <button
-                onClick={() => { void handleSubmit(); }}
+                onClick={() => {
+                  void handleSubmit();
+                }}
                 disabled={logging}
                 className="border border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg transition-colors px-3 py-0.5 mt-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -297,9 +318,7 @@ export default function Login() {
 
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between gap-3">
         <span>
-          {trustedDevice
-            ? 'Trusted device login'
-            : 'Log in with your Wavis ID and password'}
+          {trustedDevice ? 'Trusted device login' : 'Log in with your Wavis ID and password'}
         </span>
         {trustedDevice ? (
           <button
@@ -314,7 +333,9 @@ export default function Login() {
           </button>
         ) : (
           <button
-            onClick={() => navigate('/setup')}
+            onClick={() => {
+              void navigate('/setup');
+            }}
             className="hover:text-wavis-text transition-colors"
           >
             /setup

@@ -65,7 +65,14 @@ function parseCapability(cell, allowed) {
 }
 
 function normalizeRuntimeRow(cells) {
-  const [desktopEnv, compositor, videoCaptureCell, audioCaptureCell, combinedStatusCell, userMessageCell] = cells;
+  const [
+    desktopEnv,
+    compositor,
+    videoCaptureCell,
+    audioCaptureCell,
+    combinedStatusCell,
+    userMessageCell,
+  ] = cells;
   const compositorValue = compositor.toLowerCase();
   if (compositorValue !== 'wayland' && compositorValue !== 'x11') {
     throw new Error(`runtime compositor must be x11 or wayland, got "${compositor}"`);

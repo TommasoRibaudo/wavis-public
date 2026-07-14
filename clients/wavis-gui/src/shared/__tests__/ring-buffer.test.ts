@@ -46,12 +46,8 @@ describe('RingBuffer — unit tests', () => {
   });
 
   it('constructor throws for capacity < 1', () => {
-    expect(() => new RingBuffer(0)).toThrow(
-      'RingBuffer capacity must be at least 1',
-    );
-    expect(() => new RingBuffer(-1)).toThrow(
-      'RingBuffer capacity must be at least 1',
-    );
+    expect(() => new RingBuffer(0)).toThrow('RingBuffer capacity must be at least 1');
+    expect(() => new RingBuffer(-1)).toThrow('RingBuffer capacity must be at least 1');
   });
 });
 
@@ -103,36 +99,32 @@ describe('Feature: in-app-bug-report, Property 2: Ring buffer overflow discards 
    */
   it('overflow keeps size at C, new item is last, oldest is gone', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 200 }),
-        fc.integer(),
-        (capacity, newItem) => {
-          const buf = new RingBuffer<number>(capacity);
+      fc.property(fc.integer({ min: 1, max: 200 }), fc.integer(), (capacity, newItem) => {
+        const buf = new RingBuffer<number>(capacity);
 
-          // Fill to capacity with distinct sentinel values
-          const fillItems: number[] = [];
-          for (let i = 0; i < capacity; i++) {
-            const sentinel = i * 1000000 + 1;
-            fillItems.push(sentinel);
-            buf.push(sentinel);
-          }
-          expect(buf.size).toBe(capacity);
+        // Fill to capacity with distinct sentinel values
+        const fillItems: number[] = [];
+        for (let i = 0; i < capacity; i++) {
+          const sentinel = i * 1000000 + 1;
+          fillItems.push(sentinel);
+          buf.push(sentinel);
+        }
+        expect(buf.size).toBe(capacity);
 
-          const oldestBefore = fillItems[0];
+        const oldestBefore = fillItems[0];
 
-          buf.push(newItem);
+        buf.push(newItem);
 
-          expect(buf.size).toBe(capacity);
+        expect(buf.size).toBe(capacity);
 
-          const snapshot = buf.snapshot();
-          expect(snapshot[snapshot.length - 1]).toBe(newItem);
+        const snapshot = buf.snapshot();
+        expect(snapshot[snapshot.length - 1]).toBe(newItem);
 
-          // Oldest entry should be gone (unless newItem equals it)
-          if (newItem !== oldestBefore) {
-            expect(snapshot).not.toContain(oldestBefore);
-          }
-        },
-      ),
+        // Oldest entry should be gone (unless newItem equals it)
+        if (newItem !== oldestBefore) {
+          expect(snapshot).not.toContain(oldestBefore);
+        }
+      }),
       { numRuns: 200 },
     );
   });
@@ -220,11 +212,10 @@ describe('Feature: in-app-bug-report, Property 3: Console interception preserves
   it('preserves structured console args in the buffered message', () => {
     consoleLogBuffer.clear();
 
-    console.log(
-      '[wavis:voice-room]',
-      '[share-leak] session_closed summary_json',
-      { shareSessionId: 'share-leak-test', cleanupRssDeltaMb: 12.5 },
-    );
+    console.log('[wavis:voice-room]', '[share-leak] session_closed summary_json', {
+      shareSessionId: 'share-leak-test',
+      cleanupRssDeltaMb: 12.5,
+    });
 
     const snapshot = consoleLogBuffer.snapshot();
     expect(snapshot).toHaveLength(1);
@@ -238,9 +229,7 @@ describe('Feature: in-app-bug-report, Property 3: Console interception preserves
     vi.stubEnv('VITE_DEBUG_NOISE_SUPPRESSION', 'true');
     const mod = await import('../ring-buffer');
 
-    expect(
-      mod._shouldForwardForTest('log', ['[wavis:ns]', 'processor active']),
-    ).toBe(true);
+    expect(mod._shouldForwardForTest('log', ['[wavis:ns]', 'processor active'])).toBe(true);
 
     vi.unstubAllEnvs();
   });

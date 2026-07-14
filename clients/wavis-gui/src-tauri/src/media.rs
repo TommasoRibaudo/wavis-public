@@ -5,9 +5,13 @@
 //! JS SDK. The interface mirrors LiveKitModule's shape so voice-room.ts can
 //! swap transparently.
 
+#[cfg(target_os = "windows")]
+use serde::Deserialize;
 use serde::Serialize;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "linux")]
+use std::process::{Child, Command, Stdio};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "linux")]
@@ -20,10 +24,6 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     time::Duration,
-};
-#[cfg(target_os = "linux")]
-use std::{
-    process::{Child, Command, Stdio},
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::{Builder, Runtime};
@@ -44,6 +44,19 @@ use crate::screen_capture;
 const LOG: &str = "[wavis:native-media]";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsScreenShareStartSourceRequest {
+    source_id: String,
+    share_session_id: Option<String>,
+    source_kind: Option<String>,
+    capture_backend: Option<String>,
+    compatibility_mode: Option<bool>,
+    previous_backend: Option<String>,
+    retry_reason: Option<String>,
+}
 
 #[cfg(target_os = "windows")]
 fn unix_now_ms() -> u64 {
@@ -1029,14 +1042,11 @@ fn wait_for_first_pollable_frame(
                     || diag.timing.first_raw_to_pollable_frame_ms.is_some()
                     || diag.first_raw_frame_latency_ms.is_some()
                     || diag.first_buffered_jpeg_latency_ms.is_some()
-                    || diag
-                        .startup_step_timings
-                        .iter()
-                        .any(|timing| {
-                            timing.stage == "first_frame_arrived"
-                                || timing.stage == "first_buffered_jpeg"
-                                || timing.stage == "first_pollable_frame_written"
-                        })
+                    || diag.startup_step_timings.iter().any(|timing| {
+                        timing.stage == "first_frame_arrived"
+                            || timing.stage == "first_buffered_jpeg"
+                            || timing.stage == "first_pollable_frame_written"
+                    })
             })
             .unwrap_or(false);
         if first_frame_processing_started && first_frame_processing_started_at.is_none() {
@@ -1147,6 +1157,8 @@ pub struct MediaState {
     #[cfg(target_os = "linux")]
     linux_mic_handle: Mutex<Option<crate::linux_mic::LinuxMicHandle>>,
     #[cfg(target_os = "linux")]
+    linux_playback_handle: Mutex<Option<crate::linux_mic::LinuxPlaybackHandle>>,
+    #[cfg(target_os = "linux")]
     remote_screen_share_stream_port: u16,
     #[cfg(target_os = "linux")]
     native_screen_share_viewers: Arc<Mutex<std::collections::HashMap<String, std::process::Child>>>,
@@ -1254,6 +1266,8 @@ impl MediaState {
             #[cfg(target_os = "linux")]
             linux_mic_handle: Mutex::new(None),
             #[cfg(target_os = "linux")]
+            linux_playback_handle: Mutex::new(None),
+            #[cfg(target_os = "linux")]
             remote_screen_share_stream_port,
             #[cfg(target_os = "linux")]
             native_screen_share_viewers: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1314,6 +1328,11 @@ impl MediaState {
                     handle.stop();
                 }
             }
+            if let Ok(mut guard) = self.linux_playback_handle.lock() {
+                if let Some(handle) = guard.take() {
+                    handle.stop();
+                }
+            }
         }
 
         self.audio
@@ -1339,11 +1358,21 @@ impl MediaState {
             }
         }
 
+        #[cfg(not(target_os = "linux"))]
         self.audio
             .play_remote(AudioTrack {
                 id: "native-playback".to_string(),
             })
             .map_err(|err| format!("failed to start output device: {err}"))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let handle = crate::linux_mic::start_linux_playback(self.audio.playback_buffer.clone())
+                .map_err(|err| format!("failed to start output device: {err}"))?;
+            if let Ok(mut guard) = self.linux_playback_handle.lock() {
+                *guard = Some(handle);
+            }
+        }
 
         let mut capture_guard = self
             .capture_buffer
@@ -1620,8 +1649,16 @@ pub fn media_connect(
         *dn_guard = Some(denoise);
     }
 
-    // Wire audio frame callback → emit audio levels to frontend
+    // Wire audio frame callback → emit audio levels to frontend. The frontend
+    // only renders the isSpeaking transition (see voiceIcon in
+    // ActiveRoom.tsx), so only emit when a participant's speaking state
+    // actually flips — this callback otherwise fires on every decoded audio
+    // frame (~50Hz per remote participant) and was flooding the webview with
+    // IPC events that each triggered a full room re-render for no visible
+    // change.
     let app_levels = app.clone();
+    let last_speaking: Arc<Mutex<std::collections::HashMap<String, bool>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
     conn.on_audio_frame(Box::new(move |identity, samples| {
         // Compute RMS from samples
         let rms = if samples.is_empty() {
@@ -1631,6 +1668,14 @@ pub fn media_connect(
             (sum_sq / samples.len() as f32).sqrt()
         };
         let is_speaking = rms > 0.02;
+
+        {
+            let mut last = last_speaking.lock().unwrap();
+            if last.get(identity) == Some(&is_speaking) {
+                return;
+            }
+            last.insert(identity.to_string(), is_speaking);
+        }
 
         let entry = AudioLevelEntry {
             identity: identity.to_string(),
@@ -1905,6 +1950,11 @@ pub fn media_disconnect(state: State<'_, MediaState>, app: AppHandle) -> Result<
     #[cfg(target_os = "linux")]
     {
         if let Ok(mut guard) = state.linux_mic_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.stop();
+            }
+        }
+        if let Ok(mut guard) = state.linux_playback_handle.lock() {
             if let Some(handle) = guard.take() {
                 handle.stop();
             }
@@ -2625,13 +2675,7 @@ pub fn screen_share_start_source(
 #[tauri::command]
 #[cfg(target_os = "windows")]
 pub fn screen_share_start_source(
-    source_id: String,
-    share_session_id: Option<String>,
-    source_kind: Option<String>,
-    capture_backend: Option<String>,
-    compatibility_mode: Option<bool>,
-    previous_backend: Option<String>,
-    retry_reason: Option<String>,
+    request: WindowsScreenShareStartSourceRequest,
     state: State<'_, MediaState>,
     app: AppHandle,
 ) -> Result<bool, String> {
@@ -2641,6 +2685,16 @@ pub fn screen_share_start_source(
         WinCapture, WinCaptureConfig, WinCaptureSourceKind, WindowsNativeCaptureDiagnostics,
     };
     use screen_capture::ScreenCapture;
+
+    let WindowsScreenShareStartSourceRequest {
+        source_id,
+        share_session_id,
+        source_kind,
+        capture_backend,
+        compatibility_mode,
+        previous_backend,
+        retry_reason,
+    } = request;
 
     let source_kind = parse_windows_source_kind(source_kind.as_deref())?;
     let capture_backend = select_windows_capture_backend(
@@ -2920,13 +2974,15 @@ pub fn screen_share_start_source(
                 let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
                 if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
                     diag_guard.record_pollable_frame_timing(
-                        cap_downscale_ms,
-                        i420_convert_ms,
-                        0,
-                        0,
-                        0,
-                        i420_write_ms,
-                        raw_to_pollable_frame_ms,
+                        screen_capture::win_capture::PollableFrameTiming {
+                            cap_downscale_ms,
+                            i420_convert_ms,
+                            rgba_to_rgb_ms: 0,
+                            jpeg_encode_ms: 0,
+                            base64_encode_ms: 0,
+                            latest_frame_write_ms: i420_write_ms,
+                            raw_to_pollable_frame_ms,
+                        },
                     );
                 }
                 if let Ok(mut leak_guard) = native_share_leak_session.lock() {
@@ -3050,13 +3106,15 @@ pub fn screen_share_start_source(
             let raw_to_pollable_frame_ms = raw_to_pollable_start.elapsed().as_millis() as u64;
             if let Ok(mut diag_guard) = diagnostics_for_frames.lock() {
                 diag_guard.record_pollable_frame_timing(
-                    cap_downscale_ms,
-                    i420_convert_ms,
-                    rgba_to_rgb_ms,
-                    jpeg_encode_ms,
-                    base64_encode_ms,
-                    latest_frame_write_ms,
-                    raw_to_pollable_frame_ms,
+                    screen_capture::win_capture::PollableFrameTiming {
+                        cap_downscale_ms,
+                        i420_convert_ms,
+                        rgba_to_rgb_ms,
+                        jpeg_encode_ms,
+                        base64_encode_ms,
+                        latest_frame_write_ms,
+                        raw_to_pollable_frame_ms,
+                    },
                 );
             }
             let mut first_pollable_elapsed_ms = raw_to_pollable_frame_ms;
@@ -3790,9 +3848,10 @@ pub fn screen_share_start() -> Result<bool, String> {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_capture_routing_tests {
     use super::{
-        is_windows_capture_setup_error, parse_windows_source_kind, select_windows_capture_backend,
-        rgba_to_i420, wait_for_first_pollable_frame, windows_bridge_transport_fps, LatestFrame,
-        windows_i420_stream_frame_header, LatestI420Frame, WindowsCaptureBackend, WindowsSourceKind,
+        is_windows_capture_setup_error, parse_windows_source_kind, rgba_to_i420,
+        select_windows_capture_backend, wait_for_first_pollable_frame,
+        windows_bridge_transport_fps, windows_i420_stream_frame_header, LatestFrame,
+        LatestI420Frame, WindowsCaptureBackend, WindowsSourceKind,
     };
     use crate::screen_capture::frame_processor::ScreenShareConfig;
     use crate::screen_capture::win_capture::WindowsNativeCaptureDiagnostics;
@@ -3838,7 +3897,10 @@ mod windows_capture_routing_tests {
         assert_eq!(u32::from_le_bytes(header[0..4].try_into().unwrap()), 4);
         assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 2);
         assert_eq!(u64::from_le_bytes(header[8..16].try_into().unwrap()), 9);
-        assert_eq!(u64::from_le_bytes(header[16..24].try_into().unwrap()), 123_456);
+        assert_eq!(
+            u64::from_le_bytes(header[16..24].try_into().unwrap()),
+            123_456
+        );
         assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 12);
     }
 
@@ -3957,16 +4019,23 @@ mod windows_capture_routing_tests {
     #[test]
     fn startup_setup_error_classification_ignores_nonfatal_configuration_errors() {
         assert!(is_windows_capture_setup_error("capture_item_create_error"));
-        assert!(is_windows_capture_setup_error("capture_session_create_error"));
-        assert!(!is_windows_capture_setup_error("cursor_border_config_error"));
-        assert!(!is_windows_capture_setup_error("closed_handler_register_error"));
-        assert!(!is_windows_capture_setup_error("first_pollable_frame_timeout"));
+        assert!(is_windows_capture_setup_error(
+            "capture_session_create_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "cursor_border_config_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "closed_handler_register_error"
+        ));
+        assert!(!is_windows_capture_setup_error(
+            "first_pollable_frame_timeout"
+        ));
     }
 
     #[test]
     fn cursor_border_unsupported_error_does_not_become_primary_first_error() {
-        let mut diagnostics =
-            WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
+        let mut diagnostics = WindowsNativeCaptureDiagnostics::new("wgc", "screen", 1920, 1080);
 
         diagnostics.record_nonfatal_startup_error(
             "cursor_border_config_error",
@@ -4027,6 +4096,11 @@ mod windows_capture_routing_tests {
         let diagnostics = Arc::new(Mutex::new(WindowsNativeCaptureDiagnostics::new(
             "wgc", "screen", 1920, 1080,
         )));
+        {
+            let mut diag = diagnostics.lock().unwrap();
+            diag.record_startup_stage("first_frame_arrived", "FrameArrived callback", 10);
+            diag.frame_arrived_callbacks = 1;
+        }
         let latest_i420_for_thread = latest_i420_frame.clone();
         let writer = thread::spawn(move || {
             thread::sleep(Duration::from_millis(15));

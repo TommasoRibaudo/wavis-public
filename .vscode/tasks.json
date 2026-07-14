@@ -40,6 +40,35 @@
       },
       "problemMatcher": []
     },
+    {
+      // Full docker stack for the GUI e2e suite (postgres + redis + livekit
+      // + wavis-backend). AUTH_REGISTER_RATE_LIMIT must be raised from its
+      // default 5/hr: a full 7-spec run does ~14 registrations from one
+      // window (see e2e-tooling/README.md). Compose recreates wavis-backend
+      // automatically if the running container was started with a different
+      // limit. Uses the existing backend image — if you've changed backend
+      // code, rebuild it first: docker compose up -d --build
+      "label": "Ensure E2E Backend Stack",
+      "type": "shell",
+      "command": "docker compose up -d",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "AUTH_REGISTER_RATE_LIMIT": "200"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "E2E Stack Ready",
+      "dependsOn": ["Ensure E2E Backend Stack", "Wait for Backend Ready"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
 
     // ─── Test Tasks (multi-binary, can't use LLDB launch) ─────
     {
@@ -98,6 +127,92 @@
         "clear": true
       },
       "problemMatcher": "$rustc"
+    },
+
+    // ─── Quality Gates (mirror workspace-ci.yml blocking steps) ───
+    {
+      "label": "Gate: Rustfmt Check",
+      "type": "shell",
+      "command": "cargo fmt --all --check",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Gate: Arch Check",
+      "type": "shell",
+      "command": "node scripts/arch-check.mjs",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate: Clippy (blocking)",
+      "type": "shell",
+      "command": "cargo clippy -p shared -p wavis-backend -p wavis-client-shared -p wavis-cli-test -p wavis-client -p ws-sfu-test -p stress-harness -p gui-surface-test -- -D warnings",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Gate: GUI Prettier Check",
+      "type": "shell",
+      "command": "npm run format:check",
+      "options": { "cwd": "${workspaceFolder}/clients/wavis-gui" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate: GUI ESLint",
+      "type": "shell",
+      "command": "npm run lint",
+      "options": { "cwd": "${workspaceFolder}/clients/wavis-gui" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": "$eslint-stylish"
+    },
+    {
+      "label": "Gate: GUI Dependency Cruiser",
+      "type": "shell",
+      "command": "npm run lint:deps",
+      "options": { "cwd": "${workspaceFolder}/clients/wavis-gui" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gate: GUI Typecheck",
+      "type": "shell",
+      "command": "npm run typecheck",
+      "options": { "cwd": "${workspaceFolder}/clients/wavis-gui" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "Gate: GUI Tests (vitest)",
+      "type": "shell",
+      "command": "npm test",
+      "options": { "cwd": "${workspaceFolder}/clients/wavis-gui" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      // Everything CI blocks on, in the same cheap-first order, failing
+      // fast at the first red gate. Warnings (ESLint warn rules, clippy
+      // metrics) never fail this — errors only, matching workspace-ci.yml.
+      "label": "Full CI Check",
+      "type": "shell",
+      "command": "cargo fmt --all --check; if (!$?) { exit 1 }; node scripts/arch-check.mjs; if (!$?) { exit 1 }; npm --prefix clients/wavis-gui run format:check; if (!$?) { exit 1 }; npm --prefix clients/wavis-gui run lint; if (!$?) { exit 1 }; npm --prefix clients/wavis-gui run lint:deps; if (!$?) { exit 1 }; npm --prefix clients/wavis-gui run typecheck; if (!$?) { exit 1 }; cargo clippy -p shared -p wavis-backend -p wavis-client-shared -p wavis-cli-test -p wavis-client -p ws-sfu-test -p stress-harness -p gui-surface-test -- -D warnings; if (!$?) { exit 1 }; cargo test; if (!$?) { exit 1 }; npm --prefix clients/wavis-gui test; if (!$?) { exit 1 }; Write-Host 'ALL GATES GREEN'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
     },
 
     // ─── Python / Terraform Tests ─────────────────────────────

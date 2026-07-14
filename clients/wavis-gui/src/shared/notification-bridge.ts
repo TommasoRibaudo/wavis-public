@@ -65,10 +65,7 @@ export function initNotificationBridge(): () => void {
  *
  * On Linux, errors are caught silently (NFR-3, R19.8).
  */
-export async function sendWavisNotification(
-  event: NotifiableEvent,
-  body: string,
-): Promise<void> {
+export async function sendWavisNotification(event: NotifiableEvent, body: string): Promise<void> {
   try {
     // Check toggle
     const enabled = await isNotificationEnabled(event);

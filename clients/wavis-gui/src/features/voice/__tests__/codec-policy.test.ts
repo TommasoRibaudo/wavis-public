@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  CodecPolicyConfig,
-  DEFAULT_CODEC_POLICY,
-  getDefaultCodecPolicy,
-} from '../codec-policy';
+import { CodecPolicyConfig, DEFAULT_CODEC_POLICY, getDefaultCodecPolicy } from '../codec-policy';
 
 describe('codec-policy', () => {
   it('defaults to vp8 simulcast (W4 decision: vp8sim)', () => {

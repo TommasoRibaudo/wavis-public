@@ -134,7 +134,8 @@ describe('Screen Share Error UX — Three-Way Result Handling', () => {
   });
 
   it('AC3: displays portal-specific error message', async () => {
-    const errorMsg = 'screen sharing requires xdg-desktop-portal on Wayland; no X11 fallback is available on this system';
+    const errorMsg =
+      'screen sharing requires xdg-desktop-portal on Wayland; no X11 fallback is available on this system';
     mockStartShare.mockRejectedValue(new Error(errorMsg));
     let state = initialShareErrorState();
     state = await handleStartShare(state, mockStartShare);
@@ -201,7 +202,8 @@ describe('Screen Share Error UX — Three-Way Result Handling', () => {
 
   /* ── AC6: Wayland-specific error mentions xdg-desktop-portal ── */
   it('AC6: Wayland error message mentions xdg-desktop-portal', async () => {
-    const errorMsg = 'screen sharing requires xdg-desktop-portal on Wayland; no X11 fallback is available on this system';
+    const errorMsg =
+      'screen sharing requires xdg-desktop-portal on Wayland; no X11 fallback is available on this system';
     mockStartShare.mockRejectedValue(new Error(errorMsg));
     let state = initialShareErrorState();
     state = await handleStartShare(state, mockStartShare);

@@ -61,58 +61,66 @@ export default function AuthGate() {
     const delay = Math.max(0, expiryMs - 120_000);
     console.log(LOG_PREFIX, `Scheduling refresh in ${delay}ms`);
 
-    refreshTimeoutRef.current = setTimeout(async () => {
-      console.log(LOG_PREFIX, 'Scheduled refresh firing');
-      const result = await refreshTokens();
+    refreshTimeoutRef.current = setTimeout(() => {
+      void (async () => {
+        console.log(LOG_PREFIX, 'Scheduled refresh firing');
+        const result = await refreshTokens();
 
-      if (result.status === 'success') {
-        refreshRetriesRef.current = 0;
-        scheduleRefresh();
-        return;
-      }
-
-      // Non-recoverable: retry once more (the first 401 might be a transient
-      // race with token rotation), then navigate to /login preserving the
-      // refresh token so the Login page can offer "Reconnect".
-      if (!isTransientFailure(result)) {
-        if (refreshRetriesRef.current === 0) {
-          // First non-recoverable failure — retry once after a short delay
-          refreshRetriesRef.current = MAX_REFRESH_RETRIES - 1;
-          console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable (${result.status}) — retrying once`);
-          refreshTimeoutRef.current = setTimeout(() => {
-            scheduleRefresh();
-          }, jitteredDelay(1000));
+        if (result.status === 'success') {
+          refreshRetriesRef.current = 0;
+          void scheduleRefresh();
           return;
         }
-        console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable: ${result.status}`);
-        // Preserve refresh token — only clear access tokens so Login shows
-        // "Reconnect" instead of forcing a full re-register.
+
+        // Non-recoverable: retry once more (the first 401 might be a transient
+        // race with token rotation), then navigate to /login preserving the
+        // refresh token so the Login page can offer "Reconnect".
+        if (!isTransientFailure(result)) {
+          if (refreshRetriesRef.current === 0) {
+            // First non-recoverable failure — retry once after a short delay
+            refreshRetriesRef.current = MAX_REFRESH_RETRIES - 1;
+            console.warn(
+              LOG_PREFIX,
+              `Scheduled refresh non-recoverable (${result.status}) — retrying once`,
+            );
+            refreshTimeoutRef.current = setTimeout(() => {
+              void scheduleRefresh();
+            }, jitteredDelay(1000));
+            return;
+          }
+          console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable: ${result.status}`);
+          // Preserve refresh token — only clear access tokens so Login shows
+          // "Reconnect" instead of forcing a full re-register.
+          await clearAccessTokens();
+          cancelScheduledRefresh();
+          void navigate('/login', { replace: true });
+          return;
+        }
+
+        // Transient: retry with backoff
+        refreshRetriesRef.current += 1;
+        console.warn(
+          LOG_PREFIX,
+          `Scheduled refresh failed (attempt ${refreshRetriesRef.current}/${MAX_REFRESH_RETRIES}): ${result.status}`,
+        );
+
+        if (refreshRetriesRef.current < MAX_REFRESH_RETRIES) {
+          const retryDelay =
+            result.status === 'rate_limited' && result.retryAfter
+              ? result.retryAfter
+              : jitteredDelay(STARTUP_RETRY_DELAYS[refreshRetriesRef.current - 1] ?? 3000);
+          refreshTimeoutRef.current = setTimeout(() => {
+            void scheduleRefresh();
+          }, retryDelay);
+          return;
+        }
+
+        // All retries exhausted — transient failure, preserve refresh token
+        console.warn(LOG_PREFIX, 'All scheduled refresh retries exhausted');
         await clearAccessTokens();
         cancelScheduledRefresh();
-        navigate('/login', { replace: true });
-        return;
-      }
-
-      // Transient: retry with backoff
-      refreshRetriesRef.current += 1;
-      console.warn(LOG_PREFIX, `Scheduled refresh failed (attempt ${refreshRetriesRef.current}/${MAX_REFRESH_RETRIES}): ${result.status}`);
-
-      if (refreshRetriesRef.current < MAX_REFRESH_RETRIES) {
-        const retryDelay =
-          result.status === 'rate_limited' && result.retryAfter
-            ? result.retryAfter
-            : jitteredDelay(STARTUP_RETRY_DELAYS[refreshRetriesRef.current - 1] ?? 3000);
-        refreshTimeoutRef.current = setTimeout(() => {
-          scheduleRefresh();
-        }, retryDelay);
-        return;
-      }
-
-      // All retries exhausted — transient failure, preserve refresh token
-      console.warn(LOG_PREFIX, 'All scheduled refresh retries exhausted');
-      await clearAccessTokens();
-      cancelScheduledRefresh();
-      navigate('/login', { replace: true });
+        void navigate('/login', { replace: true });
+      })();
     }, delay);
   }, [navigate, cancelScheduledRefresh]);
 
@@ -125,10 +133,13 @@ export default function AuthGate() {
       console.warn(LOG_PREFIX, 'Auth-expired signal from API call — navigating to /login');
       cancelScheduledRefresh();
       await clearAccessTokens();
-      navigate('/login', { replace: true });
+      void navigate('/login', { replace: true });
     }
-    window.addEventListener('wavis:auth-expired', handleAuthExpired);
-    return () => window.removeEventListener('wavis:auth-expired', handleAuthExpired);
+    const onAuthExpired = () => {
+      void handleAuthExpired();
+    };
+    window.addEventListener('wavis:auth-expired', onAuthExpired);
+    return () => window.removeEventListener('wavis:auth-expired', onAuthExpired);
   }, [navigate, cancelScheduledRefresh]);
 
   // Re-evaluate token state when app regains focus. Covers two cases:
@@ -143,20 +154,23 @@ export default function AuthGate() {
         const result = await refreshTokens();
         if (result.status === 'success') {
           refreshRetriesRef.current = 0;
-          scheduleRefresh();
+          void scheduleRefresh();
         } else if (!isTransientFailure(result)) {
           await clearAccessTokens();
           cancelScheduledRefresh();
-          navigate('/login', { replace: true });
+          void navigate('/login', { replace: true });
         }
       } else {
         // Token still valid — re-schedule in case the timer was killed while backgrounded
         console.log(LOG_PREFIX, 'App resumed — re-scheduling refresh timer');
-        scheduleRefresh();
+        void scheduleRefresh();
       }
     }
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
+    const onVisibilityChange = () => {
+      void handleVisibility();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [navigate, scheduleRefresh, cancelScheduledRefresh]);
 
   useEffect(() => {
@@ -166,7 +180,7 @@ export default function AuthGate() {
       // 1. Check device registration
       const registered = await isDeviceRegistered();
       if (!registered) {
-        if (!cancelled) navigate('/setup', { replace: true });
+        if (!cancelled) void navigate('/setup', { replace: true });
         return;
       }
 
@@ -194,7 +208,7 @@ export default function AuthGate() {
           if (!cancelled) {
             await clearAccessTokens();
             cancelScheduledRefresh();
-            navigate('/login', { replace: true });
+            void navigate('/login', { replace: true });
           }
           return;
         } else {
@@ -214,7 +228,7 @@ export default function AuthGate() {
               // Became non-recoverable mid-retry — preserve refresh token
               await clearAccessTokens();
               cancelScheduledRefresh();
-              navigate('/login', { replace: true });
+              void navigate('/login', { replace: true });
               return;
             }
           }
@@ -223,7 +237,7 @@ export default function AuthGate() {
             if (!cancelled) {
               await clearAccessTokens();
               cancelScheduledRefresh();
-              navigate('/login', { replace: true });
+              void navigate('/login', { replace: true });
             }
             return;
           }
@@ -248,11 +262,11 @@ export default function AuthGate() {
       // 4. Token is valid (or just refreshed) — schedule background refresh
       if (!cancelled) {
         setReady(true);
-        scheduleRefresh();
+        void scheduleRefresh();
       }
     }
 
-    init();
+    void init();
 
     return () => {
       cancelled = true;
@@ -281,7 +295,9 @@ export default function AuthGate() {
             {username && <span className="text-wavis-text-secondary truncate">@ {hostname}</span>}
           </div>
           <button
-            onClick={() => navigate('/settings')}
+            onClick={() => {
+              void navigate('/settings');
+            }}
             className="text-wavis-text-secondary shrink-0 border border-wavis-text-secondary py-0.5 px-1 text-xs text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
           >
             /settings

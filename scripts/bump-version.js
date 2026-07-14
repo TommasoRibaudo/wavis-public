@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Usage: node scripts/bump-version.js <version>
 //
-// Updates the version field in both:
+// Updates the version field in:
 //   clients/wavis-gui/src-tauri/tauri.conf.json
+//   clients/wavis-gui/src-tauri/Cargo.toml
 //   clients/wavis-gui/package.json
+//   clients/wavis-gui/package-lock.json
 //
 // Run this before committing and tagging a release:
 //   node scripts/bump-version.js 0.2.0
-//   git add clients/wavis-gui/src-tauri/tauri.conf.json clients/wavis-gui/package.json
+//   git add clients/wavis-gui/src-tauri/tauri.conf.json clients/wavis-gui/src-tauri/Cargo.toml clients/wavis-gui/package.json clients/wavis-gui/package-lock.json
 //   git commit -m "chore: bump version to 0.2.0"
 //   git tag desktop-v0.2.0
 //   git push && git push --tags
@@ -36,9 +38,33 @@ function bump(filePath, mutate) {
 
 bump(join(root, 'clients/wavis-gui/src-tauri/tauri.conf.json'), o => { o.version = version; });
 bump(join(root, 'clients/wavis-gui/package.json'),              o => { o.version = version; });
+bump(join(root, 'clients/wavis-gui/package-lock.json'),         o => {
+  o.version = version;
+  if (o.packages?.['']) {
+    o.packages[''].version = version;
+  }
+});
+
+function bumpCargoToml(filePath) {
+  const raw = readFileSync(filePath, 'utf8');
+  const next = raw.replace(
+    /^(\[package\]\s*\nname = "wavis-gui"\s*\nversion = )"[^"]+"/m,
+    `$1"${version}"`,
+  );
+
+  if (next === raw) {
+    console.error(`Could not update package version in ${filePath}`);
+    process.exit(1);
+  }
+
+  writeFileSync(filePath, next);
+  console.log(`${filePath.replace(root + '/', '')}:  version -> ${version}`);
+}
+
+bumpCargoToml(join(root, 'clients/wavis-gui/src-tauri/Cargo.toml'));
 
 console.log(`\nNext steps:`);
-console.log(`  git add clients/wavis-gui/src-tauri/tauri.conf.json clients/wavis-gui/package.json`);
+console.log(`  git add clients/wavis-gui/src-tauri/tauri.conf.json clients/wavis-gui/src-tauri/Cargo.toml clients/wavis-gui/package.json clients/wavis-gui/package-lock.json`);
 console.log(`  git commit -m "chore: bump version to ${version}"`);
 console.log(`  git tag desktop-v${version}`);
 console.log(`  git push && git push --tags`);

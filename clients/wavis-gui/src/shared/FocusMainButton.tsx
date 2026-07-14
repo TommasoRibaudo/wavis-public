@@ -20,7 +20,10 @@ export default function FocusMainButton({ onClick }: FocusMainButtonProps) {
   return (
     <button
       onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
       className="px-1.5 flex items-center justify-center text-wavis-text-secondary hover:opacity-70 transition-opacity"
       aria-label="Focus main window"
       title={`focus main window (${focusMain})`}

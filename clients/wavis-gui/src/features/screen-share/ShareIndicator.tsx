@@ -23,6 +23,13 @@ interface ShareEntry {
   sourceName: string;
 }
 
+/** Shape of the JSON payload encoded into the URL hash by the opener window. */
+interface HashPayload {
+  shares?: ShareEntry[];
+  shareType?: ShareMode;
+  sourceName?: string;
+}
+
 /* ═══ Component ═════════════════════════════════════════════════════ */
 
 export default function ShareIndicator() {
@@ -30,7 +37,9 @@ export default function ShareIndicator() {
   const hash = decodeURIComponent(window.location.hash.slice(1));
   let shares: ShareEntry[] = [];
   try {
-    const params = JSON.parse(hash);
+    // One audited cast at the JSON.parse boundary — everything downstream reads
+    // through the HashPayload shape instead of `any`.
+    const params = JSON.parse(hash) as HashPayload;
     if (Array.isArray(params.shares)) {
       shares = params.shares;
     } else {
@@ -43,15 +52,17 @@ export default function ShareIndicator() {
 
   const handleStop = (mode: ShareMode) => {
     const target = mode === 'audio_only' ? 'audio' : 'video';
-    emit('share-indicator:stop', { target });
+    void emit('share-indicator:stop', { target });
   };
 
   const handleStopAll = () => {
-    emit('share-indicator:stop', { target: 'all' });
+    void emit('share-indicator:stop', { target: 'all' });
   };
 
   const handleHide = () => {
-    getCurrentWindow().hide().catch(() => {});
+    getCurrentWindow()
+      .hide()
+      .catch(() => {});
   };
 
   return (
@@ -59,7 +70,9 @@ export default function ShareIndicator() {
       className="h-full flex flex-col justify-center gap-0.5 px-3 bg-wavis-bg font-mono text-wavis-text text-xs select-none cursor-move"
       onMouseDown={(e) => {
         if (!(e.target as HTMLElement).closest('button')) {
-          getCurrentWindow().startDragging().catch(() => {});
+          getCurrentWindow()
+            .startDragging()
+            .catch(() => {});
         }
       }}
     >

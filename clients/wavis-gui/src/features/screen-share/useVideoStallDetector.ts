@@ -83,7 +83,10 @@ export function useVideoStallDetector({
     const healthPing = setInterval(() => {
       if (disposed) return;
       const elapsed = Date.now() - lastFrameTime;
-      if (elapsed >= STATIC_CONTENT_HEALTH_PING_MS && isPlaybackHealthyWithoutFreshFrames(video, stream)) {
+      if (
+        elapsed >= STATIC_CONTENT_HEALTH_PING_MS &&
+        isPlaybackHealthyWithoutFreshFrames(video, stream)
+      ) {
         lastFrameTime = Date.now();
         onFrameDetected?.();
       }
@@ -102,7 +105,9 @@ export function useVideoStallDetector({
           disposed = true;
           onDeadTrack();
         } else {
-          console.warn('[wavis:screen-share] stall: video track dead, waiting for LiveKit reconnect');
+          console.warn(
+            '[wavis:screen-share] stall: video track dead, waiting for LiveKit reconnect',
+          );
           lastFrameTime = Date.now();
         }
         return;
@@ -124,5 +129,13 @@ export function useVideoStallDetector({
         video.removeEventListener('timeupdate', timeupdateHandler);
       }
     };
-  }, [checkIntervalMs, onDeadTrack, onFrameDetected, onReattach, stallThresholdMs, stream, videoRef]);
+  }, [
+    checkIntervalMs,
+    onDeadTrack,
+    onFrameDetected,
+    onReattach,
+    stallThresholdMs,
+    stream,
+    videoRef,
+  ]);
 }

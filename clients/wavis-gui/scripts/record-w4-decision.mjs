@@ -18,10 +18,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  readWorkstreamStatus,
-  writeWorkstreamStatus,
-} from './lib/workstream-status.mjs';
+import { readWorkstreamStatus, writeWorkstreamStatus } from './lib/workstream-status.mjs';
 
 const VALID_DECISIONS = ['vp9vp8', 'vp8sim', 'av1vp9'];
 
@@ -38,7 +35,9 @@ if (!decision) {
 }
 
 if (!VALID_DECISIONS.includes(decision)) {
-  console.error(`[record-w4-decision] unknown decision "${decision}". Must be one of: ${VALID_DECISIONS.join(', ')}`);
+  console.error(
+    `[record-w4-decision] unknown decision "${decision}". Must be one of: ${VALID_DECISIONS.join(', ')}`,
+  );
   process.exit(1);
 }
 

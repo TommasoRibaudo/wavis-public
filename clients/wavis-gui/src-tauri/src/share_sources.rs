@@ -133,7 +133,12 @@ fn encode_thumbnail_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Option<
         .map_err(|e| format!("JPEG encoding failed: {e}"))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_buf);
-    crate::debug_eprintln!("[share-picker] thumbnail encoded: {}x{} → {} bytes base64", width, height, b64.len());
+    crate::debug_eprintln!(
+        "[share-picker] thumbnail encoded: {}x{} → {} bytes base64",
+        width,
+        height,
+        b64.len()
+    );
     Ok(Some(b64))
 }
 

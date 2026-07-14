@@ -8,10 +8,12 @@ export function useFullscreen() {
   // Sync actual window state on mount — handles windows that open already
   // fullscreen and avoids a stale-false initial render.
   useEffect(() => {
-    void getCurrentWindow().isFullscreen().then((fs) => {
-      isFullscreenRef.current = fs;
-      setIsFullscreen(fs);
-    });
+    void getCurrentWindow()
+      .isFullscreen()
+      .then((fs) => {
+        isFullscreenRef.current = fs;
+        setIsFullscreen(fs);
+      });
   }, []);
 
   const exitFullscreen = useCallback(async () => {
@@ -41,13 +43,19 @@ export function useFullscreen() {
   useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | null = null;
-    win.onResized(() => {
-      void win.isFullscreen().then((fs) => {
-        isFullscreenRef.current = fs;
-        setIsFullscreen(fs);
+    win
+      .onResized(() => {
+        void win.isFullscreen().then((fs) => {
+          isFullscreenRef.current = fs;
+          setIsFullscreen(fs);
+        });
+      })
+      .then((fn) => {
+        unlisten = fn;
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   return { isFullscreen, enterFullscreen, exitFullscreen, toggleFullscreen };

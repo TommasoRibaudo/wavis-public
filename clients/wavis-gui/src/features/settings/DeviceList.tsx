@@ -58,9 +58,7 @@ function DeviceCard({ device, isCurrent, onRevoke }: DeviceCardProps) {
         <span>{device.device_name}</span>
         {isCurrent && <span className="text-wavis-accent text-xs">(this device)</span>}
       </div>
-      <div className="text-xs text-wavis-text-secondary">
-        id: {truncateId(device.device_id)}
-      </div>
+      <div className="text-xs text-wavis-text-secondary">id: {truncateId(device.device_id)}</div>
       <div className="text-xs text-wavis-text-secondary">
         created: {formatDate(device.created_at)}
       </div>
@@ -88,7 +86,9 @@ function DeviceCard({ device, isCurrent, onRevoke }: DeviceCardProps) {
           requiredText="REVOKE"
           busy={revoking}
           busyLabel="revoking..."
-          onConfirm={handleRevoke}
+          onConfirm={() => {
+            void handleRevoke();
+          }}
           onCancel={() => setShowConfirm(false)}
         />
       )}
@@ -123,20 +123,24 @@ export default function DeviceList() {
   }, []);
 
   // Initial load
-  useEffect(() => { loadDevices(); }, [loadDevices]);
+  useEffect(() => {
+    void loadDevices();
+  }, [loadDevices]);
 
   // Auto-refresh
-  usePolling(() => loadDevices(true), POLL_MS);
+  usePolling(() => {
+    void loadDevices(true);
+  }, POLL_MS);
 
   const handleRevoke = () => {
-    loadDevices(true);
+    void loadDevices(true);
   };
 
   const handleLogoutAll = async () => {
     setLoggingOut(true);
     try {
       await logoutAll();
-      navigate('/setup', { replace: true });
+      void navigate('/setup', { replace: true });
     } catch {
       setError('Failed to log out all devices');
       setLoggingOut(false);
@@ -149,7 +153,9 @@ export default function DeviceList() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
           <button
-            onClick={() => navigate('/settings')}
+            onClick={() => {
+              void navigate('/settings');
+            }}
             className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
           >
             ← /settings
@@ -162,7 +168,13 @@ export default function DeviceList() {
 
           {/* Error */}
           {error && (
-            <ErrorPanel error={error} onRetry={() => loadDevices()} className="mb-4" />
+            <ErrorPanel
+              error={error}
+              onRetry={() => {
+                void loadDevices();
+              }}
+              className="mb-4"
+            />
           )}
 
           {/* Device list */}
@@ -208,7 +220,9 @@ export default function DeviceList() {
                   requiredText="LOGOUT"
                   busy={loggingOut}
                   busyLabel="logging out..."
-                  onConfirm={handleLogoutAll}
+                  onConfirm={() => {
+                    void handleLogoutAll();
+                  }}
                   onCancel={() => setShowLogoutConfirm(false)}
                 />
               )}

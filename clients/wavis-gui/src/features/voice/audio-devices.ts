@@ -62,7 +62,11 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
     ];
     return devices;
   } catch (err) {
-    console.warn(LOG, 'device enumeration failed:', err instanceof Error ? err.message : String(err));
+    console.warn(
+      LOG,
+      'device enumeration failed:',
+      err instanceof Error ? err.message : String(err),
+    );
     return [];
   }
 }

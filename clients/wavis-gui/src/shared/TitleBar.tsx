@@ -3,9 +3,25 @@ import { Minus, Square, X } from 'lucide-react';
 import { FixedBugReportButton } from '@features/diagnostics/BugReportButton';
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
-const appWindow = getCurrentWindow();
 
-function WindowButton({ onClick, danger, label, children }: {
+// getCurrentWindow() reads window.__TAURI_INTERNALS__.metadata and throws
+// synchronously if that's absent (e.g. a plain browser tab, no Tauri
+// runtime) — guard it so importing this module doesn't crash outside Tauri.
+function safeGetCurrentWindow() {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return null;
+  }
+  return getCurrentWindow();
+}
+
+const appWindow = safeGetCurrentWindow();
+
+function WindowButton({
+  onClick,
+  danger,
+  label,
+  children,
+}: {
   onClick: () => void;
   danger?: boolean;
   label: string;
@@ -42,13 +58,13 @@ export default function TitleBar() {
       {/* Window controls */}
       <div className="flex">
         <FixedBugReportButton />
-        <WindowButton label="Minimize" onClick={() => appWindow.minimize()}>
+        <WindowButton label="Minimize" onClick={() => void appWindow?.minimize()}>
           <Minus size={14} />
         </WindowButton>
-        <WindowButton label="Maximize" onClick={() => appWindow.toggleMaximize()}>
+        <WindowButton label="Maximize" onClick={() => void appWindow?.toggleMaximize()}>
           <Square size={11} />
         </WindowButton>
-        <WindowButton label="Close" onClick={() => appWindow.close()} danger>
+        <WindowButton label="Close" onClick={() => void appWindow?.close()} danger>
           <X size={14} />
         </WindowButton>
       </div>

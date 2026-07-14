@@ -403,9 +403,8 @@ pub(super) async fn list_sources() -> Result<EnumerationResult, String> {
     let mut warnings = Vec::new();
 
     let video_sources = if is_wayland_session() {
-        warnings.push(
-            "Direct PipeWire access unavailable on Wayland - use system picker".to_string(),
-        );
+        warnings
+            .push("Direct PipeWire access unavailable on Wayland - use system picker".to_string());
         Vec::new()
     } else {
         match enumerate_pipewire_sources() {
@@ -432,22 +431,20 @@ pub(super) async fn list_sources() -> Result<EnumerationResult, String> {
             }
         },
         Ok(sources) => sources,
-        Err(e) => {
-            match enumerate_default_pactl_audio_source() {
-                Ok(source) => {
-                    warnings.push(format!(
-                        "Audio source list unavailable, using default monitor: {e}"
-                    ));
-                    vec![source]
-                }
-                Err(fallback_error) => {
-                    warnings.push(format!(
+        Err(e) => match enumerate_default_pactl_audio_source() {
+            Ok(source) => {
+                warnings.push(format!(
+                    "Audio source list unavailable, using default monitor: {e}"
+                ));
+                vec![source]
+            }
+            Err(fallback_error) => {
+                warnings.push(format!(
                         "Audio source enumeration unavailable: {e}; pactl fallback failed: {fallback_error}"
                     ));
-                    Vec::new()
-                }
+                Vec::new()
             }
-        }
+        },
     };
 
     let mut sources = video_sources;

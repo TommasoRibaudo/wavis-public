@@ -22,7 +22,10 @@ vi.mock('@tauri-apps/api/event', () => ({
     eventListeners.set(event, listeners);
     return () => {
       const current = eventListeners.get(event) ?? [];
-      eventListeners.set(event, current.filter((entry) => entry !== callback));
+      eventListeners.set(
+        event,
+        current.filter((entry) => entry !== callback),
+      );
     };
   }),
 }));
@@ -46,6 +49,12 @@ class MockRTCPeerConnection {
     const sender = new MockRTCRtpSender(track);
     this._senders.push(sender);
     return sender;
+  });
+  // Video tracks go through addTransceiver (sendonly + encoder caps).
+  addTransceiver = vi.fn().mockImplementation((track: MediaStreamTrack) => {
+    const sender = new MockRTCRtpSender(track);
+    this._senders.push(sender);
+    return { sender, setCodecPreferences: vi.fn() };
   });
   getSenders = vi.fn().mockImplementation(() => this._senders);
   createOffer = vi.fn().mockResolvedValue({ sdp: 'mock-offer', type: 'offer' });
@@ -72,10 +81,18 @@ globalThis.RTCPeerConnection = MockRTCPeerConnection as unknown as typeof RTCPee
 class MockMediaStream {
   private tracks: MediaStreamTrack[] = [];
   id = Math.random().toString(36).slice(2);
-  getTracks() { return this.tracks; }
-  addTrack(t: MediaStreamTrack) { this.tracks.push(t); }
-  getVideoTracks() { return this.tracks.filter((t) => t.kind === 'video'); }
-  getAudioTracks() { return this.tracks.filter((t) => t.kind === 'audio'); }
+  getTracks() {
+    return this.tracks;
+  }
+  addTrack(t: MediaStreamTrack) {
+    this.tracks.push(t);
+  }
+  getVideoTracks() {
+    return this.tracks.filter((t) => t.kind === 'video');
+  }
+  getAudioTracks() {
+    return this.tracks.filter((t) => t.kind === 'audio');
+  }
 }
 globalThis.MediaStream = MockMediaStream as unknown as typeof MediaStream;
 
@@ -111,7 +128,7 @@ describe('compositeKey', () => {
 
 describe('startSending with two different window labels', () => {
   it('creates two separate entries for the same participant', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
     await startSending('user1', 'screen-share-user1', stream);
@@ -123,7 +140,7 @@ describe('startSending with two different window labels', () => {
   });
 
   it('ignores a duplicate answer while the first answer is still being applied', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
 
@@ -132,18 +149,19 @@ describe('startSending with two different window labels', () => {
 
     const pc = sender?.pc as unknown as MockRTCPeerConnection;
     let resolveRemoteDescription: VoidFunction | undefined;
-    pc.setRemoteDescription = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
-      resolveRemoteDescription = resolve;
-    }));
+    pc.setRemoteDescription = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRemoteDescription = resolve;
+        }),
+    );
 
     const answerListeners = eventListeners.get('ss-bridge:answer:user1::watch-all') as
-      | Array<(event: { payload: { sdp: string } }) => unknown>
-      | undefined;
+      Array<(event: { payload: { sdp: string } }) => unknown> | undefined;
     expect(answerListeners).toHaveLength(1);
 
     const onAnswer = answerListeners?.[0] as
-      | ((event: { payload: { sdp: string } }) => Promise<void> | void)
-      | undefined;
+      ((event: { payload: { sdp: string } }) => Promise<void> | void) | undefined;
     expect(onAnswer).toBeDefined();
 
     const firstAnswer = Promise.resolve(onAnswer?.({ payload: { sdp: 'answer-1' } }));
@@ -161,7 +179,7 @@ describe('startSending with two different window labels', () => {
 
 describe('stopSendingForWindow', () => {
   it('removes only entries for the target window label', async () => {
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
 
     await startSending('user1', 'watch-all', stream);
     await startSending('user2', 'watch-all', stream);
@@ -205,7 +223,8 @@ describe('isVideoTrackAlive', () => {
   it('returns false when audio track is live but video track is ended (the bug scenario)', () => {
     const stream = {
       active: true, // stream.active is true because audio track is still alive
-      getVideoTracks: () => [{ readyState: 'ended', muted: false }] as unknown as MediaStreamTrack[],
+      getVideoTracks: () =>
+        [{ readyState: 'ended', muted: false }] as unknown as MediaStreamTrack[],
     } as unknown as MediaStream;
     expect(isVideoTrackAlive(stream)).toBe(false);
   });
@@ -324,7 +343,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     firstPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await Promise.resolve();
 
     expect(firstResolved).not.toHaveBeenCalled();
@@ -333,7 +352,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     secondPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await secondStart;
 
     expect(firstResolved).not.toHaveBeenCalled();
@@ -359,7 +378,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     firstPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await Promise.resolve();
 
     expect(readySpy).not.toHaveBeenCalled();
@@ -367,7 +386,7 @@ describe('StreamReceiver onConnectionFailed', () => {
     secondPc.ontrack?.({
       track: { kind: 'video' },
       streams: [],
-    } as unknown as RTCTrackEvent);
+    });
     await latestStart;
 
     expect(readySpy).toHaveBeenCalledTimes(1);
@@ -386,7 +405,7 @@ function makeVideoTrack(readyState: string = 'live'): MediaStreamTrack {
 describe('resendStream', () => {
   it('uses replaceTrack() when an existing connected sender is found — no stopSending/startSending', async () => {
     const track1 = makeVideoTrack();
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(track1);
 
     await startSending('user1', 'watch-all', stream1);
@@ -400,7 +419,7 @@ describe('resendStream', () => {
     pc._simulateConnectionState('connected');
 
     const track2 = makeVideoTrack();
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(track2);
 
     await resendStream('user1', 'watch-all', stream2);
@@ -408,9 +427,8 @@ describe('resendStream', () => {
     // The peer connection must NOT have been closed (no full rebuild)
     expect(pc.close).not.toHaveBeenCalled();
     // replaceTrack must have been called on the video sender
-    const videoSender = pc.getSenders().find(
-      (s: MockRTCRtpSender) => s.track?.kind === 'video',
-    ) as MockRTCRtpSender | undefined;
+    const videoSender = pc.getSenders().find((s: MockRTCRtpSender) => s.track?.kind === 'video') as
+      MockRTCRtpSender | undefined;
     expect(videoSender?.replaceTrack).toHaveBeenCalledWith(track2);
     // The entry must still be in the senders map (not torn down)
     expect(senders.has('user1::watch-all')).toBe(true);
@@ -418,7 +436,7 @@ describe('resendStream', () => {
 
   it('falls back to full rebuild when no existing sender is found', async () => {
     const track = makeVideoTrack();
-    const stream = new MediaStream() as unknown as MediaStream;
+    const stream = new MediaStream();
     (stream as unknown as MockMediaStream).addTrack(track);
 
     // No startSending called first — resendStream acts like startSending
@@ -426,13 +444,13 @@ describe('resendStream', () => {
 
     const senders = _getSendersForTest();
     expect(senders.has('user1::watch-all')).toBe(true);
-    // addTrack must have been called (startSending path)
+    // addTransceiver must have been called for the video track (startSending path)
     const entry = senders.get('user1::watch-all');
-    expect((entry!.pc as unknown as MockRTCPeerConnection).addTrack).toHaveBeenCalled();
+    expect((entry!.pc as unknown as MockRTCPeerConnection).addTransceiver).toHaveBeenCalled();
   });
 
   it('falls back to full rebuild when connection is not yet connected', async () => {
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await startSending('user1', 'watch-all', stream1);
@@ -442,7 +460,7 @@ describe('resendStream', () => {
     const pc = entry!.pc as unknown as MockRTCPeerConnection;
     // connectionState remains 'new' — not 'connected'
 
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await resendStream('user1', 'watch-all', stream2);
@@ -454,7 +472,7 @@ describe('resendStream', () => {
   });
 
   it('falls back to full rebuild when replaceTrack() rejects', async () => {
-    const stream1 = new MediaStream() as unknown as MediaStream;
+    const stream1 = new MediaStream();
     (stream1 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await startSending('user1', 'watch-all', stream1);
@@ -468,7 +486,7 @@ describe('resendStream', () => {
     const videoSender = pc.getSenders()[0] as MockRTCRtpSender;
     videoSender.replaceTrack.mockRejectedValueOnce(new Error('codec mismatch'));
 
-    const stream2 = new MediaStream() as unknown as MediaStream;
+    const stream2 = new MediaStream();
     (stream2 as unknown as MockMediaStream).addTrack(makeVideoTrack());
 
     await resendStream('user1', 'watch-all', stream2);

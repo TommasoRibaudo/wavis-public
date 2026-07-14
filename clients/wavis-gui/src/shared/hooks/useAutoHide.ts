@@ -5,7 +5,10 @@ interface UseAutoHideOptions {
   listenToMouseMove?: boolean;
 }
 
-export function useAutoHide({ delayMs = 2000, listenToMouseMove = false }: UseAutoHideOptions = {}) {
+export function useAutoHide({
+  delayMs = 2000,
+  listenToMouseMove = false,
+}: UseAutoHideOptions = {}) {
   const [isVisible, setIsVisible] = useState(true);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 

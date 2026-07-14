@@ -143,21 +143,18 @@ describe('shouldShowShareTransitionOverlay', () => {
     it('property: overlay never shows within stabilizationMs of firstFrameAt regardless of lastFrameAt', () => {
       // Uses a fixed epoch (firstFrameAt=5000) so the test is time-independent.
       fc.assert(
-        fc.property(
-          fc.integer({ min: 0, max: SHARE_STREAM_STABILIZATION_MS - 1 }),
-          (offset) => {
-            const result = shouldShowShareTransitionOverlay({
-              hasSurface: true,
-              hasRenderedFrame: true,
-              firstFrameAt: 5000,
-              lastFrameAt: 0, // maximally stale — would trigger without stabilization
-              hasError: false,
-              now: 5000 + offset,
-              stabilizationMs: SHARE_STREAM_STABILIZATION_MS,
-            });
-            expect(result).toBe(false);
-          },
-        ),
+        fc.property(fc.integer({ min: 0, max: SHARE_STREAM_STABILIZATION_MS - 1 }), (offset) => {
+          const result = shouldShowShareTransitionOverlay({
+            hasSurface: true,
+            hasRenderedFrame: true,
+            firstFrameAt: 5000,
+            lastFrameAt: 0, // maximally stale — would trigger without stabilization
+            hasError: false,
+            now: 5000 + offset,
+            stabilizationMs: SHARE_STREAM_STABILIZATION_MS,
+          });
+          expect(result).toBe(false);
+        }),
       );
     });
 
@@ -167,7 +164,10 @@ describe('shouldShowShareTransitionOverlay', () => {
       fc.assert(
         fc.property(
           // offset past stabilization window; also exceeds stall threshold vs lastFrameAt=0
-          fc.integer({ min: SHARE_STREAM_STABILIZATION_MS, max: SHARE_STREAM_STABILIZATION_MS + 10_000 }),
+          fc.integer({
+            min: SHARE_STREAM_STABILIZATION_MS,
+            max: SHARE_STREAM_STABILIZATION_MS + 10_000,
+          }),
           (offset) => {
             const result = shouldShowShareTransitionOverlay({
               hasSurface: true,

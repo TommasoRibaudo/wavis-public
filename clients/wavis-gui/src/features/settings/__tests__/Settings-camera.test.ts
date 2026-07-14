@@ -7,7 +7,9 @@ import { cameraOptionLabel } from './Settings-camera.property.test';
 
 describe('Feature: video-feed — Settings camera section', () => {
   it('uses device label when non-empty (6.2)', () => {
-    expect(cameraOptionLabel({ deviceId: 'abc', label: 'FaceTime HD Camera' }, 0)).toBe('FaceTime HD Camera');
+    expect(cameraOptionLabel({ deviceId: 'abc', label: 'FaceTime HD Camera' }, 0)).toBe(
+      'FaceTime HD Camera',
+    );
   });
 
   it('falls back to Camera N when label is empty (6.2)', () => {

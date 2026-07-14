@@ -8,9 +8,7 @@ import {
   normalizeChannelName,
 } from './channels';
 import { ApiError } from '@shared/api';
-import {
-  channelsListErrorMessage as errorMessage,
-} from '@shared/helpers';
+import { channelsListErrorMessage as errorMessage } from '@shared/helpers';
 import { ChannelRoleBadge } from './ChannelRoleBadge';
 import { fetchVoiceStatusWithFallback } from './channel-detail';
 import { CmdButton } from '@shared/CmdButton';
@@ -37,7 +35,9 @@ export default function ChannelsList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<'none' | 'create' | 'join'>('none');
-  const [voiceStatus, setVoiceStatus] = useState<Map<string, { active: boolean; participantCount: number }>>(new Map());
+  const [voiceStatus, setVoiceStatus] = useState<
+    Map<string, { active: boolean; participantCount: number }>
+  >(new Map());
 
   // Create form
   const [createName, setCreateName] = useState('');
@@ -66,9 +66,13 @@ export default function ChannelsList() {
       setChannels(result);
       // Fetch voice status in background (silent failure)
       const ids = result.map((ch) => ch.id);
-      fetchVoiceStatusWithFallback(ids).then((status) => {
-        setVoiceStatus(status);
-      }).catch(() => { /* silent */ });
+      fetchVoiceStatusWithFallback(ids)
+        .then((status) => {
+          setVoiceStatus(status);
+        })
+        .catch(() => {
+          /* silent */
+        });
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.kind === 'RateLimited') skipTicksRef.current = 2;
@@ -84,14 +88,17 @@ export default function ChannelsList() {
 
   /* Initial fetch on mount */
   useEffect(() => {
-    loadChannels(true);
+    void loadChannels(true);
   }, [loadChannels]);
 
   /* Auto-refresh: 15s interval */
   usePolling(() => {
-    if (skipTicksRef.current > 0) { skipTicksRef.current--; return; }
+    if (skipTicksRef.current > 0) {
+      skipTicksRef.current--;
+      return;
+    }
     if (requestInFlightRef.current) return;
-    loadChannels(false);
+    void loadChannels(false);
   }, POLL_MS);
 
   /* Auto-focus when form opens */
@@ -217,7 +224,12 @@ export default function ChannelsList() {
 
           {/* Error state */}
           {!loading && error && (
-            <ErrorPanel error={error} onRetry={() => loadChannels(true)} />
+            <ErrorPanel
+              error={error}
+              onRetry={() => {
+                void loadChannels(true);
+              }}
+            />
           )}
 
           {/* Empty state */}
@@ -236,7 +248,9 @@ export default function ChannelsList() {
                   key={ch.id}
                   onClick={() => {
                     void setLastChannel(ch.id, ch.name, ch.role);
-                    navigate('/room', { state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role } });
+                    void navigate('/room', {
+                      state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
+                    });
                   }}
                   className="flex items-center justify-between gap-4 px-3 sm:px-4 py-3 bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors text-left mb-1 cursor-pointer"
                 >
@@ -249,11 +263,12 @@ export default function ChannelsList() {
                       </span>
                     )}
                     <ChannelRoleBadge role={ch.role} variant="list" />
-                    {ch.role === 'owner' && (
-                      <span className="text-wavis-accent text-xs">★</span>
-                    )}
+                    {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
                     <button
-                      onClick={(e) => { e.stopPropagation(); navigate(`/channel/${ch.id}`); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void navigate(`/channel/${ch.id}`);
+                      }}
                       className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
                     >
                       /channel settings
@@ -285,7 +300,7 @@ export default function ChannelsList() {
                     setCreateError(null);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreate();
+                    if (e.key === 'Enter') void handleCreate();
                   }}
                   disabled={createBusy}
                   maxLength={100}
@@ -293,7 +308,9 @@ export default function ChannelsList() {
                   aria-label="Channel name"
                 />
                 <button
-                  onClick={handleCreate}
+                  onClick={() => {
+                    void handleCreate();
+                  }}
                   disabled={createBusy || !createValid}
                   className="shrink-0 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -305,9 +322,7 @@ export default function ChannelsList() {
                   → {normalized || '(empty)'}
                 </p>
               )}
-              {createError && (
-                <p className="text-wavis-danger text-sm mt-1 ml-5">{createError}</p>
-              )}
+              {createError && <p className="text-wavis-danger text-sm mt-1 ml-5">{createError}</p>}
             </div>
           )}
 
@@ -328,7 +343,7 @@ export default function ChannelsList() {
                     setJoinSuccess(false);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleJoin();
+                    if (e.key === 'Enter') void handleJoin();
                   }}
                   disabled={joinBusy}
                   className="flex-1 min-w-0 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text disabled:opacity-40 disabled:cursor-not-allowed"
@@ -336,19 +351,17 @@ export default function ChannelsList() {
                   aria-label="Invite code"
                 />
                 <button
-                  onClick={handleJoin}
+                  onClick={() => {
+                    void handleJoin();
+                  }}
                   disabled={joinBusy || !joinCode.trim()}
                   className="shrink-0 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   /join
                 </button>
               </div>
-              {joinSuccess && (
-                <p className="text-wavis-accent text-sm mt-1 ml-5">joined!</p>
-              )}
-              {joinError && (
-                <p className="text-wavis-danger text-sm mt-1 ml-5">{joinError}</p>
-              )}
+              {joinSuccess && <p className="text-wavis-accent text-sm mt-1 ml-5">joined!</p>}
+              {joinError && <p className="text-wavis-danger text-sm mt-1 ml-5">{joinError}</p>}
             </div>
           )}
         </div>
@@ -368,15 +381,21 @@ export default function ChannelsList() {
         />
         <CmdButton
           label="/refresh"
-          onClick={() => loadChannels(true)}
+          onClick={() => {
+            void loadChannels(true);
+          }}
         />
         <CmdButton
           label="/direct"
-          onClick={() => navigate('/legacy')}
+          onClick={() => {
+            void navigate('/legacy');
+          }}
         />
         <CmdButton
           label="/profile"
-          onClick={() => navigate('/settings')}
+          onClick={() => {
+            void navigate('/settings');
+          }}
         />
       </div>
     </div>

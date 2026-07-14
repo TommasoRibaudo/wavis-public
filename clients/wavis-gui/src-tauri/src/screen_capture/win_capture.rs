@@ -135,6 +135,16 @@ pub struct WindowsNativeCaptureTiming {
     pub first_raw_to_pollable_frame_ms: Option<u64>,
 }
 
+pub struct PollableFrameTiming {
+    pub cap_downscale_ms: u64,
+    pub i420_convert_ms: u64,
+    pub rgba_to_rgb_ms: u64,
+    pub jpeg_encode_ms: u64,
+    pub base64_encode_ms: u64,
+    pub latest_frame_write_ms: u64,
+    pub raw_to_pollable_frame_ms: u64,
+}
+
 impl WindowsNativeCaptureDiagnostics {
     pub fn new(backend: &str, source_kind: &str, item_width: u32, item_height: u32) -> Self {
         Self {
@@ -212,18 +222,18 @@ impl WindowsNativeCaptureDiagnostics {
             return;
         }
         let elapsed_s = elapsed_ms as f64 / 1000.0;
-        self.raw_backend_callback_fps = self
-            .frame_arrived_callbacks
-            .saturating_sub(self.interval_frame_arrived_callbacks) as f64
-            / elapsed_s;
-        self.emitted_pollable_frame_fps = self
-            .emitted_pollable_frames
-            .saturating_sub(self.interval_emitted_pollable_frames) as f64
-            / elapsed_s;
-        self.throttle_drop_fps = self
-            .throttle_drop_count
-            .saturating_sub(self.interval_throttle_drop_count) as f64
-            / elapsed_s;
+        self.raw_backend_callback_fps =
+            self.frame_arrived_callbacks
+                .saturating_sub(self.interval_frame_arrived_callbacks) as f64
+                / elapsed_s;
+        self.emitted_pollable_frame_fps =
+            self.emitted_pollable_frames
+                .saturating_sub(self.interval_emitted_pollable_frames) as f64
+                / elapsed_s;
+        self.throttle_drop_fps =
+            self.throttle_drop_count
+                .saturating_sub(self.interval_throttle_drop_count) as f64
+                / elapsed_s;
         self.interval_started_at_ms = now;
         self.interval_frame_arrived_callbacks = self.frame_arrived_callbacks;
         self.interval_emitted_pollable_frames = self.emitted_pollable_frames;
@@ -240,28 +250,25 @@ impl WindowsNativeCaptureDiagnostics {
         self.refresh_interval_rates();
     }
 
-    pub fn record_pollable_frame_timing(
-        &mut self,
-        cap_downscale_ms: u64,
-        i420_convert_ms: u64,
-        rgba_to_rgb_ms: u64,
-        jpeg_encode_ms: u64,
-        base64_encode_ms: u64,
-        latest_frame_write_ms: u64,
-        raw_to_pollable_frame_ms: u64,
-    ) {
+    pub fn record_pollable_frame_timing(&mut self, timing: PollableFrameTiming) {
         self.emitted_pollable_frames = self.emitted_pollable_frames.saturating_add(1);
         let n = self.emitted_pollable_frames as f64;
         let update = |avg: &mut f64, value: u64| {
             *avg = ((*avg * (n - 1.0)) + value as f64) / n;
         };
-        update(&mut self.cap_downscale_avg_ms, cap_downscale_ms);
-        update(&mut self.i420_convert_avg_ms, i420_convert_ms);
-        update(&mut self.rgba_to_rgb_avg_ms, rgba_to_rgb_ms);
-        update(&mut self.jpeg_encode_avg_ms, jpeg_encode_ms);
-        update(&mut self.base64_encode_avg_ms, base64_encode_ms);
-        update(&mut self.latest_frame_write_avg_ms, latest_frame_write_ms);
-        update(&mut self.raw_to_pollable_frame_avg_ms, raw_to_pollable_frame_ms);
+        update(&mut self.cap_downscale_avg_ms, timing.cap_downscale_ms);
+        update(&mut self.i420_convert_avg_ms, timing.i420_convert_ms);
+        update(&mut self.rgba_to_rgb_avg_ms, timing.rgba_to_rgb_ms);
+        update(&mut self.jpeg_encode_avg_ms, timing.jpeg_encode_ms);
+        update(&mut self.base64_encode_avg_ms, timing.base64_encode_ms);
+        update(
+            &mut self.latest_frame_write_avg_ms,
+            timing.latest_frame_write_ms,
+        );
+        update(
+            &mut self.raw_to_pollable_frame_avg_ms,
+            timing.raw_to_pollable_frame_ms,
+        );
         self.refresh_interval_rates();
     }
 
@@ -283,12 +290,7 @@ impl WindowsNativeCaptureDiagnostics {
         );
     }
 
-    pub fn record_startup_stage(
-        &mut self,
-        stage: &str,
-        current_operation: &str,
-        elapsed_ms: u64,
-    ) {
+    pub fn record_startup_stage(&mut self, stage: &str, current_operation: &str, elapsed_ms: u64) {
         self.startup_stage = stage.to_string();
         self.current_operation = current_operation.to_string();
         self.startup_elapsed_ms = Some(elapsed_ms);
@@ -1588,7 +1590,7 @@ impl Drop for WinCapture {
 
 #[cfg(test)]
 mod tests {
-    use super::{staging_texture_matches, WindowsNativeCaptureDiagnostics};
+    use super::{staging_texture_matches, PollableFrameTiming, WindowsNativeCaptureDiagnostics};
 
     #[test]
     fn staging_texture_is_reused_only_for_matching_dimensions_and_format() {
@@ -1683,8 +1685,24 @@ mod tests {
         diag.record_backend_callback();
         diag.record_backend_callback();
         diag.record_throttle_drop();
-        diag.record_pollable_frame_timing(1, 2, 3, 4, 5, 6, 7);
-        diag.record_pollable_frame_timing(3, 4, 5, 6, 7, 8, 9);
+        diag.record_pollable_frame_timing(PollableFrameTiming {
+            cap_downscale_ms: 1,
+            i420_convert_ms: 2,
+            rgba_to_rgb_ms: 3,
+            jpeg_encode_ms: 4,
+            base64_encode_ms: 5,
+            latest_frame_write_ms: 6,
+            raw_to_pollable_frame_ms: 7,
+        });
+        diag.record_pollable_frame_timing(PollableFrameTiming {
+            cap_downscale_ms: 3,
+            i420_convert_ms: 4,
+            rgba_to_rgb_ms: 5,
+            jpeg_encode_ms: 6,
+            base64_encode_ms: 7,
+            latest_frame_write_ms: 8,
+            raw_to_pollable_frame_ms: 9,
+        });
 
         assert_eq!(diag.frame_arrived_callbacks, 2);
         assert_eq!(diag.throttle_drop_count, 1);

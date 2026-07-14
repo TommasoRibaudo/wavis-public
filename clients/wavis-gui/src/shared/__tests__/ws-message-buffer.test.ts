@@ -76,11 +76,7 @@ describe('WsMessageBuffer', () => {
     buffer.record('sent', { type: 'c' });
     buffer.record('sent', { type: 'd' });
 
-    expect(buffer.snapshot()).toEqual([
-      '[12:00:00] → {b}',
-      '[12:00:00] → {c}',
-      '[12:00:00] → {d}',
-    ]);
+    expect(buffer.snapshot()).toEqual(['[12:00:00] → {b}', '[12:00:00] → {c}', '[12:00:00] → {d}']);
   });
 
   it('snapshot does not clear buffered messages', () => {
@@ -100,10 +96,7 @@ describe('WsMessageBuffer', () => {
     buffer.record('sent', { type: 'ping' });
     buffer.record('received', { type: 'pong' });
 
-    expect(buffer.drain()).toEqual([
-      '[12:00:00] → {ping}',
-      '[12:00:00] ← {pong}',
-    ]);
+    expect(buffer.drain()).toEqual(['[12:00:00] → {ping}', '[12:00:00] ← {pong}']);
     expect(buffer.snapshot()).toEqual([]);
   });
 

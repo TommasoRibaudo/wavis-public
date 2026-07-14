@@ -659,8 +659,7 @@ async fn main() -> io::Result<()> {
         )
         .route(
             "/admin/bug-report/bans/{user_id}",
-            post(diagnostics::admin_routes::ban_user)
-                .delete(diagnostics::admin_routes::unban_user),
+            post(diagnostics::admin_routes::ban_user).delete(diagnostics::admin_routes::unban_user),
         );
 
     if debug_routes_enabled {
@@ -869,7 +868,8 @@ use ec2_control::trigger_ec2_stop;
 /// LIVEKIT_API_KEY/SECRET, refresh threshold is 75% of LIVEKIT_TOKEN_TTL_SECS (450s).
 pub fn spawn_token_refresh_monitor(app_state: AppState) {
     use crate::auth::jwt::{
-        LIVEKIT_TOKEN_TTL_SECS, TOKEN_TTL_SECS, sign_livekit_token, sign_media_token,
+        LIVEKIT_TOKEN_TTL_SECS, TOKEN_TTL_SECS, livekit_identity, sign_livekit_token,
+        sign_media_token,
     };
     use shared::signaling::{MediaTokenPayload, SignalingMessage};
 
@@ -918,14 +918,14 @@ pub fn spawn_token_refresh_monitor(app_state: AppState) {
 
                 for peer_id in peers {
                     let token_result = if is_livekit_mode {
-                        let display_name = participants
-                            .iter()
-                            .find(|p| p.participant_id == peer_id)
+                        let participant = participants.iter().find(|p| p.participant_id == peer_id);
+                        let display_name = participant
                             .map(|p| p.display_name.as_str())
                             .unwrap_or(&peer_id);
+                        let user_id = participant.and_then(|p| p.user_id.as_deref());
                         sign_livekit_token(
                             &room_id,
-                            &peer_id,
+                            livekit_identity(&peer_id, user_id),
                             display_name,
                             &livekit_api_key,
                             &livekit_api_secret,

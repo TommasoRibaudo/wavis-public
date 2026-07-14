@@ -1,14 +1,27 @@
-use anyhow::{Context, anyhow};
+#[cfg(not(windows))]
+use anyhow::Context;
+use anyhow::anyhow;
+#[cfg(not(windows))]
 use aws_config::BehaviorVersion;
+#[cfg(not(windows))]
 use aws_sdk_ec2::Client;
+#[cfg(not(windows))]
 use aws_sdk_ec2::config::Region;
+#[cfg(not(windows))]
 use aws_sdk_ec2::types::InstanceStateName;
+#[cfg(not(windows))]
 use tokio::sync::OnceCell;
 
+#[cfg(not(windows))]
 pub struct Ec2InstanceController {
     client: OnceCell<Client>,
     instance_id: String,
     region: Option<String>,
+}
+
+#[cfg(windows)]
+pub struct Ec2InstanceController {
+    instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +34,7 @@ pub enum Ec2InstanceState {
 }
 
 impl Ec2InstanceController {
+    #[cfg(not(windows))]
     pub fn new(instance_id: String) -> Self {
         Self {
             client: OnceCell::new(),
@@ -29,6 +43,12 @@ impl Ec2InstanceController {
         }
     }
 
+    #[cfg(windows)]
+    pub fn new(instance_id: String) -> Self {
+        Self { instance_id }
+    }
+
+    #[cfg(not(windows))]
     async fn client(&self) -> &Client {
         self.client
             .get_or_init(|| async {
@@ -42,6 +62,7 @@ impl Ec2InstanceController {
             .await
     }
 
+    #[cfg(not(windows))]
     pub async fn start_instance(&self) -> Result<(), anyhow::Error> {
         self.client()
             .await
@@ -54,6 +75,15 @@ impl Ec2InstanceController {
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub async fn start_instance(&self) -> Result<(), anyhow::Error> {
+        Err(anyhow!(
+            "EC2 control is not available on Windows builds for instance {}",
+            self.instance_id
+        ))
+    }
+
+    #[cfg(not(windows))]
     pub async fn stop_instance(&self) -> Result<(), anyhow::Error> {
         self.client()
             .await
@@ -66,6 +96,15 @@ impl Ec2InstanceController {
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub async fn stop_instance(&self) -> Result<(), anyhow::Error> {
+        Err(anyhow!(
+            "EC2 control is not available on Windows builds for instance {}",
+            self.instance_id
+        ))
+    }
+
+    #[cfg(not(windows))]
     pub async fn describe_state(&self) -> Result<Ec2InstanceState, anyhow::Error> {
         let output = self
             .client()
@@ -95,6 +134,14 @@ impl Ec2InstanceController {
             InstanceStateName::Stopping => Ec2InstanceState::Stopping,
             other => Ec2InstanceState::Other(format!("{other:?}")),
         })
+    }
+
+    #[cfg(windows)]
+    pub async fn describe_state(&self) -> Result<Ec2InstanceState, anyhow::Error> {
+        Err(anyhow!(
+            "EC2 control is not available on Windows builds for instance {}",
+            self.instance_id
+        ))
     }
 }
 

@@ -1,0 +1,5 @@
+node_modules/
+*.png
+test-results/
+playwright-report/
+debug-tokens.txt

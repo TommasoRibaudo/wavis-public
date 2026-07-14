@@ -742,8 +742,9 @@ async fn integration_late_joiner_receives_share_state() {
         "should have exactly one ShareState for late joiner"
     );
 
-    if let SignalingMessage::ShareState(ShareStatePayload { participant_ids, .. }) =
-        &share_state_signals[0].msg
+    if let SignalingMessage::ShareState(ShareStatePayload {
+        participant_ids, ..
+    }) = &share_state_signals[0].msg
     {
         let received_set: HashSet<String> = participant_ids.iter().cloned().collect();
         let mut expected = HashSet::new();

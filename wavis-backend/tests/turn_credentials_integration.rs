@@ -4,13 +4,13 @@
 //! configuration, plus the shared credential builder used to assemble the
 //! payload handed to clients.
 
+use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use proptest::prelude::*;
 use shared::signaling::{AuthPayload, JoinPayload, RoomCreatedPayload, SignalingMessage};
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing_subscriber::fmt::MakeWriter;
-use async_trait::async_trait;
 use uuid::Uuid;
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -278,12 +278,7 @@ fn collect_joined(signals: Vec<OutboundSignal>, peer_id: &str) -> Vec<SignalingM
         .collect()
 }
 
-fn inject_turn(
-    signals: &mut [OutboundSignal],
-    peer_id: &str,
-    config: &TurnConfig,
-    now_unix: u64,
-) {
+fn inject_turn(signals: &mut [OutboundSignal], peer_id: &str, config: &TurnConfig, now_unix: u64) {
     let creds = generate_turn_credentials(peer_id, config, now_unix);
     let ice_payload = build_ice_config_payload(config, &creds);
     for signal in signals.iter_mut() {
@@ -446,7 +441,11 @@ async fn auth_then_join_includes_ice_config_when_turn_loaded() {
     inject_turn(&mut signals, "peer1234", turn_config, TEST_NOW_UNIX);
 
     let joined_msgs = collect_joined(signals, "peer1234");
-    assert_eq!(joined_msgs.len(), 1, "exactly one joined signal is expected");
+    assert_eq!(
+        joined_msgs.len(),
+        1,
+        "exactly one joined signal is expected"
+    );
 
     let ice_config = match &joined_msgs[0] {
         SignalingMessage::Joined(payload) => payload

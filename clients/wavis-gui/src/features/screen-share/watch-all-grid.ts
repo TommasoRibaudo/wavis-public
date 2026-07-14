@@ -78,14 +78,12 @@ export function computeGridLayout(
     }
   }
 
-  const currentLayout = currentColumns && currentColumns >= 1 && currentColumns <= shareCount
-    ? scoreLayout(shareCount, containerWidth, containerHeight, currentColumns)
-    : null;
+  const currentLayout =
+    currentColumns && currentColumns >= 1 && currentColumns <= shareCount
+      ? scoreLayout(shareCount, containerWidth, containerHeight, currentColumns)
+      : null;
 
-  if (
-    currentLayout &&
-    bestLayout.videoArea <= currentLayout.videoArea * LAYOUT_SWITCH_THRESHOLD
-  ) {
+  if (currentLayout && bestLayout.videoArea <= currentLayout.videoArea * LAYOUT_SWITCH_THRESHOLD) {
     return currentLayout;
   }
 
@@ -134,7 +132,7 @@ function computeWatchAllOccupiedArea(
   }
 
   const naturalTotalHeight = rowAspectSums.reduce(
-    (acc, rowAspectSum) => acc + (containerWidth / rowAspectSum),
+    (acc, rowAspectSum) => acc + containerWidth / rowAspectSum,
     0,
   );
   if (naturalTotalHeight <= 0) {
@@ -179,7 +177,7 @@ export function computeWatchAllLayout(
   let bestMask = 0; // bit i=1 means "split after stream i"
 
   // 2^(N-1) ordered partitions, N ≤ 5 → at most 16 iterations.
-  for (let mask = 0; mask < (1 << (n - 1)); mask++) {
+  for (let mask = 0; mask < 1 << (n - 1); mask++) {
     const rowAspectSums: number[] = [];
     let rowStart = 0;
 

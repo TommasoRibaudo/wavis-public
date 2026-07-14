@@ -78,7 +78,10 @@ export default function ChangePhrase() {
                 type="password"
                 placeholder="current password"
                 value={currentPhrase}
-                onChange={(e) => { setCurrentPhrase(e.target.value); setError(null); }}
+                onChange={(e) => {
+                  setCurrentPhrase(e.target.value);
+                  setError(null);
+                }}
                 onKeyDown={handleKeyDown}
                 disabled={submitting}
                 className="flex-1 min-w-0 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text disabled:opacity-40 disabled:cursor-not-allowed"
@@ -98,7 +101,10 @@ export default function ChangePhrase() {
                 type="password"
                 placeholder="new password (at least 4 characters)"
                 value={newPhrase}
-                onChange={(e) => { setNewPhrase(e.target.value); setError(null); }}
+                onChange={(e) => {
+                  setNewPhrase(e.target.value);
+                  setError(null);
+                }}
                 onKeyDown={handleKeyDown}
                 disabled={submitting}
                 className="flex-1 min-w-0 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text disabled:opacity-40 disabled:cursor-not-allowed"
@@ -116,9 +122,7 @@ export default function ChangePhrase() {
             {submitting ? 'changing...' : '/change-phrase'}
           </button>
 
-          {error && (
-            <p className="text-wavis-danger text-sm mt-4">{error}</p>
-          )}
+          {error && <p className="text-wavis-danger text-sm mt-4">{error}</p>}
 
           {success && (
             <p className="text-wavis-accent text-sm mt-4">Password changed successfully.</p>

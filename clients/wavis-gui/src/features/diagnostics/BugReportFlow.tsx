@@ -2,11 +2,7 @@ import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react
 
 import type { CapturedContext, BugReportPayload } from './bug-report';
 import { captureAllContext, isScreenshotTooLarge, submitBugReport } from './bug-report';
-import {
-  analyzeBugReport,
-  generateIssueBody,
-  buildOfflineIssueBody,
-} from './llm-client';
+import { analyzeBugReport, generateIssueBody, buildOfflineIssueBody } from './llm-client';
 import type { LlmAnalysis, QaPair } from './llm-client';
 import ScreenshotRedactor from './ScreenshotRedactor';
 
@@ -57,9 +53,7 @@ export function truncateTitle(title: string): string {
   return title.length > MAX_TITLE_CHARS ? title.slice(0, MAX_TITLE_CHARS).trimEnd() : title;
 }
 
-export function truncateIssueBody(
-  body: string,
-): string {
+export function truncateIssueBody(body: string): string {
   return body.length > MAX_ISSUE_BODY_CHARS
     ? body.slice(0, MAX_ISSUE_BODY_CHARS) + DEFAULT_TRUNCATION_NOTICE
     : body;
@@ -167,11 +161,13 @@ function buildOfflineFormBody(
     description,
     context,
     form.stepsToReproduce
-      ? [[
-          { question: 'Steps to reproduce', answer: form.stepsToReproduce },
-          { question: 'Expected behavior', answer: form.expectedBehavior },
-          { question: 'Actual behavior', answer: form.actualBehavior },
-        ]]
+      ? [
+          [
+            { question: 'Steps to reproduce', answer: form.stepsToReproduce },
+            { question: 'Expected behavior', answer: form.expectedBehavior },
+            { question: 'Actual behavior', answer: form.actualBehavior },
+          ],
+        ]
       : [],
     form.category || 'other',
   );
@@ -226,7 +222,12 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     setCurrentAnswers({});
     setLlmRound(0);
     setLlmLoading(false);
-    setOfflineForm({ category: 'other', stepsToReproduce: '', expectedBehavior: '', actualBehavior: '' });
+    setOfflineForm({
+      category: 'other',
+      stepsToReproduce: '',
+      expectedBehavior: '',
+      actualBehavior: '',
+    });
     setIssueTitle('');
     setIssueBody('');
     setCategory('other');
@@ -240,9 +241,12 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     if (step !== 'capture') return;
     let cancelled = false;
 
-    (async () => {
+    void (async () => {
       try {
         const captured = await captureAllContext(preScreenshot);
+        // Cleanup below flips `cancelled` from a separate closure if `step`
+        // changes or this unmounts while the capture is still in flight.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (cancelled) return;
         setContext(captured);
 
@@ -253,6 +257,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
         }
       } catch (err) {
         console.warn(LOG_PREFIX, 'Context capture failed:', err);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (cancelled) return;
         // Proceed with empty context
         setContext({
@@ -265,7 +270,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
             wsStatus: 'unknown',
             voiceRoomState: null,
             audioDevices: { input: null, output: null },
-            platform: navigator.platform ?? 'unknown',
+            platform: navigator.platform,
             appVersion: 'unknown',
           },
           capturedAt: new Date().toISOString(),
@@ -274,7 +279,9 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [step, preScreenshot]);
 
   /* ── Focus description input when entering describe step ────────── */
@@ -336,10 +343,16 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       setCategory(result.category);
       setLlmRound(1);
       const answers: Record<number, string> = {};
-      result.questions.forEach((_, i) => { answers[i] = ''; });
+      result.questions.forEach((_, i) => {
+        answers[i] = '';
+      });
       setCurrentAnswers(answers);
     } catch (err) {
-      console.warn(LOG_PREFIX, 'Server LLM analysis unavailable, falling back to offline mode:', err);
+      console.warn(
+        LOG_PREFIX,
+        'Server LLM analysis unavailable, falling back to offline mode:',
+        err,
+      );
       setIsOfflineMode(true);
       setAnalysis(null);
     } finally {
@@ -348,6 +361,35 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
   }, [description, context]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Step 4: Questionnaire submit ───────────────────────────────── */
+  const generatePreview = useCallback(
+    async (rounds: QaPair[][]) => {
+      if (!context) return;
+
+      if (!isOfflineMode) {
+        setLlmLoading(true);
+        try {
+          const result = await generateIssueBody(description, context, rounds, category);
+          setIssueTitle(result.title);
+          setIssueBody(result.body);
+        } catch (err) {
+          console.warn(LOG_PREFIX, 'Issue body generation failed, using offline format:', err);
+          const body = buildOfflineIssueBody(description, context, rounds, category);
+          setIssueTitle(truncateTitle(`Bug Report: ${description}`));
+          setIssueBody(body);
+        } finally {
+          setLlmLoading(false);
+        }
+      } else {
+        const body = buildOfflineIssueBody(description, context, rounds, category);
+        setIssueTitle(truncateTitle(`Bug Report: ${description}`));
+        setIssueBody(body);
+      }
+
+      setStep('preview');
+    },
+    [context, description, category, isOfflineMode],
+  );
+
   const handleQuestionnaireSubmit = useCallback(async () => {
     if (isOfflineMode) {
       // Offline mode: go straight to preview
@@ -378,7 +420,9 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
         setAnalysis(result);
         setLlmRound(2);
         const newAnswers: Record<number, string> = {};
-        result.questions.forEach((_, i) => { newAnswers[i] = ''; });
+        result.questions.forEach((_, i) => {
+          newAnswers[i] = '';
+        });
         setCurrentAnswers(newAnswers);
       } catch (err) {
         console.warn(LOG_PREFIX, 'Second LLM round failed:', err);
@@ -391,33 +435,17 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
       // No more rounds — generate preview
       await generatePreview(newRounds);
     }
-  }, [isOfflineMode, context, description, offlineForm, analysis, currentAnswers, qaRounds, llmRound]);
-
-  const generatePreview = useCallback(async (rounds: QaPair[][]) => {
-    if (!context) return;
-
-    if (!isOfflineMode) {
-      setLlmLoading(true);
-      try {
-        const result = await generateIssueBody(description, context, rounds, category);
-        setIssueTitle(result.title);
-        setIssueBody(result.body);
-      } catch (err) {
-        console.warn(LOG_PREFIX, 'Issue body generation failed, using offline format:', err);
-        const body = buildOfflineIssueBody(description, context, rounds, category);
-        setIssueTitle(truncateTitle(`Bug Report: ${description}`));
-        setIssueBody(body);
-      } finally {
-        setLlmLoading(false);
-      }
-    } else {
-      const body = buildOfflineIssueBody(description, context, rounds, category);
-      setIssueTitle(truncateTitle(`Bug Report: ${description}`));
-      setIssueBody(body);
-    }
-
-    setStep('preview');
-  }, [context, description, category, isOfflineMode]);
+  }, [
+    isOfflineMode,
+    context,
+    description,
+    offlineForm,
+    analysis,
+    currentAnswers,
+    qaRounds,
+    llmRound,
+    generatePreview,
+  ]);
 
   /* ── Step 5: Submit ────────────────────────────────────────────── */
   const handleSubmit = useCallback(async () => {
@@ -434,10 +462,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
 
       if (measureBugReportPayloadChars(basePayload) > MAX_SUBMISSION_JSON_CHARS) {
         const fixedChars = measureBugReportPayloadChars({ ...basePayload, body: '' });
-        const maxBodyChars = Math.max(
-          0,
-          MAX_SUBMISSION_JSON_CHARS - fixedChars,
-        );
+        const maxBodyChars = Math.max(0, MAX_SUBMISSION_JSON_CHARS - fixedChars);
         submissionBody = truncateTextToBudget(
           submissionBody,
           maxBodyChars,
@@ -531,19 +556,25 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
     setStep('preview');
   }, []);
 
-  const handleIssueLinkClick = useCallback(async (event: MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
+  const handleIssueLinkClick = useCallback(
+    async (event: MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
 
-    try {
-      await openExternalLink(issueUrl);
-    } catch (err) {
-      console.error(LOG_PREFIX, 'Failed to open issue URL:', err);
-    }
-  }, [issueUrl]);
+      try {
+        await openExternalLink(issueUrl);
+      } catch (err) {
+        console.error(LOG_PREFIX, 'Failed to open issue URL:', err);
+      }
+    },
+    [issueUrl],
+  );
 
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
-    <div data-bug-report-modal className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-overlay-base/80 font-mono text-wavis-text">
+    <div
+      data-bug-report-modal
+      className="fixed inset-0 z-50 flex items-center justify-center bg-wavis-overlay-base/80 font-mono text-wavis-text"
+    >
       <div
         className="bg-wavis-panel border border-wavis-text-secondary w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
         onClick={(e) => e.stopPropagation()}
@@ -623,17 +654,19 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
               >
                 <p className="text-sm text-wavis-text font-bold mb-1">Quick Send</p>
                 <p className="text-xs text-wavis-text-secondary leading-relaxed">
-                  Submits your description immediately with diagnostic logs attached. No extra steps.
+                  Submits your description immediately with diagnostic logs attached. No extra
+                  steps.
                 </p>
               </button>
               <button
                 className="flex-1 text-left border border-wavis-accent p-3 hover:bg-wavis-accent/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                onClick={handleAiAssisted}
+                onClick={() => void handleAiAssisted()}
                 disabled={!validateDescription(description)}
               >
                 <p className="text-sm text-wavis-accent font-bold mb-1">AI-Assisted</p>
                 <p className="text-xs text-wavis-text-secondary leading-relaxed">
-                  An AI analyzes your report, asks targeted follow-up questions, and generates a structured GitHub issue.
+                  An AI analyzes your report, asks targeted follow-up questions, and generates a
+                  structured GitHub issue.
                 </p>
               </button>
             </div>
@@ -658,7 +691,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
               <OfflineForm
                 form={offlineForm}
                 onChange={setOfflineForm}
-                onSubmit={handleQuestionnaireSubmit}
+                onSubmit={() => void handleQuestionnaireSubmit()}
               />
             )}
 
@@ -681,9 +714,13 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                             setCurrentAnswers((prev) => ({ ...prev, [i]: e.target.value }))
                           }
                         >
-                          <option value="" disabled>Select an option...</option>
+                          <option value="" disabled>
+                            Select an option...
+                          </option>
                           {q.options.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
                           ))}
                         </select>
                       ) : (
@@ -702,7 +739,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                 <div className="flex justify-end mt-3">
                   <button
                     className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1"
-                    onClick={handleQuestionnaireSubmit}
+                    onClick={() => void handleQuestionnaireSubmit()}
                   >
                     Next
                   </button>
@@ -717,9 +754,13 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
           <div>
             <p className="text-sm text-wavis-text-secondary mb-3">
               {reportMode === 'quick'
-                ? (context?.screenshot ? 'Step 3 of 3' : 'Step 2 of 2')
-                : (context?.screenshot ? 'Step 4 of 4' : 'Step 3 of 3')
-              } — Review &amp; Submit
+                ? context?.screenshot
+                  ? 'Step 3 of 3'
+                  : 'Step 2 of 2'
+                : context?.screenshot
+                  ? 'Step 4 of 4'
+                  : 'Step 3 of 3'}{' '}
+              — Review &amp; Submit
             </p>
 
             {llmLoading ? (
@@ -759,7 +800,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                   </button>
                   <button
                     className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-4 py-1"
-                    onClick={handleSubmit}
+                    onClick={() => void handleSubmit()}
                   >
                     Submit
                   </button>
@@ -789,7 +830,7 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-wavis-accent hover:underline break-all"
-                  onClick={handleIssueLinkClick}
+                  onClick={(event) => void handleIssueLinkClick(event)}
                 >
                   {issueUrl}
                 </a>
@@ -845,9 +886,7 @@ function OfflineForm({
 }) {
   return (
     <div className="space-y-3">
-      <p className="text-xs text-wavis-text-secondary">
-        Offline mode — LLM analysis unavailable
-      </p>
+      <p className="text-xs text-wavis-text-secondary">Offline mode — LLM analysis unavailable</p>
 
       <div>
         <label className="text-xs text-wavis-text-secondary block mb-1">Category</label>
@@ -857,7 +896,9 @@ function OfflineForm({
           onChange={(e) => onChange({ ...form, category: e.target.value })}
         >
           {OFFLINE_CATEGORIES.map((cat) => (
-            <option key={cat} value={cat}>{cat}</option>
+            <option key={cat} value={cat}>
+              {cat}
+            </option>
           ))}
         </select>
       </div>

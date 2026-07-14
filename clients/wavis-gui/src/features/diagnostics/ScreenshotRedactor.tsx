@@ -217,9 +217,7 @@ export default function ScreenshotRedactor({
 
   return (
     <div className="flex flex-col gap-3 font-mono">
-      <p className="text-wavis-accent text-sm">
-        &gt; Paint over sensitive areas to redact them
-      </p>
+      <p className="text-wavis-accent text-sm">&gt; Paint over sensitive areas to redact them</p>
 
       <div className="relative border border-wavis-text-secondary overflow-auto max-h-[60vh]">
         <canvas

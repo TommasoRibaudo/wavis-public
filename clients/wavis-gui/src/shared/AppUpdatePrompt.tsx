@@ -3,7 +3,10 @@ import type { Update } from '@tauri-apps/plugin-updater';
 import {
   checkForUpdate,
   installUpdateAndRelaunch,
+  leaveActiveVoiceRoomForUpdate,
   type UpdateProgress,
+  updateProgressLabel,
+  updateProgressPercent,
 } from './update-service';
 
 type PromptState =
@@ -11,28 +14,6 @@ type PromptState =
   | { kind: 'available'; update: Update }
   | { kind: 'installing'; update: Update; progress: UpdateProgress }
   | { kind: 'error'; message: string };
-
-async function leaveActiveVoiceRoom(): Promise<void> {
-  const { getState, leaveRoom } = await import('@features/voice/voice-room');
-  const state = getState();
-  const isActive =
-    state.machineState === 'active' ||
-    state.mediaState === 'connecting' ||
-    state.mediaState === 'connected';
-  if (isActive) {
-    leaveRoom();
-  }
-}
-
-function progressLabel(progress: UpdateProgress): string {
-  if (!progress.totalBytes) return 'Downloading update...';
-
-  const percent = Math.min(
-    100,
-    Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
-  );
-  return `Downloading update... ${percent}%`;
-}
 
 export default function AppUpdatePrompt() {
   const [promptState, setPromptState] = useState<PromptState>({ kind: 'idle' });
@@ -72,7 +53,7 @@ export default function AppUpdatePrompt() {
     });
 
     void (async () => {
-      await leaveActiveVoiceRoom();
+      await leaveActiveVoiceRoomForUpdate();
       await installUpdateAndRelaunch(update, (progress) => {
         setPromptState({ kind: 'installing', update, progress });
       });
@@ -86,13 +67,15 @@ export default function AppUpdatePrompt() {
 
   const body =
     promptState.kind === 'installing'
-      ? progressLabel(promptState.progress)
+      ? updateProgressLabel(promptState.progress)
       : promptState.kind === 'error'
         ? promptState.message
         : 'Install when you are ready to restart.';
 
   const isError = promptState.kind === 'error';
   const isInstalling = promptState.kind === 'installing';
+  const installPercent =
+    promptState.kind === 'installing' ? updateProgressPercent(promptState.progress) : null;
 
   return (
     <div className="fixed right-4 bottom-4 z-50 w-[min(360px,calc(100vw-2rem))] border border-wavis-text-secondary/30 bg-wavis-panel p-4 font-mono text-sm text-wavis-text shadow-2xl">
@@ -100,15 +83,13 @@ export default function AppUpdatePrompt() {
         <span className={isError ? 'text-wavis-danger' : 'text-wavis-accent'}>▸</span>
         <span className="font-semibold">{versionText}</span>
       </div>
-      <div className="mt-1 pl-5 text-wavis-text-secondary">
-        {body}
-      </div>
+      <div className="mt-1 pl-5 text-wavis-text-secondary">{body}</div>
       {isInstalling && promptState.progress.totalBytes != null && (
         <div className="mt-2 ml-5 h-1 overflow-hidden bg-wavis-text-secondary/20">
           <div
             className="h-full bg-wavis-accent transition-all duration-300"
             style={{
-              width: `${Math.min(100, Math.round((promptState.progress.downloadedBytes / promptState.progress.totalBytes) * 100))}%`,
+              width: `${installPercent ?? 0}%`,
             }}
           />
         </div>

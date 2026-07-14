@@ -34,10 +34,7 @@ export function formatHotkeyCombination(modifiers: string[], key: string): strin
  * Register the mute hotkey — called from connectMedia() success path.
  * Catches registration errors and re-throws with a user-friendly message.
  */
-export async function registerMuteHotkey(
-  hotkey: string,
-  onToggleMute: () => void,
-): Promise<void> {
+export async function registerMuteHotkey(hotkey: string, onToggleMute: () => void): Promise<void> {
   try {
     await register(hotkey, (event) => {
       // Only fire on key-down, not key-up
@@ -49,7 +46,7 @@ export async function registerMuteHotkey(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(LOG, `failed to register hotkey "${hotkey}":`, message);
-    throw new Error(`Hotkey conflict — choose a different combination`);
+    throw new Error(`Hotkey conflict — choose a different combination`, { cause: err });
   }
 }
 
@@ -74,10 +71,7 @@ export async function unregisterMuteHotkey(hotkey: string): Promise<void> {
  * Shortcut failure is non-fatal (Req 6.5) — the button/CLI entry points
  * remain available.
  */
-export async function registerWatchAllHotkey(
-  hotkey: string,
-  onToggle: () => void,
-): Promise<void> {
+export async function registerWatchAllHotkey(hotkey: string, onToggle: () => void): Promise<void> {
   try {
     await register(hotkey, (event) => {
       if (event.state === 'Pressed') {
@@ -110,10 +104,7 @@ export async function unregisterWatchAllHotkey(hotkey: string): Promise<void> {
  * Register the Focus Main hotkey — called from connectMedia() success path.
  * Non-fatal on failure (same policy as Watch All hotkey).
  */
-export async function registerFocusMainHotkey(
-  hotkey: string,
-  onFocus: () => void,
-): Promise<void> {
+export async function registerFocusMainHotkey(hotkey: string, onFocus: () => void): Promise<void> {
   try {
     await register(hotkey, (event) => {
       if (event.state === 'Pressed') {
