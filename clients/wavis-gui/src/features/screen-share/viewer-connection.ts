@@ -200,6 +200,11 @@ export class ViewerRoomConnection {
       // exactly the watched ScreenShare video publications, never room audio
       // (that stays in the main window's mixer) and never cameras.
       await room.connect(sfuUrl, token, { autoSubscribe: false });
+      // The guard above narrowed `this.disposed` to false and TS carries that
+      // narrowing across the await — but dispose() flips it from a separate call
+      // path (window closed) while this connect is in flight. Dropping the check
+      // would leak a connected Room after disposal.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (this.disposed || generation !== this.generation) {
         void room.disconnect();
         return;
@@ -377,7 +382,7 @@ export class ViewerRoomConnection {
 
     // Track may already be subscribed (e.g. re-watch after tile retry).
     const track = publication.track;
-    if (track && track.kind === Track.Kind.Video && track.mediaStreamTrack) {
+    if (track && track.kind === Track.Kind.Video) {
       this.deliverStream(identity, track.mediaStreamTrack);
     }
   }
@@ -386,7 +391,7 @@ export class ViewerRoomConnection {
     const participant = this.room?.remoteParticipants.get(identity);
     if (!participant) return;
     const publication = pickScreenSharePublication(participant);
-    publication?.setSubscribed?.(false);
+    publication?.setSubscribed(false);
   }
 
   private pinPublication(publication: ScreenSharePublicationLike): void {
