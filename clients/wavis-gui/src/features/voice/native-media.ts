@@ -10,7 +10,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MediaCallbacks } from './livekit-media';
-import type { CameraQuality } from './camera-types';
+import type { CameraQuality, CameraStartError } from './camera-types';
 import {
   getAudioInputDevice,
   getAudioOutputDevice,
@@ -180,7 +180,7 @@ export class NativeMediaModule {
         `saved ${kind} device unavailable; falling back to system default:`,
         reason,
       );
-      this.callbacks.onSystemEvent?.(`${kind} device unavailable, using system default`);
+      this.callbacks.onSystemEvent(`${kind} device unavailable, using system default`);
       await setStoreValue(
         kind === 'input' ? STORE_KEYS.audioInputDevice : STORE_KEYS.audioOutputDevice,
         '',
@@ -557,13 +557,16 @@ export class NativeMediaModule {
   }): Promise<{ trackId: string }> {
     const entry = this.createCameraCanvasEntry('local');
     if (!entry) {
-      throw { kind: 'device_unavailable' };
+      throw { kind: 'device_unavailable' } satisfies CameraStartError;
     }
 
     const track = entry.stream.getVideoTracks()[0] ?? null;
+    // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always
+    // defined even though an empty track array makes it genuinely undefined.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (!track) {
       this.disposeCameraCanvasEntry(entry);
-      throw { kind: 'device_unavailable' };
+      throw { kind: 'device_unavailable' } satisfies CameraStartError;
     }
 
     try {
@@ -742,7 +745,7 @@ export class NativeMediaModule {
     const entry = this.activeCameras.get(identity);
     if (!entry) return;
 
-    let payload: PolledCameraFrame | null = null;
+    let payload: PolledCameraFrame | null;
     try {
       payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
         identity,
@@ -759,7 +762,7 @@ export class NativeMediaModule {
   private async pollLocalCameraFrame(): Promise<void> {
     if (this.disposed || !this.localCamera) return;
     const entry = this.localCamera;
-    let payload: PolledCameraFrame | null = null;
+    let payload: PolledCameraFrame | null;
     try {
       payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
         lastSeq: entry.lastSeq,
@@ -844,7 +847,7 @@ export class NativeMediaModule {
     }
   }
 
-  private classifyNativeCameraError(err: unknown): { kind: string } {
+  private classifyNativeCameraError(err: unknown): CameraStartError {
     // Tauri invoke rejections are strings or structured objects, never
     // reliably Error instances — stringify objects so their fields still
     // participate in the keyword classification below.
