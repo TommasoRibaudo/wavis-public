@@ -27,7 +27,7 @@ function parseHashParams(): VideoPopoutParams | null {
   try {
     const hash = window.location.hash.slice(1);
     if (!hash) return null;
-    return JSON.parse(decodeURIComponent(hash));
+    return JSON.parse(decodeURIComponent(hash)) as VideoPopoutParams;
   } catch {
     return null;
   }
@@ -226,6 +226,9 @@ export default function VideoPopoutPage() {
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
+      // Without noUncheckedIndexedAccess, TS types entries[0] as always-defined even
+      // though the ResizeObserverEntry array could theoretically be empty.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!entry) return;
       setGridSize({ width: entry.contentRect.width, height: entry.contentRect.height });
     });
@@ -264,7 +267,7 @@ export default function VideoPopoutPage() {
 
     return () => {
       for (const cleanup of cleanups) {
-        cleanup.then((fn) => fn());
+        void cleanup.then((fn) => fn());
       }
     };
   }, []);
@@ -275,7 +278,7 @@ export default function VideoPopoutPage() {
       await emit('camera-popout:closed', {});
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -288,7 +291,7 @@ export default function VideoPopoutPage() {
       ? computeGridLayout(tiles.length, gridSize.width, gridSize.height)
       : null;
   const handleClose = () => {
-    getCurrentWindow().close();
+    void getCurrentWindow().close();
   };
 
   return (
