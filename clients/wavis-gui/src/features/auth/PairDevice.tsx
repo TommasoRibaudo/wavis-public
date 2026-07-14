@@ -94,7 +94,7 @@ export default function PairDevice() {
       } catch {
         // Best-effort: pairing succeeded; local username sync can recover later.
       }
-      navigate('/', { replace: true });
+      void navigate('/', { replace: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to finish pairing';
       if (msg.includes('not yet approved') || msg.includes('pending')) {
@@ -247,7 +247,7 @@ export default function PairDevice() {
             <div className="flex items-center gap-2">
               <span className="text-wavis-accent shrink-0">&gt;</span>
               <input
-                ref={mode === 'approve' ? inputRef : undefined}
+                ref={inputRef}
                 type="text"
                 placeholder="pairing ID from new device"
                 value={approvePairingId}
@@ -315,7 +315,9 @@ export default function PairDevice() {
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs flex items-center justify-between">
         <span>Device pairing</span>
         <button
-          onClick={() => navigate('/setup')}
+          onClick={() => {
+            void navigate('/setup');
+          }}
           className="hover:text-wavis-text transition-colors"
         >
           ← /setup
