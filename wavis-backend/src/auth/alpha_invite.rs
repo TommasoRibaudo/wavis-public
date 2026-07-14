@@ -9,6 +9,13 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+type AlphaInviteRow = (
+    Uuid,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    i32,
+    i32,
+);
 
 const HASH_DOMAIN: &[u8] = b"alpha-invite:v1:";
 
@@ -50,13 +57,7 @@ pub async fn redeem_alpha_invite(
 ) -> Result<Uuid, AlphaInviteError> {
     let code_hash = hash_invite_code(code, pepper)?;
 
-    let row: Option<(
-        Uuid,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        i32,
-        i32,
-    )> = sqlx::query_as(
+    let row: Option<AlphaInviteRow> = sqlx::query_as(
         "SELECT invite_id, expires_at, disabled_at, max_redemptions, redemption_count \
              FROM alpha_invites \
              WHERE code_hash = $1 \
