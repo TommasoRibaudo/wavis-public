@@ -71,8 +71,15 @@ async fn register_test_user(pool: &PgPool) -> Uuid {
 }
 
 /// Sign an access token for a test user.
-fn sign_test_token(user_id: &Uuid) -> String {
-    sign_access_token(user_id, &Uuid::nil(), TEST_AUTH_SECRET, 3600, 0)
+/// The auth extractor validates device revocation status against the DB,
+/// so the token must carry the user's real registered device_id.
+async fn sign_test_token(pool: &PgPool, user_id: &Uuid) -> String {
+    let device_id: Uuid = sqlx::query_scalar("SELECT device_id FROM devices WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("device lookup failed");
+    sign_access_token(user_id, &device_id, TEST_AUTH_SECRET, 3600, 0)
         .expect("signing should succeed")
 }
 
@@ -244,7 +251,7 @@ async fn test_27_1_create_channel_happy_path() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (status, body) = send_json(
@@ -271,7 +278,7 @@ async fn test_27_1_create_channel_empty_name() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (status, body) = send_json(
@@ -296,7 +303,7 @@ async fn test_27_1_create_channel_name_too_long() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let long_name = "x".repeat(101);
@@ -339,7 +346,7 @@ async fn test_27_2_list_channels() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool.clone()));
 
     // Create two channels
@@ -376,7 +383,7 @@ async fn test_27_3_get_channel_detail() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -408,8 +415,8 @@ async fn test_27_3_get_channel_non_member() {
 
     let owner = register_test_user(&pool).await;
     let outsider = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let outsider_token = sign_test_token(&outsider);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let outsider_token = sign_test_token(&pool, &outsider).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -438,7 +445,7 @@ async fn test_27_3_get_channel_not_found() {
     truncate_tables(&pool).await;
 
     let user = register_test_user(&pool).await;
-    let token = sign_test_token(&user);
+    let token = sign_test_token(&pool, &user).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let fake_id = Uuid::new_v4();
@@ -458,7 +465,7 @@ async fn test_27_4_create_invite_happy_path() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -496,8 +503,8 @@ async fn test_27_4_create_invite_member_rejected() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel and invite member
@@ -559,8 +566,8 @@ async fn test_27_5_join_channel_happy_path() {
 
     let owner = register_test_user(&pool).await;
     let joiner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let joiner_token = sign_test_token(&joiner);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let joiner_token = sign_test_token(&pool, &joiner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -607,7 +614,7 @@ async fn test_27_5_join_invalid_code() {
     truncate_tables(&pool).await;
 
     let user = register_test_user(&pool).await;
-    let token = sign_test_token(&user);
+    let token = sign_test_token(&pool, &user).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (status, body) = send_json(
@@ -632,8 +639,8 @@ async fn test_27_5_join_already_member() {
 
     let owner = register_test_user(&pool).await;
     let joiner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let joiner_token = sign_test_token(&joiner);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let joiner_token = sign_test_token(&pool, &joiner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -691,8 +698,8 @@ async fn test_27_5_join_banned_user() {
 
     let owner = register_test_user(&pool).await;
     let target = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let target_token = sign_test_token(&target);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let target_token = sign_test_token(&pool, &target).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -758,7 +765,7 @@ async fn test_27_5_join_max_uses_exhausted() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
+    let owner_token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool.clone()));
 
     let (_, create_body) = send_json(
@@ -786,7 +793,7 @@ async fn test_27_5_join_max_uses_exhausted() {
 
     // First user joins (uses up the invite)
     let user1 = register_test_user(&pool).await;
-    let token1 = sign_test_token(&user1);
+    let token1 = sign_test_token(&pool, &user1).await;
     let (status, _) = send_json(
         &app,
         post_json(
@@ -800,7 +807,7 @@ async fn test_27_5_join_max_uses_exhausted() {
 
     // Second user tries â†’ invite exhausted
     let user2 = register_test_user(&pool).await;
-    let token2 = sign_test_token(&user2);
+    let token2 = sign_test_token(&pool, &user2).await;
     let (status, body) = send_json(
         &app,
         post_json(
@@ -826,8 +833,8 @@ async fn test_27_6_leave_channel_happy_path() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -887,7 +894,7 @@ async fn test_27_6_owner_cannot_leave() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -927,8 +934,8 @@ async fn test_27_7_ban_member_happy_path() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -986,9 +993,9 @@ async fn test_27_7_ban_member_role_rejected() {
     let owner = register_test_user(&pool).await;
     let member1 = register_test_user(&pool).await;
     let member2 = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member1_token = sign_test_token(&member1);
-    let member2_token = sign_test_token(&member2);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member1_token = sign_test_token(&pool, &member1).await;
+    let member2_token = sign_test_token(&pool, &member2).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1051,8 +1058,8 @@ async fn test_27_7_ban_owner_rejected() {
 
     let owner = register_test_user(&pool).await;
     let admin = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let admin_token = sign_test_token(&admin);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let admin_token = sign_test_token(&pool, &admin).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1117,7 +1124,7 @@ async fn test_27_7_self_ban_rejected() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1153,8 +1160,8 @@ async fn test_27_7_already_banned() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1223,8 +1230,8 @@ async fn test_27_8_unban_happy_path() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1287,8 +1294,8 @@ async fn test_27_8_unban_not_banned() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1343,9 +1350,9 @@ async fn test_27_8_unban_member_role_rejected() {
     let owner = register_test_user(&pool).await;
     let member1 = register_test_user(&pool).await;
     let member2 = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member1_token = sign_test_token(&member1);
-    let member2_token = sign_test_token(&member2);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member1_token = sign_test_token(&pool, &member1).await;
+    let member2_token = sign_test_token(&pool, &member2).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1422,8 +1429,8 @@ async fn test_27_9_change_role_happy_path() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1493,9 +1500,9 @@ async fn test_27_9_change_role_non_owner_rejected() {
     let owner = register_test_user(&pool).await;
     let admin = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let admin_token = sign_test_token(&admin);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let admin_token = sign_test_token(&pool, &admin).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1570,8 +1577,8 @@ async fn test_27_9_change_role_to_owner_rejected() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1627,8 +1634,8 @@ async fn test_27_9_change_role_unknown_role() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1686,7 +1693,7 @@ async fn test_27_10_revoke_invite_happy_path() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool.clone()));
 
     let (_, create_body) = send_json(
@@ -1723,7 +1730,7 @@ async fn test_27_10_revoke_invite_happy_path() {
 
     // Revoked invite should no longer work
     let joiner = register_test_user(&pool).await;
-    let joiner_token = sign_test_token(&joiner);
+    let joiner_token = sign_test_token(&pool, &joiner).await;
     let (status, body) = send_json(
         &app,
         post_json(
@@ -1745,8 +1752,8 @@ async fn test_27_10_revoke_invite_member_rejected() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1813,7 +1820,7 @@ async fn test_27_10_revoke_nonexistent_code() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1849,7 +1856,7 @@ async fn test_27_11_delete_channel_happy_path() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1884,8 +1891,8 @@ async fn test_27_11_delete_channel_non_owner() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let (_, create_body) = send_json(
@@ -1935,7 +1942,7 @@ async fn test_27_11_delete_nonexistent_channel() {
     truncate_tables(&pool).await;
 
     let user = register_test_user(&pool).await;
-    let token = sign_test_token(&user);
+    let token = sign_test_token(&pool, &user).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     let fake_id = Uuid::new_v4();
@@ -1954,7 +1961,7 @@ async fn test_27_12_channel_rate_limiting() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
 
     // Build AppState with a very tight rate limit (3 per 60s)
     let mut state = build_test_app_state(pool);
@@ -2023,8 +2030,8 @@ async fn test_list_bans_owner_gets_200_with_banned_list() {
         .execute(&pool)
         .await
         .expect("set username");
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel + add member
@@ -2092,9 +2099,9 @@ async fn test_list_bans_admin_gets_200() {
     let owner = register_test_user(&pool).await;
     let admin = register_test_user(&pool).await;
     let target = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let admin_token = sign_test_token(&admin);
-    let target_token = sign_test_token(&target);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let admin_token = sign_test_token(&pool, &admin).await;
+    let target_token = sign_test_token(&pool, &target).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel
@@ -2180,8 +2187,8 @@ async fn test_list_bans_member_gets_403() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel + add member
@@ -2234,8 +2241,8 @@ async fn test_list_bans_non_member_gets_403() {
 
     let owner = register_test_user(&pool).await;
     let outsider = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let outsider_token = sign_test_token(&outsider);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let outsider_token = sign_test_token(&pool, &outsider).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel (outsider never joins)
@@ -2267,7 +2274,7 @@ async fn test_list_bans_empty_returns_empty_array() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
+    let owner_token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel with no bans
@@ -2302,7 +2309,7 @@ async fn test_list_invites_owner_gets_200_with_active_invites() {
     truncate_tables(&pool).await;
 
     let owner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
+    let owner_token = sign_test_token(&pool, &owner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel
@@ -2365,8 +2372,8 @@ async fn test_list_invites_admin_gets_200() {
 
     let owner = register_test_user(&pool).await;
     let admin = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let admin_token = sign_test_token(&admin);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let admin_token = sign_test_token(&pool, &admin).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel
@@ -2433,8 +2440,8 @@ async fn test_list_invites_member_gets_403() {
 
     let owner = register_test_user(&pool).await;
     let member = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let member_token = sign_test_token(&member);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let member_token = sign_test_token(&pool, &member).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel + add member
@@ -2487,8 +2494,8 @@ async fn test_list_invites_excludes_exhausted() {
 
     let owner = register_test_user(&pool).await;
     let joiner = register_test_user(&pool).await;
-    let owner_token = sign_test_token(&owner);
-    let joiner_token = sign_test_token(&joiner);
+    let owner_token = sign_test_token(&pool, &owner).await;
+    let joiner_token = sign_test_token(&pool, &joiner).await;
     let app = build_channel_router(build_test_app_state(pool));
 
     // Create channel

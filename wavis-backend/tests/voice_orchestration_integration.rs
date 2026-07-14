@@ -449,8 +449,15 @@ fn build_voice_query_router(state: AppState) -> Router {
 }
 
 /// Sign an access token for a test user.
-fn sign_test_token(user_id: &Uuid) -> String {
-    sign_access_token(user_id, &Uuid::nil(), TEST_AUTH_SECRET, 3600, 0)
+/// The auth extractor validates device revocation status against the DB,
+/// so the token must carry the user's real registered device_id.
+async fn sign_test_token(pool: &PgPool, user_id: &Uuid) -> String {
+    let device_id: Uuid = sqlx::query_scalar("SELECT device_id FROM devices WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("device lookup failed");
+    sign_access_token(user_id, &device_id, TEST_AUTH_SECRET, 3600, 0)
         .expect("signing should succeed")
 }
 
@@ -480,7 +487,7 @@ fn prop14_voice_query_membership_gate() {
             let app_state = build_test_app_state(pool.clone());
             let app = build_voice_query_router(app_state);
 
-            let token = sign_test_token(&outsider);
+            let token = sign_test_token(&pool, &outsider).await;
             let uri = format!("/channels/{}/voice", channel_id);
 
             let req = Request::builder()
@@ -1285,7 +1292,7 @@ async fn prop15_voice_query_accuracy() {
     let app_state = build_test_app_state(pool.clone());
     let app = build_voice_query_router(app_state.clone());
 
-    let token = sign_test_token(&member);
+    let token = sign_test_token(&pool, &member).await;
     let uri = format!("/channels/{}/voice", channel_id);
 
     let req = Request::builder()
@@ -1335,7 +1342,11 @@ async fn prop15_voice_query_accuracy() {
         "peer-owner",
         "Owner",
         None,
-        true,
+        // supports_sub_rooms: false — legacy clients are auto-assigned to the
+        // default sub-room, which is what get_voice_status counts as "active".
+        // A sub-room-aware client stays unassigned ("lobby") until it explicitly
+        // joins a room, which is a different behavior this test isn't exercising.
+        false,
         6,
     )
     .await
@@ -1377,14 +1388,14 @@ async fn prop15_voice_query_accuracy() {
         "peer-member",
         "Member",
         None,
-        true,
+        false,
         6,
     )
     .await
     .expect("member join_voice should succeed");
 
     let app3 = build_voice_query_router(app_state.clone());
-    let owner_token = sign_test_token(&owner);
+    let owner_token = sign_test_token(&pool, &owner).await;
     let req3 = Request::builder()
         .method("GET")
         .uri(&uri)
@@ -2073,7 +2084,7 @@ async fn example_voice_query_no_active_room() {
 
     let app_state = build_test_app_state(pool.clone());
     let app = build_voice_query_router(app_state);
-    let token = sign_test_token(&owner);
+    let token = sign_test_token(&pool, &owner).await;
 
     let req = Request::builder()
         .method("GET")
@@ -2113,7 +2124,7 @@ async fn example_voice_query_non_member_forbidden() {
 
     let app_state = build_test_app_state(pool.clone());
     let app = build_voice_query_router(app_state);
-    let token = sign_test_token(&outsider);
+    let token = sign_test_token(&pool, &outsider).await;
 
     let req = Request::builder()
         .method("GET")

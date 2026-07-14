@@ -2,7 +2,7 @@ name: Workspace CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, pre-dev]
     paths:
       - 'wavis-backend/**'
       - 'shared/**'
@@ -33,9 +33,10 @@ env:
   # Disable debug info on CI — the symbol tables are what bloat linker memory,
   # not the code.  A single link of aws-sdk-ec2 + full backend with full debug
   # info exceeds the 7 GB GitHub Actions runner limit.  0 = no debug info.
+  # (CARGO_BUILD_JOBS=1 used to be a secondary OOM guard, but it serializes
+  # ALL compilation — not just linking — and multiplied CI time. debug=0 is
+  # what actually fixed the OOM.)
   CARGO_PROFILE_DEV_DEBUG: 0
-  # Limit to 1 parallel link job as a secondary guard against OOM.
-  CARGO_BUILD_JOBS: 1
   # Retry transient crates.io network failures (SSL EOF, timeout, etc).
   CARGO_NET_RETRY: 10
   CARGO_HTTP_TIMEOUT: 120
@@ -61,7 +62,9 @@ jobs:
       shared: ${{ steps.filter.outputs.shared }}
       clients: ${{ steps.filter.outputs.clients }}
       gui: ${{ steps.filter.outputs.gui }}
+      tauri: ${{ steps.filter.outputs.tauri }}
       cargo-root: ${{ steps.filter.outputs.cargo-root }}
+      backend-other: ${{ steps.filter.outputs.backend-other }}
       # Granular Backend Filters
       auth: ${{ steps.filter.outputs.auth }}
       voice: ${{ steps.filter.outputs.voice }}
@@ -86,6 +89,8 @@ jobs:
               - '!clients/wavis-gui/**'
             gui:
               - 'clients/wavis-gui/**'
+            tauri:
+              - 'clients/wavis-gui/src-tauri/**'
             cargo-root:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -136,24 +141,50 @@ jobs:
               - 'wavis-backend/src/main.rs'
               - 'wavis-backend/src/app_state.rs'
               - 'wavis-backend/src/state.rs'
+            # Backend paths NOT covered by any granular bucket above (chat,
+            # diagnostics, connections, ip, redaction, uncategorized tests…).
+            # When this matches, the full backend test suite runs — a hole in
+            # the granular filters must fail safe, not skip tests.
+            backend-other:
+              - 'wavis-backend/**'
+              - '!wavis-backend/src/auth/**'
+              - '!wavis-backend/src/voice/**'
+              - '!wavis-backend/src/channel/**'
+              - '!wavis-backend/src/abuse/**'
+              - '!wavis-backend/src/ws/**'
+              - '!wavis-backend/src/redaction.rs'
+              - '!wavis-backend/src/lib.rs'
+              - '!wavis-backend/src/main.rs'
+              - '!wavis-backend/src/app_state.rs'
+              - '!wavis-backend/src/state.rs'
+              - '!wavis-backend/tests/auth_integration.rs'
+              - '!wavis-backend/tests/ws_auth_integration.rs'
+              - '!wavis-backend/tests/jwt_validation.rs'
+              - '!wavis-backend/tests/device_integration.rs'
+              - '!wavis-backend/tests/pairing_integration.rs'
+              - '!wavis-backend/tests/recovery_integration.rs'
+              - '!wavis-backend/tests/voice_orchestration_integration.rs'
+              - '!wavis-backend/tests/voice_ws_integration.rs'
+              - '!wavis-backend/tests/sfu_relay_integration.rs'
+              - '!wavis-backend/tests/p2p_relay_integration.rs'
+              - '!wavis-backend/tests/turn_credentials_integration.rs'
+              - '!wavis-backend/tests/livekit_e2e_integration.rs'
+              - '!wavis-backend/tests/channel_integration.rs'
+              - '!wavis-backend/tests/channel_rest_integration.rs'
+              - '!wavis-backend/tests/invite_lifecycle_integration.rs'
+              - '!wavis-backend/tests/create_room_integration.rs'
+              - '!wavis-backend/tests/display_name_integration.rs'
+              - '!wavis-backend/tests/abuse_controls_integration.rs'
+              - '!wavis-backend/tests/signaling_relay_integration.rs'
+              - '!wavis-backend/tests/security_hardening_integration.rs'
+              - '!wavis-backend/tests/no_sensitive_logs.rs'
+              - '!wavis-backend/tests/authorization_matrix_integration.rs'
+              - '!wavis-backend/tests/screen_share_integration.rs'
+              - '!wavis-backend/tests/screen_share_ws_integration.rs'
 
 
-  # ── Secret scanning (gitleaks CLI, no license needed) ────────────────
-  gitleaks:
-    name: Gitleaks secret scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Install gitleaks
-        run: |
-          GITLEAKS_VERSION=8.21.2
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar xz -C /usr/local/bin gitleaks
-      - name: Run gitleaks
-        run: gitleaks detect --source . --verbose
-
+  # Secret scanning lives in secret-scan.yml (gitleaks-action, all PRs) —
+  # the duplicate gitleaks CLI job that used to live here was removed.
 
   # ── Rust build + test (backend, shared crate, client crates) ────────
   rust-test:
@@ -196,7 +227,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # pre-dev is the integration branch — saving there keeps PR caches
+          # fresh instead of pinning them to release-time main.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-dev' }}
 
       # Clippy first — its artifacts are reused by cargo test below,
       # minimising recompilation within the job.
@@ -216,6 +249,18 @@ jobs:
       - name: Full workspace tests
         if: github.ref == 'refs/heads/main' || needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true'
         run: cargo test $CI_PACKAGES
+
+      # Backend changed in a path no granular bucket covers (chat, diagnostics,
+      # connections, …) — run the whole backend suite rather than nothing.
+      - name: "Targeted Backend: Fallback (uncategorized paths)"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.backend-other == 'true'
+        run: cargo test -p wavis-backend
+
+      # Targeted runs only exercise --test binaries; unit tests in src/ must
+      # still run whenever any backend code changed.
+      - name: "Targeted Backend: Unit tests"
+        if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend-other != 'true'
+        run: cargo test -p wavis-backend --lib --bins
 
       - name: "Targeted Backend: Auth"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.auth == 'true'
@@ -277,6 +322,9 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('clients/wavis-gui/package-lock.json') }}
           restore-keys: ${{ runner.os }}-npm-
 
+      # npm install (not ci): package-lock.json is gitignored in this repo,
+      # so there is no lockfile for npm ci to install from. If the lockfile
+      # is ever committed, switch this to npm ci for reproducible installs.
       - name: Install GUI dependencies
         run: npm install --no-audit --no-fund
         working-directory: clients/wavis-gui
@@ -334,8 +382,10 @@ jobs:
         github.ref == 'refs/heads/main' ||
         needs.changes.outputs.core == 'true' ||
         needs.changes.outputs.shared == 'true' ||
+        needs.changes.outputs.backend-other == 'true' ||
         needs.changes.outputs.auth == 'true' ||
-        needs.changes.outputs.channel == 'true'
+        needs.changes.outputs.channel == 'true' ||
+        needs.changes.outputs.voice == 'true'
       )
 
     services:
@@ -379,5 +429,74 @@ jobs:
           shared-key: rust-${{ runner.os }}
           save-if: 'false'
 
-      - name: Run DB-dependent integration tests
-        run: cargo test -p wavis-backend --test auth_integration -- --ignored
+      # All Postgres-gated suites self-run migrations and isolate via table
+      # truncation / #[serial], so --test-threads=1 keeps them safe.
+      # --features test-support is required by channel_rest/voice_ws and
+      # harmless for the rest (keeps a single compile configuration).
+      - name: "DB tests: full suite"
+        if: >-
+          github.ref == 'refs/heads/main' ||
+          needs.changes.outputs.core == 'true' ||
+          needs.changes.outputs.shared == 'true' ||
+          needs.changes.outputs.backend-other == 'true'
+        run: cargo test -p wavis-backend --features test-support --test auth_integration --test device_integration --test pairing_integration --test recovery_integration --test cleanup_integration --test channel_integration --test channel_rest_integration --test voice_orchestration_integration --test voice_ws_integration -- --ignored --test-threads=1
+
+      - name: "DB tests: auth"
+        if: >-
+          github.ref != 'refs/heads/main' &&
+          needs.changes.outputs.core != 'true' &&
+          needs.changes.outputs.shared != 'true' &&
+          needs.changes.outputs.backend-other != 'true' &&
+          needs.changes.outputs.auth == 'true'
+        run: cargo test -p wavis-backend --features test-support --test auth_integration --test device_integration --test pairing_integration --test recovery_integration --test cleanup_integration -- --ignored --test-threads=1
+
+      - name: "DB tests: channel"
+        if: >-
+          github.ref != 'refs/heads/main' &&
+          needs.changes.outputs.core != 'true' &&
+          needs.changes.outputs.shared != 'true' &&
+          needs.changes.outputs.backend-other != 'true' &&
+          needs.changes.outputs.channel == 'true'
+        run: cargo test -p wavis-backend --features test-support --test channel_integration --test channel_rest_integration -- --ignored --test-threads=1
+
+      - name: "DB tests: voice"
+        if: >-
+          github.ref != 'refs/heads/main' &&
+          needs.changes.outputs.core != 'true' &&
+          needs.changes.outputs.shared != 'true' &&
+          needs.changes.outputs.backend-other != 'true' &&
+          needs.changes.outputs.voice == 'true'
+        run: cargo test -p wavis-backend --features test-support --test voice_orchestration_integration --test voice_ws_integration -- --ignored --test-threads=1
+
+
+  # ── Tauri Rust crate compile check (Windows) ────────────────────────
+  # src-tauri is sed-removed from every Linux job (needs GTK/WebKit there),
+  # so without this job a Rust compile error in the Tauri crate passes all
+  # PR CI and only surfaces in the Codemagic release build. Windows needs
+  # no system libs for Tauri — a plain cargo check catches it in minutes.
+  tauri-check:
+    name: Tauri crate check (Windows)
+    runs-on: windows-latest
+    needs: [changes]
+    if: needs.changes.outputs.tauri == 'true'
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-tauri-${{ runner.os }}
+          workspaces: '. -> target'
+
+      # tauri-build validates that frontendDist (../dist) exists at compile
+      # time. An empty directory is enough for cargo check — we are not
+      # bundling the frontend here.
+      - name: Create placeholder frontend dist
+        run: New-Item -ItemType Directory -Force clients/wavis-gui/dist | Out-Null
+
+      - name: Cargo check Tauri crate
+        run: cargo check -p wavis-gui --message-format=short
