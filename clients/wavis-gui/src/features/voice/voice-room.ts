@@ -328,6 +328,16 @@ export interface VoiceRoomState {
   roomPanelTab: 'logs' | 'video';
   /** Identities of remote participants currently in audio-only share mode. */
   audioOnlySharers: Set<string>;
+  /**
+   * Subset of audioOnlySharers whose membership came from an explicit
+   * audio_only share_started/share_state entry (a real, independent
+   * standalone-audio slot), as opposed to LiveKit's TrackSubscribed-based
+   * guess (onAudioOnlySharerAdded) made before any signaling confirms it.
+   * A later video-type share_started must not clear a confirmed entry (the
+   * two slots are independent), but should still correct an unconfirmed
+   * LiveKit guess once real signaling arrives.
+   */
+  confirmedAudioOnlySharers: Set<string>;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -890,6 +900,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   roomPanelManualOverride: null,
   roomPanelTab: 'logs',
   audioOnlySharers: new Set(),
+  confirmedAudioOnlySharers: new Set(),
 };
 
 let state: VoiceRoomState = {
@@ -2776,8 +2787,11 @@ function connectMedia(
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       state.audioOnlySharers = new Set(state.audioOnlySharers);
-      state.audioOnlySharers.delete(participantIdForLiveKitIdentity(identity));
+      state.audioOnlySharers.delete(participantId);
+      state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+      state.confirmedAudioOnlySharers.delete(participantId);
       notify();
     },
   };
@@ -3675,17 +3689,36 @@ function dispatchMessage(raw: unknown): void {
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
         sp.isSharing = true;
-        sp.shareType = remoteShareType;
+        // Video-type share and audio-only share are independent slots — a
+        // participant may run both concurrently. Only overwrite the video
+        // slot when this event is itself for a video-type share (or a
+        // legacy untyped restart); an audio_only start must never clobber
+        // an already-recorded video type.
+        if (remoteShareType !== 'audio_only') {
+          sp.shareType = remoteShareType;
+        }
       }
       // Keep audioOnlySharers in sync directly — updateRemoteShareType is a no-op
       // when lkModule is not yet initialized, which would leave the UI stuck on ◉.
-      if (remoteShareType === 'audio_only' && !state.audioOnlySharers.has(shareStartId)) {
-        state.audioOnlySharers = new Set(state.audioOnlySharers);
-        state.audioOnlySharers.add(shareStartId);
+      // A video share starting must never clear a CONFIRMED audio-only flag
+      // (and vice versa) — the two slots are independent, only an explicit
+      // share_stopped for that slot does. An UNCONFIRMED flag (LiveKit's
+      // TrackSubscribed-based onAudioOnlySharerAdded guess, made before any
+      // signaling arrives) is a different case: the first real video-type
+      // share_started is authoritative and must correct that guess.
+      if (remoteShareType === 'audio_only') {
+        if (!state.audioOnlySharers.has(shareStartId)) {
+          state.audioOnlySharers = new Set(state.audioOnlySharers);
+          state.audioOnlySharers.add(shareStartId);
+        }
+        if (!state.confirmedAudioOnlySharers.has(shareStartId)) {
+          state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+          state.confirmedAudioOnlySharers.add(shareStartId);
+        }
       } else if (
         remoteShareType !== undefined &&
-        remoteShareType !== 'audio_only' &&
-        state.audioOnlySharers.has(shareStartId)
+        state.audioOnlySharers.has(shareStartId) &&
+        !state.confirmedAudioOnlySharers.has(shareStartId)
       ) {
         state.audioOnlySharers = new Set(state.audioOnlySharers);
         state.audioOnlySharers.delete(shareStartId);
@@ -3731,24 +3764,38 @@ function dispatchMessage(raw: unknown): void {
     case 'share_stopped': {
       const shareStopId = msg.participantId;
       const shareStopName = msg.displayName;
+      // share_type is set when only one slot stopped (the other, if any,
+      // keeps running); undefined means every slot for this participant
+      // stopped (legacy behavior / host-directed stop-all).
+      const stoppedType = parseRemoteShareType(msg.shareType);
+      const stopsVideoSlot = stoppedType !== 'audio_only';
+      const stopsAudioSlot = stoppedType === undefined || stoppedType === 'audio_only';
       const ssp = state.participants.find((pp) => pp.id === shareStopId);
-      if (ssp) {
-        ssp.isSharing = false;
+      if (ssp && stopsVideoSlot) {
         ssp.shareType = undefined;
       }
-      if (state.audioOnlySharers.has(shareStopId)) {
+      if (stopsAudioSlot && state.audioOnlySharers.has(shareStopId)) {
         state.audioOnlySharers = new Set(state.audioOnlySharers);
         state.audioOnlySharers.delete(shareStopId);
+        if (state.confirmedAudioOnlySharers.has(shareStopId)) {
+          state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+          state.confirmedAudioOnlySharers.delete(shareStopId);
+        }
       }
-      clearRemoteShareType(shareStopId);
-      refreshRetryGenerations.delete(shareStopId);
-      // Clear the stream reference immediately on signaling. The LiveKit
-      // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
-      // the sharer closes the app abruptly; without this the viewer's UI shows
-      // a stale frozen frame until the SFU eventually fires the event.
-      if (state.screenShareStreams.has(shareStopId)) {
-        state.screenShareStreams = new Map(state.screenShareStreams);
-        state.screenShareStreams.delete(shareStopId);
+      if (ssp) {
+        ssp.isSharing = ssp.shareType !== undefined || state.audioOnlySharers.has(shareStopId);
+      }
+      if (stopsVideoSlot) {
+        clearRemoteShareType(shareStopId);
+        refreshRetryGenerations.delete(shareStopId);
+        // Clear the stream reference immediately on signaling. The LiveKit
+        // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
+        // the sharer closes the app abruptly; without this the viewer's UI shows
+        // a stale frozen frame until the SFU eventually fires the event.
+        if (state.screenShareStreams.has(shareStopId)) {
+          state.screenShareStreams = new Map(state.screenShareStreams);
+          state.screenShareStreams.delete(shareStopId);
+        }
       }
       // Cache the display name from the server payload
       if (shareStopName) {
@@ -3774,17 +3821,23 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_state': {
-      // share_state is an authoritative snapshot — reconcile all participants
+      // share_state is an authoritative snapshot — reconcile all participants.
+      // A participant may have up to two entries in activeShares (one video-type
+      // slot, one audio-only slot) — collect them per participant rather than
+      // collapsing to a single type, or a late joiner only ever learns about
+      // whichever slot happened to be listed last.
       const shareIds = new Set(msg.participantIds || []);
-      const typedShares = new Map<string, RemoteShareType | undefined>(
-        (msg.activeShares || []).map(
-          (share) =>
-            [share.participantId, parseRemoteShareType(share.shareType)] as [
-              string,
-              RemoteShareType | undefined,
-            ],
-        ),
-      );
+      const typedShares = new Map<string, Set<RemoteShareType>>();
+      for (const share of msg.activeShares || []) {
+        const t = parseRemoteShareType(share.shareType);
+        if (t === undefined) continue;
+        const existing = typedShares.get(share.participantId);
+        if (existing) {
+          existing.add(t);
+        } else {
+          typedShares.set(share.participantId, new Set([t]));
+        }
+      }
       for (const p of state.participants) {
         const shouldBeSharing = shareIds.has(p.id);
         if (p.isSharing && !shouldBeSharing) {
@@ -3795,6 +3848,10 @@ function dispatchMessage(raw: unknown): void {
             state.audioOnlySharers = new Set(state.audioOnlySharers);
             state.audioOnlySharers.delete(p.id);
           }
+          if (state.confirmedAudioOnlySharers.has(p.id)) {
+            state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+            state.confirmedAudioOnlySharers.delete(p.id);
+          }
           clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
@@ -3804,26 +3861,39 @@ function dispatchMessage(raw: unknown): void {
           p.isSharing = true;
         }
         if (shouldBeSharing) {
-          p.shareType = typedShares.get(p.id);
-          const resolvedType = p.shareType as RemoteShareType | undefined;
-          if (resolvedType === 'audio_only' && !state.audioOnlySharers.has(p.id)) {
-            state.audioOnlySharers = new Set(state.audioOnlySharers);
-            state.audioOnlySharers.add(p.id);
-          } else if (
-            resolvedType !== undefined &&
-            resolvedType !== 'audio_only' &&
-            state.audioOnlySharers.has(p.id)
-          ) {
+          const types = typedShares.get(p.id);
+          const videoType = types ? [...types].find((t) => t !== 'audio_only') : undefined;
+          const hasAudioOnly = types ? types.has('audio_only') : false;
+          p.shareType = videoType;
+          if (hasAudioOnly) {
+            if (!state.audioOnlySharers.has(p.id)) {
+              state.audioOnlySharers = new Set(state.audioOnlySharers);
+              state.audioOnlySharers.add(p.id);
+            }
+            if (!state.confirmedAudioOnlySharers.has(p.id)) {
+              state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+              state.confirmedAudioOnlySharers.add(p.id);
+            }
+          } else if (types !== undefined && state.audioOnlySharers.has(p.id)) {
+            // Typed snapshot explicitly has no audio-only entry for this
+            // participant (it was stopped while we were away) — clear it.
             state.audioOnlySharers = new Set(state.audioOnlySharers);
             state.audioOnlySharers.delete(p.id);
+            if (state.confirmedAudioOnlySharers.has(p.id)) {
+              state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+              state.confirmedAudioOnlySharers.delete(p.id);
+            }
           }
-          if (resolvedType !== undefined || !state.audioOnlySharers.has(p.id)) {
-            updateRemoteShareType(p.id, resolvedType);
+          // else: no typed entry at all (legacy/untyped sender) — keep
+          // whatever audioOnlySharers already holds for this participant.
+          if (videoType !== undefined || !state.audioOnlySharers.has(p.id)) {
+            updateRemoteShareType(p.id, videoType);
           }
-          const isAudioOnlyShare =
-            resolvedType === 'audio_only' ||
-            (resolvedType === undefined && state.audioOnlySharers.has(p.id));
-          if (!isAudioOnlyShare) {
+          const isPureAudioOnlyShare =
+            types !== undefined
+              ? videoType === undefined && hasAudioOnly
+              : state.audioOnlySharers.has(p.id);
+          if (!isPureAudioOnlyShare) {
             refreshRemoteScreenShare(p.id);
             // Schedule retries for late joiners or post-reconnect cases where
             // the stream isn't available yet. share_state doesn't schedule
@@ -5224,18 +5294,16 @@ export async function stopCustomShare(
     }
   }
 
-  // 4. Send stop_share signaling — only when the entire share session ends.
-  // If the other slot is still active the participant remains "sharing" on the backend.
-  const willStillBeSharing =
-    (target === 'video' && state.activeAudioShare !== null) ||
-    (target === 'audio' && state.activeVideoShare !== null);
+  // 4. Send stop-share signaling for the slot(s) that stopped. A slot-scoped
+  // shareType tells the backend to clear only that slot and leave the other
+  // slot (if still active) running — the participant stays "sharing" there.
   if (client && !options.suppressSignaling) {
-    if (!willStillBeSharing) {
+    if (target === 'all') {
       client.send({ type: 'stop-share' });
-    } else if (target === 'video' && state.activeAudioShare !== null) {
-      client.send({ type: 'start_share', shareType: 'audio_only' });
-    } else if (target === 'audio' && state.activeVideoShare !== null) {
-      client.send({ type: 'start_share', shareType: state.activeVideoShare.mode });
+    } else if (target === 'video' && state.activeVideoShare) {
+      client.send({ type: 'stop-share', shareType: state.activeVideoShare.mode });
+    } else if (target === 'audio') {
+      client.send({ type: 'stop-share', shareType: 'audio_only' });
     }
   }
 

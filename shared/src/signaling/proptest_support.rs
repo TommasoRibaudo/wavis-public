@@ -539,9 +539,13 @@ impl Arbitrary for StopSharePayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        prop::option::of(any::<String>())
-            .prop_map(|target_participant_id| StopSharePayload {
+        (
+            prop::option::of(any::<String>()),
+            prop::option::of(any::<WireShareType>()),
+        )
+            .prop_map(|(target_participant_id, share_type)| StopSharePayload {
                 target_participant_id,
+                share_type,
             })
             .boxed()
     }
@@ -552,11 +556,18 @@ impl Arbitrary for ShareStoppedPayload {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        (any::<String>(), any::<String>())
-            .prop_map(|(participant_id, display_name)| ShareStoppedPayload {
-                participant_id,
-                display_name,
-            })
+        (
+            any::<String>(),
+            any::<String>(),
+            prop::option::of(any::<WireShareType>()),
+        )
+            .prop_map(
+                |(participant_id, display_name, share_type)| ShareStoppedPayload {
+                    participant_id,
+                    display_name,
+                    share_type,
+                },
+            )
             .boxed()
     }
 }

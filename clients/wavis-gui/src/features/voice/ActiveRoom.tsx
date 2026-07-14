@@ -1016,6 +1016,11 @@ export default function ActiveRoom() {
 
   const participantsViewModel: ParticipantRowViewModel[] = roomState.participants.map((p) => {
     const videoTile = roomState.videoTilesById[p.id];
+    // A legacy/untyped signaling-only sharer (no shareType metadata at all)
+    // is assumed to be video, matching prior behavior — see voice-room.ts's
+    // share_started/share_state handlers for how shareType/audioOnlySharers
+    // are kept independent for participants running both slots at once.
+    const isAudioOnlySharer = roomState.audioOnlySharers.has(p.id);
     return {
       id: p.id,
       userId: p.userId,
@@ -1033,7 +1038,8 @@ export default function ActiveRoom() {
       // genuinely undefined.
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       cameraOn: !!videoTile && !videoTile.isMuted && !videoTile.hasError,
-      isAudioOnlySharer: roomState.audioOnlySharers.has(p.id),
+      isAudioOnlySharer,
+      hasVideoShare: p.shareType !== undefined || !isAudioOnlySharer,
       hasScreenShareStream: roomState.screenShareStreams.has(p.id),
     };
   });

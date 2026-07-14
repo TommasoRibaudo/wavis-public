@@ -531,6 +531,7 @@ mod tests {
 
         let msg2 = SignalingMessage::StopShare(StopSharePayload {
             target_participant_id: Some(long_str(MAX_PEER_ID_LEN + 1)),
+            share_type: None,
         });
         let err2 = validate_field_lengths(&msg2).unwrap_err();
         assert_eq!(err2.field, "target_participant_id");

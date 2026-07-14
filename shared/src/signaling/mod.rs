@@ -75,13 +75,21 @@ pub enum WireSharePermission {
 }
 
 /// Wire-format screen share type.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WireShareType {
     ScreenAudio,
     Window,
     AudioOnly,
     Browser,
+}
+
+impl WireShareType {
+    /// True for the standalone system-audio-only share type. All other
+    /// variants carry video and may optionally have companion audio.
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, Self::AudioOnly)
+    }
 }
 
 impl WireSharePermission {
@@ -693,14 +701,21 @@ pub struct ShareStartedPayload {
 }
 
 /// Client requests to stop a screen share (optionally targeting another participant's share).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct StopSharePayload {
     /// If set, a host is stopping another participant's share.
     #[serde(
         rename = "targetParticipantId",
+        default,
         skip_serializing_if = "Option::is_none"
     )]
     pub target_participant_id: Option<String>,
+    /// Which concurrent share slot to stop (a participant may have an
+    /// independent video-type share and audio-only share active at once).
+    /// `None` stops every slot the target has active — preserves legacy
+    /// single-slot behavior for older clients.
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Broadcast to all participants when a screen share stops.
@@ -712,6 +727,10 @@ pub struct ShareStoppedPayload {
     /// Display name for the sharer whose presentation stopped.
     #[serde(rename = "displayName")]
     pub display_name: String,
+    /// Which slot stopped. `None` means every slot for this participant
+    /// stopped (legacy behavior / host-directed stop-all).
+    #[serde(rename = "shareType", default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<WireShareType>,
 }
 
 /// Snapshot of all active screen sharers in a room. Sent to late joiners.
