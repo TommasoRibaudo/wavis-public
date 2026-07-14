@@ -34,29 +34,39 @@ export default function InitialRedirect() {
     }
 
     let cancelled = false;
-    (async () => {
+    void (async () => {
       const lastChannel = await getLastChannel();
       if (!lastChannel) {
+        // `cancelled` is flipped by the effect's cleanup closure while
+        // getLastChannel() is in flight — invisible to the linter's local
+        // narrowing, but a real guard against post-unmount state updates.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!cancelled) setShowChannelsList(true);
         return;
       }
 
       try {
         const channels = await fetchChannels();
+        // Same cross-closure race: cleanup can set `cancelled` while
+        // fetchChannels() is in flight.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (cancelled) return;
 
         const target = resolveInitialRedirect(lastChannel, channels);
         if (target.kind === 'room') {
           const ch = target.channel;
-          navigate('/room', {
+          void navigate('/room', {
             state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
             replace: true,
           });
           return;
         }
 
-        if (!cancelled) setShowChannelsList(true);
+        setShowChannelsList(true);
       } catch {
+        // Reachable with cancelled === true: fetchChannels() can reject after
+        // cleanup ran, jumping straight here without passing the guard above.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!cancelled) setShowChannelsList(true);
       }
     })();
