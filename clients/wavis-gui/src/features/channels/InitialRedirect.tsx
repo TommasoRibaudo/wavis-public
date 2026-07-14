@@ -23,15 +23,15 @@ export function resolveInitialRedirect(
 export default function InitialRedirect() {
   const navigate = useNavigate();
   const location = useLocation();
+  // If we arrived here after an explicit room leave, skip the auto-redirect to
+  // /room — the user intentionally left and should see the channels list.
+  const skipAutoRedirect = Boolean(
+    (location.state as Record<string, unknown> | null)?.skipAutoRedirect,
+  );
   const [showChannelsList, setShowChannelsList] = useState(false);
 
   useEffect(() => {
-    // If we arrived here after an explicit room leave, skip the auto-redirect to
-    // /room — the user intentionally left and should see the channels list.
-    if ((location.state as Record<string, unknown> | null)?.skipAutoRedirect) {
-      setShowChannelsList(true);
-      return;
-    }
+    if (skipAutoRedirect) return;
 
     let cancelled = false;
     void (async () => {
@@ -74,8 +74,8 @@ export default function InitialRedirect() {
     return () => {
       cancelled = true;
     };
-  }, [navigate, location.state]);
+  }, [navigate, skipAutoRedirect]);
 
-  if (!showChannelsList) return null;
+  if (!skipAutoRedirect && !showChannelsList) return null;
   return <ChannelsList />;
 }
