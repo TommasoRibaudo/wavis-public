@@ -5655,6 +5655,11 @@ export class LiveKitModule {
     this.wasapiWorkletNode = new AudioWorkletNode(ctx, 'wasapi-audio-processor', {
       outputChannelCount: [1],
     });
+    this.wasapiWorkletNode.port.onmessage = (event: MessageEvent<{ type: string; payload: unknown }>) => {
+      if (DEBUG_WASAPI && event.data.type === 'stats') {
+        console.log(LOG, '[wasapi] worklet stats:', event.data.payload);
+      }
+    };
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] AudioWorkletNode created');
 
     // Route worklet output to a MediaStream so we can publish it as a track.
