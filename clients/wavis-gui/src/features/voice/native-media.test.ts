@@ -103,9 +103,7 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
    */
   it('startScreenShare() should invoke screen_share_start IPC and return true', async () => {
     // Simulate the IPC command returning Ok(true) — capture started
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(true);
+    vi.mocked(invoke).mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
 
     const result = await mod_.startScreenShare();
 
@@ -182,9 +180,7 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
    * this platform" via onSystemEvent callback.
    */
   it('startScreenShare() should not emit "not available" system event', async () => {
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(true);
+    vi.mocked(invoke).mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
 
     await mod_.startScreenShare();
 
@@ -213,7 +209,9 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
     mockSettings.outputDeviceId = 'output:wavis_capture';
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'set_audio_device') {
-        throw new Error('pactl set-default-sink failed with status exit status: 1: Failure: No such entity');
+        throw new Error(
+          'pactl set-default-sink failed with status exit status: 1: Failure: No such entity',
+        );
       }
       return undefined;
     });
@@ -230,7 +228,9 @@ describe('Property 1: Fault Condition — Linux Screen Share Stubbed Out', () =>
       denoiseEnabled: false,
     });
     expect(setStoreValue).toHaveBeenCalledWith(STORE_KEYS.audioOutputDevice, '');
-    expect(callbacks.onSystemEvent).toHaveBeenCalledWith('output device unavailable, using system default');
+    expect(callbacks.onSystemEvent).toHaveBeenCalledWith(
+      'output device unavailable, using system default',
+    );
     expect(callbacks.onMediaFailed).not.toHaveBeenCalled();
   });
 });
@@ -247,18 +247,12 @@ describe('Rust-side bug condition — static analysis', () => {
    * BUG (unfixed): No screen share commands exist in the handler list.
    */
   it('main.rs should register screen_share_start command', () => {
-    const mainRs = readFileSync(
-      resolve(__dirname, '../../../src-tauri/src/main.rs'),
-      'utf-8',
-    );
+    const mainRs = readFileSync(resolve(__dirname, '../../../src-tauri/src/main.rs'), 'utf-8');
     expect(mainRs).toContain('screen_share_start');
   });
 
   it('main.rs should register screen_share_stop command', () => {
-    const mainRs = readFileSync(
-      resolve(__dirname, '../../../src-tauri/src/main.rs'),
-      'utf-8',
-    );
+    const mainRs = readFileSync(resolve(__dirname, '../../../src-tauri/src/main.rs'), 'utf-8');
     expect(mainRs).toContain('screen_share_stop');
   });
 
@@ -288,13 +282,9 @@ describe('Rust-side bug condition — static analysis', () => {
    * BUG (unfixed): media.rs has no screen capture functionality.
    */
   it('media.rs should contain screen_capture state or screen_share_start handler', () => {
-    const mediaRs = readFileSync(
-      resolve(__dirname, '../../../src-tauri/src/media.rs'),
-      'utf-8',
-    );
+    const mediaRs = readFileSync(resolve(__dirname, '../../../src-tauri/src/media.rs'), 'utf-8');
     const hasScreenCapture =
-      mediaRs.includes('screen_capture') ||
-      mediaRs.includes('screen_share_start');
+      mediaRs.includes('screen_capture') || mediaRs.includes('screen_share_start');
     expect(hasScreenCapture).toBe(true);
   });
 });

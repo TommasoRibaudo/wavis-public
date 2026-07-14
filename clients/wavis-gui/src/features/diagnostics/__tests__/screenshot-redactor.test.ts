@@ -11,10 +11,12 @@ import { undoStroke, type BrushStroke } from '../ScreenshotRedactor';
 
 // ─── Generators ────────────────────────────────────────────────────
 
-const brushStrokeArb = fc.array(
-  fc.record({ x: fc.integer({ min: 0, max: 2000 }), y: fc.integer({ min: 0, max: 2000 }) }),
-  { minLength: 1, maxLength: 20 },
-).map(points => ({ points }));
+const brushStrokeArb = fc
+  .array(
+    fc.record({ x: fc.integer({ min: 0, max: 2000 }), y: fc.integer({ min: 0, max: 2000 }) }),
+    { minLength: 1, maxLength: 20 },
+  )
+  .map((points) => ({ points }));
 
 // ─── Property 22: Screenshot redaction stroke undo is a stack ──────
 
@@ -61,17 +63,14 @@ describe('Feature: in-app-bug-report, Property 22: Screenshot redaction stroke u
    */
   it('clear removes all strokes regardless of count', () => {
     fc.assert(
-      fc.property(
-        fc.array(brushStrokeArb, { minLength: 0, maxLength: 30 }),
-        (strokes) => {
-          // Clear is modeled as setting strokes to []
-          const cleared: BrushStroke[] = [];
-          expect(cleared).toHaveLength(0);
+      fc.property(fc.array(brushStrokeArb, { minLength: 0, maxLength: 30 }), (strokes) => {
+        // Clear is modeled as setting strokes to []
+        const cleared: BrushStroke[] = [];
+        expect(cleared).toHaveLength(0);
 
-          // Verify original had some content (or was empty)
-          expect(strokes.length).toBeGreaterThanOrEqual(0);
-        },
-      ),
+        // Verify original had some content (or was empty)
+        expect(strokes.length).toBeGreaterThanOrEqual(0);
+      }),
       { numRuns: 100 },
     );
   });
@@ -94,8 +93,18 @@ describe('undoStroke — unit tests', () => {
   });
 
   it('undo preserves order of remaining strokes', () => {
-    const s1: BrushStroke = { points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] };
-    const s2: BrushStroke = { points: [{ x: 20, y: 20 }, { x: 30, y: 30 }] };
+    const s1: BrushStroke = {
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+    };
+    const s2: BrushStroke = {
+      points: [
+        { x: 20, y: 20 },
+        { x: 30, y: 30 },
+      ],
+    };
     const s3: BrushStroke = { points: [{ x: 40, y: 40 }] };
 
     const result = undoStroke([s1, s2, s3]);

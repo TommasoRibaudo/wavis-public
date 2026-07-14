@@ -10,9 +10,9 @@ const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig(({ command, mode }) => {
   if (
-    command === 'build'
-    && mode === 'production'
-    && Object.prototype.hasOwnProperty.call(process.env, WINDOWS_SHARE_PATH_OVERRIDE_KEY)
+    command === 'build' &&
+    mode === 'production' &&
+    Object.prototype.hasOwnProperty.call(process.env, WINDOWS_SHARE_PATH_OVERRIDE_KEY)
   ) {
     throw new Error(`${WINDOWS_SHARE_PATH_OVERRIDE_KEY} must be unset for production builds`);
   }

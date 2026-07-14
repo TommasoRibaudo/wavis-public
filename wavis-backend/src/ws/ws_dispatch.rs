@@ -274,81 +274,36 @@ pub(crate) async fn dispatch_message(
     match message {
         SignalingMessage::Auth(payload) => {
             // Auth message dispatch (Req 6.1, 6.2, 6.3, 15.1, 15.2, 15.3)
-            // validate_state_transition already checked auth is allowed
-            match crate::auth::jwt::validate_access_token_with_rotation(
-                &payload.access_token,
+            // validate_state_transition already checked auth is allowed.
+            // All verification (JWT, device revocation, session epoch) lives in
+            // the auth layer; this arm only translates the result to signals.
+            match crate::auth::auth::authenticate_access_token(
+                &ctx.app_state.db_pool,
                 &ctx.app_state.auth_jwt_secret,
                 ctx.app_state
                     .auth_jwt_secret_previous
                     .as_ref()
                     .map(|s| s.as_slice()),
-            ) {
-                Ok((user_id, device_id, token_epoch)) => {
-                    // Verify session epoch against DB
-                    match crate::auth::auth::check_session_epoch(
-                        &ctx.app_state.db_pool,
-                        &user_id,
-                        token_epoch,
-                    )
-                    .await
+                &payload.access_token,
+            )
+            .await
+            {
+                Ok((user_id, device_id)) => {
+                    *ctx.authenticated_user_id = Some(user_id.to_string());
+                    #[allow(unused_assignments)]
                     {
-                        Ok(()) => {
-                            // Verify the device has not been revoked (Req 15.1, 15.2)
-                            let revoked_at: Option<Option<chrono::DateTime<chrono::Utc>>> =
-                                sqlx::query_scalar(
-                                    "SELECT revoked_at FROM devices WHERE device_id = $1",
-                                )
-                                .bind(device_id)
-                                .fetch_optional(&ctx.app_state.db_pool)
-                                .await
-                                .unwrap_or(None);
-
-                            match revoked_at {
-                                Some(None) => {
-                                    // Device exists and is not revoked — auth success
-                                    *ctx.authenticated_user_id = Some(user_id.to_string());
-                                    #[allow(unused_assignments)]
-                                    {
-                                        *ctx.authenticated_device_id = Some(device_id);
-                                    }
-                                    info!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth succeeded");
-                                    ctx.app_state.connections.send_to(
-                                        ctx.peer_id,
-                                        &SignalingMessage::AuthSuccess(
-                                            shared::signaling::AuthSuccessPayload {
-                                                user_id: user_id.to_string(),
-                                            },
-                                        ),
-                                    );
-                                }
-                                _ => {
-                                    // Device not found or revoked (Req 15.2)
-                                    warn!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth failed: device revoked or not found");
-                                    ctx.app_state.connections.send_to(
-                                        ctx.peer_id,
-                                        &SignalingMessage::AuthFailed(
-                                            shared::signaling::AuthFailedPayload {
-                                                reason: "authentication failed".to_string(),
-                                            },
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            warn!(peer_id = %ctx.peer_id, user_id = %user_id, error = %err, "ws auth epoch check failed");
-                            ctx.app_state.connections.send_to(
-                                ctx.peer_id,
-                                &SignalingMessage::AuthFailed(
-                                    shared::signaling::AuthFailedPayload {
-                                        reason: "authentication failed".to_string(),
-                                    },
-                                ),
-                            );
-                        }
+                        *ctx.authenticated_device_id = Some(device_id);
                     }
+                    info!(peer_id = %ctx.peer_id, user_id = %user_id, device_id = %device_id, "ws auth succeeded");
+                    ctx.app_state.connections.send_to(
+                        ctx.peer_id,
+                        &SignalingMessage::AuthSuccess(shared::signaling::AuthSuccessPayload {
+                            user_id: user_id.to_string(),
+                        }),
+                    );
                 }
                 Err(err) => {
+                    // Rejection is opaque to the client; the log keeps the cause.
                     warn!(peer_id = %ctx.peer_id, error = %err, "ws auth failed");
                     ctx.app_state.connections.send_to(
                         ctx.peer_id,

@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   computeSpeaking,
   updateSpeakingTracker,
-  colorFor,
-  computeEffectiveParticipantVolume,
   TERMINAL_COLORS,
   RMS_START_THRESHOLD,
   RMS_STOP_THRESHOLD,
   SPEAKING_DEBOUNCE_FRAMES,
   MAX_EVENTS,
 } from '../voice-room';
+import { colorFor } from '../chat-display-model';
+import { computeEffectiveParticipantVolume } from '../participant-volume-model';
 
 describe('computeSpeaking', () => {
   it('returns true when RMS above start threshold and not currently speaking', () => {
@@ -213,19 +213,40 @@ describe('event log cap enforcement', () => {
 describe('computeEffectiveParticipantVolume', () => {
   it('preserves the manual volume for participants in the same joined room', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-1' }, null),
+      computeEffectiveParticipantVolume(
+        44,
+        'peer-2',
+        'self-peer',
+        'room-1',
+        { 'peer-2': 'room-1' },
+        null,
+      ),
     ).toBe(44);
   });
 
   it('mutes participants in different rooms', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', 'room-1', { 'peer-2': 'room-2' }, null),
+      computeEffectiveParticipantVolume(
+        44,
+        'peer-2',
+        'self-peer',
+        'room-1',
+        { 'peer-2': 'room-2' },
+        null,
+      ),
     ).toBe(0);
   });
 
   it('mutes everyone else when the local user has not joined a room', () => {
     expect(
-      computeEffectiveParticipantVolume(44, 'peer-2', 'self-peer', null, { 'peer-2': 'room-1' }, null),
+      computeEffectiveParticipantVolume(
+        44,
+        'peer-2',
+        'self-peer',
+        null,
+        { 'peer-2': 'room-1' },
+        null,
+      ),
     ).toBe(0);
   });
 
@@ -298,7 +319,7 @@ describe('Property 2: Share button enabled iff permission allows and media ready
   it('for any permission and host status, enabled iff (anyone OR selfIsHost) AND active AND connected', () => {
     fc.assert(
       fc.property(arbSharePermission, fc.boolean(), (perm, selfIsHost) => {
-        const expected = (perm === 'anyone' || selfIsHost);
+        const expected = perm === 'anyone' || selfIsHost;
         expect(isShareEnabled(perm, selfIsHost, 'active', 'connected', 'room-1')).toBe(expected);
         // Always false when media not ready, regardless of permission
         expect(isShareEnabled(perm, selfIsHost, 'active', 'disconnected', 'room-1')).toBe(false);
@@ -309,8 +330,7 @@ describe('Property 2: Share button enabled iff permission allows and media ready
   });
 });
 
-
-import { mergeParticipantsWithVolume } from '../voice-room';
+import { mergeParticipantsWithVolume } from '../participant-volume-model';
 import type { RoomParticipant } from '../voice-room';
 
 /* ═══ Property 11: Volume preservation across reconnect ═════════════ */
@@ -339,15 +359,12 @@ describe('Property 11: Volume preservation across reconnect', () => {
 
   it('matched participants retain old volume', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 100 }),
-        (oldVol) => {
-          const old = [makeParticipant('p1', oldVol)];
-          const fresh = [makeParticipant('p1', DEFAULT_VOL)];
-          const merged = mergeParticipantsWithVolume(old, fresh);
-          expect(merged[0].volume).toBe(oldVol);
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 100 }), (oldVol) => {
+        const old = [makeParticipant('p1', oldVol)];
+        const fresh = [makeParticipant('p1', DEFAULT_VOL)];
+        const merged = mergeParticipantsWithVolume(old, fresh);
+        expect(merged[0].volume).toBe(oldVol);
+      }),
       { numRuns: 100 },
     );
   });
@@ -361,15 +378,12 @@ describe('Property 11: Volume preservation across reconnect', () => {
 
   it('new participants keep the volume from the fresh list', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 100 }),
-        (freshVol) => {
-          const old: RoomParticipant[] = [];
-          const fresh = [makeParticipant('new-1', freshVol)];
-          const merged = mergeParticipantsWithVolume(old, fresh);
-          expect(merged[0].volume).toBe(freshVol);
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 100 }), (freshVol) => {
+        const old: RoomParticipant[] = [];
+        const fresh = [makeParticipant('new-1', freshVol)];
+        const merged = mergeParticipantsWithVolume(old, fresh);
+        expect(merged[0].volume).toBe(freshVol);
+      }),
       { numRuns: 100 },
     );
   });
@@ -383,24 +397,20 @@ describe('Property 11: Volume preservation across reconnect', () => {
 
   it('mixed scenario: matched keep volume, new carry fresh volume, old-only dropped', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 100 }),
-        (vol1) => {
-          const old = [makeParticipant('stay', vol1), makeParticipant('gone', 99)];
-          const fresh = [makeParticipant('stay', 50), makeParticipant('new', 50)];
-          const merged = mergeParticipantsWithVolume(old, fresh);
-          expect(merged).toHaveLength(2);
-          expect(merged[0].id).toBe('stay');
-          expect(merged[0].volume).toBe(vol1); // preserved
-          expect(merged[1].id).toBe('new');
-          expect(merged[1].volume).toBe(50);   // carries fresh list volume
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 100 }), (vol1) => {
+        const old = [makeParticipant('stay', vol1), makeParticipant('gone', 99)];
+        const fresh = [makeParticipant('stay', 50), makeParticipant('new', 50)];
+        const merged = mergeParticipantsWithVolume(old, fresh);
+        expect(merged).toHaveLength(2);
+        expect(merged[0].id).toBe('stay');
+        expect(merged[0].volume).toBe(vol1); // preserved
+        expect(merged[1].id).toBe('new');
+        expect(merged[1].volume).toBe(50); // carries fresh list volume
+      }),
       { numRuns: 100 },
     );
   });
 });
-
 
 import { getState, getRegisteredHotkey, toggleSelfMute } from '../voice-room';
 
@@ -438,18 +448,16 @@ describe('Property 15: Hotkey not registered when no voice session', () => {
   });
 });
 
-
+import { sendChatMessage, leaveRoom } from '../voice-room';
 import {
-  sendChatMessage,
   MAX_CHAT_MESSAGES,
-  leaveRoom,
   computeSinceCursor,
   buildChatDisplayItems,
   buildRoomEventDisplayItems,
   shouldPlayChatNotification,
   resolveChatMessageDisplayColor,
-} from '../voice-room';
-import type { ChatMessage, RoomEvent } from '../voice-room';
+} from '../chat-display-model';
+import type { ChatMessage, RoomEvent } from '../chat-display-model';
 
 /* ═══ Ephemeral Room Chat — Client Property Tests ═══════════════════ */
 
@@ -478,7 +486,9 @@ describe('Property 1: Send trims and transmits non-empty input', () => {
 // **Validates: Requirements 1.3, 1.5**
 
 describe('Property 2: Whitespace-only input is discarded', () => {
-  const arbWhitespace = fc.array(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 50 }).map((a) => a.join(''));
+  const arbWhitespace = fc
+    .array(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 50 })
+    .map((a) => a.join(''));
 
   it('for any whitespace-only string, sendChatMessage does not modify chatMessages', () => {
     fc.assert(
@@ -537,25 +547,22 @@ describe('Property 6: Receive appends with 200-message cap', () => {
 
   it('for any N messages, list length equals min(N, MAX_CHAT_MESSAGES) with oldest discarded', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 500 }),
-        (n) => {
-          // Simulate the dispatchMessage append + cap logic
-          let chatMessages: ChatMessage[] = [];
-          for (let i = 0; i < n; i++) {
-            chatMessages = [...chatMessages, makeChatMsg(i)];
-            if (chatMessages.length > MAX_CHAT_MESSAGES) {
-              chatMessages = chatMessages.slice(-MAX_CHAT_MESSAGES);
-            }
+      fc.property(fc.integer({ min: 1, max: 500 }), (n) => {
+        // Simulate the dispatchMessage append + cap logic
+        let chatMessages: ChatMessage[] = [];
+        for (let i = 0; i < n; i++) {
+          chatMessages = [...chatMessages, makeChatMsg(i)];
+          if (chatMessages.length > MAX_CHAT_MESSAGES) {
+            chatMessages = chatMessages.slice(-MAX_CHAT_MESSAGES);
           }
-          expect(chatMessages.length).toBe(Math.min(n, MAX_CHAT_MESSAGES));
-          if (n > MAX_CHAT_MESSAGES) {
-            // Oldest discarded — first message should be from index (n - MAX_CHAT_MESSAGES)
-            expect(chatMessages[0].id).toBe(`msg-${n - MAX_CHAT_MESSAGES}`);
-            expect(chatMessages[chatMessages.length - 1].id).toBe(`msg-${n - 1}`);
-          }
-        },
-      ),
+        }
+        expect(chatMessages.length).toBe(Math.min(n, MAX_CHAT_MESSAGES));
+        if (n > MAX_CHAT_MESSAGES) {
+          // Oldest discarded — first message should be from index (n - MAX_CHAT_MESSAGES)
+          expect(chatMessages[0].id).toBe(`msg-${n - MAX_CHAT_MESSAGES}`);
+          expect(chatMessages[chatMessages.length - 1].id).toBe(`msg-${n - 1}`);
+        }
+      }),
       { numRuns: 100 },
     );
   });
@@ -616,54 +623,53 @@ describe('Property 7: Color resolution from participant list', () => {
 
   it('uses stored message color when no current participant matches', () => {
     fc.assert(
-      fc.property(
-        fc.string({ minLength: 1, maxLength: 20 }),
-        (unknownId) => {
-          const participants: RoomParticipant[] = [
-            {
-              id: 'known-peer',
-              displayName: 'Known',
-              color: TERMINAL_COLORS[0],
-              role: 'guest',
-              isSpeaking: false,
-              isMuted: false,
-              isHostMuted: false,
-              isDeafened: false,
-              isSharing: false,
-              mediaConnected: true,
-              rmsLevel: 0,
-              volume: 70,
-            },
-          ];
-          // Only test when unknownId differs from the known peer
-          if (unknownId === 'known-peer') return;
-          const resolvedColor = resolveChatMessageDisplayColor(
-            message({ participantId: unknownId, color: '#ABCDEF' }),
-            participants,
-          );
-          expect(resolvedColor).toBe('#ABCDEF');
-        },
-      ),
+      fc.property(fc.string({ minLength: 1, maxLength: 20 }), (unknownId) => {
+        const participants: RoomParticipant[] = [
+          {
+            id: 'known-peer',
+            displayName: 'Known',
+            color: TERMINAL_COLORS[0],
+            role: 'guest',
+            isSpeaking: false,
+            isMuted: false,
+            isHostMuted: false,
+            isDeafened: false,
+            isSharing: false,
+            mediaConnected: true,
+            rmsLevel: 0,
+            volume: 70,
+          },
+        ];
+        // Only test when unknownId differs from the known peer
+        if (unknownId === 'known-peer') return;
+        const resolvedColor = resolveChatMessageDisplayColor(
+          message({ participantId: unknownId, color: '#ABCDEF' }),
+          participants,
+        );
+        expect(resolvedColor).toBe('#ABCDEF');
+      }),
       { numRuns: 100 },
     );
   });
 
   it('messages recolor when a matching participant color changes', () => {
     const chatMessage = message({ participantId: 'peer-1', color: '#111111' });
-    const before: RoomParticipant[] = [{
-      id: 'peer-1',
-      displayName: 'Alice',
-      color: '#222222',
-      role: 'guest',
-      isSpeaking: false,
-      isMuted: false,
-      isHostMuted: false,
-      isDeafened: false,
-      isSharing: false,
-      mediaConnected: true,
-      rmsLevel: 0,
-      volume: 70,
-    }];
+    const before: RoomParticipant[] = [
+      {
+        id: 'peer-1',
+        displayName: 'Alice',
+        color: '#222222',
+        role: 'guest',
+        isSpeaking: false,
+        isMuted: false,
+        isHostMuted: false,
+        isDeafened: false,
+        isSharing: false,
+        mediaConnected: true,
+        rmsLevel: 0,
+        volume: 70,
+      },
+    ];
     const after = before.map((p) => ({ ...p, color: '#333333' }));
 
     expect(resolveChatMessageDisplayColor(chatMessage, before)).toBe('#222222');
@@ -704,36 +710,46 @@ describe('Property 7: Color resolution from participant list', () => {
       },
     ];
 
-    expect(resolveChatMessageDisplayColor(
-      message({ participantId: 'old-peer', userId: 'user-1', color: '#999999' }),
-      participants,
-    )).toBe('#44AA88');
+    expect(
+      resolveChatMessageDisplayColor(
+        message({ participantId: 'old-peer', userId: 'user-1', color: '#999999' }),
+        participants,
+      ),
+    ).toBe('#44AA88');
   });
 
   it('legacy messages without userId still recolor by participantId', () => {
-    const participants: RoomParticipant[] = [{
-      id: 'legacy-peer',
-      displayName: 'Legacy',
-      color: '#AA7744',
-      role: 'guest',
-      isSpeaking: false,
-      isMuted: false,
-      isHostMuted: false,
-      isDeafened: false,
-      isSharing: false,
-      mediaConnected: true,
-      rmsLevel: 0,
-      volume: 70,
-    }];
+    const participants: RoomParticipant[] = [
+      {
+        id: 'legacy-peer',
+        displayName: 'Legacy',
+        color: '#AA7744',
+        role: 'guest',
+        isSpeaking: false,
+        isMuted: false,
+        isHostMuted: false,
+        isDeafened: false,
+        isSharing: false,
+        mediaConnected: true,
+        rmsLevel: 0,
+        volume: 70,
+      },
+    ];
 
-    expect(resolveChatMessageDisplayColor(
-      message({ participantId: 'legacy-peer', userId: undefined, color: '#999999' }),
-      participants,
-    )).toBe('#AA7744');
+    expect(
+      resolveChatMessageDisplayColor(
+        message({ participantId: 'legacy-peer', userId: undefined, color: '#999999' }),
+        participants,
+      ),
+    ).toBe('#AA7744');
   });
 
   it('hash fallback is stable when no participant and no stored color match', () => {
-    const chatMessage = message({ participantId: 'peer-fallback', userId: 'user-fallback', color: '' });
+    const chatMessage = message({
+      participantId: 'peer-fallback',
+      userId: 'user-fallback',
+      color: '',
+    });
 
     expect(resolveChatMessageDisplayColor(chatMessage, [])).toBe(
       colorFor({ userId: 'user-fallback', id: 'peer-fallback' }),
@@ -792,7 +808,6 @@ describe('Property 12: Client rejects oversized messages before send', () => {
   });
 });
 
-
 describe('Chat date dividers', () => {
   function localIso(year: number, month: number, day: number, hour = 10): string {
     return new Date(year, month - 1, day, hour).toISOString();
@@ -826,11 +841,8 @@ describe('Chat date dividers', () => {
       chatMessage('2', localIso(2026, 5, 1)),
     ]);
 
-    const labels = items.flatMap((item) => item.type === 'date-divider' ? [item.label] : []);
-    expect(labels).toEqual([
-      'April 30, 2026',
-      'May 1, 2026',
-    ]);
+    const labels = items.flatMap((item) => (item.type === 'date-divider' ? [item.label] : []));
+    expect(labels).toEqual(['April 30, 2026', 'May 1, 2026']);
   });
 
   it('ignores legacy history divider entries when building display rows', () => {
@@ -850,7 +862,9 @@ describe('Chat date dividers', () => {
       chatMessage('2', localIso(2026, 4, 30, 12)),
     ]);
 
-    expect(items.some((item) => item.type === 'message' && item.message.id === 'history-divider')).toBe(false);
+    expect(
+      items.some((item) => item.type === 'message' && item.message.id === 'history-divider'),
+    ).toBe(false);
     expect(items.filter((item) => item.type === 'date-divider')).toHaveLength(1);
   });
 });
@@ -886,11 +900,8 @@ describe('Log date dividers', () => {
       roomEvent('2', localIso(2026, 5, 1)),
     ]);
 
-    const labels = items.flatMap((item) => item.type === 'date-divider' ? [item.label] : []);
-    expect(labels).toEqual([
-      'April 30, 2026',
-      'May 1, 2026',
-    ]);
+    const labels = items.flatMap((item) => (item.type === 'date-divider' ? [item.label] : []));
+    expect(labels).toEqual(['April 30, 2026', 'May 1, 2026']);
   });
 });
 
@@ -907,7 +918,6 @@ describe('Chat notification sound sender exclusion', () => {
     expect(shouldPlayChatNotification('peer-2', null)).toBe(false);
   });
 });
-
 
 /* ═══ Task 6.4: Unit tests for client serialization and boundary cases ═══ */
 
@@ -982,7 +992,6 @@ describe('Boundary value tests (Requirement 6.3)', () => {
   });
 });
 
-
 /* ═══ Feature: chat-history-persistence, Property 5: Client since cursor derivation ═══ */
 // **Validates: Requirements 3.3**
 
@@ -990,17 +999,27 @@ describe('Property 5: Client since cursor derivation', () => {
   // Generate timestamps as integer ms then convert — avoids invalid Date from fc.date()
   const MIN_MS = new Date('2020-01-01T00:00:00Z').getTime();
   const MAX_MS = new Date('2030-01-01T00:00:00Z').getTime();
-  const arbTimestamp = fc.integer({ min: MIN_MS, max: MAX_MS }).map((ms) => new Date(ms).toISOString());
+  const arbTimestamp = fc
+    .integer({ min: MIN_MS, max: MAX_MS })
+    .map((ms) => new Date(ms).toISOString());
 
   const arbChatMessage = (overrides?: Partial<ChatMessage>) =>
-    fc.record({
-      id: fc.uuid(),
-      timestamp: arbTimestamp,
-      participantId: fc.string({ minLength: 1, maxLength: 20 }),
-      displayName: fc.string({ minLength: 1, maxLength: 30 }),
-      color: fc.constantFrom(...TERMINAL_COLORS),
-      text: fc.string({ minLength: 1, maxLength: 200 }),
-    }).map((m) => ({ ...m, messageId: undefined, isHistory: undefined, isDivider: undefined, ...overrides } as ChatMessage));
+    fc
+      .record({
+        id: fc.uuid(),
+        timestamp: arbTimestamp,
+        participantId: fc.string({ minLength: 1, maxLength: 20 }),
+        displayName: fc.string({ minLength: 1, maxLength: 30 }),
+        color: fc.constantFrom(...TERMINAL_COLORS),
+        text: fc.string({ minLength: 1, maxLength: 200 }),
+      })
+      .map((m) => ({
+        ...m,
+        messageId: undefined,
+        isHistory: undefined,
+        isDivider: undefined,
+        ...overrides,
+      }));
 
   it('non-empty real-time messages: since = earliest timestamp minus 1 second', () => {
     fc.assert(
@@ -1068,8 +1087,7 @@ describe('Property 5: Client since cursor derivation', () => {
   });
 });
 
-
-import { mergeHistoryMessages } from '../voice-room';
+import { mergeHistoryMessages } from '../chat-display-model';
 
 /* ═══ Feature: chat-history-persistence, Property 6: Client merge, dedup, and cap ═══ */
 // **Validates: Requirements 3.4, 4.1, 4.3**
@@ -1077,7 +1095,9 @@ import { mergeHistoryMessages } from '../voice-room';
 describe('Property 6: Client merge, dedup, and cap', () => {
   const MIN_MS = new Date('2020-01-01T00:00:00Z').getTime();
   const MAX_MS = new Date('2030-01-01T00:00:00Z').getTime();
-  const arbTimestamp = fc.integer({ min: MIN_MS, max: MAX_MS }).map((ms) => new Date(ms).toISOString());
+  const arbTimestamp = fc
+    .integer({ min: MIN_MS, max: MAX_MS })
+    .map((ms) => new Date(ms).toISOString());
 
   // Generator for history payload entries
   const arbHistoryEntry = fc.record({
@@ -1089,15 +1109,17 @@ describe('Property 6: Client merge, dedup, and cap', () => {
   });
 
   // Generator for existing (real-time) ChatMessage entries with messageId set
-  const arbExistingMessage = fc.record({
-    id: fc.uuid(),
-    messageId: fc.uuid(),
-    timestamp: arbTimestamp,
-    participantId: fc.string({ minLength: 1, maxLength: 20 }),
-    displayName: fc.string({ minLength: 1, maxLength: 30 }),
-    color: fc.constantFrom(...TERMINAL_COLORS),
-    text: fc.string({ minLength: 1, maxLength: 200 }),
-  }).map((m) => m as ChatMessage);
+  const arbExistingMessage = fc
+    .record({
+      id: fc.uuid(),
+      messageId: fc.uuid(),
+      timestamp: arbTimestamp,
+      participantId: fc.string({ minLength: 1, maxLength: 20 }),
+      displayName: fc.string({ minLength: 1, maxLength: 30 }),
+      color: fc.constantFrom(...TERMINAL_COLORS),
+      text: fc.string({ minLength: 1, maxLength: 200 }),
+    })
+    .map((m) => m as ChatMessage);
 
   // Generator that produces history + existing with some overlapping messageIds
   const arbWithOverlap = fc
@@ -1111,7 +1133,10 @@ describe('Property 6: Client merge, dedup, and cap', () => {
         return fc.constant({ history, existing });
       }
       return fc
-        .array(fc.integer({ min: 0, max: existing.length - 1 }), { minLength: 0, maxLength: Math.min(existing.length, 10) })
+        .array(fc.integer({ min: 0, max: existing.length - 1 }), {
+          minLength: 0,
+          maxLength: Math.min(existing.length, 10),
+        })
         .map((indices) => {
           const overlapping = [...history];
           for (const idx of indices) {
@@ -1180,14 +1205,16 @@ describe('Property 6: Client merge, dedup, and cap', () => {
 
   it('history merge preserves optional userId', () => {
     const merged = mergeHistoryMessages(
-      [{
-        messageId: 'history-1',
-        participantId: 'old-peer',
-        userId: 'user-1',
-        displayName: 'Alice',
-        text: 'from history',
-        timestamp: '2026-05-05T00:00:00Z',
-      }],
+      [
+        {
+          messageId: 'history-1',
+          participantId: 'old-peer',
+          userId: 'user-1',
+          displayName: 'Alice',
+          text: 'from history',
+          timestamp: '2026-05-05T00:00:00Z',
+        },
+      ],
       [],
     );
 
@@ -1196,14 +1223,15 @@ describe('Property 6: Client merge, dedup, and cap', () => {
   });
 });
 
-
 /* ═══ Feature: chat-history-persistence, Property 7: Divider position stability ═══ */
 // **Validates: Requirements 4.7**
 
 describe('Property 7: Divider position stability', () => {
   const MIN_MS = new Date('2020-01-01T00:00:00Z').getTime();
   const MAX_MS = new Date('2030-01-01T00:00:00Z').getTime();
-  const arbTimestamp = fc.integer({ min: MIN_MS, max: MAX_MS }).map((ms) => new Date(ms).toISOString());
+  const arbTimestamp = fc
+    .integer({ min: MIN_MS, max: MAX_MS })
+    .map((ms) => new Date(ms).toISOString());
 
   const arbHistoryEntry = fc.record({
     messageId: fc.uuid(),
@@ -1213,25 +1241,29 @@ describe('Property 7: Divider position stability', () => {
     timestamp: arbTimestamp,
   });
 
-  const arbExistingMessage = fc.record({
-    id: fc.uuid(),
-    messageId: fc.uuid(),
-    timestamp: arbTimestamp,
-    participantId: fc.string({ minLength: 1, maxLength: 20 }),
-    displayName: fc.string({ minLength: 1, maxLength: 30 }),
-    color: fc.constantFrom(...TERMINAL_COLORS),
-    text: fc.string({ minLength: 1, maxLength: 200 }),
-  }).map((m) => m as ChatMessage);
+  const arbExistingMessage = fc
+    .record({
+      id: fc.uuid(),
+      messageId: fc.uuid(),
+      timestamp: arbTimestamp,
+      participantId: fc.string({ minLength: 1, maxLength: 20 }),
+      displayName: fc.string({ minLength: 1, maxLength: 30 }),
+      color: fc.constantFrom(...TERMINAL_COLORS),
+      text: fc.string({ minLength: 1, maxLength: 200 }),
+    })
+    .map((m) => m as ChatMessage);
 
-  const arbNewMessage = fc.record({
-    id: fc.uuid(),
-    messageId: fc.uuid(),
-    timestamp: arbTimestamp,
-    participantId: fc.string({ minLength: 1, maxLength: 20 }),
-    displayName: fc.string({ minLength: 1, maxLength: 30 }),
-    color: fc.constantFrom(...TERMINAL_COLORS),
-    text: fc.string({ minLength: 1, maxLength: 200 }),
-  }).map((m) => m as ChatMessage);
+  const arbNewMessage = fc
+    .record({
+      id: fc.uuid(),
+      messageId: fc.uuid(),
+      timestamp: arbTimestamp,
+      participantId: fc.string({ minLength: 1, maxLength: 20 }),
+      displayName: fc.string({ minLength: 1, maxLength: 30 }),
+      color: fc.constantFrom(...TERMINAL_COLORS),
+      text: fc.string({ minLength: 1, maxLength: 200 }),
+    })
+    .map((m) => m as ChatMessage);
 
   it('divider index unchanged after appending new real-time messages', () => {
     fc.assert(

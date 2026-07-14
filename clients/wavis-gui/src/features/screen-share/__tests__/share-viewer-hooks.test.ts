@@ -9,7 +9,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fc from 'fast-check';
-import { isPlaybackHealthyWithoutFreshFrames, STATIC_CONTENT_HEALTH_PING_MS } from '../useVideoStallDetector';
+import {
+  isPlaybackHealthyWithoutFreshFrames,
+  STATIC_CONTENT_HEALTH_PING_MS,
+} from '../useVideoStallDetector';
 
 const HAVE_METADATA = 1;
 const HAVE_CURRENT_DATA = 2;
@@ -80,7 +83,9 @@ describe('useShareReconnect logic', () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 10 }), (n) => {
         let callCount = 0;
-        const { trigger } = makeReconnectState(() => { callCount += 1; });
+        const { trigger } = makeReconnectState(() => {
+          callCount += 1;
+        });
         for (let i = 0; i < n; i++) trigger();
         expect(callCount).toBe(n);
       }),
@@ -149,8 +154,12 @@ describe('isPlaybackHealthyWithoutFreshFrames', () => {
  * ================================================================= */
 
 describe('useAutoHide timer logic', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   /**
    * Simulates the useAutoHide state machine using fake timers.
@@ -163,7 +172,9 @@ describe('useAutoHide timer logic', () => {
     const resetTimer = () => {
       isVisible = true;
       if (timerId !== null) clearTimeout(timerId);
-      timerId = setTimeout(() => { isVisible = false; }, delayMs);
+      timerId = setTimeout(() => {
+        isVisible = false;
+      }, delayMs);
     };
 
     const cleanup = () => {
@@ -203,7 +214,7 @@ describe('useAutoHide timer logic', () => {
     resetTimer();
     vi.advanceTimersByTime(1999); // only 1999ms after reset — still visible
     expect(getVisible()).toBe(true);
-    vi.advanceTimersByTime(1);   // now 2000ms after reset — hidden
+    vi.advanceTimersByTime(1); // now 2000ms after reset — hidden
     expect(getVisible()).toBe(false);
   });
 
@@ -243,7 +254,7 @@ describe('useAutoHide timer logic', () => {
   it('property: any number of resetTimer calls keeps visible until delayMs after last call', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 5 }),      // n resets
+        fc.integer({ min: 1, max: 5 }), // n resets
         fc.integer({ min: 100, max: 1000 }), // delayMs
         (n, delayMs) => {
           vi.useFakeTimers();
@@ -348,27 +359,19 @@ describe('useVideoStallDetector stall-check logic', () => {
 
   it('property: action is always none when elapsed <= threshold', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 3000 }),
-        fc.boolean(),
-        (elapsed, trackAlive) => {
-          const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive });
-          expect(action).toBe('none');
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 3000 }), fc.boolean(), (elapsed, trackAlive) => {
+        const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive });
+        expect(action).toBe('none');
+      }),
     );
   });
 
   it('property: action is never none when elapsed > threshold', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 3001, max: 60_000 }),
-        fc.boolean(),
-        (elapsed, trackAlive) => {
-          const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive });
-          expect(action).not.toBe('none');
-        },
-      ),
+      fc.property(fc.integer({ min: 3001, max: 60_000 }), fc.boolean(), (elapsed, trackAlive) => {
+        const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive });
+        expect(action).not.toBe('none');
+      }),
     );
   });
 
@@ -379,7 +382,12 @@ describe('useVideoStallDetector stall-check logic', () => {
         fc.boolean(), // whether onDeadTrack is provided
         (elapsed, hasCallback) => {
           const onDeadTrack = hasCallback ? vi.fn() : undefined;
-          const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive: false, onDeadTrack });
+          const { action } = checkStall({
+            elapsed,
+            stallThresholdMs: 3000,
+            trackAlive: false,
+            onDeadTrack,
+          });
           if (hasCallback) {
             expect(action).toBe('dead-track-reconnect');
           } else {
@@ -392,13 +400,10 @@ describe('useVideoStallDetector stall-check logic', () => {
 
   it('property: live track always routes to reattach when elapsed > threshold', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 3001, max: 60_000 }),
-        (elapsed) => {
-          const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive: true });
-          expect(action).toBe('reattach');
-        },
-      ),
+      fc.property(fc.integer({ min: 3001, max: 60_000 }), (elapsed) => {
+        const { action } = checkStall({ elapsed, stallThresholdMs: 3000, trackAlive: true });
+        expect(action).toBe('reattach');
+      }),
     );
   });
 
@@ -410,7 +415,12 @@ describe('useVideoStallDetector stall-check logic', () => {
 
   it('calls onReattach when live-track stall triggers re-attach', () => {
     const onReattach = vi.fn();
-    const { action } = checkStall({ elapsed: 3001, stallThresholdMs: 3000, trackAlive: true, onReattach });
+    const { action } = checkStall({
+      elapsed: 3001,
+      stallThresholdMs: 3000,
+      trackAlive: true,
+      onReattach,
+    });
     expect(action).toBe('reattach');
     expect(onReattach).toHaveBeenCalledOnce();
   });
@@ -430,7 +440,12 @@ describe('useVideoStallDetector stall-check logic', () => {
 
   it('does not call onReattach when elapsed <= threshold (action is none)', () => {
     const onReattach = vi.fn();
-    const { action } = checkStall({ elapsed: 3000, stallThresholdMs: 3000, trackAlive: true, onReattach });
+    const { action } = checkStall({
+      elapsed: 3000,
+      stallThresholdMs: 3000,
+      trackAlive: true,
+      onReattach,
+    });
     expect(action).toBe('none');
     expect(onReattach).not.toHaveBeenCalled();
   });
@@ -446,7 +461,14 @@ describe('useVideoStallDetector stall-check logic', () => {
     fc.assert(
       fc.property(fc.integer({ min: 3001, max: 60_000 }), (elapsed) => {
         let calls = 0;
-        checkStall({ elapsed, stallThresholdMs: 3000, trackAlive: true, onReattach: () => { calls += 1; } });
+        checkStall({
+          elapsed,
+          stallThresholdMs: 3000,
+          trackAlive: true,
+          onReattach: () => {
+            calls += 1;
+          },
+        });
         expect(calls).toBe(1);
       }),
     );
@@ -487,7 +509,9 @@ describe('static content health ping', () => {
   });
 
   it('does not fire when elapsed is below pingMs (rvfc recently delivered a frame)', () => {
-    expect(checkHealthPing({ elapsed: STATIC_CONTENT_HEALTH_PING_MS - 1, isHealthy: true })).toBe(false);
+    expect(checkHealthPing({ elapsed: STATIC_CONTENT_HEALTH_PING_MS - 1, isHealthy: true })).toBe(
+      false,
+    );
   });
 
   it('does not fire when stream is unhealthy even if elapsed is large (genuine interruption)', () => {
@@ -507,12 +531,9 @@ describe('static content health ping', () => {
 
   it('property: always fires when elapsed >= pingMs and stream is healthy', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: STATIC_CONTENT_HEALTH_PING_MS, max: 10_000 }),
-        (elapsed) => {
-          expect(checkHealthPing({ elapsed, isHealthy: true })).toBe(true);
-        },
-      ),
+      fc.property(fc.integer({ min: STATIC_CONTENT_HEALTH_PING_MS, max: 10_000 }), (elapsed) => {
+        expect(checkHealthPing({ elapsed, isHealthy: true })).toBe(true);
+      }),
     );
   });
 
@@ -530,12 +551,9 @@ describe('static content health ping', () => {
 
   it('property: never fires when stream is unhealthy', () => {
     fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 10_000 }),
-        (elapsed) => {
-          expect(checkHealthPing({ elapsed, isHealthy: false })).toBe(false);
-        },
-      ),
+      fc.property(fc.integer({ min: 0, max: 10_000 }), (elapsed) => {
+        expect(checkHealthPing({ elapsed, isHealthy: false })).toBe(false);
+      }),
     );
   });
 });

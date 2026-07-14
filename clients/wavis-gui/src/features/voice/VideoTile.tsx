@@ -4,7 +4,9 @@ import type { VideoTileViewModel } from './camera-types';
 
 /* ─── Error Boundary ─────────────────────────────────────────────── */
 
-interface ErrorBoundaryState { hasError: boolean }
+interface ErrorBoundaryState {
+  hasError: boolean;
+}
 
 class TileErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
   constructor(props: { children: ReactNode }) {
@@ -59,9 +61,7 @@ function VideoTileInner({ tile }: VideoTileProps) {
   }, [tile.track]);
 
   return (
-    <div
-      className="relative w-full h-full overflow-hidden bg-wavis-panel"
-    >
+    <div className="relative w-full h-full overflow-hidden bg-wavis-panel">
       {tile.track && !tile.isMuted ? (
         <video
           ref={videoRef}

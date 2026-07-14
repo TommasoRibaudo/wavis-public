@@ -189,9 +189,7 @@ export async function setNotificationToggle(
   return setStoreValue(key, enabled);
 }
 
-export async function isNotificationEnabled(
-  event: keyof NotificationToggles,
-): Promise<boolean> {
+export async function isNotificationEnabled(event: keyof NotificationToggles): Promise<boolean> {
   const key = NOTIFICATION_KEY_MAP[event];
   return getStoreValue(key, true);
 }
@@ -332,19 +330,32 @@ export async function setSoundVolumes(volumes: Record<string, number>): Promise<
 // ─── Channel Volume Preferences ────────────────────────────────────
 
 export async function getChannelVolumes(channelId: string): Promise<ChannelVolumePrefs | null> {
-  const all = await getStoreValue<Record<string, ChannelVolumePrefs>>(STORE_KEYS.channelVolumes, {});
+  const all = await getStoreValue<Record<string, ChannelVolumePrefs>>(
+    STORE_KEYS.channelVolumes,
+    {},
+  );
   return all[channelId] ?? null;
 }
 
-export async function setChannelVolumes(channelId: string, prefs: ChannelVolumePrefs): Promise<void> {
-  const all = await getStoreValue<Record<string, ChannelVolumePrefs>>(STORE_KEYS.channelVolumes, {});
+export async function setChannelVolumes(
+  channelId: string,
+  prefs: ChannelVolumePrefs,
+): Promise<void> {
+  const all = await getStoreValue<Record<string, ChannelVolumePrefs>>(
+    STORE_KEYS.channelVolumes,
+    {},
+  );
   all[channelId] = prefs;
   return setStoreValue(STORE_KEYS.channelVolumes, all);
 }
 
 // ─── Last Channel (hub redirect) ───────────────────────────────────
 
-export async function getLastChannel(): Promise<{ id: string; name: string; role: ChannelRole } | null> {
+export async function getLastChannel(): Promise<{
+  id: string;
+  name: string;
+  role: ChannelRole;
+} | null> {
   const [id, name, role] = await Promise.all([
     getStoreValue<string | null>(STORE_KEYS.lastChannelId, null),
     getStoreValue<string | null>(STORE_KEYS.lastChannelName, null),
@@ -379,4 +390,3 @@ export async function getScreenShareCodec(): Promise<ScreenShareCodecOverride> {
 export async function setScreenShareCodec(codec: ScreenShareCodecOverride): Promise<void> {
   return setStoreValue(STORE_KEYS.screenShareCodec, codec);
 }
-

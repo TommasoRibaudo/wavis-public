@@ -6,11 +6,7 @@ interface ErrorPanelProps {
   className?: string;
 }
 
-export function ErrorPanel({
-  error,
-  onRetry,
-  className = '',
-}: ErrorPanelProps) {
+export function ErrorPanel({ error, onRetry, className = '' }: ErrorPanelProps) {
   return (
     <div className={`p-4 bg-wavis-panel border border-wavis-text-secondary ${className}`}>
       <p className="text-wavis-danger">{error}</p>

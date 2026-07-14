@@ -25,7 +25,9 @@
 
 use std::time::Instant;
 
-use crate::auth::jwt::{livekit_identity, sign_livekit_token, sign_livekit_viewer_token, sign_media_token};
+use crate::auth::jwt::{
+    livekit_identity, sign_livekit_token, sign_livekit_viewer_token, sign_media_token,
+};
 use crate::channel::invite::InviteStore;
 use crate::voice::sfu_bridge::{SfuError, SfuRoomManager};
 

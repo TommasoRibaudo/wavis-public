@@ -20,7 +20,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 let mockStore: Record<string, unknown> = {};
 let mockKeychain: Record<string, string> = {};
 let navigateTarget: string | null = null;
-let mockFetchBehavior: 'network_error' | '401' | '400' | '429' | '500' | '200' | 'register_ok' | 'register_fail' = '200';
+let mockFetchBehavior:
+  'network_error' | '401' | '400' | '429' | '500' | '200' | 'register_ok' | 'register_fail' = '200';
 
 /* ─── Module Mocks ──────────────────────────────────────────────── */
 
@@ -61,7 +62,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
       }
       if (mockFetchBehavior === '401') {
         return {
-          ok: false, status: 401,
+          ok: false,
+          status: 401,
           headers: { get: () => null },
           json: async () => ({ error: 'unauthorized' }),
         };
@@ -69,7 +71,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
       if (mockFetchBehavior === '200') {
         const futureExp = Date.now() / 1000 + 900;
         return {
-          ok: true, status: 200,
+          ok: true,
+          status: 200,
           headers: { get: () => null },
           json: async () => ({
             user_id: 'device-123',
@@ -87,7 +90,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
       if (mockFetchBehavior === 'register_ok') {
         const futureExp = Date.now() / 1000 + 900;
         return {
-          ok: true, status: 200,
+          ok: true,
+          status: 200,
           headers: { get: () => null },
           json: async () => ({
             user_id: 'new-user-456',
@@ -100,7 +104,8 @@ vi.mock('@tauri-apps/plugin-http', () => ({
       }
       if (mockFetchBehavior === 'register_fail') {
         return {
-          ok: false, status: 500,
+          ok: false,
+          status: 500,
           headers: { get: () => null },
           json: async () => ({ error: 'internal server error' }),
         };
@@ -115,7 +120,6 @@ vi.mock('react-router', () => ({
     navigateTarget = target;
   },
 }));
-
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -192,19 +196,23 @@ async function simulateReconnect(): Promise<{
     await auth.clearSessionFull();
     return {
       success: false,
-      error: result.status === 'unauthorized'
-        ? 'Session expired — please re-register'
-        : 'Session invalid — please re-register',
+      error:
+        result.status === 'unauthorized'
+          ? 'Session expired — please re-register'
+          : 'Session invalid — please re-register',
       switchedToReregister: true,
     };
   }
 
   // Transient errors: show inline error, stay on /login
   const errorMsg =
-    result.status === 'network_error' ? 'Network error — could not reach server'
-    : result.status === 'server_error' ? 'Server error — try again later'
-    : result.status === 'rate_limited' ? 'Too many requests — try again later'
-    : 'Unexpected error';
+    result.status === 'network_error'
+      ? 'Network error — could not reach server'
+      : result.status === 'server_error'
+        ? 'Server error — try again later'
+        : result.status === 'rate_limited'
+          ? 'Too many requests — try again later'
+          : 'Unexpected error';
 
   return { success: false, error: errorMsg, switchedToReregister: false };
 }

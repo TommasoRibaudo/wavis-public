@@ -5,12 +5,7 @@ import { MotionDetector } from '../motion-detector';
  * Push N identical samples starting at t=startMs, spaced 250ms apart (4 Hz).
  * Returns the next available timestamp (startMs + N*250).
  */
-function pushSamples(
-  det: MotionDetector,
-  count: number,
-  ratio: number,
-  startMs: number,
-): number {
+function pushSamples(det: MotionDetector, count: number, ratio: number, startMs: number): number {
   let t = startMs;
   for (let i = 0; i < count; i++) {
     det.push({ timestampMs: t, changedAreaRatio: ratio });
@@ -60,7 +55,7 @@ describe('MotionDetector', () => {
 
   it('switches motion→detail after ≥5 s sustained <10% motion (accounting for rolling window)', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 44 low samples: well past the 5 s dwell (triggers at t=7000ms)
@@ -71,7 +66,7 @@ describe('MotionDetector', () => {
 
   it('does NOT switch-out before the 5 s dwell elapses', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 23 low samples: dwell = 6750 - 2000 = 4750ms < 5000ms → no switch
@@ -81,7 +76,7 @@ describe('MotionDetector', () => {
 
   it('hysteresis: ratio between 0.10 and 0.40 does NOT trigger switch-out from motion', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 0.15 is above switchOutAreaThreshold (0.10) → belowThresholdSinceMs never set
@@ -92,7 +87,7 @@ describe('MotionDetector', () => {
   it('hysteresis: ratio between 0.10 and 0.40 does NOT trigger switch-in from detail', () => {
     const det = new MotionDetector();
     // 0.30 is below switchInAreaThreshold (0.40) → aboveThresholdSinceMs never set
-    pushSamples(det, 20, 0.30, 0);
+    pushSamples(det, 20, 0.3, 0);
     expect(det.currentRecommendation()).toBe('detail');
   });
 
@@ -121,17 +116,17 @@ describe('MotionDetector', () => {
   it('switches when ratio is exactly at switchInAreaThreshold (>= boundary)', () => {
     const det = new MotionDetector();
     // Exactly 0.40 satisfies >=, should switch after dwell
-    pushSamples(det, 5, 0.40, 0);
+    pushSamples(det, 5, 0.4, 0);
     expect(det.currentRecommendation()).toBe('motion');
   });
 
   it('does NOT switch out when ratio is exactly at switchOutAreaThreshold (< required, not <=)', () => {
     const det = new MotionDetector();
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
     // 0.10 is NOT < 0.10 → condition never satisfied → no switch-out
-    pushSamples(det, 60, 0.10, t);
+    pushSamples(det, 60, 0.1, t);
     expect(det.currentRecommendation()).toBe('motion');
   });
 
@@ -139,7 +134,7 @@ describe('MotionDetector', () => {
     const det = new MotionDetector();
     expect(det.lastSwitchReason()).toBeNull();
 
-    let t = pushSamples(det, 5, 0.5, 0);
+    const t = pushSamples(det, 5, 0.5, 0);
     expect(det.lastSwitchReason()).toBe('auto_switch_in');
 
     // 44 low samples to clear window and expire dwell
@@ -150,18 +145,18 @@ describe('MotionDetector', () => {
   it('custom config overrides defaults', () => {
     // Custom threshold 0.60 — ratio=0.50 should NOT trigger switch
     const det = new MotionDetector({
-      switchInAreaThreshold: 0.60,
+      switchInAreaThreshold: 0.6,
       switchInDwellMs: 1_000,
     });
-    pushSamples(det, 10, 0.50, 0);
+    pushSamples(det, 10, 0.5, 0);
     expect(det.currentRecommendation()).toBe('detail');
 
     // Custom threshold 0.60, dwell=1000ms: 5th sample at t=1000ms → dwell = 1000ms >= 1000ms → switch
     const det2 = new MotionDetector({
-      switchInAreaThreshold: 0.60,
+      switchInAreaThreshold: 0.6,
       switchInDwellMs: 1_000,
     });
-    pushSamples(det2, 5, 0.70, 0);
+    pushSamples(det2, 5, 0.7, 0);
     expect(det2.currentRecommendation()).toBe('motion');
   });
 });

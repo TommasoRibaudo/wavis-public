@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 export function usePolling(
   fn: () => void,
   intervalMs: number,
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean },
 ): void {
   const fnRef = useRef(fn);
   useEffect(() => {

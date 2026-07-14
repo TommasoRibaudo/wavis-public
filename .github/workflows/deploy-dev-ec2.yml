@@ -3,6 +3,18 @@ name: Deploy Dev ECS
 on:
   push:
     branches: [dev]
+    # Only deploy when something the backend image / deploy scripts / smoke
+    # tests actually use has changed — docs or GUI-only pushes skip the whole
+    # docker build + ECS cycle. workflow_dispatch always deploys.
+    paths:
+      - 'wavis-backend/**'
+      - 'shared/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deploy/**'
+      - 'docker-compose.yml'
+      - 'tools/smoke/**'
+      - '.github/workflows/deploy-dev-ec2.yml'
   workflow_dispatch:
 
 concurrency:
@@ -24,39 +36,45 @@ env:
 
 jobs:
   # ── Stage 1: Pre-deploy CI gate ─────────────────────────────────────────
-  # Uncomment when runner minutes allow. While commented, rely on
-  # workspace-ci.yml running in parallel (enforce via branch protection).
-  #
-  # ci-gate:
-  #   name: CI gate (pre-deploy tests)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Remove Tauri GUI crate from workspace
-  #       run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
-  #     - name: Install system dependencies
-  #       run: |
-  #         sudo apt-get update -qq
-  #         sudo apt-get install -y --no-install-recommends \
-  #           build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         shared-key: rust-${{ runner.os }}
-  #         save-if: 'false'
-  #     - name: Run tests
-  #       run: cargo test -p wavis-backend -p shared -p wavis-client-shared
+  # Nothing else tests a push to dev (workspace-ci push triggers don't cover
+  # dev), so this is the ONLY thing standing between a bad merge and a live
+  # deploy. Restores the workspace-ci cache, so it's a warm build.
+  ci-gate:
+    name: CI gate (pre-deploy tests)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Remove Tauri GUI crate from workspace
+        run: sed -i '/"clients\/wavis-gui\/src-tauri"/d' Cargo.toml
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ runner.os }}
+          save-if: 'false'
+      - name: Run tests
+        run: cargo test -p wavis-backend -p shared -p wavis-client-shared
 
   # ── Stage 2: Deploy ──────────────────────────────────────────────────────
   deploy:
-    # needs: [ci-gate]   # uncomment when ci-gate is re-enabled
+    needs: [ci-gate]
     runs-on: ubuntu-latest
     outputs:
       previous_taskdef: ${{ steps.capture_taskdef.outputs.arn }}
+      # 'true' once update-service has run — rollback is only meaningful
+      # after the service was actually repointed at the new task definition.
+      service_updated: ${{ steps.update_service.outputs.updated }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Mask deployment values
         run: |
@@ -150,6 +168,7 @@ jobs:
           echo "taskdef_arn=$TASKDEF_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Update ECS service
+        id: update_service
         run: |
           set -euo pipefail
           aws ecs update-service \
@@ -158,6 +177,7 @@ jobs:
             --task-definition "${{ steps.register.outputs.taskdef_arn }}" \
             --query 'service.serviceArn' \
             --output text > /dev/null
+          echo "updated=true" >> "$GITHUB_OUTPUT"
 
       - name: Wait for ECS stability
         run: |
@@ -185,6 +205,7 @@ jobs:
   deploy-livekit:
     name: Deploy LiveKit (SSM)
     runs-on: ubuntu-latest
+    needs: [ci-gate]
     if: ${{ vars.LIVEKIT_INSTANCE_ID != '' && vars.LIVEKIT_DEPLOY_ROLE_ARN != '' }}
 
     steps:
@@ -293,7 +314,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Mask smoke values
         env:
@@ -334,14 +355,25 @@ jobs:
           SMOKE_TIMEOUT_SECS: "10"
         run: python tools/smoke/smoke.py
 
-  # ── Stage 4: Rollback (conditional on smoke failure) ────────────────────
+  # ── Stage 4: Rollback ────────────────────────────────────────────────────
   # Reverts the ECS service to the task definition revision that was live
   # before this deploy. ECS task definition revisions are immutable — the
   # previous revision is always available without any git operations.
+  #
+  # Fires when smoke failed, OR when the deploy job itself failed AFTER
+  # repointing the service (health check / stability wait) — previously that
+  # path left the broken task definition live with no rollback because smoke
+  # never ran.
   rollback:
     name: Rollback ECS to previous task definition
     needs: [deploy, smoke]
-    if: failure() && needs.smoke.result == 'failure'
+    if: >-
+      always() &&
+      needs.deploy.outputs.previous_taskdef != '' &&
+      (
+        needs.smoke.result == 'failure' ||
+        (needs.deploy.result == 'failure' && needs.deploy.outputs.service_updated == 'true')
+      )
     runs-on: ubuntu-latest
 
     steps:

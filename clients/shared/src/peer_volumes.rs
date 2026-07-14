@@ -193,8 +193,16 @@ mod tests {
         }
         assert_eq!(pv.list().len(), MAX_PEER_VOLUMES);
         pv.set("peer-overflow", 99);
-        assert_eq!(pv.get("peer-overflow"), DEFAULT_VOLUME, "overflow peer should return default");
-        assert_eq!(pv.list().len(), MAX_PEER_VOLUMES, "map should not grow beyond cap");
+        assert_eq!(
+            pv.get("peer-overflow"),
+            DEFAULT_VOLUME,
+            "overflow peer should return default"
+        );
+        assert_eq!(
+            pv.list().len(),
+            MAX_PEER_VOLUMES,
+            "map should not grow beyond cap"
+        );
     }
 
     #[test]

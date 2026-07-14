@@ -23,7 +23,7 @@ import { clearTelemetrySnapshot, getTelemetrySnapshot } from '../telemetry';
  */
 type AssertNoWarning = AudioShareStartResult extends { warning: unknown } ? never : true;
 // @ts-expect-error — unused variable; exists solely for compile-time assertion
-const _typeCheck: AssertNoWarning = true; // eslint-disable-line @typescript-eslint/no-unused-vars
+const _typeCheck: AssertNoWarning = true;
 
 /* ─── Mock State ────────────────────────────────────────────────── */
 
@@ -33,7 +33,10 @@ let sentMessages: Array<Record<string, unknown>>;
 let messageHandler: ((msg: unknown) => void) | null;
 
 /** Tracks invoke calls — key is command name, value is array of arg objects. */
-let invokeCalls: Array<{ command: string; args?: Record<string, unknown> }>;
+type MockInvokeArgs = Record<string, unknown> & {
+  request?: Record<string, unknown>;
+};
+let invokeCalls: Array<{ command: string; args?: MockInvokeArgs }>;
 let tauriListeners: Map<string, Set<(event: { payload: unknown }) => void>>;
 
 /** When set, invoke('audio_share_start') will reject with this error. */
@@ -64,7 +67,9 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
     connect: vi.fn(async (sfuUrl: string, token: string) => {
       (mod.connectCalls as Array<{ sfuUrl: string; token: string }>).push({ sfuUrl, token });
     }),
-    disconnect: vi.fn(() => { (mod as Record<string, number>).disconnectCalls++; }),
+    disconnect: vi.fn(() => {
+      (mod as Record<string, number>).disconnectCalls++;
+    }),
     setMicEnabled: vi.fn(async () => {}),
     setParticipantVolume: vi.fn(),
     setParticipantPassthrough: vi.fn(),
@@ -90,7 +95,10 @@ function createMockLkModule(callbacks: Record<string, (...args: unknown[]) => vo
 }
 
 vi.mock('../livekit-media', () => ({
-  LiveKitModule: vi.fn(function (this: Record<string, unknown>, callbacks: Record<string, (...args: unknown[]) => void>) {
+  LiveKitModule: vi.fn(function (
+    this: Record<string, unknown>,
+    callbacks: Record<string, (...args: unknown[]) => void>,
+  ) {
     const mod = createMockLkModule(callbacks);
     lkConstructorCalls.push(callbacks);
     Object.assign(this, mod);
@@ -104,19 +112,23 @@ vi.mock('../livekit-media', () => ({
 vi.mock('@shared/websocket', () => ({
   SignalingClient: vi.fn(function (this: Record<string, unknown>) {
     this.status = 'disconnected';
-    this.send = vi.fn((msg: Record<string, unknown>) => { sentMessages.push(msg); });
+    this.send = vi.fn((msg: Record<string, unknown>) => {
+      sentMessages.push(msg);
+    });
     this.onMessage = vi.fn((handler: (msg: unknown) => void) => {
       messageHandler = handler;
-      return () => { messageHandler = null; };
+      return () => {
+        messageHandler = null;
+      };
     });
     this.onStatusChange = vi.fn(() => {
       return () => {};
     });
     this.connectWithAuth = vi.fn(async () => {
-      (this as Record<string, unknown>).status = 'connected';
+      this.status = 'connected';
     });
     this.disconnect = vi.fn(() => {
-      (this as Record<string, unknown>).status = 'disconnected';
+      this.status = 'disconnected';
     });
     return this;
   }),
@@ -215,7 +227,10 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 }));
 
 vi.mock('../native-media', () => ({
-  NativeMediaModule: vi.fn(function (this: Record<string, unknown>, callbacks: Record<string, (...args: unknown[]) => void>) {
+  NativeMediaModule: vi.fn(function (
+    this: Record<string, unknown>,
+    callbacks: Record<string, (...args: unknown[]) => void>,
+  ) {
     const mod = createMockLkModule(callbacks);
     lkConstructorCalls.push(callbacks);
     Object.assign(this, mod);
@@ -240,7 +255,7 @@ import type { ShareSelection } from '@features/screen-share/share-types';
 
 /* ─── Test Helpers ──────────────────────────────────────────────── */
 
-const tick = () => new Promise<void>(r => setTimeout(r, 0));
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
 function resetAll() {
   lkConstructorCalls = [];
@@ -280,9 +295,7 @@ async function driveToActive() {
       type: 'joined',
       peerId: 'self-peer',
       roomId: 'room-audio',
-      participants: [
-        { participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' },
-      ],
+      participants: [{ participantId: 'self-peer', displayName: 'TestUser', userId: 'u1' }],
     });
   }
   await tick();
@@ -315,7 +328,11 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
   });
 
   afterEach(() => {
-    try { leaveRoom(); } catch { /* ignore */ }
+    try {
+      leaveRoom();
+    } catch {
+      /* ignore */
+    }
     vi.unstubAllGlobals();
   });
 
@@ -332,9 +349,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     await expect(startCustomShare(selection)).rejects.toThrow();
 
     expect(mockToastError).toHaveBeenCalledTimes(1);
-    expect(mockToastError).toHaveBeenCalledWith(
-      'system audio sharing requires loopback exclusion',
-    );
+    expect(mockToastError).toHaveBeenCalledWith('system audio sharing requires loopback exclusion');
   });
 
   it('room event log receives a system event on audio share failure', async () => {
@@ -386,7 +401,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
 
     // No start_share message should have been sent
     const newMsgs = sentMessages.slice(msgsBefore);
-    const startShareMsgs = newMsgs.filter(m => m.type === 'start_share');
+    const startShareMsgs = newMsgs.filter((m) => m.type === 'start_share');
     expect(startShareMsgs).toHaveLength(0);
   });
 
@@ -433,10 +448,15 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       command: 'screen_share_start_source',
       args: expect.objectContaining({ sourceId: 'screen-1' }),
     });
-    expect(invokeCalls).toContainEqual({ command: 'get_default_audio_monitor_fast', args: undefined });
+    expect(invokeCalls).toContainEqual({
+      command: 'get_default_audio_monitor_fast',
+      args: undefined,
+    });
     expect(
       getState().events.some((event) =>
-        event.message.includes('remote mic and system-audio still share one subscriber volume slot on Linux'),
+        event.message.includes(
+          'remote mic and system-audio still share one subscriber volume slot on Linux',
+        ),
       ),
     ).toBe(true);
   });
@@ -461,9 +481,7 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(invokeCalls.some((call) => call.command === 'screen_share_start_source')).toBe(false);
     expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
     expect(
-      getState().events.some((event) =>
-        event.message.includes('not supported on Sway/Wayland'),
-      ),
+      getState().events.some((event) => event.message.includes('not supported on Sway/Wayland')),
     ).toBe(true);
   });
 
@@ -515,7 +533,8 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
   });
 
   it('error message is propagated exactly from the invoke rejection', async () => {
-    const errorMsg = 'system audio sharing requires loopback exclusion — Windows pre-21H1 does not support per-process audio capture';
+    const errorMsg =
+      'system audio sharing requires loopback exclusion — Windows pre-21H1 does not support per-process audio capture';
     audioShareStartError = errorMsg;
 
     const selection: ShareSelection = {
@@ -590,12 +609,20 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       sourceKind: 'screen',
     };
 
-    await expect(startCustomShare(selection)).rejects.toThrow('native capture: first frame timeout (2s)');
+    await expect(startCustomShare(selection)).rejects.toThrow(
+      'native capture: first frame timeout (2s)',
+    );
 
     expect(invokeCalls.filter((call) => call.command === 'screen_share_start_source')).toEqual([
       {
         command: 'screen_share_start_source',
-        args: expect.objectContaining({ sourceId: 'screen-1', sourceKind: 'screen', captureBackend: 'wgc' }),
+        args: {
+          request: expect.objectContaining({
+            sourceId: 'screen-1',
+            sourceKind: 'screen',
+            captureBackend: 'wgc',
+          }),
+        },
       },
     ]);
     expect(invokeCalls).toContainEqual({
@@ -615,9 +642,15 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
     expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
     expect(getState().activeVideoShare).toBeNull();
-    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'capture.native.failed', sourceKind: 'screen', backend: 'wgc' }),
-    ]));
+    expect(getTelemetrySnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'capture.native.failed',
+          sourceKind: 'screen',
+          backend: 'wgc',
+        }),
+      ]),
+    );
   });
 
   it('syncs selected max quality into Rust before Windows native source capture', async () => {
@@ -661,24 +694,33 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     });
     await driveToActive();
 
-    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error('WGC timeout'));
+    (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('WGC timeout'),
+    );
 
-    await expect(startCustomShare({
-      mode: 'screen_audio',
-      sourceId: 'screen-1',
-      sourceName: 'Display 1',
-      sourceKind: 'screen',
-      withAudio: true,
-    })).rejects.toThrow('WGC timeout');
+    await expect(
+      startCustomShare({
+        mode: 'screen_audio',
+        sourceId: 'screen-1',
+        sourceName: 'Display 1',
+        sourceKind: 'screen',
+        withAudio: true,
+      }),
+    ).rejects.toThrow('WGC timeout');
 
     expect(lastLkModule!.startScreenShare).not.toHaveBeenCalled();
     expect(getState().activeVideoShare).toBeNull();
     expect(invokeCalls.some((call) => call.command === 'audio_share_start')).toBe(false);
     expect(sentMessages.filter((message) => message.type === 'start_share')).toHaveLength(0);
-    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'capture.native.failed', sourceKind: 'screen', backend: 'wgc' }),
-    ]));
+    expect(getTelemetrySnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'capture.native.failed',
+          sourceKind: 'screen',
+          backend: 'wgc',
+        }),
+      ]),
+    );
   });
 
   it('retries Windows WGC native capture with GDI polling when JS-observed new-sequence cadence is too low', async () => {
@@ -692,7 +734,11 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     await driveToActive();
 
     (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error('native capture: low JS-observed WGC new-sequence FPS (3.0 < 20) after 2000ms; retryReason=wgc_sustained_low_js_observed_sequence_fps'))
+      .mockRejectedValueOnce(
+        new Error(
+          'native capture: low JS-observed WGC new-sequence FPS (3.0 < 20) after 2000ms; retryReason=wgc_sustained_low_js_observed_sequence_fps',
+        ),
+      )
       .mockResolvedValueOnce(undefined);
 
     await startCustomShare({
@@ -703,29 +749,36 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       withAudio: false,
     });
 
-    expect(invokeCalls
-      .filter((call) => call.command === 'screen_share_start_source')
-      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'gdi_poll']);
-    expect(invokeCalls
-      .filter((call) => call.command === 'screen_share_start_source')
-      .at(-1)?.args).toEqual(expect.objectContaining({
+    expect(
+      invokeCalls
+        .filter((call) => call.command === 'screen_share_start_source')
+        .map((call) => call.args?.request?.captureBackend),
+    ).toEqual(['wgc', 'gdi_poll']);
+    expect(
+      invokeCalls.filter((call) => call.command === 'screen_share_start_source').at(-1)?.args
+        ?.request,
+    ).toEqual(
+      expect.objectContaining({
         previousBackend: 'wgc',
         retryReason: 'wgc_sustained_low_js_observed_sequence_fps',
-      }));
+      }),
+    );
     expect(lastLkModule!.startNativeCapture).toHaveBeenCalledTimes(2);
     expect(lastLkModule!.startNativeCapture).toHaveBeenLastCalledWith({
       firstFrameTimeoutMs: 4500,
       lowJsBridgeFpsRetry: undefined,
     });
-    expect(getTelemetrySnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        name: 'capture.fallback.activated',
-        os: 'windows',
-        from: 'wgc',
-        to: 'gdi_poll',
-        reason: 'wgc_sustained_low_js_observed_sequence_fps',
-      }),
-    ]));
+    expect(getTelemetrySnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'capture.fallback.activated',
+          os: 'windows',
+          from: 'wgc',
+          to: 'gdi_poll',
+          reason: 'wgc_sustained_low_js_observed_sequence_fps',
+        }),
+      ]),
+    );
   });
 
   it('does not bypass WGC for later shares after one session failure', async () => {
@@ -749,7 +802,9 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       withAudio: false,
     };
 
-    await expect(startCustomShare(selection)).rejects.toThrow('native capture: first frame timeout (2s)');
+    await expect(startCustomShare(selection)).rejects.toThrow(
+      'native capture: first frame timeout (2s)',
+    );
     (lastLkModule!.startNativeCapture as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     await startCustomShare(selection);
     await stopCustomShare('video');
@@ -761,9 +816,11 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
       withAudio: false,
     });
 
-    expect(invokeCalls
-      .filter((call) => call.command === 'screen_share_start_source')
-      .map((call) => call.args?.captureBackend)).toEqual(['wgc', 'wgc', 'wgc']);
+    expect(
+      invokeCalls
+        .filter((call) => call.command === 'screen_share_start_source')
+        .map((call) => call.args?.request?.captureBackend),
+    ).toEqual(['wgc', 'wgc', 'wgc']);
   });
 
   it('window compatibility mode skips WGC while screen selections still start with WGC', async () => {
@@ -788,7 +845,9 @@ describe('Audio share error propagation and toast display (Task 4.4)', () => {
     expect(invokeCalls.filter((call) => call.command === 'screen_share_start_source')).toEqual([
       {
         command: 'screen_share_start_source',
-        args: expect.objectContaining({ sourceKind: 'window', captureBackend: 'gdi_poll' }),
+        args: {
+          request: expect.objectContaining({ sourceKind: 'window', captureBackend: 'gdi_poll' }),
+        },
       },
     ]);
   });
@@ -802,7 +861,11 @@ describe('Windows companion audio toggle state', () => {
   });
 
   afterEach(() => {
-    try { leaveRoom(); } catch { /* ignore */ }
+    try {
+      leaveRoom();
+    } catch {
+      /* ignore */
+    }
     vi.unstubAllGlobals();
   });
 

@@ -19,10 +19,12 @@ export function shouldDisableCameraButton(
 }
 
 export function hasBrowserCameraMediaSupport(): boolean {
-  return typeof window !== 'undefined'
-    && typeof navigator !== 'undefined'
-    && 'RTCPeerConnection' in window
-    && 'mediaDevices' in navigator
-    && navigator.mediaDevices !== undefined
-    && typeof navigator.mediaDevices.getUserMedia === 'function';
+  return (
+    typeof window !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    'RTCPeerConnection' in window &&
+    'mediaDevices' in navigator &&
+    navigator.mediaDevices !== undefined &&
+    typeof navigator.mediaDevices.getUserMedia === 'function'
+  );
 }

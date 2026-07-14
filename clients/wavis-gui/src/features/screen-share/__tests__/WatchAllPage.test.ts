@@ -53,8 +53,12 @@ globalThis.RTCPeerConnection = MockRTCPeerConnection as unknown as typeof RTCPee
 
 class MockMediaStream {
   private tracks: unknown[] = [];
-  getTracks() { return this.tracks; }
-  addTrack(t: unknown) { this.tracks.push(t); }
+  getTracks() {
+    return this.tracks;
+  }
+  addTrack(t: unknown) {
+    this.tracks.push(t);
+  }
 }
 globalThis.MediaStream = MockMediaStream as unknown as typeof MediaStream;
 
@@ -85,9 +89,7 @@ interface LabelOverlayState {
  * Mirrors the handleToggleMute callback in WatchAllPage.
  */
 function toggleMute(tiles: ShareTileState[], targetId: string): ShareTileState[] {
-  return tiles.map((t) =>
-    t.participantId === targetId ? { ...t, muted: !t.muted } : t,
-  );
+  return tiles.map((t) => (t.participantId === targetId ? { ...t, muted: !t.muted } : t));
 }
 
 /**
@@ -99,7 +101,18 @@ function addTile(
   payload: { participantId: string; displayName: string; color: string; canvasFallback: boolean },
 ): ShareTileState[] {
   if (tiles.some((t) => t.participantId === payload.participantId)) return tiles;
-  return [...tiles, { ...payload, kind: 'live', muted: false, volume: 70, nativeWidth: null, nativeHeight: null, aspectRatio: 16 / 9 }];
+  return [
+    ...tiles,
+    {
+      ...payload,
+      kind: 'live',
+      muted: false,
+      volume: 70,
+      nativeWidth: null,
+      nativeHeight: null,
+      aspectRatio: 16 / 9,
+    },
+  ];
 }
 
 /**
@@ -116,16 +129,17 @@ function setTileVolume(
   volume: number,
 ): ShareTileState[] {
   return tiles.map((t) =>
-    t.participantId === participantId
-      ? { ...t, volume, muted: volume === 0 }
-      : t,
+    t.participantId === participantId ? { ...t, volume, muted: volume === 0 } : t,
   );
 }
 
 function popOutTile(
   tiles: ShareTileState[],
   participantId: string,
-): { remainingTiles: ShareTileState[]; payload: { participantId: string; volume: number; muted: boolean } | null } {
+): {
+  remainingTiles: ShareTileState[];
+  payload: { participantId: string; volume: number; muted: boolean } | null;
+} {
   const tile = tiles.find((t) => t.participantId === participantId) ?? null;
   if (!tile) return { remainingTiles: tiles, payload: null };
   return {
@@ -145,17 +159,15 @@ function restoreTileVolume(
   );
 }
 
-function applyDiagnosticsTestState(
-  payload: {
-    tiles: Array<{
-      participantId: string;
-      displayName: string;
-      color: string;
-      width: number;
-      height: number;
-    }>;
-  },
-): ShareTileState[] {
+function applyDiagnosticsTestState(payload: {
+  tiles: Array<{
+    participantId: string;
+    displayName: string;
+    color: string;
+    width: number;
+    height: number;
+  }>;
+}): ShareTileState[] {
   return payload.tiles.map((tile) => ({
     participantId: tile.participantId,
     displayName: tile.displayName,
@@ -435,7 +447,12 @@ describe('WatchAllPage tile state management', () => {
 
   it('mute toggle preserves slider position (volume field unchanged)', () => {
     let tiles: ShareTileState[] = [];
-    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = addTile(tiles, {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
     tiles = setTileVolume(tiles, 'user-1', 70);
     expect(tiles[0].volume).toBe(70);
 
@@ -450,7 +467,12 @@ describe('WatchAllPage tile state management', () => {
 
   it('restore-volume with 0 sets slider to 0 and mutes', () => {
     let tiles: ShareTileState[] = [];
-    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = addTile(tiles, {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
     tiles = setTileVolume(tiles, 'user-1', 60);
 
     // Simulates slider explicitly dragged to 0 in another window (persisted via syncScreenShareVolume)
@@ -461,7 +483,12 @@ describe('WatchAllPage tile state management', () => {
 
   it('pop-out of muted tile sends slider position and mute state', () => {
     let tiles: ShareTileState[] = [];
-    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = addTile(tiles, {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
     tiles = setTileVolume(tiles, 'user-1', 80);
     tiles = toggleMute(tiles, 'user-1');
     expect(tiles[0].muted).toBe(true);
@@ -473,7 +500,12 @@ describe('WatchAllPage tile state management', () => {
 
   it('pop-out of unmuted tile sends slider position', () => {
     let tiles: ShareTileState[] = [];
-    tiles = addTile(tiles, { participantId: 'user-1', displayName: 'Alice', color: '#E06C75', canvasFallback: false });
+    tiles = addTile(tiles, {
+      participantId: 'user-1',
+      displayName: 'Alice',
+      color: '#E06C75',
+      canvasFallback: false,
+    });
     tiles = setTileVolume(tiles, 'user-1', 45);
 
     const { payload } = popOutTile(tiles, 'user-1');

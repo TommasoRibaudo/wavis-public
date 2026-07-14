@@ -5,8 +5,8 @@
 //! downstream handlers can depend on for identity.
 //!
 //! **Does not own:** token creation, refresh, revocation, or any other auth
-//! business logic. Validation is delegated to `domain::auth` functions
-//! (`validate_access_token_with_rotation`, `check_session_epoch`).
+//! business logic. Validation is delegated to the shared `domain::auth`
+//! entry point (`authenticate_access_token`).
 //!
 //! **Key invariants:**
 //! - Rejection is opaque: all auth failures return the same 401 response
@@ -26,8 +26,7 @@ use axum::http::request::Parts;
 use uuid::Uuid;
 
 use crate::app_state::AppState;
-use crate::auth::auth::check_session_epoch;
-use crate::auth::jwt::validate_access_token_with_rotation;
+use crate::auth::auth::authenticate_access_token;
 use crate::error::ErrorResponse;
 
 /// Extracted from a valid `Authorization: Bearer <token>` header.
@@ -62,34 +61,19 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
 
         let token = header_value.strip_prefix("Bearer ").ok_or_else(reject)?;
 
-        let (user_id, device_id, token_epoch) = validate_access_token_with_rotation(
-            token,
+        // JWT signature/claims, device revocation, and session epoch are all
+        // verified by the shared auth entry point. Rejection stays opaque.
+        let (user_id, device_id) = authenticate_access_token(
+            &state.db_pool,
             &state.auth_jwt_secret,
             state
                 .auth_jwt_secret_previous
                 .as_deref()
                 .map(|v| v.as_slice()),
+            token,
         )
+        .await
         .map_err(|_| reject())?;
-
-        // Verify the device has not been revoked.
-        let revoked_at: Option<Option<chrono::DateTime<chrono::Utc>>> =
-            sqlx::query_scalar("SELECT revoked_at FROM devices WHERE device_id = $1")
-                .bind(device_id)
-                .fetch_optional(&state.db_pool)
-                .await
-                .map_err(|_| reject())?;
-
-        match revoked_at {
-            Some(None) => {}           // device exists and is not revoked — OK
-            _ => return Err(reject()), // not found OR revoked_at IS NOT NULL
-        }
-
-        // Verify the token's epoch matches the current DB epoch.
-        // This rejects tokens issued before a security event (reuse detection).
-        check_session_epoch(&state.db_pool, &user_id, token_epoch)
-            .await
-            .map_err(|_| reject())?;
 
         Ok(AuthenticatedUser { user_id, device_id })
     }

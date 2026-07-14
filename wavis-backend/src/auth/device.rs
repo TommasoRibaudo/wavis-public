@@ -67,6 +67,21 @@ pub async fn list_devices(pool: &PgPool, user_id: Uuid) -> Result<Vec<DeviceInfo
     Ok(rows)
 }
 
+/// Check whether a device exists and has not been revoked.
+///
+/// Returns `Ok(false)` for both "not found" and "revoked" — callers reject
+/// either way and must not leak which case occurred.
+pub async fn is_device_active(pool: &PgPool, device_id: Uuid) -> Result<bool, DeviceError> {
+    let revoked_at: Option<Option<DateTime<Utc>>> =
+        sqlx::query_scalar("SELECT revoked_at FROM devices WHERE device_id = $1")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DeviceError::DatabaseError(e.to_string()))?;
+
+    Ok(matches!(revoked_at, Some(None)))
+}
+
 /// Revoke a device — sets `revoked_at` and revokes all its refresh tokens.
 ///
 /// Verifies the target device belongs to the authenticated user (returns

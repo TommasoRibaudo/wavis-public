@@ -68,40 +68,44 @@ export default function StreamHoverBar({
 
       {onFocusMain && (
         <>
-          <span className="text-wavis-text-secondary opacity-30 select-none leading-none">{SEPARATOR}</span>
+          <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
+            {SEPARATOR}
+          </span>
           <FocusMainButton onClick={onFocusMain} />
         </>
       )}
 
-      <span className="text-wavis-text-secondary opacity-30 select-none leading-none">{SEPARATOR}</span>
+      <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
+        {SEPARATOR}
+      </span>
 
       <div className="flex items-center gap-2 flex-1 min-w-0">
         {ownerControls ?? (
           <>
-          <span className="text-wavis-text-secondary shrink-0">vol</span>
-          <div
-            className="w-24"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <VolumeSlider
-              value={streamVolume}
-              onChange={onStreamVolumeChange}
-              color={streamVolumeColor}
-            />
-          </div>
-          <button
-            className="shrink-0 hover:opacity-70 transition-opacity"
-            style={{ color: streamMuted ? 'var(--wavis-text-secondary)' : streamVolumeColor }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onStreamMuteToggle();
-            }}
-            aria-label={streamMuted ? 'Unmute stream audio' : 'Mute stream audio'}
-            title={streamMuted ? 'unmute stream' : 'mute stream'}
-          >
-            {streamMuted ? STREAM_MUTED_ICON : STREAM_UNMUTED_ICON}
-          </button>
+            <span className="text-wavis-text-secondary shrink-0">vol</span>
+            <div
+              className="w-24"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <VolumeSlider
+                value={streamVolume}
+                onChange={onStreamVolumeChange}
+                color={streamVolumeColor}
+              />
+            </div>
+            <button
+              className="shrink-0 hover:opacity-70 transition-opacity"
+              style={{ color: streamMuted ? 'var(--wavis-text-secondary)' : streamVolumeColor }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onStreamMuteToggle();
+              }}
+              aria-label={streamMuted ? 'Unmute stream audio' : 'Mute stream audio'}
+              title={streamMuted ? 'unmute stream' : 'mute stream'}
+            >
+              {streamMuted ? STREAM_MUTED_ICON : STREAM_UNMUTED_ICON}
+            </button>
           </>
         )}
       </div>

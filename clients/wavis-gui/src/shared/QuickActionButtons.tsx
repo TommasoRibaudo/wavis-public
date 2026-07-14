@@ -46,7 +46,9 @@ export default function QuickActionButtons({
       >
         {SELF_MUTE_ICON}
       </button>
-      <span className="text-wavis-text-secondary opacity-30 select-none leading-none">{SEPARATOR}</span>
+      <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
+        {SEPARATOR}
+      </span>
       <button
         onClick={(e) => {
           e.stopPropagation();

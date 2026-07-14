@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  navigateCliHistory,
-  pushCliHistory,
-  resetCliHistoryNavigation,
-} from '../cli-history';
+import { navigateCliHistory, pushCliHistory, resetCliHistoryNavigation } from '../cli-history';
 
 describe('pushCliHistory', () => {
   it('appends trimmed commands', () => {

@@ -14,7 +14,8 @@ const CHECKS = [
     id: 'bundleIdentifier',
     regex: /\bbundleIdentifier\b/,
     allowInSckFallback: true,
-    message: 'bundle-identifier based macOS exclusion is only allowed inside the ScreenCaptureKit fallback branch.',
+    message:
+      'bundle-identifier based macOS exclusion is only allowed inside the ScreenCaptureKit fallback branch.',
   },
   {
     id: 'SCRunningApplications',

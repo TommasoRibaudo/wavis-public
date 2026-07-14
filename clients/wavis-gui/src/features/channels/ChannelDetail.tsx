@@ -43,8 +43,7 @@ function apiErrorMessage(err: ApiError): string {
 const DETAIL_POLL_MS = 15_000;
 const VOICE_POLL_MS = 5_000;
 const SUCCESS_DISPLAY_MS = 2_000;
-const MEMBER_ROW_GRID_CLASS =
-  'grid grid-cols-[minmax(0,1fr)_4rem_4rem_5.75rem] items-center gap-1';
+const MEMBER_ROW_GRID_CLASS = 'grid grid-cols-[minmax(0,1fr)_4rem_4rem_5.75rem] items-center gap-1';
 const MEMBER_JOINED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -110,14 +109,20 @@ function MemberRow({
       {isRoleTarget ? (
         <div className="col-start-2 col-span-2 min-w-0 flex items-center justify-end gap-1.5">
           <button
-            onClick={() => { onRoleChange(member.userId, 'admin'); setRoleTarget(null); }}
+            onClick={() => {
+              onRoleChange(member.userId, 'admin');
+              setRoleTarget(null);
+            }}
             disabled={submitting || member.role === 'admin'}
             className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ADMIN
           </button>
           <button
-            onClick={() => { onRoleChange(member.userId, 'member'); setRoleTarget(null); }}
+            onClick={() => {
+              onRoleChange(member.userId, 'member');
+              setRoleTarget(null);
+            }}
             disabled={submitting || member.role === 'member'}
             className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -132,48 +137,57 @@ function MemberRow({
         </div>
       ) : (
         <div className="min-w-0 flex items-center justify-end gap-1">
-        {showRoleBtn && (
-          <button
-            onClick={() => onRole?.(member.userId)}
-            disabled={submitting}
-            className="text-xs text-wavis-text-secondary disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
-          >
-            /role
-          </button>
-        )}
-        {isRoleTarget && (
-          <div className="flex flex-wrap items-center gap-1">
+          {showRoleBtn && (
             <button
-              onClick={() => { onRoleChange(member.userId, 'admin'); setRoleTarget(null); }}
-              disabled={submitting || member.role === 'admin'}
-              className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={() => onRole?.(member.userId)}
+              disabled={submitting}
+              className="text-xs text-wavis-text-secondary disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
             >
-              ADMIN
+              /role
             </button>
-            <button
-              onClick={() => { onRoleChange(member.userId, 'member'); setRoleTarget(null); }}
-              disabled={submitting || member.role === 'member'}
-              className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              MEMBER
-            </button>
-            <button
-              onClick={() => setRoleTarget(null)}
-              className="text-xs text-wavis-text-secondary hover:text-wavis-text ml-1"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-        {onBan && !isMe && member.role !== 'owner' && (myRole === 'owner' || (myRole === 'admin' && member.role !== 'admin')) && (
-          <button
-            onClick={() => onBan(member.userId)}
-            disabled={submitting}
-            className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
-          >
-            /ban
-          </button>
-        )}
+          )}
+          {isRoleTarget && (
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                onClick={() => {
+                  onRoleChange(member.userId, 'admin');
+                  setRoleTarget(null);
+                }}
+                disabled={submitting || member.role === 'admin'}
+                className="text-xs border border-wavis-warn text-wavis-warn hover:bg-wavis-warn hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ADMIN
+              </button>
+              <button
+                onClick={() => {
+                  onRoleChange(member.userId, 'member');
+                  setRoleTarget(null);
+                }}
+                disabled={submitting || member.role === 'member'}
+                className="text-xs border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-1 py-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                MEMBER
+              </button>
+              <button
+                onClick={() => setRoleTarget(null)}
+                className="text-xs text-wavis-text-secondary hover:text-wavis-text ml-1"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          {onBan &&
+            !isMe &&
+            member.role !== 'owner' &&
+            (myRole === 'owner' || (myRole === 'admin' && member.role !== 'admin')) && (
+              <button
+                onClick={() => onBan(member.userId)}
+                disabled={submitting}
+                className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
+              >
+                /ban
+              </button>
+            )}
         </div>
       )}
       <span className="justify-self-end text-right text-xs text-wavis-text-secondary font-mono tabular-nums">
@@ -191,7 +205,8 @@ function VoiceStatusPanel({ voice }: { voice: VoiceStatus | null }) {
         <div>
           <span className="text-wavis-accent text-sm">● ACTIVE</span>
           <span className="text-wavis-text-secondary text-xs ml-2">
-            {voice.participantCount ?? 0} participant{(voice.participantCount ?? 0) !== 1 ? 's' : ''}
+            {voice.participantCount ?? 0} participant
+            {(voice.participantCount ?? 0) !== 1 ? 's' : ''}
           </span>
           {voice.participants && voice.participants.length > 0 && (
             <div className="text-xs text-wavis-text-secondary mt-1 ml-4">
@@ -210,7 +225,6 @@ function VoiceStatusPanel({ voice }: { voice: VoiceStatus | null }) {
     </div>
   );
 }
-
 
 function InvitePanel({
   channelId,
@@ -338,7 +352,9 @@ function RevokePanel({
         }
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [channelId]);
 
   if (loadError) {
@@ -375,13 +391,10 @@ function RevokePanel({
           </span>
           <button
             onClick={() =>
-              onMutation(
-                async () => {
-                  await revokeInvite(channelId, inv.code);
-                  setInvites((prev) => prev?.filter((i) => i.code !== inv.code) ?? null);
-                },
-                'invite revoked',
-              )
+              onMutation(async () => {
+                await revokeInvite(channelId, inv.code);
+                setInvites((prev) => prev?.filter((i) => i.code !== inv.code) ?? null);
+              }, 'invite revoked')
             }
             disabled={submitting}
             className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
@@ -484,7 +497,9 @@ function UnbanPanel({
         }
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [channelId, knownDisplayNames]);
 
   if (loadError) {
@@ -521,13 +536,10 @@ function UnbanPanel({
           </span>
           <button
             onClick={() =>
-              onMutation(
-                async () => {
-                  await unbanMember(channelId, b.userId);
-                  setBanned((prev) => prev?.filter((x) => x.userId !== b.userId) ?? null);
-                },
-                'member unbanned',
-              )
+              onMutation(async () => {
+                await unbanMember(channelId, b.userId);
+                setBanned((prev) => prev?.filter((x) => x.userId !== b.userId) ?? null);
+              }, 'member unbanned')
             }
             disabled={submitting}
             className="text-xs text-wavis-accent disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-accent py-0.5 px-1 text-center transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
@@ -564,7 +576,14 @@ interface ChannelDetailProps {
   embeddedMiddle?: ReactNode;
 }
 
-export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackButton, onNavigateAway, embedded, embeddedMiddle }: ChannelDetailProps = {}) {
+export default function ChannelDetail({
+  channelIdProp,
+  hideJoinVoice,
+  hideBackButton,
+  onNavigateAway,
+  embedded,
+  embeddedMiddle,
+}: ChannelDetailProps = {}) {
   const { channelId: channelIdParam } = useParams();
   const channelId = channelIdProp ?? channelIdParam;
   const navigate = useNavigate();
@@ -744,16 +763,13 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
   );
 
   /* ── Panel toggle ── */
-  const togglePanel = useCallback(
-    (panel: 'invite' | 'revoke' | 'ban' | 'unban' | 'role') => {
-      setActivePanel((prev) => (prev === panel ? 'none' : panel));
-      setRoleTarget(null);
-      setMutationError(null);
-      setSuccessMsg(null);
-      setConfirmAction('none');
-    },
-    [],
-  );
+  const togglePanel = useCallback((panel: 'invite' | 'revoke' | 'ban' | 'unban' | 'role') => {
+    setActivePanel((prev) => (prev === panel ? 'none' : panel));
+    setRoleTarget(null);
+    setMutationError(null);
+    setSuccessMsg(null);
+    setConfirmAction('none');
+  }, []);
 
   /* ── Command handlers ── */
   const handleJoinVoice = useCallback(() => {
@@ -866,8 +882,8 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
   );
   // Embedded (in-room settings) groups commands into settings-style sections:
   // management actions vs. destructive membership actions.
-  const managementCommands = allCommands.filter((c) =>
-    c === '/invite' || c === '/revoke' || c === '/ban' || c === '/unban',
+  const managementCommands = allCommands.filter(
+    (c) => c === '/invite' || c === '/revoke' || c === '/ban' || c === '/unban',
   );
   const dangerCommands = allCommands.filter((c) => c === '/delete' || c === '/leave');
   const sorted = detail ? sortMembers(detail.members) : [];
@@ -889,9 +905,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
       {loading && <LoadingBlock />}
 
       {/* Error */}
-      {!loading && error && (
-        <ErrorPanel error={error} onRetry={() => loadDetail()} />
-      )}
+      {!loading && error && <ErrorPanel error={error} onRetry={() => loadDetail()} />}
 
       {/* Detail loaded */}
       {!loading && !error && detail && (
@@ -969,12 +983,8 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
               </div>
 
               {/* Feedback messages */}
-              {successMsg && (
-                <p className="text-wavis-accent text-sm mt-2">{successMsg}</p>
-              )}
-              {mutationError && (
-                <p className="text-wavis-danger text-sm mt-2">{mutationError}</p>
-              )}
+              {successMsg && <p className="text-wavis-accent text-sm mt-2">{successMsg}</p>}
+              {mutationError && <p className="text-wavis-danger text-sm mt-2">{mutationError}</p>}
 
               {/* Active panel */}
               {activePanel === 'invite' && (
@@ -1159,9 +1169,7 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
                 return (
                   <div key={cmd} className="space-y-2">
                     <div>
-                      <p className="text-sm">
-                        {isDelete ? 'Delete channel' : 'Leave channel'}
-                      </p>
+                      <p className="text-sm">{isDelete ? 'Delete channel' : 'Leave channel'}</p>
                       <p className="text-xs text-wavis-text-secondary mt-1">
                         {isDelete
                           ? 'Deleting permanently removes this channel and its membership.'
@@ -1206,25 +1214,23 @@ export default function ChannelDetail({ channelIdProp, hideJoinVoice, hideBackBu
   return (
     <div className="h-full flex flex-col bg-wavis-bg font-mono text-wavis-text">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
-          {innerContent}
-        </div>
+        <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">{innerContent}</div>
       </div>
 
       {/* Bottom command bar */}
       <div className="border-t border-wavis-text-secondary p-4 flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex gap-4 border-b border-transparent w-full max-w-[1000px] mx-auto">
-        {bottomCommands.map((cmd) => (
-          <CmdButton
-            key={cmd}
-            label={cmd === '/leave' ? '/abandon' : cmd}
-            onClick={() => handleCmdClick(cmd)}
-            active={false}
-            danger={cmd === '/leave'}
-            disabled={submitting && cmd !== '/back'}
-            className="py-[7px] flex-1"
-          />
-        ))}
+          {bottomCommands.map((cmd) => (
+            <CmdButton
+              key={cmd}
+              label={cmd === '/leave' ? '/abandon' : cmd}
+              onClick={() => handleCmdClick(cmd)}
+              active={false}
+              danger={cmd === '/leave'}
+              disabled={submitting && cmd !== '/back'}
+              className="py-[7px] flex-1"
+            />
+          ))}
         </div>
       </div>
     </div>

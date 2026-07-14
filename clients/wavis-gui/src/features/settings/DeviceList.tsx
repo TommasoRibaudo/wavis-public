@@ -58,9 +58,7 @@ function DeviceCard({ device, isCurrent, onRevoke }: DeviceCardProps) {
         <span>{device.device_name}</span>
         {isCurrent && <span className="text-wavis-accent text-xs">(this device)</span>}
       </div>
-      <div className="text-xs text-wavis-text-secondary">
-        id: {truncateId(device.device_id)}
-      </div>
+      <div className="text-xs text-wavis-text-secondary">id: {truncateId(device.device_id)}</div>
       <div className="text-xs text-wavis-text-secondary">
         created: {formatDate(device.created_at)}
       </div>
@@ -123,7 +121,9 @@ export default function DeviceList() {
   }, []);
 
   // Initial load
-  useEffect(() => { loadDevices(); }, [loadDevices]);
+  useEffect(() => {
+    loadDevices();
+  }, [loadDevices]);
 
   // Auto-refresh
   usePolling(() => loadDevices(true), POLL_MS);
@@ -161,9 +161,7 @@ export default function DeviceList() {
           {loading && <LoadingBlock message="loading devices..." className="text-sm" />}
 
           {/* Error */}
-          {error && (
-            <ErrorPanel error={error} onRetry={() => loadDevices()} className="mb-4" />
-          )}
+          {error && <ErrorPanel error={error} onRetry={() => loadDevices()} className="mb-4" />}
 
           {/* Device list */}
           {!loading && !error && devices.length === 0 && (

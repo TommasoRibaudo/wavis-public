@@ -27,8 +27,8 @@ export interface MotionDetectorConfig {
 }
 
 export const DEFAULT_MOTION_DETECTOR_CONFIG: MotionDetectorConfig = {
-  switchInAreaThreshold: 0.40,
-  switchOutAreaThreshold: 0.10,
+  switchInAreaThreshold: 0.4,
+  switchOutAreaThreshold: 0.1,
   switchInDwellMs: 1_000,
   switchOutDwellMs: 5_000,
   sampleWindowMs: 1_000,

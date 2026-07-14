@@ -4,7 +4,10 @@ export const SHARE_TRANSITION_THRESHOLD_MS = 1200;
 export const SHARE_STREAM_STABILIZATION_MS = 2000;
 const SHARE_TRANSITION_POLL_MS = 250;
 
-export function shouldShowShareLoadingOverlay(hasRenderedFrame: boolean, hasError: boolean): boolean {
+export function shouldShowShareLoadingOverlay(
+  hasRenderedFrame: boolean,
+  hasError: boolean,
+): boolean {
   return !hasRenderedFrame && !hasError;
 }
 
@@ -108,7 +111,10 @@ export function useShareTransitionOverlay({
             console.log(
               '[wavis:share-transition] overlay activated — stalledFor:',
               lastFrame != null ? now - lastFrame : 'n/a',
-              'ms, threshold:', thresholdMs, 'ts:', now,
+              'ms, threshold:',
+              thresholdMs,
+              'ts:',
+              now,
             );
           }
         }

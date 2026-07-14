@@ -21,6 +21,8 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use axum::Router;
+use axum::routing::get;
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
 use wavis_backend::auth::auth_rate_limiter::{AuthRateLimiter, AuthRateLimiterConfig};
@@ -29,8 +31,6 @@ use wavis_backend::ip::IpConfig;
 use wavis_backend::voice::mock_sfu_bridge::MockSfuBridge;
 use wavis_backend::voice::sfu_bridge::{SfuRoomManager, SfuSignalingProxy};
 use wavis_backend::ws::ws::ws_handler;
-use axum::Router;
-use axum::routing::get;
 
 // ─── Server setup ─────────────────────────────────────────────────
 
@@ -46,7 +46,10 @@ async fn start_server() -> (SocketAddr, AppState) {
     let mock = Arc::new(MockSfuBridge::new());
     let invite_store = Arc::new(InviteStore::new(InviteStoreConfig::default()));
     let join_rate_limiter = Arc::new(JoinRateLimiter::new(JoinRateLimiterConfig::default()));
-    let ip_config = IpConfig { trust_proxy_headers: false, trusted_proxy_cidrs: vec![] };
+    let ip_config = IpConfig {
+        trust_proxy_headers: false,
+        trusted_proxy_cidrs: vec![],
+    };
 
     let mut app_state = AppState::new(
         mock.clone() as Arc<dyn SfuRoomManager>,
@@ -99,9 +102,12 @@ async fn start_server() -> (SocketAddr, AppState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-            .unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     (addr, app_state)
@@ -148,7 +154,11 @@ async fn drain(stream: &mut WsStream) {
 
 /// Join an SFU room and return the assigned peer_id.
 async fn join_sfu(sink: &mut WsSink, stream: &mut WsStream, room_id: &str) -> String {
-    ws_send(sink, json!({"type":"join","roomId":room_id,"roomType":"sfu"})).await;
+    ws_send(
+        sink,
+        json!({"type":"join","roomId":room_id,"roomType":"sfu"}),
+    )
+    .await;
     let joined = recv_type(stream, "joined").await;
     drain(stream).await;
     joined["peerId"].as_str().unwrap().to_string()
@@ -241,10 +251,17 @@ async fn set_passthrough_without_channel_session_returns_error() {
     join_sfu(&mut sink, &mut stream, "pt-room").await;
     drain(&mut stream).await;
 
-    ws_send(&mut sink, json!({"type":"set_passthrough","targetSubRoomId":"sr-2"})).await;
+    ws_send(
+        &mut sink,
+        json!({"type":"set_passthrough","targetSubRoomId":"sr-2"}),
+    )
+    .await;
     let err = recv_type(&mut stream, "error").await;
     assert!(
-        err["message"].as_str().unwrap().contains("channel voice session"),
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("channel voice session"),
         "expected channel session error, got: {}",
         err["message"]
     );
@@ -259,7 +276,12 @@ async fn clear_passthrough_without_channel_session_returns_error() {
 
     ws_send(&mut sink, json!({"type":"clear_passthrough"})).await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("channel voice session"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("channel voice session")
+    );
 }
 
 #[tokio::test]
@@ -269,9 +291,18 @@ async fn set_passthrough_volume_without_channel_session_returns_error() {
     join_sfu(&mut sink, &mut stream, "ptv-room").await;
     drain(&mut stream).await;
 
-    ws_send(&mut sink, json!({"type":"set_passthrough_volume","volume":30})).await;
+    ws_send(
+        &mut sink,
+        json!({"type":"set_passthrough_volume","volume":30}),
+    )
+    .await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("channel voice session"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("channel voice session")
+    );
 }
 
 // ─── Server-generated sub-room messages rejected ──────────────────
@@ -286,7 +317,10 @@ async fn sub_room_state_from_client_returns_error() {
     ws_send(&mut sink, json!({"type":"sub_room_state","rooms":[]})).await;
     let err = recv_type(&mut stream, "error").await;
     assert!(
-        err["message"].as_str().unwrap().contains("unexpected server-generated"),
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected server-generated"),
         "got: {}",
         err["message"]
     );
@@ -301,7 +335,12 @@ async fn sub_room_created_from_client_returns_error() {
 
     ws_send(&mut sink, json!({"type":"sub_room_created","room":{"subRoomId":"x","roomNumber":1,"isDefault":false,"participantIds":[]}})).await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("unexpected server-generated"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected server-generated")
+    );
 }
 
 #[tokio::test]
@@ -311,9 +350,18 @@ async fn sub_room_joined_from_client_returns_error() {
     join_sfu(&mut sink, &mut stream, "srj-room").await;
     drain(&mut stream).await;
 
-    ws_send(&mut sink, json!({"type":"sub_room_joined","participantId":"p1","subRoomId":"sr-1"})).await;
+    ws_send(
+        &mut sink,
+        json!({"type":"sub_room_joined","participantId":"p1","subRoomId":"sr-1"}),
+    )
+    .await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("unexpected server-generated"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected server-generated")
+    );
 }
 
 #[tokio::test]
@@ -323,9 +371,18 @@ async fn sub_room_left_from_client_returns_error() {
     join_sfu(&mut sink, &mut stream, "srl-room").await;
     drain(&mut stream).await;
 
-    ws_send(&mut sink, json!({"type":"sub_room_left","participantId":"p1","subRoomId":"sr-1"})).await;
+    ws_send(
+        &mut sink,
+        json!({"type":"sub_room_left","participantId":"p1","subRoomId":"sr-1"}),
+    )
+    .await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("unexpected server-generated"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected server-generated")
+    );
 }
 
 #[tokio::test]
@@ -335,9 +392,18 @@ async fn sub_room_deleted_from_client_returns_error() {
     join_sfu(&mut sink, &mut stream, "srd-room").await;
     drain(&mut stream).await;
 
-    ws_send(&mut sink, json!({"type":"sub_room_deleted","subRoomId":"sr-1"})).await;
+    ws_send(
+        &mut sink,
+        json!({"type":"sub_room_deleted","subRoomId":"sr-1"}),
+    )
+    .await;
     let err = recv_type(&mut stream, "error").await;
-    assert!(err["message"].as_str().unwrap().contains("unexpected server-generated"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected server-generated")
+    );
 }
 
 // ─── ChatHistoryRequest state machine validation ──────────────────
@@ -411,11 +477,17 @@ async fn deafened_state_visible_in_room_state_for_late_joiner() {
 
     // Late joiner
     let (mut s2, mut r2) = ws_connect(addr).await;
-    ws_send(&mut s2, json!({"type":"join","roomId":"deafen-late-room","roomType":"sfu"})).await;
+    ws_send(
+        &mut s2,
+        json!({"type":"join","roomId":"deafen-late-room","roomType":"sfu"}),
+    )
+    .await;
     let joined = recv_type(&mut r2, "joined").await;
 
     let participants = joined["participants"].as_array().unwrap();
-    let p1 = participants.iter().find(|p| p["participantId"].as_str() == Some(&peer1));
+    let p1 = participants
+        .iter()
+        .find(|p| p["participantId"].as_str() == Some(&peer1));
     assert!(p1.is_some(), "peer1 should be in participants list");
     assert!(
         p1.unwrap()["isDeafened"].as_bool().unwrap_or(false),

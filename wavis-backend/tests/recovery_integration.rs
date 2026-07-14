@@ -184,12 +184,11 @@ async fn prop5_recovery_preserves_existing_username() {
     .unwrap();
 
     // The account username must NOT have been overwritten.
-    let after: Option<String> =
-        sqlx::query_scalar("SELECT username FROM users WHERE user_id = $1")
-            .bind(reg.user_id)
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
+    let after: Option<String> = sqlx::query_scalar("SELECT username FROM users WHERE user_id = $1")
+        .bind(reg.user_id)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         after.as_deref(),
         Some("original-name"),

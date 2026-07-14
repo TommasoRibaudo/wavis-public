@@ -14,10 +14,7 @@ const SAMPLE_INTERVAL_MS = 250; // 4 Hz
 /** Absolute luma change threshold per pixel (0–255). Design §2.3. */
 const LUMA_THRESHOLD = 16;
 
-function computeChangedAreaRatio(
-  current: Uint8ClampedArray,
-  previous: Uint8ClampedArray,
-): number {
+function computeChangedAreaRatio(current: Uint8ClampedArray, previous: Uint8ClampedArray): number {
   let changed = 0;
   const totalPixels = current.length / 4; // RGBA
   for (let i = 0; i < current.length; i += 4) {
@@ -46,7 +43,9 @@ export function startOffscreenCanvasSampling(
   }
 
   const offscreen = new OffscreenCanvas(SAMPLE_WIDTH, SAMPLE_HEIGHT);
-  const ctx = offscreen.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D | null;
+  const ctx = offscreen.getContext('2d', {
+    willReadFrequently: true,
+  });
   if (!ctx) return () => {};
 
   let previousData: Uint8ClampedArray | null = null;
@@ -55,13 +54,14 @@ export function startOffscreenCanvasSampling(
   const intervalId = setInterval(async () => {
     if (stopped || track.readyState !== 'live') return;
     try {
-      const bitmap = await (imageCapture as ImageCapture & { grabFrame(): Promise<ImageBitmap> }).grabFrame();
+      const bitmap = await (
+        imageCapture as ImageCapture & { grabFrame(): Promise<ImageBitmap> }
+      ).grabFrame();
       ctx.drawImage(bitmap, 0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
       bitmap.close();
       const { data } = ctx.getImageData(0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
-      const changedAreaRatio = previousData !== null
-        ? computeChangedAreaRatio(data, previousData)
-        : 0;
+      const changedAreaRatio =
+        previousData !== null ? computeChangedAreaRatio(data, previousData) : 0;
       previousData = data;
       detector.push({ timestampMs: performance.now(), changedAreaRatio });
       if (DEBUG_MOTION) {

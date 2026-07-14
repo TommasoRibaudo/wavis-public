@@ -211,18 +211,58 @@ mod tests {
             1u64..=1_000_000u64,
         )
             .prop_map(
-                |(mask, ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window, llm_max, llm_window)| {
+                |(
+                    mask,
+                    ws,
+                    joins,
+                    invite_ttl,
+                    token_ttl,
+                    ban,
+                    window,
+                    br_max,
+                    br_window,
+                    llm_max,
+                    llm_window,
+                )| {
                     SecurityConfig {
                         global_ws_per_sec: if mask & 0b000000000001 != 0 { 0 } else { ws },
                         global_joins_per_sec: if mask & 0b000000000010 != 0 { 0 } else { joins },
-                        invite_ttl_secs: if mask & 0b000000000100 != 0 { 0 } else { invite_ttl },
-                        token_ttl_secs: if mask & 0b000000001000 != 0 { 0 } else { token_ttl },
+                        invite_ttl_secs: if mask & 0b000000000100 != 0 {
+                            0
+                        } else {
+                            invite_ttl
+                        },
+                        token_ttl_secs: if mask & 0b000000001000 != 0 {
+                            0
+                        } else {
+                            token_ttl
+                        },
                         ban_duration_secs: if mask & 0b000000010000 != 0 { 0 } else { ban },
-                        rate_limit_window_secs: if mask & 0b000000100000 != 0 { 0 } else { window },
-                        bug_report_rate_limit_max: if mask & 0b000001000000 != 0 { 0 } else { br_max },
-                        bug_report_rate_limit_window_secs: if mask & 0b000010000000 != 0 { 0 } else { br_window },
-                        llm_rate_limit_max: if mask & 0b000100000000 != 0 { 0 } else { llm_max },
-                        llm_rate_limit_window_secs: if mask & 0b001000000000 != 0 { 0 } else { llm_window },
+                        rate_limit_window_secs: if mask & 0b000000100000 != 0 {
+                            0
+                        } else {
+                            window
+                        },
+                        bug_report_rate_limit_max: if mask & 0b000001000000 != 0 {
+                            0
+                        } else {
+                            br_max
+                        },
+                        bug_report_rate_limit_window_secs: if mask & 0b000010000000 != 0 {
+                            0
+                        } else {
+                            br_window
+                        },
+                        llm_rate_limit_max: if mask & 0b000100000000 != 0 {
+                            0
+                        } else {
+                            llm_max
+                        },
+                        llm_rate_limit_window_secs: if mask & 0b001000000000 != 0 {
+                            0
+                        } else {
+                            llm_window
+                        },
                         github_bug_report_token_set: mask & 0b010000000000 == 0,
                         github_bug_report_repo_set: mask & 0b100000000000 == 0,
                     }
@@ -244,7 +284,18 @@ mod tests {
             1u64..=1_000_000u64,
         )
             .prop_map(
-                |(ws, joins, invite_ttl, token_ttl, ban, window, br_max, br_window, llm_max, llm_window)| {
+                |(
+                    ws,
+                    joins,
+                    invite_ttl,
+                    token_ttl,
+                    ban,
+                    window,
+                    br_max,
+                    br_window,
+                    llm_max,
+                    llm_window,
+                )| {
                     SecurityConfig {
                         global_ws_per_sec: ws,
                         global_joins_per_sec: joins,

@@ -93,7 +93,10 @@ describe('roleBadgeInfo', () => {
   });
 
   it('returns MEMBER with secondary color', () => {
-    expect(roleBadgeInfo('member')).toEqual({ label: 'MEMBER', color: 'var(--wavis-text-secondary)' });
+    expect(roleBadgeInfo('member')).toEqual({
+      label: 'MEMBER',
+      color: 'var(--wavis-text-secondary)',
+    });
   });
 });
 
@@ -218,7 +221,6 @@ describe('channelsListErrorMessage', () => {
   });
 });
 
-
 /* ─── Property 18: Audio device display name formatting ─────────── */
 // Feature: gui-feature-completion, Property 18: Audio device display name formatting
 // **Validates: Requirements 11.3**
@@ -252,9 +254,12 @@ describe('Property 18: Audio device display name formatting', () => {
 
   it('default devices always end with "(default)"', () => {
     fc.assert(
-      fc.property(arbAudioDevice.filter((d) => d.is_default), (device) => {
-        expect(formatDeviceName(device)).toMatch(/\(default\)$/);
-      }),
+      fc.property(
+        arbAudioDevice.filter((d) => d.is_default),
+        (device) => {
+          expect(formatDeviceName(device)).toMatch(/\(default\)$/);
+        },
+      ),
       { numRuns: 100 },
     );
   });
@@ -262,9 +267,7 @@ describe('Property 18: Audio device display name formatting', () => {
   it('non-default devices never contain "(default)"', () => {
     fc.assert(
       fc.property(
-        arbAudioDevice
-          .filter((d) => !d.is_default)
-          .filter((d) => !d.name.includes('(default)')),
+        arbAudioDevice.filter((d) => !d.is_default).filter((d) => !d.name.includes('(default)')),
         (device) => {
           expect(formatDeviceName(device)).not.toContain('(default)');
         },
@@ -362,7 +365,6 @@ describe('Denoise status messaging', () => {
   });
 });
 
-
 /* ─── Property 6: Token redaction respects show-secrets flag ────── */
 // Feature: gui-feature-completion, Property 6: Token redaction respects show-secrets flag
 // **Validates: Requirements 16.5, 16.6**
@@ -396,7 +398,6 @@ describe('Property 6: Token redaction respects show-secrets flag', () => {
     );
   });
 });
-
 
 /* ─── Property 14: Connection mode badge visibility gated by showSecrets ── */
 // Feature: gui-feature-completion, Property 14
@@ -447,7 +448,7 @@ describe('Property 14: Connection mode badge visibility gated by showSecrets', (
 // **Validates: Requirements 8.1, 8.2, 8.5, 8.6**
 
 import { toastMessageForEvent, toastColorForEvent, eventToToggleKey } from '../helpers';
-import type { RoomEventType } from '@features/voice/voice-room';
+import type { RoomEventType } from '@features/voice/chat-display-model';
 
 describe('Property 3: Toast message contains display name and correct verb', () => {
   const toastableEvents: Array<{ type: RoomEventType; verb: string }> = [
@@ -507,7 +508,6 @@ describe('Property 3: Toast message contains display name and correct verb', () 
   });
 });
 
-
 /* ─── Property 1: Voice indicator reflects voice status ─────────── */
 // Feature: gui-feature-completion, Property 1
 // **Validates: Requirements 2.1, 2.2**
@@ -539,9 +539,12 @@ describe('Property 1: Voice indicator reflects voice status', () => {
 
   it('participant count is non-negative when active', () => {
     fc.assert(
-      fc.property(arbVoiceStatus.filter((s) => s.active), (status) => {
-        expect(status.participantCount).toBeGreaterThanOrEqual(0);
-      }),
+      fc.property(
+        arbVoiceStatus.filter((s) => s.active),
+        (status) => {
+          expect(status.participantCount).toBeGreaterThanOrEqual(0);
+        },
+      ),
       { numRuns: 100 },
     );
   });

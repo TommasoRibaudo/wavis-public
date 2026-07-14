@@ -53,9 +53,7 @@ export default function ParticipantMixer({
       onClick={(e) => e.stopPropagation()}
     >
       {title && (
-        <div className="mb-2 text-wavis-text-secondary uppercase tracking-normal">
-          {title}
-        </div>
+        <div className="mb-2 text-wavis-text-secondary uppercase tracking-normal">{title}</div>
       )}
       {participants.length === 0 ? (
         <div className="text-wavis-text-secondary whitespace-nowrap">{emptyMessage}</div>
@@ -88,7 +86,9 @@ export default function ParticipantMixer({
                   color: participant.muted ? 'var(--wavis-text-secondary)' : participant.color,
                 }}
                 onClick={() => onToggleMute(participant.id)}
-                aria-label={participant.muted ? `Unmute ${participant.name}` : `Mute ${participant.name}`}
+                aria-label={
+                  participant.muted ? `Unmute ${participant.name}` : `Mute ${participant.name}`
+                }
                 title={participant.muted ? 'unmute' : 'mute'}
               >
                 {participant.muted ? MUTED_ICON : UNMUTED_ICON}

@@ -5,15 +5,24 @@
  * publishing/subscribing, Web Audio volume control, speaking
  * indicators, screen share, and cleanup. One instance per
  * VoiceRoom session — never reused across sessions.
- */ 
+ */
 
-import {
-  Room, RoomEvent, Track, VideoQuality,
-  RemoteTrack, RemoteTrackPublication, RemoteParticipant,
-  LocalParticipant, LocalTrackPublication, LocalAudioTrack, Participant,
-  VideoPreset, TrackPublication,
+import { Room, RoomEvent, Track, VideoQuality, VideoPreset } from 'livekit-client';
+import type {
+  AudioProcessorOptions,
+  RoomConnectOptions,
+  TrackProcessor,
+  LocalVideoTrack,
+  TrackPublishOptions,
+  RemoteTrack,
+  RemoteTrackPublication,
+  RemoteParticipant,
+  LocalParticipant,
+  LocalTrackPublication,
+  LocalAudioTrack,
+  Participant,
+  TrackPublication,
 } from 'livekit-client';
-import type { AudioProcessorOptions, TrackProcessor, LocalVideoTrack, TrackPublishOptions } from 'livekit-client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { NativeMicBridge } from './native-mic-bridge';
@@ -72,11 +81,12 @@ function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void
     return;
   }
 
-  const os = result.capture_path === 'wasapi'
-    ? 'windows'
-    : result.capture_path === 'pulse_audio'
-      ? 'linux'
-      : 'macos';
+  const os =
+    result.capture_path === 'wasapi'
+      ? 'windows'
+      : result.capture_path === 'pulse_audio'
+        ? 'linux'
+        : 'macos';
   emitTelemetryEvent({
     name: 'capture.path.selected',
     os,
@@ -184,7 +194,7 @@ export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishO
       maxBitrate: quality.maxBitrate,
       maxFramerate: quality.maxFps,
     },
-  } as TrackPublishOptions;
+  };
 }
 
 export function buildCameraTrackConstraints(quality: CameraQuality): MediaTrackConstraints {
@@ -197,10 +207,12 @@ export function buildCameraTrackConstraints(quality: CameraQuality): MediaTrackC
 
 export function buildCameraSenderParameters(quality: CameraQuality): RTCRtpSendParameters {
   return {
-    encodings: [{
-      maxBitrate: quality.maxBitrate,
-      maxFramerate: quality.maxFps,
-    }],
+    encodings: [
+      {
+        maxBitrate: quality.maxBitrate,
+        maxFramerate: quality.maxFps,
+      },
+    ],
   } as RTCRtpSendParameters;
 }
 
@@ -278,7 +290,12 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
       console.log(LOG, 'ICE config: added STUN servers:', payload.stunUrls);
     }
 
-    if (payload.turnUrls && payload.turnUrls.length > 0 && payload.turnUsername && payload.turnCredential) {
+    if (
+      payload.turnUrls &&
+      payload.turnUrls.length > 0 &&
+      payload.turnUsername &&
+      payload.turnCredential
+    ) {
       iceServers.push({
         urls: payload.turnUrls,
         username: payload.turnUsername,
@@ -312,7 +329,6 @@ export function buildRtcConfiguration(payload?: TurnIceConfigPayload): RTCConfig
   return rtcConfig;
 }
 
-
 type TrackPublishOptionsWithAudioBitrate = TrackPublishOptions & {
   audioBitrate?: number;
 };
@@ -328,7 +344,9 @@ const _realEnumerateDevices: (() => Promise<MediaDeviceInfo[]>) | null = (() => 
     if (desc?.value) {
       return (desc.value as () => Promise<MediaDeviceInfo[]>).bind(navigator.mediaDevices);
     }
-  } catch { /* ignore — unavailable in test environments */ }
+  } catch {
+    /* ignore — unavailable in test environments */
+  }
   return null;
 })();
 
@@ -379,10 +397,10 @@ function usesRustScreenShareAudio(): boolean {
 function isInactiveVideoLeakCandidate(transceiver: RTCRtpTransceiver): boolean {
   const stopped = (transceiver as { stopped?: boolean }).stopped;
   return (
-    stopped !== true
-    && transceiver.direction === 'inactive'
-    && transceiver.sender.track == null
-    && transceiver.receiver.track?.kind === 'video'
+    stopped !== true &&
+    transceiver.direction === 'inactive' &&
+    transceiver.sender.track == null &&
+    transceiver.receiver.track?.kind === 'video'
   );
 }
 
@@ -392,18 +410,21 @@ function isStrandedSenderTransceiver(
   direction: 'sendonly' | 'sendrecv';
 } {
   return (
-    transceiver.senderTrackId === null
-    && (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
+    transceiver.senderTrackId === null &&
+    (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
   );
 }
 
-function expectedActiveVideoSenderSlots(snapshot: ShareLeakBrowserWebRtcSnapshot | null): number | null {
+function expectedActiveVideoSenderSlots(
+  snapshot: ShareLeakBrowserWebRtcSnapshot | null,
+): number | null {
   if (!snapshot) {
     return null;
   }
-  return snapshot.transceivers.filter((transceiver) =>
-    (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv')
-    && (transceiver.senderTrackKind === 'video' || transceiver.receiverTrackKind === 'video'),
+  return snapshot.transceivers.filter(
+    (transceiver) =>
+      (transceiver.direction === 'sendonly' || transceiver.direction === 'sendrecv') &&
+      (transceiver.senderTrackKind === 'video' || transceiver.receiverTrackKind === 'video'),
   ).length;
 }
 
@@ -564,7 +585,9 @@ interface ScreenSharePublishOptions {
    * LiveKit SDK shape: boolean | { codec: 'vp9' | 'vp8' | 'h264'; encoding?: VideoEncoding }.
    * We keep the object form so W4 can exercise explicit backup paths.
    */
-  backupCodec: boolean | { codec: 'vp9' | 'vp8' | 'h264'; encoding?: { maxBitrate: number; maxFramerate: number } };
+  backupCodec:
+    | boolean
+    | { codec: 'vp9' | 'vp8' | 'h264'; encoding?: { maxBitrate: number; maxFramerate: number } };
   simulcast: boolean;
   degradationPreference: 'maintain-resolution';
   /**
@@ -586,7 +609,9 @@ const DEFAULT_PUBLISH_OPTIONS: ScreenSharePublishOptions = {
   ],
 };
 
-function buildSdkScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): TrackPublishOptions {
+function buildSdkScreenSharePublishOptions(
+  pubOpts: ScreenSharePublishOptions,
+): TrackPublishOptions {
   return {
     screenShareEncoding: pubOpts.screenShareEncoding,
     videoCodec: pubOpts.videoCodec,
@@ -599,7 +624,9 @@ function buildSdkScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): 
   } as unknown as TrackPublishOptions;
 }
 
-function buildNativeScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions): TrackPublishOptions {
+function buildNativeScreenSharePublishOptions(
+  pubOpts: ScreenSharePublishOptions,
+): TrackPublishOptions {
   return {
     ...buildSdkScreenSharePublishOptions(pubOpts),
     simulcast: false,
@@ -608,7 +635,7 @@ function buildNativeScreenSharePublishOptions(pubOpts: ScreenSharePublishOptions
       maxFramerate: pubOpts.screenShareEncoding.maxFramerate,
     },
     screenShareSimulcastLayers: [],
-  } as unknown as TrackPublishOptions;
+  };
 }
 
 /* ─── Adaptive Quality ──────────────────────────────────────────── */
@@ -628,12 +655,12 @@ export interface AdaptiveQualityState {
 }
 
 /** Packet loss thresholds for adaptive quality transitions. */
-const ADAPTIVE_LOSS_THRESHOLD_MODERATE = 5;   // >5% → reduce FPS
-const ADAPTIVE_LOSS_THRESHOLD_SEVERE = 15;    // >15% → reduce resolution (when already in reduced-fps)
-const ADAPTIVE_RECOVERY_THRESHOLD = 3;        // <3% → recover
-const ADAPTIVE_STEPDOWN_POLLS = 2;            // 2 consecutive polls above threshold (10s at 5s cadence)
-const ADAPTIVE_RECOVERY_POLLS = 3;            // 3 consecutive polls below threshold (15s at 5s cadence)
-const ADAPTIVE_BANDWIDTH_STEPDOWN_POLLS = 3;  // 3 consecutive polls with bandwidth limitation (15s)
+const ADAPTIVE_LOSS_THRESHOLD_MODERATE = 5; // >5% → reduce FPS
+const ADAPTIVE_LOSS_THRESHOLD_SEVERE = 15; // >15% → reduce resolution (when already in reduced-fps)
+const ADAPTIVE_RECOVERY_THRESHOLD = 3; // <3% → recover
+const ADAPTIVE_STEPDOWN_POLLS = 2; // 2 consecutive polls above threshold (10s at 5s cadence)
+const ADAPTIVE_RECOVERY_POLLS = 3; // 3 consecutive polls below threshold (15s at 5s cadence)
+const ADAPTIVE_BANDWIDTH_STEPDOWN_POLLS = 3; // 3 consecutive polls with bandwidth limitation (15s)
 
 /** Resolution tiers for adaptive step-down (width × height). */
 const RESOLUTION_TIERS: Array<{ width: number; height: number }> = [
@@ -713,9 +740,9 @@ interface QualityPreset {
 }
 
 const QUALITY_PRESETS: Record<ShareQuality, QualityPreset> = {
-  low:  MOTION_PROFILE,
+  low: MOTION_PROFILE,
   high: DETAIL_PROFILE,
-  max:  { ...DETAIL_PROFILE, maxFramerate: 60 },
+  max: { ...DETAIL_PROFILE, maxFramerate: 60 },
 };
 
 function windowsNativeCapturePreset(quality: ShareQuality): QualityPreset {
@@ -789,7 +816,10 @@ export interface PassthroughFilterSettings {
   strength: number;
 }
 
-export function mapPassthroughFilterParams(strength: number): { cutoffHz: number; highShelfDb: number } {
+export function mapPassthroughFilterParams(strength: number): {
+  cutoffHz: number;
+  highShelfDb: number;
+} {
   const clamped = Math.max(0, Math.min(100, Math.round(strength)));
   if (clamped <= 50) {
     const t = clamped / 50;
@@ -844,7 +874,9 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
   for (const report of reports) {
     // Build a local id→entry map to resolve candidate-pair → local-candidate references
     const entryById = new Map<string, RTCStats>();
-    report.forEach((entry) => { entryById.set(entry.id, entry); });
+    report.forEach((entry) => {
+      entryById.set(entry.id, entry);
+    });
 
     report.forEach((entry) => {
       // Nominated ICE candidate pair: RTT, available outgoing bandwidth, local candidate type
@@ -856,7 +888,8 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
           availableBandwidthKbps = Math.round(entry.availableOutgoingBitrate / 1000);
         }
         if (candidateType === 'unknown' && entry.localCandidateId) {
-          const local = entryById.get(entry.localCandidateId) as Record<string, unknown> | undefined;
+          const local = entryById.get(entry.localCandidateId) as
+            Record<string, unknown> | undefined;
           if (local) {
             const ct = typeof local.candidateType === 'string' ? local.candidateType : undefined;
             if (ct === 'host' || ct === 'srflx' || ct === 'relay') {
@@ -879,11 +912,25 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
         // Both jitterBufferTargetDelay and jitterBufferDelay are cumulative totals (seconds)
         // across all emitted samples — divide by jitterBufferEmittedCount to get the average.
         // Prefer jitterBufferTargetDelay (target) over jitterBufferDelay (actual) when present.
-        if (jitterBufferDelayMs === 0 && typeof entry.jitterBufferTargetDelay === 'number' && typeof entry.jitterBufferEmittedCount === 'number' && entry.jitterBufferEmittedCount > 0) {
-          jitterBufferDelayMs = Math.round((entry.jitterBufferTargetDelay / entry.jitterBufferEmittedCount) * 1000);
+        if (
+          jitterBufferDelayMs === 0 &&
+          typeof entry.jitterBufferTargetDelay === 'number' &&
+          typeof entry.jitterBufferEmittedCount === 'number' &&
+          entry.jitterBufferEmittedCount > 0
+        ) {
+          jitterBufferDelayMs = Math.round(
+            (entry.jitterBufferTargetDelay / entry.jitterBufferEmittedCount) * 1000,
+          );
         }
-        if (jitterBufferDelayMs === 0 && typeof entry.jitterBufferDelay === 'number' && typeof entry.jitterBufferEmittedCount === 'number' && entry.jitterBufferEmittedCount > 0) {
-          jitterBufferDelayMs = Math.round((entry.jitterBufferDelay / entry.jitterBufferEmittedCount) * 1000);
+        if (
+          jitterBufferDelayMs === 0 &&
+          typeof entry.jitterBufferDelay === 'number' &&
+          typeof entry.jitterBufferEmittedCount === 'number' &&
+          entry.jitterBufferEmittedCount > 0
+        ) {
+          jitterBufferDelayMs = Math.round(
+            (entry.jitterBufferDelay / entry.jitterBufferEmittedCount) * 1000,
+          );
         }
         if (typeof entry.concealmentEvents === 'number') {
           concealmentEventsTotal += entry.concealmentEvents;
@@ -892,11 +939,20 @@ function extractStatsFromReports(reports: RTCStatsReport[]): {
     });
   }
 
-  const packetLossPercent = totalPackets > 0
-    ? Math.round((lostPackets / totalPackets) * 1000) / 10 // one decimal
-    : 0;
+  const packetLossPercent =
+    totalPackets > 0
+      ? Math.round((lostPackets / totalPackets) * 1000) / 10 // one decimal
+      : 0;
 
-  return { rttMs, packetLossPercent, jitterMs, jitterBufferDelayMs, concealmentEventsTotal, candidateType, availableBandwidthKbps };
+  return {
+    rttMs,
+    packetLossPercent,
+    jitterMs,
+    jitterBufferDelayMs,
+    concealmentEventsTotal,
+    candidateType,
+    availableBandwidthKbps,
+  };
 }
 
 function getTrackSettingsSafe(track: MediaStreamTrack | undefined): Partial<MediaTrackSettings> {
@@ -989,13 +1045,18 @@ function getPublisherPeerConnectionId(peerConnection: RTCPeerConnection | null):
   return nextId;
 }
 
-function hasReusableInactiveVideoTransceiver(snapshot: ShareLeakBrowserWebRtcSnapshot | null): boolean {
-  return snapshot?.transceivers.some((transceiver) =>
-    transceiver.stopped !== true &&
-    transceiver.direction === 'inactive' &&
-    transceiver.senderTrackId === null &&
-    transceiver.receiverTrackKind === 'video'
-  ) ?? false;
+function hasReusableInactiveVideoTransceiver(
+  snapshot: ShareLeakBrowserWebRtcSnapshot | null,
+): boolean {
+  return (
+    snapshot?.transceivers.some(
+      (transceiver) =>
+        transceiver.stopped !== true &&
+        transceiver.direction === 'inactive' &&
+        transceiver.senderTrackId === null &&
+        transceiver.receiverTrackKind === 'video',
+    ) ?? false
+  );
 }
 
 interface WavisSenderData {
@@ -1022,18 +1083,14 @@ function getShareSenderDegradationPreferenceResult(
   const senderData = getWavisSenderDataStore()?.get(sender);
   if (!senderData) return null;
   const attemptedPreferences = Array.isArray(senderData.attemptedPreferences)
-    ? senderData.attemptedPreferences.filter(
-      (value): value is string => typeof value === 'string',
-    )
+    ? senderData.attemptedPreferences.filter((value): value is string => typeof value === 'string')
     : [];
   const senderWasReused = senderData.reused === true;
   const invalidStateSkipped = senderData.invalidStateSkipped === true;
-  const finalErrorName = typeof senderData.lastErrorName === 'string'
-    ? senderData.lastErrorName
-    : null;
-  const finalErrorMessage = typeof senderData.lastErrorMessage === 'string'
-    ? senderData.lastErrorMessage
-    : null;
+  const finalErrorName =
+    typeof senderData.lastErrorName === 'string' ? senderData.lastErrorName : null;
+  const finalErrorMessage =
+    typeof senderData.lastErrorMessage === 'string' ? senderData.lastErrorMessage : null;
 
   if (
     !senderWasReused &&
@@ -1192,13 +1249,28 @@ export class LiveKitModule {
   private participantGains: Map<string, GainNode> = new Map();
   private participantSources: Map<string, MediaStreamAudioSourceNode> = new Map();
   private participantPassthrough = new Set<string>();
-  private participantFilters: Map<string, { highShelf: BiquadFilterNode; lowPass: BiquadFilterNode }> = new Map();
+  private participantFilters: Map<
+    string,
+    { highShelf: BiquadFilterNode; lowPass: BiquadFilterNode }
+  > = new Map();
   private passthroughFilterSettings: PassthroughFilterSettings = { enabled: true, strength: 50 };
   private desiredParticipantVolumes: Map<string, number> = new Map();
   private audioElementMap: Map<string, HTMLAudioElement> = new Map();
   private cameraTracks: Map<string, RemoteCameraEntry> = new Map();
-  private screenShareElements: Map<string, { stream: MediaStream; startedAtMs: number; trackSid: string; dummyVideo?: HTMLVideoElement; trackEndedCleanup?: () => void }> = new Map();
-  private screenShareAudioTracks: Map<string, { track: RemoteTrack; participant: RemoteParticipant }> = new Map();
+  private screenShareElements: Map<
+    string,
+    {
+      stream: MediaStream;
+      startedAtMs: number;
+      trackSid: string;
+      dummyVideo?: HTMLVideoElement;
+      trackEndedCleanup?: () => void;
+    }
+  > = new Map();
+  private screenShareAudioTracks: Map<
+    string,
+    { track: RemoteTrack; participant: RemoteParticipant }
+  > = new Map();
   private screenShareAudioPublications: Map<string, RemoteTrackPublication> = new Map();
   /** Participants whose viewer window is open but whose audio track hadn't arrived yet when attachScreenShareAudio was called. */
   private screenShareAudioPending = new Set<string>();
@@ -1346,7 +1418,8 @@ export class LiveKitModule {
     video.srcObject = stream;
     video.muted = true;
     video.playsInline = true;
-    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+    video.style.cssText =
+      'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
     document.body.appendChild(video);
     video.play().catch(() => {});
 
@@ -1415,7 +1488,10 @@ export class LiveKitModule {
         cancelVideoFrameCallback?: (handle: number) => void;
         _rvfcHandle?: number;
       };
-      if (typeof videoWithRvfc.cancelVideoFrameCallback === 'function' && videoWithRvfc._rvfcHandle !== undefined) {
+      if (
+        typeof videoWithRvfc.cancelVideoFrameCallback === 'function' &&
+        videoWithRvfc._rvfcHandle !== undefined
+      ) {
         videoWithRvfc.cancelVideoFrameCallback(videoWithRvfc._rvfcHandle);
       }
       video.srcObject = null;
@@ -1439,7 +1515,10 @@ export class LiveKitModule {
     );
   }
 
-  private async syncMicProcessor(reason: string, opts?: { originalTrack?: MediaStreamTrack | null }): Promise<void> {
+  private async syncMicProcessor(
+    reason: string,
+    opts?: { originalTrack?: MediaStreamTrack | null },
+  ): Promise<void> {
     const track = this.localMicTrack;
     if (!track) return;
 
@@ -1457,7 +1536,10 @@ export class LiveKitModule {
       this.micAudioProcessor = null;
       this.setNoiseSuppressionActive(false);
       this.stopLocalMicMonitor();
-      console.log(NS_LOG, `${reason} processor bypassed gain=${gain.toFixed(3)} denoise=${shouldEnableDenoise}`);
+      console.log(
+        NS_LOG,
+        `${reason} processor bypassed gain=${gain.toFixed(3)} denoise=${shouldEnableDenoise}`,
+      );
       return;
     }
 
@@ -1563,7 +1645,10 @@ export class LiveKitModule {
     sourceId: string;
     sourceName: string;
     sourceKind: 'screen' | 'window';
-    captureBackend: Extract<ShareLeakCaptureBackend, 'native-wgc' | 'native-gdi-screen' | 'native-gdi-window'>;
+    captureBackend: Extract<
+      ShareLeakCaptureBackend,
+      'native-wgc' | 'native-gdi-screen' | 'native-gdi-window'
+    >;
   }): void {
     if (!details.shareSessionId) return;
     // This is only the custom native-source path used by the share picker.
@@ -1589,9 +1674,7 @@ export class LiveKitModule {
     );
   }
 
-  attachWindowsNativeCaptureDiagnostics(
-    diagnostics: WindowsNativeCaptureDiagnostics | null,
-  ): void {
+  attachWindowsNativeCaptureDiagnostics(diagnostics: WindowsNativeCaptureDiagnostics | null): void {
     if (!this.nativeCaptureLeakSession || !diagnostics) return;
     this.nativeCaptureLeakSession.summary.windowsNativeCaptureDiagnostics = diagnostics;
   }
@@ -1614,11 +1697,15 @@ export class LiveKitModule {
     return null;
   }
 
-  private captureBrowserWebRtcSnapshot(expectedTrackId?: string | null): ShareLeakBrowserWebRtcSnapshot | null {
+  private captureBrowserWebRtcSnapshot(
+    expectedTrackId?: string | null,
+  ): ShareLeakBrowserWebRtcSnapshot | null {
     if (!this.room) return null;
 
     const localPublications = Array.from(this.room.localParticipant.trackPublications.values());
-    const screenSharePublication = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    const screenSharePublication = this.room.localParticipant.getTrackPublication(
+      Track.Source.ScreenShare,
+    );
     const publicationTrackId = screenSharePublication?.track?.mediaStreamTrack?.id ?? null;
     const resolvedTrackId = expectedTrackId ?? publicationTrackId;
     const peerConnection = this.getPublisherPeerConnection();
@@ -1626,9 +1713,10 @@ export class LiveKitModule {
     const senders = peerConnection ? peerConnection.getSenders() : null;
     const transceivers = peerConnection ? peerConnection.getTransceivers() : null;
     const videoSenders = senders?.filter((sender) => sender.track?.kind === 'video') ?? null;
-    const screenShareSenders = videoSenders && resolvedTrackId
-      ? videoSenders.filter((sender) => sender.track?.id === resolvedTrackId)
-      : null;
+    const screenShareSenders =
+      videoSenders && resolvedTrackId
+        ? videoSenders.filter((sender) => sender.track?.id === resolvedTrackId)
+        : null;
 
     return {
       capturedAt: new Date().toISOString(),
@@ -1636,38 +1724,42 @@ export class LiveKitModule {
       publicationExists: !!screenSharePublication,
       expectedTrackId: resolvedTrackId,
       publicationTrackId,
-      localScreenSharePublicationCount: localPublications.filter((pub) => pub.source === Track.Source.ScreenShare).length,
-      localVideoPublicationCount: localPublications.filter((pub) => pub.kind === Track.Kind.Video).length,
+      localScreenSharePublicationCount: localPublications.filter(
+        (pub) => pub.source === Track.Source.ScreenShare,
+      ).length,
+      localVideoPublicationCount: localPublications.filter((pub) => pub.kind === Track.Kind.Video)
+        .length,
       senderCount: senders ? senders.length : null,
       videoSenderCount: videoSenders ? videoSenders.length : null,
       transceiverCount: transceivers ? transceivers.length : null,
       screenShareSenderCount: screenShareSenders ? screenShareSenders.length : null,
       liveVideoSenderTrackIds: videoSenders
         ? videoSenders
-          .filter((sender) => sender.track?.readyState === 'live')
-          .map((sender) => sender.track?.id)
-          .filter((id): id is string => typeof id === 'string')
+            .filter((sender) => sender.track?.readyState === 'live')
+            .map((sender) => sender.track?.id)
+            .filter((id): id is string => typeof id === 'string')
         : [],
       endedVideoSenderTrackIds: videoSenders
         ? videoSenders
-          .filter((sender) => sender.track?.readyState === 'ended')
-          .map((sender) => sender.track?.id)
-          .filter((id): id is string => typeof id === 'string')
+            .filter((sender) => sender.track?.readyState === 'ended')
+            .map((sender) => sender.track?.id)
+            .filter((id): id is string => typeof id === 'string')
         : [],
       transceivers: transceivers
         ? transceivers.map((transceiver, index) => ({
-          index,
-          mid: transceiver.mid ?? null,
-          direction: transceiver.direction ?? null,
-          currentDirection: transceiver.currentDirection ?? null,
-          stopped: typeof (transceiver as { stopped?: unknown }).stopped === 'boolean'
-            ? (transceiver as { stopped?: boolean }).stopped ?? null
-            : null,
-          senderTrackId: transceiver.sender.track?.id ?? null,
-          senderTrackKind: transceiver.sender.track?.kind ?? null,
-          senderTrackReadyState: transceiver.sender.track?.readyState ?? null,
-          receiverTrackKind: transceiver.receiver.track?.kind ?? null,
-        }))
+            index,
+            mid: transceiver.mid ?? null,
+            direction: transceiver.direction ?? null,
+            currentDirection: transceiver.currentDirection ?? null,
+            stopped:
+              typeof (transceiver as { stopped?: unknown }).stopped === 'boolean'
+                ? ((transceiver as { stopped?: boolean }).stopped ?? null)
+                : null,
+            senderTrackId: transceiver.sender.track?.id ?? null,
+            senderTrackKind: transceiver.sender.track?.kind ?? null,
+            senderTrackReadyState: transceiver.sender.track?.readyState ?? null,
+            receiverTrackKind: transceiver.receiver.track?.kind ?? null,
+          }))
         : [],
     };
   }
@@ -1683,12 +1775,14 @@ export class LiveKitModule {
       // Diagnostics IPC is best-effort for leak triage.
     }
 
-    const perfMemory = (performance as {
-      memory?: {
-        usedJSHeapSize: number;
-        totalJSHeapSize: number;
-      };
-    }).memory;
+    const perfMemory = (
+      performance as {
+        memory?: {
+          usedJSHeapSize: number;
+          totalJSHeapSize: number;
+        };
+      }
+    ).memory;
 
     return {
       capturedAt: new Date().toISOString(),
@@ -1696,7 +1790,8 @@ export class LiveKitModule {
       childProcessCount,
       jsHeapUsedMb: perfMemory ? perfMemory.usedJSHeapSize / 1024 / 1024 : null,
       jsHeapTotalMb: perfMemory ? perfMemory.totalJSHeapSize / 1024 / 1024 : null,
-      domNodes: typeof document.querySelectorAll === 'function' ? document.querySelectorAll('*').length : 0,
+      domNodes:
+        typeof document.querySelectorAll === 'function' ? document.querySelectorAll('*').length : 0,
     };
   }
 
@@ -1798,10 +1893,12 @@ export class LiveKitModule {
     diagnostics.videoSenderCount = publishSnapshot?.videoSenderCount ?? null;
     const trackId = publishSnapshot?.publicationTrackId ?? null;
     const peerConnection = this.getPublisherPeerConnection();
-    const publishSender = trackId && peerConnection
-      ? peerConnection.getSenders().find((sender) => sender.track?.id === trackId) ?? null
-      : null;
-    diagnostics.degradationPreferenceResult = getShareSenderDegradationPreferenceResult(publishSender);
+    const publishSender =
+      trackId && peerConnection
+        ? (peerConnection.getSenders().find((sender) => sender.track?.id === trackId) ?? null)
+        : null;
+    diagnostics.degradationPreferenceResult =
+      getShareSenderDegradationPreferenceResult(publishSender);
     const publishTransceiver = publishSnapshot?.transceivers.find(
       (transceiver) => transceiver.senderTrackId === trackId,
     );
@@ -1857,12 +1954,13 @@ export class LiveKitModule {
     if (!summary.stages.session_closed) {
       summary.stages.session_closed = cleanupRaw.capturedAt;
     }
-    const strandedSenders = summary.browserWebRtcAfterStop?.transceivers
-      .filter(isStrandedSenderTransceiver)
-      .map((transceiver) => ({
-        trackId: transceiver.mid ?? `transceiver-${transceiver.index}`,
-        direction: transceiver.direction,
-      })) ?? [];
+    const strandedSenders =
+      summary.browserWebRtcAfterStop?.transceivers
+        .filter(isStrandedSenderTransceiver)
+        .map((transceiver) => ({
+          trackId: transceiver.mid ?? `transceiver-${transceiver.index}`,
+          direction: transceiver.direction,
+        })) ?? [];
     summary.strandedSenders = strandedSenders;
     for (const strandedSender of strandedSenders) {
       emitTelemetryEvent({
@@ -1881,9 +1979,10 @@ export class LiveKitModule {
       expected,
       videoSenderCount,
       stranded: strandedSenders.length,
-      satisfied: expected === null || videoSenderCount === null
-        ? null
-        : videoSenderCount + strandedSenders.length === expected,
+      satisfied:
+        expected === null || videoSenderCount === null
+          ? null
+          : videoSenderCount + strandedSenders.length === expected,
     };
     const cleanupRssDelta = summary.cleanupMemory?.deltaRssMb ?? 'n/a';
     const cleanupHeapDelta = summary.cleanupMemory?.deltaJsHeapUsedMb ?? 'n/a';
@@ -1924,10 +2023,12 @@ export class LiveKitModule {
 
   private async syncCodecPolicyFromSettings(): Promise<void> {
     const shootoutOverride = getShootoutCodecOverride();
-    const codecOverride: ScreenShareCodecOverride = shootoutOverride ?? await getScreenShareCodec();
-    const codecPolicy = codecOverride === 'auto'
-      ? getDefaultCodecPolicy()
-      : getDefaultCodecPolicy({ defaultPrimaryCodec: codecOverride });
+    const codecOverride: ScreenShareCodecOverride =
+      shootoutOverride ?? (await getScreenShareCodec());
+    const codecPolicy =
+      codecOverride === 'auto'
+        ? getDefaultCodecPolicy()
+        : getDefaultCodecPolicy({ defaultPrimaryCodec: codecOverride });
 
     this.currentPublishOptions = {
       ...this.currentPublishOptions,
@@ -1981,11 +2082,16 @@ export class LiveKitModule {
       // Try to resume immediately — in Tauri (WebView2/WebKit) the autoplay
       // policy is often more relaxed than in a browser tab, so this may
       // succeed without a user gesture.
-      this.audioContext.resume().then(() => {
-        if (this.audioContext?.state === 'running') {
-          this.callbacks.onSystemEvent('audio context resumed');
-        }
-      }).catch(() => { /* ignore — fallback to gesture listener below */ });
+      this.audioContext
+        .resume()
+        .then(() => {
+          if (this.audioContext?.state === 'running') {
+            this.callbacks.onSystemEvent('audio context resumed');
+          }
+        })
+        .catch(() => {
+          /* ignore — fallback to gesture listener below */
+        });
 
       // Also register a gesture listener as fallback in case resume() fails
       if (!this.gestureListener) {
@@ -2000,7 +2106,9 @@ export class LiveKitModule {
         document.addEventListener('click', resume, { once: true });
         document.addEventListener('keydown', resume, { once: true });
         this.gestureListener = resume;
-        this.callbacks.onSystemEvent('audio context suspended — click or press a key to enable audio');
+        this.callbacks.onSystemEvent(
+          'audio context suspended — click or press a key to enable audio',
+        );
       }
     }
     return this.audioContext;
@@ -2021,7 +2129,10 @@ export class LiveKitModule {
   private async setAudioContextSinkId(deviceId: string): Promise<boolean> {
     if (!this.audioContext || !('setSinkId' in this.audioContext)) {
       if (DEBUG_AUDIO_OUTPUT) {
-        console.warn(LOG, '[audio-output] AudioContext.setSinkId NOT SUPPORTED — Wavis audio cannot be routed away from system default');
+        console.warn(
+          LOG,
+          '[audio-output] AudioContext.setSinkId NOT SUPPORTED — Wavis audio cannot be routed away from system default',
+        );
       }
       return false;
     }
@@ -2031,11 +2142,19 @@ export class LiveKitModule {
       await (this.audioContext as any).setSinkId(deviceId);
       if (DEBUG_AUDIO_OUTPUT) {
         const displayId = deviceId === '' ? '(default)' : deviceId.slice(0, 16) + '…';
-        console.log(LOG, '[audio-output] audioContext.setSinkId SUCCESS — audio now routed to:', displayId);
+        console.log(
+          LOG,
+          '[audio-output] audioContext.setSinkId SUCCESS — audio now routed to:',
+          displayId,
+        );
       }
       return true;
     } catch (err) {
-      console.warn(LOG, '[audio-output] audioContext.setSinkId FAILED:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        '[audio-output] audioContext.setSinkId FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
       return false;
     }
   }
@@ -2047,8 +2166,12 @@ export class LiveKitModule {
     try {
       const realDevices = await browserEnumerateDevices();
       if (DEBUG_AUDIO_OUTPUT) {
-        const realOutputs = realDevices.filter(d => d.kind === 'audiooutput');
-        console.log(LOG, '[audio-output] real browser output devices:', realOutputs.map(d => `"${d.label}" (${d.deviceId.slice(0, 16)}…)`));
+        const realOutputs = realDevices.filter((d) => d.kind === 'audiooutput');
+        console.log(
+          LOG,
+          '[audio-output] real browser output devices:',
+          realOutputs.map((d) => `"${d.label}" (${d.deviceId.slice(0, 16)}…)`),
+        );
       }
       const match = realDevices.find(
         (d) => d.kind === 'audiooutput' && audioOutputLabelsMatch(d.label, deviceLabel),
@@ -2056,7 +2179,11 @@ export class LiveKitModule {
       return match?.deviceId ?? null;
     } catch (err) {
       if (DEBUG_AUDIO_OUTPUT) {
-        console.warn(LOG, '[audio-output] browser enumerateDevices failed:', err instanceof Error ? err.message : String(err));
+        console.warn(
+          LOG,
+          '[audio-output] browser enumerateDevices failed:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
       return null;
     }
@@ -2067,18 +2194,27 @@ export class LiveKitModule {
     const resolvedId = await this.resolveBrowserOutputDeviceIdFromLabel(deviceLabel);
     if (resolvedId) {
       if (DEBUG_AUDIO_OUTPUT) {
-        console.log(LOG, `[audio-output] resolved saved output "${deviceLabel}" → real deviceId: ${resolvedId.slice(0, 16)}…`);
+        console.log(
+          LOG,
+          `[audio-output] resolved saved output "${deviceLabel}" → real deviceId: ${resolvedId.slice(0, 16)}…`,
+        );
       }
       return resolvedId;
     }
 
     if (DEBUG_AUDIO_OUTPUT) {
-      console.warn(LOG, `[audio-output] no real device matched label "${deviceLabel}" — falling back to savedId`);
+      console.warn(
+        LOG,
+        `[audio-output] no real device matched label "${deviceLabel}" — falling back to savedId`,
+      );
     }
     return savedId;
   }
 
-  private async resolveCoreAudioOutputDeviceId(coreAudioUid: string, deviceName?: string | null): Promise<string | null> {
+  private async resolveCoreAudioOutputDeviceId(
+    coreAudioUid: string,
+    deviceName?: string | null,
+  ): Promise<string | null> {
     const patchedDevices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
     const nativeMatch = patchedDevices.find(
       (device) =>
@@ -2094,7 +2230,11 @@ export class LiveKitModule {
     // on the bypass path. Fall back to label matching using the device name from Rust.
     if (deviceName) {
       if (DEBUG_AUDIO_OUTPUT) {
-        console.log(LOG, '[audio-output] CoreAudio UID not matched in enumerateDevices; trying label fallback for:', deviceName);
+        console.log(
+          LOG,
+          '[audio-output] CoreAudio UID not matched in enumerateDevices; trying label fallback for:',
+          deviceName,
+        );
       }
       return this.resolveBrowserOutputDeviceIdFromLabel(deviceName);
     }
@@ -2102,7 +2242,10 @@ export class LiveKitModule {
     return null;
   }
 
-  private async pinShareAudioOutputToRealDevice(coreAudioUid: string, deviceName?: string | null): Promise<void> {
+  private async pinShareAudioOutputToRealDevice(
+    coreAudioUid: string,
+    deviceName?: string | null,
+  ): Promise<void> {
     const resolvedDeviceId = await this.resolveCoreAudioOutputDeviceId(coreAudioUid, deviceName);
     if (!resolvedDeviceId) {
       console.warn(
@@ -2117,7 +2260,11 @@ export class LiveKitModule {
     if (didPin) {
       this.sharePinnedAudioOutputDeviceId = resolvedDeviceId;
       if (DEBUG_SHARE_AUDIO) {
-        console.log(LOG, '[share-audio] room audio pinned to real output device:', resolvedDeviceId.slice(0, 16) + '…');
+        console.log(
+          LOG,
+          '[share-audio] room audio pinned to real output device:',
+          resolvedDeviceId.slice(0, 16) + '…',
+        );
       }
     }
   }
@@ -2140,7 +2287,11 @@ export class LiveKitModule {
   private async applyAudioOutputDevice(): Promise<void> {
     if (this.sharePinnedAudioOutputDeviceId) {
       if (DEBUG_AUDIO_OUTPUT) {
-        console.log(LOG, '[audio-output] share override active — keeping room audio pinned to:', this.sharePinnedAudioOutputDeviceId.slice(0, 16) + '…');
+        console.log(
+          LOG,
+          '[audio-output] share override active — keeping room audio pinned to:',
+          this.sharePinnedAudioOutputDeviceId.slice(0, 16) + '…',
+        );
       }
       await this.setAudioContextSinkId(this.sharePinnedAudioOutputDeviceId);
       return;
@@ -2149,7 +2300,11 @@ export class LiveKitModule {
     const savedId = await getAudioOutputDevice();
 
     if (DEBUG_AUDIO_OUTPUT) {
-      console.log(LOG, '[audio-output] applyAudioOutputDevice called — saved deviceId:', savedId ?? '(none)');
+      console.log(
+        LOG,
+        '[audio-output] applyAudioOutputDevice called — saved deviceId:',
+        savedId ?? '(none)',
+      );
     }
 
     if (!savedId) {
@@ -2169,10 +2324,17 @@ export class LiveKitModule {
           console.log(LOG, '[audio-output] room.switchActiveDevice SUCCESS');
         }
       } catch (err) {
-        console.warn(LOG, '[audio-output] room.switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+        console.warn(
+          LOG,
+          '[audio-output] room.switchActiveDevice FAILED:',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     } else if (DEBUG_AUDIO_OUTPUT) {
-      console.log(LOG, '[audio-output] room not ready — skipping switchActiveDevice (will retry on connect)');
+      console.log(
+        LOG,
+        '[audio-output] room not ready — skipping switchActiveDevice (will retry on connect)',
+      );
     }
     return;
 
@@ -2260,7 +2422,11 @@ export class LiveKitModule {
     try {
       await this.room.switchActiveDevice('audioinput', resolvedId);
     } catch (err) {
-      console.warn(LOG, '[audio-input] switchActiveDevice FAILED:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        '[audio-input] switchActiveDevice FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
@@ -2308,10 +2474,17 @@ export class LiveKitModule {
     if (this.deviceChangeListener) return;
     const handler = () => {
       if (DEBUG_AUDIO_OUTPUT) {
-        navigator.mediaDevices.enumerateDevices().then((devices) => {
-          const outputs = devices.filter(d => d.kind === 'audiooutput');
-          console.log(LOG, '[audio-output] devicechange event — output devices now:', outputs.map(d => `"${d.label}" (${d.deviceId.slice(0, 8)}…)`));
-        }).catch(() => {});
+        navigator.mediaDevices
+          .enumerateDevices()
+          .then((devices) => {
+            const outputs = devices.filter((d) => d.kind === 'audiooutput');
+            console.log(
+              LOG,
+              '[audio-output] devicechange event — output devices now:',
+              outputs.map((d) => `"${d.label}" (${d.deviceId.slice(0, 8)}…)`),
+            );
+          })
+          .catch(() => {});
       }
       this.applyAudioOutputDevice();
     };
@@ -2346,7 +2519,7 @@ export class LiveKitModule {
 
       // 1. Build ICE configuration
       const rtcConfig = buildRtcConfiguration(iceConfig);
-      
+
       console.log(LOG, 'creating LiveKit Room with config:', {
         ...LIVEKIT_ROOM_OPTIONS,
         platform: isMac() ? 'mac' : isWindows() ? 'windows' : 'other',
@@ -2387,7 +2560,8 @@ export class LiveKitModule {
           // point so the browser has audio permission and setSinkId will succeed.
           // Calling it earlier (RoomEvent.Connected) always fails because getUserMedia
           // hasn't run yet and setSinkId requires an active audio permission grant.
-          if (DEBUG_AUDIO_OUTPUT) console.log(LOG, '[audio-output] checkReady — mic ready, applying output device');
+          if (DEBUG_AUDIO_OUTPUT)
+            console.log(LOG, '[audio-output] checkReady — mic ready, applying output device');
           this.applyAudioOutputDevice();
           this.applyAudioInputDevice();
         }
@@ -2431,10 +2605,9 @@ export class LiveKitModule {
       addListener(RoomEvent.Reconnecting, () => {
         if (this.disposed || !this.hasActiveScreenShare()) return;
         console.log(LOG, `screen share stopped due to LiveKit reconnect — ts: ${Date.now()}`);
-        this.stopScreenShare()
-          .catch(() => {
-            this.clearScreenShareRuntimeState();
-          });
+        this.stopScreenShare().catch(() => {
+          this.clearScreenShareRuntimeState();
+        });
         this.callbacks.onSystemEvent('Screen share stopped due to reconnect');
       });
 
@@ -2449,7 +2622,8 @@ export class LiveKitModule {
         this.callbacks.onSystemEvent('LiveKit reconnected');
         // Re-apply output device routing after reconnect — the room's internal
         // audio elements are recreated and lose the previous sinkId.
-        if (DEBUG_AUDIO_OUTPUT) console.log(LOG, '[audio-output] RoomEvent.Reconnected — re-applying output device');
+        if (DEBUG_AUDIO_OUTPUT)
+          console.log(LOG, '[audio-output] RoomEvent.Reconnected — re-applying output device');
         this.applyAudioOutputDevice();
         this.applyAudioInputDevice();
       });
@@ -2457,197 +2631,272 @@ export class LiveKitModule {
       // e0. TrackPublished — diagnostic (debug only): log all publications to trace
       // whether ScreenShareAudio reaches the viewer.
       if (DEBUG_SHARE_TRACK_SUB) {
-        addListener(RoomEvent.TrackPublished, (
+        addListener(
+          RoomEvent.TrackPublished,
+          (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+            console.log(
+              LOG,
+              `[diag] TrackPublished — participant: ${participant.identity}, source: ${publication.source}, kind: ${publication.kind}, sid: ${publication.trackSid}`,
+            );
+          },
+        );
+      }
+
+      addListener(
+        RoomEvent.TrackPublished,
+        (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera) {
+            const existing = this.cameraTracks.get(participant.identity);
+            this.cameraTracks.set(participant.identity, {
+              publication,
+              track: existing?.track ?? null,
+              muted: publication.isMuted ?? existing?.muted ?? false,
+              readyCleanup: existing?.readyCleanup ?? null,
+            });
+            publication.setSubscribed?.(true);
+            if (DEBUG_VIDEO_FEED)
+              console.log(
+                LOG,
+                '[video-feed] remote camera published, subscribing',
+                participant.identity,
+                'trackSid:',
+                publication.trackSid,
+              );
+            this.callbacks.onRemoteCameraPublished?.(participant.identity);
+            return;
+          }
+          if (
+            publication.source === Track.Source.ScreenShare &&
+            publication.kind === Track.Kind.Video
+          ) {
+            if (DEBUG_SHARE_TRACK_SUB) {
+              console.log(
+                LOG,
+                `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`,
+              );
+            }
+            if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+              if (DEBUG_SHARE_AUDIO)
+                console.log(
+                  LOG,
+                  '[audio-only-diag] clearing inferred audio_only: ScreenShare video published',
+                  { identity: participant.identity },
+                );
+              this.setRemoteShareType(participant.identity, undefined);
+            }
+            publication.setSubscribed?.(true);
+            publication.setEnabled?.(true);
+            publication.setVideoQuality?.(VideoQuality.HIGH);
+            return;
+          }
+          if (publication.source !== Track.Source.ScreenShareAudio) return;
+          this.screenShareAudioPublications.set(participant.identity, publication);
+          publication.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
+        },
+      );
+
+      // e. TrackSubscribed
+      addListener(
+        RoomEvent.TrackSubscribed,
+        (
+          track: RemoteTrack,
           publication: RemoteTrackPublication,
           participant: RemoteParticipant,
         ) => {
-          console.log(LOG, `[diag] TrackPublished — participant: ${participant.identity}, source: ${publication.source}, kind: ${publication.kind}, sid: ${publication.trackSid}`);
-        });
-      }
+          if (this.disposed) return;
+          if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+            // Force-keep this subscription enabled regardless of adaptive stream.
+            // VideoTile attaches via `video.srcObject = new MediaStream([track])`, bypassing
+            // LiveKit's element observer (track.attach()/registerElement). With no registered
+            // consumer, adaptiveStream pauses the track server-side after the first frame.
+            // Same override the screen-share path uses below.
+            publication.setEnabled(true);
 
-      addListener(RoomEvent.TrackPublished, (
-        publication: RemoteTrackPublication,
-        participant: RemoteParticipant,
-      ) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera) {
-          const existing = this.cameraTracks.get(participant.identity);
-          this.cameraTracks.set(participant.identity, {
-            publication,
-            track: existing?.track ?? null,
-            muted: publication.isMuted ?? existing?.muted ?? false,
-            readyCleanup: existing?.readyCleanup ?? null,
-          });
-          publication.setSubscribed?.(true);
-          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera published, subscribing', participant.identity, 'trackSid:', publication.trackSid);
-          this.callbacks.onRemoteCameraPublished?.(participant.identity);
-          return;
-        }
-        if (publication.source === Track.Source.ScreenShare && publication.kind === Track.Kind.Video) {
-          if (DEBUG_SHARE_TRACK_SUB) {
-            console.log(LOG, `[diag] TrackPublished ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, isSubscribed: ${publication.isSubscribed}`);
-          }
-          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
-            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video published', { identity: participant.identity });
-            this.setRemoteShareType(participant.identity, undefined);
-          }
-          publication.setSubscribed?.(true);
-          publication.setEnabled?.(true);
-          publication.setVideoQuality?.(VideoQuality.HIGH);
-          return;
-        }
-        if (publication.source !== Track.Source.ScreenShareAudio) return;
-        this.screenShareAudioPublications.set(participant.identity, publication);
-        publication.setSubscribed(this.shouldPlayScreenShareAudio(participant.identity));
-      });
+            const previous = this.cameraTracks.get(participant.identity);
+            previous?.readyCleanup?.();
+            const entry: RemoteCameraEntry = {
+              publication,
+              track: null,
+              muted: publication.isMuted ?? false,
+              readyCleanup: null,
+            };
+            this.cameraTracks.set(participant.identity, entry);
+            if (DEBUG_VIDEO_FEED)
+              console.log(
+                LOG,
+                '[video-feed] camera TrackSubscribed',
+                participant.identity,
+                'trackSid:',
+                track.sid,
+                'readyState:',
+                track.mediaStreamTrack.readyState,
+              );
 
-      // e. TrackSubscribed
-      addListener(RoomEvent.TrackSubscribed, (
-        track: RemoteTrack,
-        publication: RemoteTrackPublication,
-        participant: RemoteParticipant,
-      ) => {
-        if (this.disposed) return;
-        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-          // Force-keep this subscription enabled regardless of adaptive stream.
-          // VideoTile attaches via `video.srcObject = new MediaStream([track])`, bypassing
-          // LiveKit's element observer (track.attach()/registerElement). With no registered
-          // consumer, adaptiveStream pauses the track server-side after the first frame.
-          // Same override the screen-share path uses below.
-          publication.setEnabled(true);
-
-          const previous = this.cameraTracks.get(participant.identity);
-          previous?.readyCleanup?.();
-          const entry: RemoteCameraEntry = {
-            publication,
-            track: null,
-            muted: publication.isMuted ?? false,
-            readyCleanup: null,
-          };
-          this.cameraTracks.set(participant.identity, entry);
-          if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera TrackSubscribed', participant.identity, 'trackSid:', track.sid, 'readyState:', track.mediaStreamTrack.readyState);
-
-          this.waitForRemoteCameraReady(track.mediaStreamTrack)
-            .then((cleanup) => {
-              if (this.disposed) {
-                cleanup();
-                return;
-              }
-              const currentEntry = this.cameraTracks.get(participant.identity);
-              if (!currentEntry || currentEntry.publication !== publication) {
-                cleanup();
-                return;
-              }
-              currentEntry.track = track.mediaStreamTrack;
-              currentEntry.muted = publication.isMuted ?? currentEntry.muted;
-              currentEntry.readyCleanup = cleanup;
-              if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] remote camera ready', participant.identity, 'trackSid:', track.sid);
-              this.callbacks.onRemoteCameraReady?.(participant.identity, track.mediaStreamTrack);
-            })
-            .catch((err) => {
-              // Subscription-timeout warnings are always logged (unconditional per design).
-              console.warn(LOG, '[video-feed] remote camera ready failed/timeout', participant.identity, 'trackSid:', track.sid, err);
-              const currentEntry = this.cameraTracks.get(participant.identity);
-              if (currentEntry?.publication === publication) {
-                currentEntry.readyCleanup = null;
-              }
-            });
-          return;
-        }
-        if (track.kind === Track.Kind.Audio) {
-          // Defer screen share audio — only attach when user opens the viewer,
-          // unless it's an audio-only share (no video track), in which case attach immediately.
-          if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
-            if (publication.source === Track.Source.ScreenShareAudio) {
-              this.screenShareAudioPublications.set(participant.identity, publication);
-            }
-            this.screenShareAudioTracks.set(participant.identity, { track, participant });
-            const isPending = this.screenShareAudioPending.has(participant.identity);
-            if (DEBUG_SHARE_TRACK_SUB || DEBUG_SHARE_AUDIO) {
-              console.log(LOG, `[screen-share-audio] TrackSubscribed ScreenShareAudio — identity=${participant.identity} muted=${track.isMuted} readyState=${track.mediaStreamTrack.readyState} enabled=${track.mediaStreamTrack.enabled} isPending=${isPending}`);
-            }
-            if (DEBUG_SHARE_TRACK_SUB || DEBUG_SHARE_AUDIO) {
-              const mst = track.mediaStreamTrack;
-              const settings = typeof mst.getSettings === 'function' ? mst.getSettings() : undefined;
-              console.log(LOG, '[screen-share-audio] TrackSubscribed diagnostics', {
-                participantIdentity: participant.identity,
-                trackSid: track.sid,
-                publicationTrackSid: publication.trackSid,
-                streamState: publication.track ? publication.track.streamState : undefined,
-                isMuted: publication.isMuted,
-                audioContextSampleRate: this.audioContext?.sampleRate ?? null,
-                mediaStreamTrackId: mst.id,
-                mediaStreamTrackLabel: mst.label,
-                mediaStreamTrackReadyState: mst.readyState,
-                mediaStreamTrackMuted: mst.muted,
-                settings,
+            this.waitForRemoteCameraReady(track.mediaStreamTrack)
+              .then((cleanup) => {
+                if (this.disposed) {
+                  cleanup();
+                  return;
+                }
+                const currentEntry = this.cameraTracks.get(participant.identity);
+                if (!currentEntry || currentEntry.publication !== publication) {
+                  cleanup();
+                  return;
+                }
+                currentEntry.track = track.mediaStreamTrack;
+                currentEntry.muted = publication.isMuted ?? currentEntry.muted;
+                currentEntry.readyCleanup = cleanup;
+                if (DEBUG_VIDEO_FEED)
+                  console.log(
+                    LOG,
+                    '[video-feed] remote camera ready',
+                    participant.identity,
+                    'trackSid:',
+                    track.sid,
+                  );
+                this.callbacks.onRemoteCameraReady?.(participant.identity, track.mediaStreamTrack);
+              })
+              .catch((err) => {
+                // Subscription-timeout warnings are always logged (unconditional per design).
+                console.warn(
+                  LOG,
+                  '[video-feed] remote camera ready failed/timeout',
+                  participant.identity,
+                  'trackSid:',
+                  track.sid,
+                  err,
+                );
+                const currentEntry = this.cameraTracks.get(participant.identity);
+                if (currentEntry?.publication === publication) {
+                  currentEntry.readyCleanup = null;
+                }
               });
-            }
-            // Infer audio-only when share_started WS message omits shareType
-            // (older sender clients). ScreenShareAudio with no ScreenShare video = audio-only.
-            if (publication.source === Track.Source.ScreenShareAudio &&
-                this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
-              const hasVideoShare = !!participant.getTrackPublication(Track.Source.ScreenShare);
-              if (!hasVideoShare) {
-                if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] inferred audio_only: ScreenShareAudio present but no ScreenShare video', { identity: participant.identity });
-                this.setRemoteShareType(participant.identity, 'audio_only');
+            return;
+          }
+          if (track.kind === Track.Kind.Audio) {
+            // Defer screen share audio — only attach when user opens the viewer,
+            // unless it's an audio-only share (no video track), in which case attach immediately.
+            if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
+              if (publication.source === Track.Source.ScreenShareAudio) {
+                this.screenShareAudioPublications.set(participant.identity, publication);
               }
+              this.screenShareAudioTracks.set(participant.identity, { track, participant });
+              const isPending = this.screenShareAudioPending.has(participant.identity);
+              if (DEBUG_SHARE_TRACK_SUB || DEBUG_SHARE_AUDIO) {
+                console.log(
+                  LOG,
+                  `[screen-share-audio] TrackSubscribed ScreenShareAudio — identity=${participant.identity} muted=${track.isMuted} readyState=${track.mediaStreamTrack.readyState} enabled=${track.mediaStreamTrack.enabled} isPending=${isPending}`,
+                );
+              }
+              if (DEBUG_SHARE_TRACK_SUB || DEBUG_SHARE_AUDIO) {
+                const mst = track.mediaStreamTrack;
+                const settings =
+                  typeof mst.getSettings === 'function' ? mst.getSettings() : undefined;
+                console.log(LOG, '[screen-share-audio] TrackSubscribed diagnostics', {
+                  participantIdentity: participant.identity,
+                  trackSid: track.sid,
+                  publicationTrackSid: publication.trackSid,
+                  streamState: publication.track ? publication.track.streamState : undefined,
+                  isMuted: publication.isMuted,
+                  audioContextSampleRate: this.audioContext?.sampleRate ?? null,
+                  mediaStreamTrackId: mst.id,
+                  mediaStreamTrackLabel: mst.label,
+                  mediaStreamTrackReadyState: mst.readyState,
+                  mediaStreamTrackMuted: mst.muted,
+                  settings,
+                });
+              }
+              // Infer audio-only when share_started WS message omits shareType
+              // (older sender clients). ScreenShareAudio with no ScreenShare video = audio-only.
+              if (
+                publication.source === Track.Source.ScreenShareAudio &&
+                this.remoteShareTypes.get(participant.identity) !== 'audio_only'
+              ) {
+                const hasVideoShare = !!participant.getTrackPublication(Track.Source.ScreenShare);
+                if (!hasVideoShare) {
+                  if (DEBUG_SHARE_AUDIO)
+                    console.log(
+                      LOG,
+                      '[audio-only-diag] inferred audio_only: ScreenShareAudio present but no ScreenShare video',
+                      { identity: participant.identity },
+                    );
+                  this.setRemoteShareType(participant.identity, 'audio_only');
+                }
+              }
+              if (this.shouldPlayScreenShareAudio(participant.identity)) {
+                this.attachDesiredScreenShareAudio(participant.identity);
+              } else if (typeof publication.setSubscribed === 'function') {
+                publication.setSubscribed(false);
+              }
+            } else {
+              this.attachAudioTrack(participant, track);
             }
-            if (this.shouldPlayScreenShareAudio(participant.identity)) {
-              this.attachDesiredScreenShareAudio(participant.identity);
-            } else if (typeof publication.setSubscribed === 'function') {
-              publication.setSubscribed(false);
+          } else if (
+            track.kind === Track.Kind.Video &&
+            publication.source === Track.Source.ScreenShare
+          ) {
+            if (DEBUG_SHARE_TRACK_SUB) {
+              console.log(
+                LOG,
+                `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`,
+              );
             }
-          } else {
-            this.attachAudioTrack(participant, track);
+            if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
+              if (DEBUG_SHARE_AUDIO)
+                console.log(
+                  LOG,
+                  '[audio-only-diag] clearing inferred audio_only: ScreenShare video subscribed',
+                  { identity: participant.identity },
+                );
+              this.setRemoteShareType(participant.identity, undefined);
+            }
+            this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
           }
-        } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
-          if (DEBUG_SHARE_TRACK_SUB) {
-            console.log(LOG, `[diag] TrackSubscribed ScreenShare — participant: ${participant.identity}, trackSid: ${publication.trackSid}, readyState: ${track.mediaStreamTrack.readyState}`);
-          }
-          if (this.remoteShareTypes.get(participant.identity) === 'audio_only') {
-            if (DEBUG_SHARE_AUDIO) console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video subscribed', { identity: participant.identity });
-            this.setRemoteShareType(participant.identity, undefined);
-          }
-          this.attachRemoteScreenShareTrack(participant, publication, track, 'track_subscribed');
-        }
-      });
+        },
+      );
 
       // f. TrackUnsubscribed
-      addListener(RoomEvent.TrackUnsubscribed, (
-        track: RemoteTrack,
-        publication: RemoteTrackPublication,
-        participant: RemoteParticipant,
-      ) => {
-        if (this.disposed) return;
-        if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-          this.clearRemoteCameraEntry(participant.identity);
-          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
-          return;
-        }
-        if (track.kind === Track.Kind.Audio) {
-          if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
-            // Clean up deferred screen share audio
-            this.screenShareAudioTracks.delete(participant.identity);
-            // Also clean up if it was attached
-            this.cleanupParticipantAudio(`${participant.identity}:screen-share`);
-          } else {
-            this.cleanupParticipantAudio(participant.identity);
+      addListener(
+        RoomEvent.TrackUnsubscribed,
+        (
+          track: RemoteTrack,
+          publication: RemoteTrackPublication,
+          participant: RemoteParticipant,
+        ) => {
+          if (this.disposed) return;
+          if (track.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+            this.clearRemoteCameraEntry(participant.identity);
+            this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+            return;
           }
-        } else if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
-          const entry = this.screenShareElements.get(participant.identity);
-          if (entry && entry.trackSid === track.sid) {
-            entry.trackEndedCleanup?.();
-            if (entry.dummyVideo) {
-              entry.dummyVideo.srcObject = null;
-              entry.dummyVideo.remove();
+          if (track.kind === Track.Kind.Audio) {
+            if (this.isDeferredScreenShareAudioTrack(participant, publication, track)) {
+              // Clean up deferred screen share audio
+              this.screenShareAudioTracks.delete(participant.identity);
+              // Also clean up if it was attached
+              this.cleanupParticipantAudio(`${participant.identity}:screen-share`);
+            } else {
+              this.cleanupParticipantAudio(participant.identity);
             }
-            this.screenShareElements.delete(participant.identity);
-            this.callbacks.onScreenShareUnsubscribed(participant.identity);
-            this.syncScreenShareAudioPolicy(participant.identity);
+          } else if (
+            track.kind === Track.Kind.Video &&
+            publication.source === Track.Source.ScreenShare
+          ) {
+            const entry = this.screenShareElements.get(participant.identity);
+            if (entry && entry.trackSid === track.sid) {
+              entry.trackEndedCleanup?.();
+              if (entry.dummyVideo) {
+                entry.dummyVideo.srcObject = null;
+                entry.dummyVideo.remove();
+              }
+              this.screenShareElements.delete(participant.identity);
+              this.callbacks.onScreenShareUnsubscribed(participant.identity);
+              this.syncScreenShareAudioPolicy(participant.identity);
+            }
           }
-        }
-      });
+        },
+      );
 
       // g. ActiveSpeakersChanged
       addListener(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
@@ -2658,7 +2907,7 @@ export class LiveKitModule {
         }
         this.scheduleAudioLevelFlush();
         // Also fire the direct callback for speaking resolution precedence
-        this.callbacks.onActiveSpeakers(speakers.map(s => s.identity));
+        this.callbacks.onActiveSpeakers(speakers.map((s) => s.identity));
         // Feed the local level indicator from server-reported data.
         // At < 100% the startLocalMicMonitor interval provides smoother 50ms updates;
         // this fallback drives the self-indicator at 100% with no Web Audio tap.
@@ -2709,9 +2958,13 @@ export class LiveKitModule {
         if (!this.screenShareAudioPending.has(participant.identity)) return;
         for (const pub of participant.trackPublications.values()) {
           if (pub.source === Track.Source.ScreenShareAudio && pub.track) {
-            const track = pub.track as RemoteTrack;
+            const track = pub.track;
             this.screenShareAudioTracks.set(participant.identity, { track, participant });
-            if (DEBUG_SHARE_AUDIO) console.log(LOG, `[screen-share-audio] ParticipantConnected recovery for ${participant.identity}`);
+            if (DEBUG_SHARE_AUDIO)
+              console.log(
+                LOG,
+                `[screen-share-audio] ParticipantConnected recovery for ${participant.identity}`,
+              );
             this.attachDesiredScreenShareAudio(participant.identity);
             break;
           }
@@ -2719,63 +2972,75 @@ export class LiveKitModule {
       });
 
       // j. ConnectionQualityChanged
-      addListener(RoomEvent.ConnectionQualityChanged, (_quality: unknown, _participant: Participant) => {
-        if (this.disposed) return;
-        console.log(LOG, 'connection quality changed', _quality, _participant.identity);
-      });
+      addListener(
+        RoomEvent.ConnectionQualityChanged,
+        (_quality: unknown, _participant: Participant) => {
+          if (this.disposed) return;
+          console.log(LOG, 'connection quality changed', _quality, _participant.identity);
+        },
+      );
 
       // j. LocalTrackPublished
-      addListener(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera) {
-          this.localCameraPublication = publication;
-          this.localCameraMediaTrack = publication.track?.mediaStreamTrack ?? this.localCameraMediaTrack;
-        }
-        if (publication.track?.kind === Track.Kind.Audio) {
-          // Suppress local playback on screen share audio tracks — the LiveKit SDK
-          // strips suppressLocalAudioPlayback from getDisplayMedia() options, so we
-          // apply it post-capture on the MediaStreamTrack directly.
-          if (publication.source === Track.Source.ScreenShareAudio) {
-            this.suppressLocalAudioOnTrack(publication.track.mediaStreamTrack);
-          } else {
-            micReady = true;
-            // Capture mst before async block so the closure has it.
-            const mst = publication.track.mediaStreamTrack;
-            this.localMicTrack = publication.track as LocalAudioTrack;
-            this.logNoiseSuppressionCapabilities(mst, 'local_track_published');
-            this.syncMicProcessor('local_track_published', { originalTrack: mst }).catch((err) => {
-              this.setNoiseSuppressionActive(false);
-              console.warn(LOG, 'mic processor attach failed:', err);
-              this.callbacks.onSystemEvent(
-                `mic processor fallback — using plain mic (${err instanceof Error ? err.message : String(err)})`,
-              );
-            });
-            checkReady();
+      addListener(
+        RoomEvent.LocalTrackPublished,
+        (publication: LocalTrackPublication, _participant: LocalParticipant) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera) {
+            this.localCameraPublication = publication;
+            this.localCameraMediaTrack =
+              publication.track?.mediaStreamTrack ?? this.localCameraMediaTrack;
           }
-        }
-      });
+          if (publication.track?.kind === Track.Kind.Audio) {
+            // Suppress local playback on screen share audio tracks — the LiveKit SDK
+            // strips suppressLocalAudioPlayback from getDisplayMedia() options, so we
+            // apply it post-capture on the MediaStreamTrack directly.
+            if (publication.source === Track.Source.ScreenShareAudio) {
+              this.suppressLocalAudioOnTrack(publication.track.mediaStreamTrack);
+            } else {
+              micReady = true;
+              // Capture mst before async block so the closure has it.
+              const mst = publication.track.mediaStreamTrack;
+              this.localMicTrack = publication.track as LocalAudioTrack;
+              this.logNoiseSuppressionCapabilities(mst, 'local_track_published');
+              this.syncMicProcessor('local_track_published', { originalTrack: mst }).catch(
+                (err) => {
+                  this.setNoiseSuppressionActive(false);
+                  console.warn(LOG, 'mic processor attach failed:', err);
+                  this.callbacks.onSystemEvent(
+                    `mic processor fallback — using plain mic (${err instanceof Error ? err.message : String(err)})`,
+                  );
+                },
+              );
+              checkReady();
+            }
+          }
+        },
+      );
 
       // k. LocalTrackUnpublished
-      addListener(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, _participant: LocalParticipant) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera) {
-          this.localCameraPublication = null;
-          this.localCameraMediaTrack = null;
-        }
-        if (publication.source === Track.Source.ScreenShare) {
-          this.callbacks.onLocalScreenShareEnded();
-        }
-      });
+      addListener(
+        RoomEvent.LocalTrackUnpublished,
+        (publication: LocalTrackPublication, _participant: LocalParticipant) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera) {
+            this.localCameraPublication = null;
+            this.localCameraMediaTrack = null;
+          }
+          if (publication.source === Track.Source.ScreenShare) {
+            this.callbacks.onLocalScreenShareEnded();
+          }
+        },
+      );
 
-      addListener(RoomEvent.TrackUnpublished, (
-        publication: RemoteTrackPublication,
-        participant: RemoteParticipant,
-      ) => {
-        if (this.disposed) return;
-        if (publication.source !== Track.Source.Camera) return;
-        this.clearRemoteCameraEntry(participant.identity);
-        this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
-      });
+      addListener(
+        RoomEvent.TrackUnpublished,
+        (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (this.disposed) return;
+          if (publication.source !== Track.Source.Camera) return;
+          this.clearRemoteCameraEntry(participant.identity);
+          this.callbacks.onRemoteCameraUnpublished?.(participant.identity);
+        },
+      );
 
       // l. MediaDevicesError
       addListener(RoomEvent.MediaDevicesError, (error: Error) => {
@@ -2784,102 +3049,153 @@ export class LiveKitModule {
       });
 
       // m. TrackMuted — remote participant muted their audio
-      addListener(RoomEvent.TrackMuted, (publication: RemoteTrackPublication, participant: Participant) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera) {
-          const entry = this.cameraTracks.get(participant.identity);
-          if (entry) {
-            entry.muted = true;
+      addListener(
+        RoomEvent.TrackMuted,
+        (publication: RemoteTrackPublication, participant: Participant) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera) {
+            const entry = this.cameraTracks.get(participant.identity);
+            if (entry) {
+              entry.muted = true;
+            }
+            this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, true);
+            return;
           }
-          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, true);
-          return;
-        }
-        if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
-          this.callbacks.onParticipantMuteChanged(participant.identity, true);
-        }
-      });
+          if (
+            publication.kind === Track.Kind.Audio &&
+            participant !== this.room?.localParticipant
+          ) {
+            this.callbacks.onParticipantMuteChanged(participant.identity, true);
+          }
+        },
+      );
 
       // n. TrackUnmuted — remote participant unmuted their audio
-      addListener(RoomEvent.TrackUnmuted, (publication: RemoteTrackPublication, participant: Participant) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera) {
-          const entry = this.cameraTracks.get(participant.identity);
-          if (entry) {
-            entry.muted = false;
+      addListener(
+        RoomEvent.TrackUnmuted,
+        (publication: RemoteTrackPublication, participant: Participant) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera) {
+            const entry = this.cameraTracks.get(participant.identity);
+            if (entry) {
+              entry.muted = false;
+            }
+            this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, false);
+            return;
           }
-          this.callbacks.onRemoteCameraMutedChanged?.(participant.identity, false);
-          return;
-        }
-        if (publication.kind === Track.Kind.Audio && participant !== this.room?.localParticipant) {
-          this.callbacks.onParticipantMuteChanged(participant.identity, false);
-        }
-      });
+          if (
+            publication.kind === Track.Kind.Audio &&
+            participant !== this.room?.localParticipant
+          ) {
+            this.callbacks.onParticipantMuteChanged(participant.identity, false);
+          }
+        },
+      );
 
       // o. TrackMuted/TrackUnmuted for LOCAL participant — detect external mute changes
       // (e.g. LiveKit re-enabling mic on reconnect, or OS-level mute)
-      addListener(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
-        if (this.disposed) return;
-        if (participant === this.room?.localParticipant && publication.kind === Track.Kind.Audio) {
-          this.callbacks.onParticipantMuteChanged(participant.identity, true);
-        }
-      });
-      addListener(RoomEvent.TrackUnmuted, (publication: TrackPublication, participant: Participant) => {
-        if (this.disposed) return;
-        if (participant === this.room?.localParticipant && publication.kind === Track.Kind.Audio) {
-          this.callbacks.onParticipantMuteChanged(participant.identity, false);
-        }
-      });
+      addListener(
+        RoomEvent.TrackMuted,
+        (publication: TrackPublication, participant: Participant) => {
+          if (this.disposed) return;
+          if (
+            participant === this.room?.localParticipant &&
+            publication.kind === Track.Kind.Audio
+          ) {
+            this.callbacks.onParticipantMuteChanged(participant.identity, true);
+          }
+        },
+      );
+      addListener(
+        RoomEvent.TrackUnmuted,
+        (publication: TrackPublication, participant: Participant) => {
+          if (this.disposed) return;
+          if (
+            participant === this.room?.localParticipant &&
+            publication.kind === Track.Kind.Audio
+          ) {
+            this.callbacks.onParticipantMuteChanged(participant.identity, false);
+          }
+        },
+      );
 
       // p. TrackStreamStateChanged — detect paused/resumed screen share or camera video (adaptive stream)
-      addListener(RoomEvent.TrackStreamStateChanged, (
-        publication: RemoteTrackPublication,
-        streamState: Track.StreamState,
-        participant: RemoteParticipant,
-      ) => {
-        if (this.disposed) return;
-        if (publication.source === Track.Source.Camera && publication.kind === Track.Kind.Video) {
-          if (streamState === Track.StreamState.Paused) {
-            // Always warn — adaptiveStream pausing a camera track is unexpected
-            // (we call setEnabled(true) on subscribe) and worth logging unconditionally.
-            console.warn(LOG, '[video-feed] camera stream paused by adaptiveStream — re-enabling', participant.identity, 'trackSid:', publication.trackSid);
-            publication.setEnabled(true);
-          } else if (streamState === Track.StreamState.Active) {
-            if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] camera stream active', participant.identity, 'trackSid:', publication.trackSid);
-          }
-        }
-        if (
-          publication.source === Track.Source.ScreenShare &&
-          publication.kind === Track.Kind.Video
-        ) {
-          console.log(
-            LOG,
-            `screen share stream state ${streamState} for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`,
-          );
-          publication.setSubscribed?.(true);
-          publication.setEnabled?.(true);
-          publication.setVideoQuality?.(VideoQuality.HIGH);
-          if (streamState === Track.StreamState.Paused) {
-            console.log(LOG, `screen share paused for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`);
-            if (DEBUG_CAPTURE) console.log(LOG, `screen share paused — enabled: ${publication.isEnabled}`);
-            // Don't re-emit the stream here — wait for Active state to confirm
-            // the track actually resumed. Re-emitting a paused stream causes
-            // the viewer to attach a dead MediaStream.
-          } else if (streamState === Track.StreamState.Active) {
-            console.log(LOG, `screen share resumed for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`);
-            const entry = this.screenShareElements.get(participant.identity);
-            if (entry) {
-              // Wrap in a fresh MediaStream so downstream reference-equality
-              // checks (Watch All effect: stream !== prevStream) detect the
-              // change and call resendStream with the now-active track.
-              const freshStream = new MediaStream(entry.stream.getTracks());
-              this.screenShareElements.set(participant.identity, { ...entry, stream: freshStream });
-              if (entry.dummyVideo) entry.dummyVideo.srcObject = freshStream;
-              if (DEBUG_CAPTURE) console.log(LOG, `screen share resumed — new streamId: ${freshStream.id}`);
-              this.callbacks.onScreenShareSubscribed(participant.identity, freshStream);
+      addListener(
+        RoomEvent.TrackStreamStateChanged,
+        (
+          publication: RemoteTrackPublication,
+          streamState: Track.StreamState,
+          participant: RemoteParticipant,
+        ) => {
+          if (this.disposed) return;
+          if (publication.source === Track.Source.Camera && publication.kind === Track.Kind.Video) {
+            if (streamState === Track.StreamState.Paused) {
+              // Always warn — adaptiveStream pausing a camera track is unexpected
+              // (we call setEnabled(true) on subscribe) and worth logging unconditionally.
+              console.warn(
+                LOG,
+                '[video-feed] camera stream paused by adaptiveStream — re-enabling',
+                participant.identity,
+                'trackSid:',
+                publication.trackSid,
+              );
+              publication.setEnabled(true);
+            } else if (streamState === Track.StreamState.Active) {
+              if (DEBUG_VIDEO_FEED)
+                console.log(
+                  LOG,
+                  '[video-feed] camera stream active',
+                  participant.identity,
+                  'trackSid:',
+                  publication.trackSid,
+                );
             }
           }
-        }
-      });
+          if (
+            publication.source === Track.Source.ScreenShare &&
+            publication.kind === Track.Kind.Video
+          ) {
+            console.log(
+              LOG,
+              `screen share stream state ${streamState} for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`,
+            );
+            publication.setSubscribed?.(true);
+            publication.setEnabled?.(true);
+            publication.setVideoQuality?.(VideoQuality.HIGH);
+            if (streamState === Track.StreamState.Paused) {
+              console.log(
+                LOG,
+                `screen share paused for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`,
+              );
+              if (DEBUG_CAPTURE)
+                console.log(LOG, `screen share paused — enabled: ${publication.isEnabled}`);
+              // Don't re-emit the stream here — wait for Active state to confirm
+              // the track actually resumed. Re-emitting a paused stream causes
+              // the viewer to attach a dead MediaStream.
+            } else if (streamState === Track.StreamState.Active) {
+              console.log(
+                LOG,
+                `screen share resumed for ${participant.identity} — trackSid: ${publication.trackSid}, ts: ${Date.now()}`,
+              );
+              const entry = this.screenShareElements.get(participant.identity);
+              if (entry) {
+                // Wrap in a fresh MediaStream so downstream reference-equality
+                // checks (Watch All effect: stream !== prevStream) detect the
+                // change and call resendStream with the now-active track.
+                const freshStream = new MediaStream(entry.stream.getTracks());
+                this.screenShareElements.set(participant.identity, {
+                  ...entry,
+                  stream: freshStream,
+                });
+                if (entry.dummyVideo) entry.dummyVideo.srcObject = freshStream;
+                if (DEBUG_CAPTURE)
+                  console.log(LOG, `screen share resumed — new streamId: ${freshStream.id}`);
+                this.callbacks.onScreenShareSubscribed(participant.identity, freshStream);
+              }
+            }
+          }
+        },
+      );
 
       // 6. Stats polling (10s interval).
       // Every cycle: per-receiver stats (RemoteTrack.receiver.getStats()) for audio quality
@@ -2904,15 +3220,31 @@ export class LiveKitModule {
           let videoReceiverReport: RTCStatsReport | null = null;
           for (const participant of this.room.remoteParticipants.values()) {
             for (const pub of participant.trackPublications.values()) {
-              const remoteTrack = pub.track as RemoteTrack | undefined;
+              const remoteTrack = pub.track;
               if (!remoteTrack?.receiver) continue;
               // First remote microphone audio track → jitter buffer, concealment, loss, jitter
-              if (!audioReceiverReport && pub.kind === Track.Kind.Audio && pub.source !== Track.Source.ScreenShareAudio) {
-                try { audioReceiverReport = await remoteTrack.receiver.getStats(); } catch { /* ignore */ }
+              if (
+                !audioReceiverReport &&
+                pub.kind === Track.Kind.Audio &&
+                pub.source !== Track.Source.ScreenShareAudio
+              ) {
+                try {
+                  audioReceiverReport = await remoteTrack.receiver.getStats();
+                } catch {
+                  /* ignore */
+                }
               }
               // Screen share video track → video receive stats (fps, decode time, freeze, etc.)
-              if (!videoReceiverReport && pub.source === Track.Source.ScreenShare && pub.kind === Track.Kind.Video) {
-                try { videoReceiverReport = await remoteTrack.receiver.getStats(); } catch { /* ignore */ }
+              if (
+                !videoReceiverReport &&
+                pub.source === Track.Source.ScreenShare &&
+                pub.kind === Track.Kind.Video
+              ) {
+                try {
+                  videoReceiverReport = await remoteTrack.receiver.getStats();
+                } catch {
+                  /* ignore */
+                }
               }
             }
           }
@@ -2939,9 +3271,11 @@ export class LiveKitModule {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             async function resolveStats(transport: any): Promise<RTCStatsReport | null> {
               if (!transport) return null;
-              if (typeof transport.getStats === 'function') return transport.getStats() as Promise<RTCStatsReport>;
+              if (typeof transport.getStats === 'function')
+                return transport.getStats() as Promise<RTCStatsReport>;
               const pc = transport.pc ?? transport._pc;
-              if (pc && typeof pc.getStats === 'function') return pc.getStats() as Promise<RTCStatsReport>;
+              if (pc && typeof pc.getStats === 'function')
+                return pc.getStats() as Promise<RTCStatsReport>;
               return null;
             }
             const pubReport = await resolveStats(pubTransport);
@@ -2949,7 +3283,8 @@ export class LiveKitModule {
             if (pubReport) {
               const pub = extractStatsFromReports([pubReport]);
               if (pub.candidateType !== 'unknown') this.lastCandidateType = pub.candidateType;
-              if (pub.availableBandwidthKbps > 0) this.lastAvailableBandwidthKbps = pub.availableBandwidthKbps;
+              if (pub.availableBandwidthKbps > 0)
+                this.lastAvailableBandwidthKbps = pub.availableBandwidthKbps;
               if (pub.rttMs > 0) this.lastRttMs = pub.rttMs;
               if (pub.packetLossPercent > 0) this.lastPacketLossPercent = pub.packetLossPercent;
               if (pub.jitterMs > 0) this.lastJitterMs = pub.jitterMs;
@@ -2974,23 +3309,30 @@ export class LiveKitModule {
       // 7. Connect to SFU
       const finalSfuUrl = sfuUrl.trim();
       console.log(LOG, `attempting to connect to SFU: ${finalSfuUrl}`);
-      console.log(LOG, `platform: ${isMac() ? 'mac (WKWebView)' : isWindows() ? 'windows (WebView2)' : 'other'}`);
+      console.log(
+        LOG,
+        `platform: ${isMac() ? 'mac (WKWebView)' : isWindows() ? 'windows (WebView2)' : 'other'}`,
+      );
       console.log(LOG, `user agent: ${navigator.userAgent}`);
       console.log(LOG, `WebSocket available: ${typeof WebSocket !== 'undefined'}`);
       console.log(LOG, `RTCPeerConnection available: ${typeof RTCPeerConnection !== 'undefined'}`);
-      
+
       // Mac-specific: Try to work around WKWebView WebSocket issues
-      const connectOptions: any = { 
+      const connectOptions: RoomConnectOptions = {
         autoSubscribe: true,
         rtcConfig: Object.keys(rtcConfig).length > 0 ? rtcConfig : undefined,
       };
-      
-      console.log(LOG, 'connect options:', JSON.stringify({
-        autoSubscribe: connectOptions.autoSubscribe,
-        hasRtcConfig: !!connectOptions.rtcConfig,
-        iceServerCount: connectOptions.rtcConfig?.iceServers?.length ?? 0,
-      }));
-      
+
+      console.log(
+        LOG,
+        'connect options:',
+        JSON.stringify({
+          autoSubscribe: connectOptions.autoSubscribe,
+          hasRtcConfig: !!connectOptions.rtcConfig,
+          iceServerCount: connectOptions.rtcConfig?.iceServers?.length ?? 0,
+        }),
+      );
+
       await this.room.connect(finalSfuUrl, token, connectOptions);
       console.log(LOG, 'SFU connection successful');
     } catch (err) {
@@ -3015,7 +3357,11 @@ export class LiveKitModule {
     this.disposed = true;
 
     this.teardownComplete = this.disconnectOrdered().catch((err) => {
-      console.warn(LOG, 'disconnect teardown failed:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        'disconnect teardown failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     });
   }
 
@@ -3290,10 +3636,12 @@ export class LiveKitModule {
 
   setMasterVolume(volume: number): void {
     if (this.masterGain) {
-      this.masterGain.gain.setValueAtTime(perceptualGain(volume), this.audioContext?.currentTime ?? 0);
+      this.masterGain.gain.setValueAtTime(
+        perceptualGain(volume),
+        this.audioContext?.currentTime ?? 0,
+      );
     }
   }
-
 
   /**
    * Start screen share via browser/WebView getDisplayMedia.
@@ -3308,8 +3656,14 @@ export class LiveKitModule {
     const profile = this.currentCaptureProfile;
     const nativeShareAudio = usesNativeScreenShareAudio();
     const rustShareAudio = usesRustScreenShareAudio();
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
-      nativeShareAudio, profile.audio, navigator.userAgent.slice(0, 60));
+    if (DEBUG_WASAPI)
+      console.log(
+        LOG,
+        '[wasapi-diag] startScreenShare: nativeShareAudio=%s profile.audio=%s userAgent=%s',
+        nativeShareAudio,
+        profile.audio,
+        navigator.userAgent.slice(0, 60),
+      );
 
     const captureOpts = {
       resolution: {
@@ -3378,21 +3732,22 @@ export class LiveKitModule {
       return true;
     } catch (err) {
       // Fall back to browser defaults on constraint rejection
-      const isOverconstrained = err instanceof Error &&
+      const isOverconstrained =
+        err instanceof Error &&
         (err.name === 'OverconstrainedError' || err.name.includes('Overconstrained'));
       if (isOverconstrained) {
         console.warn(LOG, 'capture constraints rejected, falling back to defaults:', err.message);
         this.callbacks.onSystemEvent('capture constraints rejected — using browser defaults');
         try {
-          const fallbackCaptureOpts = nativeShareAudio || rustShareAudio
-            ? { audio: false }
-            : undefined;
+          const fallbackCaptureOpts =
+            nativeShareAudio || rustShareAudio ? { audio: false } : undefined;
           this.stopAllInactiveVideoTransceivers();
           this.noteShareLeakPublishStart();
           await this.room.localParticipant.setScreenShareEnabled(true, fallbackCaptureOpts);
           this.captureShareLeakPublishDiagnostics();
           if (this.nativeCaptureLeakSession) {
-            this.nativeCaptureLeakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
+            this.nativeCaptureLeakSession.activeRaw =
+              await this.captureRawShareLeakMemorySnapshot();
           }
           this.markNativeCaptureLeakStage('publish_track_done');
           if (!nativeShareAudio) {
@@ -3421,9 +3776,15 @@ export class LiveKitModule {
           this.startScreenShareStatsPolling();
           return true;
         } catch (fallbackErr) {
-          this.markNativeCaptureFailure(fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr));
+          this.markNativeCaptureFailure(
+            fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+          );
           await this.finalizeNativeCaptureLeakSession();
-          console.log(LOG, 'screen share fallback failed:', fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr));
+          console.log(
+            LOG,
+            'screen share fallback failed:',
+            fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+          );
           this.callbacks.onSystemEvent(
             `screen share failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
           );
@@ -3434,7 +3795,8 @@ export class LiveKitModule {
       // granted in System Preferences). Distinct from a user-cancelled picker, which
       // throws NotAllowedError with "Permission denied". Rethrow so the caller can
       // surface a useful OS-level hint rather than silently returning false.
-      const isPlatformDenied = err instanceof Error &&
+      const isPlatformDenied =
+        err instanceof Error &&
         err.name === 'NotAllowedError' &&
         err.message.toLowerCase().includes('not allowed by the user agent');
       if (isPlatformDenied) {
@@ -3513,7 +3875,8 @@ export class LiveKitModule {
       leakSession.activeRaw = await this.captureRawShareLeakMemorySnapshot();
       // Guard against concurrent disconnect() nulling this.room while awaiting above.
       if (this.disposed || !this.room) return;
-      leakSession.summary.browserWebRtcBeforeStop = this.captureBrowserWebRtcSnapshot(expectedTrackId);
+      leakSession.summary.browserWebRtcBeforeStop =
+        this.captureBrowserWebRtcSnapshot(expectedTrackId);
       this.markNativeCaptureLeakStage('share_stop_requested');
     }
 
@@ -3596,7 +3959,8 @@ export class LiveKitModule {
         );
       }
       if (leakSession) {
-        leakSession.summary.browserWebRtcAfterStop = this.captureBrowserWebRtcSnapshot(expectedTrackId);
+        leakSession.summary.browserWebRtcAfterStop =
+          this.captureBrowserWebRtcSnapshot(expectedTrackId);
       }
       await this.finalizeNativeCaptureLeakSession();
     }
@@ -3630,7 +3994,11 @@ export class LiveKitModule {
       ]);
       return { inputs, outputs };
     } catch (err) {
-      console.warn(LOG, 'device enumeration failed:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        'device enumeration failed:',
+        err instanceof Error ? err.message : String(err),
+      );
       return { inputs: [], outputs: [] };
     }
   }
@@ -3640,7 +4008,9 @@ export class LiveKitModule {
   async setInputVolume(volume: number): Promise<void> {
     await setInputVolume(volume);
     if (!this.localMicTrack) return;
-    await this.syncMicProcessor('input_volume_changed', { originalTrack: this.localMicTrack.mediaStreamTrack });
+    await this.syncMicProcessor('input_volume_changed', {
+      originalTrack: this.localMicTrack.mediaStreamTrack,
+    });
   }
 
   /** Toggle JS-side noise suppression on the active mic track. */
@@ -3672,7 +4042,8 @@ export class LiveKitModule {
    *  the Web Audio context so Wavis audio leaves the system default endpoint. */
   async setOutputDevice(deviceId: string): Promise<void> {
     if (!this.room) return;
-    if (DEBUG_AUDIO_OUTPUT) console.log(LOG, '[audio-output] setOutputDevice called — persisting deviceId:', deviceId);
+    if (DEBUG_AUDIO_OUTPUT)
+      console.log(LOG, '[audio-output] setOutputDevice called — persisting deviceId:', deviceId);
     // Persist first so applyAudioOutputDevice reads the new value.
     await setStoreValue(STORE_KEYS.audioOutputDevice, deviceId);
     await this.applyAudioOutputDevice();
@@ -3738,7 +4109,11 @@ export class LiveKitModule {
         this.callbacks.onSystemEvent(`screen share audio: ${withAudio ? 'on' : 'off'}`);
         return true;
       } catch (err) {
-        console.log(LOG, 'restartScreenShareWithAudio (WASAPI) failed:', err instanceof Error ? err.message : String(err));
+        console.log(
+          LOG,
+          'restartScreenShareWithAudio (WASAPI) failed:',
+          err instanceof Error ? err.message : String(err),
+        );
         this.callbacks.onSystemEvent(
           `screen share audio toggle failed: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -3790,7 +4165,8 @@ export class LiveKitModule {
         hasAudioTrack: !!audioPublication?.track,
         trackMuted: audioPublication?.isMuted,
         hasUserGesture,
-        userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } }).userActivation?.isActive,
+        userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } })
+          .userActivation?.isActive,
       });
     }
 
@@ -3798,16 +4174,23 @@ export class LiveKitModule {
     if (audioPublication?.track) {
       try {
         if (withAudio) {
-          if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] unmuting existing ScreenShareAudio track');
+          if (DEBUG_SHARE_AUDIO)
+            console.log(LOG, '[share-audio] unmuting existing ScreenShareAudio track');
           await audioPublication.track.unmute();
         } else {
-          if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] muting existing ScreenShareAudio track');
+          if (DEBUG_SHARE_AUDIO)
+            console.log(LOG, '[share-audio] muting existing ScreenShareAudio track');
           await audioPublication.track.mute();
         }
         this.callbacks.onSystemEvent(`screen share audio: ${withAudio ? 'on' : 'off'}`);
         return true;
       } catch (muteErr) {
-        if (DEBUG_SHARE_AUDIO) console.warn(LOG, '[share-audio] mute/unmute failed, falling through to restart:', muteErr);
+        if (DEBUG_SHARE_AUDIO)
+          console.warn(
+            LOG,
+            '[share-audio] mute/unmute failed, falling through to restart:',
+            muteErr,
+          );
         // Fall through to full restart below.
       }
     }
@@ -3816,9 +4199,15 @@ export class LiveKitModule {
     // a full setScreenShareEnabled restart, which calls getDisplayMedia.
     // This requires a direct user gesture in THIS window. On macOS, gestures from
     // a child Tauri window (e.g. ScreenSharePage) do NOT transfer here via IPC.
-    if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] no existing audio track — full restart required, hasUserGesture:', hasUserGesture);
+    if (DEBUG_SHARE_AUDIO)
+      console.log(
+        LOG,
+        '[share-audio] no existing audio track — full restart required, hasUserGesture:',
+        hasUserGesture,
+      );
     if (!hasUserGesture) {
-      if (DEBUG_SHARE_AUDIO) console.warn(LOG, '[share-audio] skipping restart: no user gesture in this window');
+      if (DEBUG_SHARE_AUDIO)
+        console.warn(LOG, '[share-audio] skipping restart: no user gesture in this window');
       this.callbacks.onSystemEvent(
         'screen share audio toggle skipped — use the audio button in the main window',
       );
@@ -3844,7 +4233,13 @@ export class LiveKitModule {
     const publishOpts = buildSdkScreenSharePublishOptions(pubOpts);
 
     try {
-      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] calling setScreenShareEnabled(false) then setScreenShareEnabled(true, audio:', withAudio, ')');
+      if (DEBUG_SHARE_AUDIO)
+        console.log(
+          LOG,
+          '[share-audio] calling setScreenShareEnabled(false) then setScreenShareEnabled(true, audio:',
+          withAudio,
+          ')',
+        );
       this.clearScreenShareRuntimeState();
       await this.room.localParticipant.setScreenShareEnabled(false);
       await this.room.localParticipant.setScreenShareEnabled(true, captureOpts, publishOpts);
@@ -3867,7 +4262,11 @@ export class LiveKitModule {
       this.callbacks.onSystemEvent(`screen share audio: ${withAudio ? 'on' : 'off'}`);
       return true;
     } catch (err) {
-      console.log(LOG, 'restartScreenShareWithAudio failed:', err instanceof Error ? err.message : String(err));
+      console.log(
+        LOG,
+        'restartScreenShareWithAudio failed:',
+        err instanceof Error ? err.message : String(err),
+      );
       this.callbacks.onSystemEvent(
         `screen share restart failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -3927,7 +4326,9 @@ export class LiveKitModule {
             selfBrowserSurface: captureOpts.selfBrowserSurface,
           } as MediaTrackConstraints,
           audio: captureOpts.audio
-            ? ({ suppressLocalAudioPlayback: captureOpts.suppressLocalAudioPlayback } as MediaTrackConstraints)
+            ? ({
+                suppressLocalAudioPlayback: captureOpts.suppressLocalAudioPlayback,
+              } as MediaTrackConstraints)
             : false,
         });
 
@@ -3981,7 +4382,11 @@ export class LiveKitModule {
       this.startScreenShareStatsPolling();
       return true;
     } catch (err) {
-      console.log(LOG, 'changeScreenShareSource failed:', err instanceof Error ? err.message : String(err));
+      console.log(
+        LOG,
+        'changeScreenShareSource failed:',
+        err instanceof Error ? err.message : String(err),
+      );
       // Do NOT tear down the existing publication on failure — the user may have
       // cancelled the picker, in which case the original share is still active.
       return false;
@@ -3995,7 +4400,9 @@ export class LiveKitModule {
    */
   hasActiveScreenShareTrack(): boolean {
     if (!this.room) return false;
-    return this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track !== undefined;
+    return (
+      this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track !== undefined
+    );
   }
 
   /**
@@ -4018,7 +4425,10 @@ export class LiveKitModule {
 
     const onEnded = () => {
       if (this.disposed || cleaned) return;
-      console.log(LOG, `monitorScreenShareTrack: track ended for ${participant.identity} — trackSid: ${track.sid ?? '?'}, readyState: ${mst.readyState}, ts: ${Date.now()}`);
+      console.log(
+        LOG,
+        `monitorScreenShareTrack: track ended for ${participant.identity} — trackSid: ${track.sid ?? '?'}, readyState: ${mst.readyState}, ts: ${Date.now()}`,
+      );
 
       // The 'ended' event may fire before LiveKit has swapped in the new
       // track on the publication. Try immediately, then retry with backoff
@@ -4036,7 +4446,10 @@ export class LiveKitModule {
         const entry = this.screenShareElements.get(participant.identity);
         if (!entry) return true; // entry gone, nothing to rebuild
 
-        console.log(LOG, `screen share track replaced for ${participant.identity}, rebuilding stream — oldTrackSid: ${entry.trackSid}, newTrackSid: ${currentTrack.sid ?? '?'}, ts: ${Date.now()}`);
+        console.log(
+          LOG,
+          `screen share track replaced for ${participant.identity}, rebuilding stream — oldTrackSid: ${entry.trackSid}, newTrackSid: ${currentTrack.sid ?? '?'}, ts: ${Date.now()}`,
+        );
 
         // Build a new MediaStream from the replacement track
         const newStream = new MediaStream([currentTrack.mediaStreamTrack]);
@@ -4065,7 +4478,10 @@ export class LiveKitModule {
 
         // Re-emit so the loopback bridge rebuilds with the new stream
         this.callbacks.onScreenShareSubscribed(participant.identity, newStream);
-        console.log(LOG, `monitorScreenShareTrack: rebuild succeeded for ${participant.identity} — newStreamId: ${newStream.id}, newTrackSid: ${currentTrack.sid ?? '?'}, ts: ${Date.now()}`);
+        console.log(
+          LOG,
+          `monitorScreenShareTrack: rebuild succeeded for ${participant.identity} — newStreamId: ${newStream.id}, newTrackSid: ${currentTrack.sid ?? '?'}, ts: ${Date.now()}`,
+        );
         return true;
       };
 
@@ -4106,7 +4522,11 @@ export class LiveKitModule {
   /** Return list of active remote screen shares, sorted by startedAtMs descending (most recent first). */
   getActiveScreenShares(): Array<{ identity: string; stream: MediaStream; startedAtMs: number }> {
     return Array.from(this.screenShareElements.entries())
-      .map(([identity, entry]) => ({ identity, stream: entry.stream, startedAtMs: entry.startedAtMs }))
+      .map(([identity, entry]) => ({
+        identity,
+        stream: entry.stream,
+        startedAtMs: entry.startedAtMs,
+      }))
       .sort((a, b) => b.startedAtMs - a.startedAtMs);
   }
 
@@ -4114,7 +4534,10 @@ export class LiveKitModule {
     const participant = this.room?.remoteParticipants.get(participantIdentity);
     if (!participant) {
       if (DEBUG_SHARE_TRACK_SUB) {
-        console.log(LOG, `refreshRemoteScreenShare: no LiveKit remoteParticipant for identity ${participantIdentity} — retry will silently no-op`);
+        console.log(
+          LOG,
+          `refreshRemoteScreenShare: no LiveKit remoteParticipant for identity ${participantIdentity} — retry will silently no-op`,
+        );
       }
       return;
     }
@@ -4122,7 +4545,10 @@ export class LiveKitModule {
     const publication = participant.getTrackPublication(Track.Source.ScreenShare);
     if (!publication || publication.kind !== Track.Kind.Video) {
       if (DEBUG_SHARE_TRACK_SUB) {
-        console.log(LOG, `refreshRemoteScreenShare: no screen-share video publication for ${participantIdentity}`);
+        console.log(
+          LOG,
+          `refreshRemoteScreenShare: no screen-share video publication for ${participantIdentity}`,
+        );
       }
       return;
     }
@@ -4133,15 +4559,9 @@ export class LiveKitModule {
 
     const track = publication.track;
     if (track && track.kind === Track.Kind.Video) {
-      this.attachRemoteScreenShareTrack(
-        participant,
-        publication,
-        track as RemoteTrack,
-        'signaling_recovery',
-      );
+      this.attachRemoteScreenShareTrack(participant, publication, track, 'signaling_recovery');
     }
   }
-
 
   /* ─── Post-Publish Track Tuning ──────────────────────────────── */
 
@@ -4185,25 +4605,31 @@ export class LiveKitModule {
       this.callbacks.onShareQualityInfo?.(info);
     };
 
-    mediaTrack.applyConstraints(constraints).then(() => {
-      reportQualityInfo();
-    }).catch(() => {
-      // First failure — retry once after 300ms
-      this.postPublishRetryTimeout = setTimeout(() => {
-        this.postPublishRetryTimeout = null;
-        mediaTrack.applyConstraints(constraints).then(() => {
-          reportQualityInfo();
-        }).catch((retryErr: unknown) => {
-          // Second failure — log warning, report whatever we got, and continue
-          console.warn(
-            LOG,
-            'post-publish applyConstraints failed after retry:',
-            retryErr instanceof Error ? retryErr.message : String(retryErr),
-          );
-          reportQualityInfo();
-        });
-      }, 300);
-    });
+    mediaTrack
+      .applyConstraints(constraints)
+      .then(() => {
+        reportQualityInfo();
+      })
+      .catch(() => {
+        // First failure — retry once after 300ms
+        this.postPublishRetryTimeout = setTimeout(() => {
+          this.postPublishRetryTimeout = null;
+          mediaTrack
+            .applyConstraints(constraints)
+            .then(() => {
+              reportQualityInfo();
+            })
+            .catch((retryErr: unknown) => {
+              // Second failure — log warning, report whatever we got, and continue
+              console.warn(
+                LOG,
+                'post-publish applyConstraints failed after retry:',
+                retryErr instanceof Error ? retryErr.message : String(retryErr),
+              );
+              reportQualityInfo();
+            });
+        }, 300);
+      });
   }
 
   /* ─── Screen Share Sender Stats Polling ───────────────────────── */
@@ -4227,120 +4653,135 @@ export class LiveKitModule {
         const engine = (this.room as any).engine;
         const publisher = engine?.pcManager?.publisher;
         if (publisher && typeof publisher.getStats === 'function') {
-          publisher.getStats().then(async (report: RTCStatsReport) => {
-            if (this.disposed) return;
-            try {
-              let bytesSent = 0;
-              let timestamp = 0;
-              let fps = 0;
-              let browserReportedFps = 0;
-              let framesSentCumulative = 0;
-              let framesEncodedCumulative = 0;
-              let qualityLimitation = 'none';
-              let packetsSent = 0;
-              let packetsLost = 0;
-              let frameWidth = 0;
-              let frameHeight = 0;
-              let pliCountCumulative = 0;
-              let nackCountCumulative = 0;
-              let availableBandwidthKbps = 0;
-              report.forEach((stat: Record<string, unknown>) => {
-                if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
-                  if (typeof stat.bytesSent === 'number') bytesSent = stat.bytesSent as number;
-                  if (typeof stat.timestamp === 'number') timestamp = stat.timestamp as number;
-                  if (typeof stat.framesPerSecond === 'number') browserReportedFps = stat.framesPerSecond as number;
-                  if (typeof stat.framesSent === 'number') framesSentCumulative = stat.framesSent as number;
-                  if (typeof stat.framesEncoded === 'number') framesEncodedCumulative = stat.framesEncoded as number;
-                  if (typeof stat.qualityLimitationReason === 'string') qualityLimitation = stat.qualityLimitationReason as string;
-                  if (typeof stat.packetsSent === 'number') packetsSent = stat.packetsSent as number;
-                  if (typeof stat.frameWidth === 'number') frameWidth = stat.frameWidth as number;
-                  if (typeof stat.frameHeight === 'number') frameHeight = stat.frameHeight as number;
-                  if (typeof stat.pliCount === 'number') pliCountCumulative = stat.pliCount as number;
-                  if (typeof stat.nackCount === 'number') nackCountCumulative = stat.nackCount as number;
-                }
-                // Read packet loss from remote-inbound-rtp (RTCP receiver reports for our outbound stream)
-                if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') {
-                  if (typeof stat.packetsLost === 'number') packetsLost = stat.packetsLost as number;
-                }
-                // Available outgoing bandwidth from nominated ICE candidate pair
-                if (stat.type === 'candidate-pair' && stat.nominated === true) {
-                  if (typeof stat.availableOutgoingBitrate === 'number') {
-                    availableBandwidthKbps = Math.round((stat.availableOutgoingBitrate as number) / 1000);
+          publisher
+            .getStats()
+            .then(async (report: RTCStatsReport) => {
+              if (this.disposed) return;
+              try {
+                let bytesSent = 0;
+                let timestamp = 0;
+                let fps = 0;
+                let browserReportedFps = 0;
+                let framesSentCumulative = 0;
+                let framesEncodedCumulative = 0;
+                let qualityLimitation = 'none';
+                let packetsSent = 0;
+                let packetsLost = 0;
+                let frameWidth = 0;
+                let frameHeight = 0;
+                let pliCountCumulative = 0;
+                let nackCountCumulative = 0;
+                let availableBandwidthKbps = 0;
+                report.forEach((stat: Record<string, unknown>) => {
+                  if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
+                    if (typeof stat.bytesSent === 'number') bytesSent = stat.bytesSent;
+                    if (typeof stat.timestamp === 'number') timestamp = stat.timestamp;
+                    if (typeof stat.framesPerSecond === 'number')
+                      browserReportedFps = stat.framesPerSecond;
+                    if (typeof stat.framesSent === 'number') framesSentCumulative = stat.framesSent;
+                    if (typeof stat.framesEncoded === 'number')
+                      framesEncodedCumulative = stat.framesEncoded;
+                    if (typeof stat.qualityLimitationReason === 'string')
+                      qualityLimitation = stat.qualityLimitationReason;
+                    if (typeof stat.packetsSent === 'number') packetsSent = stat.packetsSent;
+                    if (typeof stat.frameWidth === 'number') frameWidth = stat.frameWidth;
+                    if (typeof stat.frameHeight === 'number') frameHeight = stat.frameHeight;
+                    if (typeof stat.pliCount === 'number') pliCountCumulative = stat.pliCount;
+                    if (typeof stat.nackCount === 'number') nackCountCumulative = stat.nackCount;
                   }
+                  // Read packet loss from remote-inbound-rtp (RTCP receiver reports for our outbound stream)
+                  if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') {
+                    if (typeof stat.packetsLost === 'number') packetsLost = stat.packetsLost;
+                  }
+                  // Available outgoing bandwidth from nominated ICE candidate pair
+                  if (stat.type === 'candidate-pair' && stat.nominated === true) {
+                    if (typeof stat.availableOutgoingBitrate === 'number') {
+                      availableBandwidthKbps = Math.round(stat.availableOutgoingBitrate / 1000);
+                    }
+                  }
+                });
+                let bitrateKbps = 0;
+                if (prevTimestamp > 0 && timestamp > prevTimestamp) {
+                  const deltaBytes = bytesSent - prevBytesSent;
+                  const deltaSec = (timestamp - prevTimestamp) / 1000;
+                  bitrateKbps = Math.round((deltaBytes * 8) / deltaSec / 1000);
                 }
-              });
-              let bitrateKbps = 0;
-              if (prevTimestamp > 0 && timestamp > prevTimestamp) {
-                const deltaBytes = bytesSent - prevBytesSent;
-                const deltaSec = (timestamp - prevTimestamp) / 1000;
-                bitrateKbps = Math.round((deltaBytes * 8) / deltaSec / 1000);
+                prevBytesSent = bytesSent;
+                prevTimestamp = timestamp;
+
+                let framesSentFps = 0;
+                let framesEncodedFps = 0;
+                if (this.prevShareFrameTimestamp > 0 && timestamp > this.prevShareFrameTimestamp) {
+                  const deltaSec = (timestamp - this.prevShareFrameTimestamp) / 1000;
+                  framesSentFps = Math.max(
+                    0,
+                    (framesSentCumulative - this.prevShareFramesSent) / deltaSec,
+                  );
+                  framesEncodedFps = Math.max(
+                    0,
+                    (framesEncodedCumulative - this.prevShareFramesEncoded) / deltaSec,
+                  );
+                }
+                this.prevShareFramesSent = framesSentCumulative;
+                this.prevShareFramesEncoded = framesEncodedCumulative;
+                this.prevShareFrameTimestamp = timestamp;
+                fps =
+                  framesSentFps > 0
+                    ? framesSentFps
+                    : framesEncodedFps > 0
+                      ? framesEncodedFps
+                      : browserReportedFps;
+
+                // Compute outbound packet loss percentage
+                const totalPackets = packetsSent + packetsLost;
+                const packetLossPercent =
+                  totalPackets > 0 ? Math.round((packetsLost / totalPackets) * 1000) / 10 : 0;
+
+                // Compute per-interval deltas for PLI and NACK (avoid reporting ever-growing cumulative totals)
+                const pliCount = Math.max(0, pliCountCumulative - this.prevSharePliCount);
+                const nackCount = Math.max(0, nackCountCumulative - this.prevShareNackCount);
+                this.prevSharePliCount = pliCountCumulative;
+                this.prevShareNackCount = nackCountCumulative;
+
+                console.log(
+                  LOG,
+                  `screen share stats: bitrate=${bitrateKbps}kbps fps=${fps} ${frameWidth}x${frameHeight} qualityLimitation=${qualityLimitation} loss=${packetLossPercent}% pli=${pliCount} nack=${nackCount}`,
+                );
+
+                // Feed packet loss and quality limitation to adaptive quality logic
+                this.processAdaptiveQuality(packetLossPercent, qualityLimitation);
+
+                // Forward stats to diagnostics window (optional callback, 5s cadence)
+                await this.refreshWindowsNativeCaptureDiagnosticsForStats();
+                const nativeBridge = this.nativeBridgeCadenceStats
+                  ? this.snapshotNativeBridgeStatsForReport()
+                  : undefined;
+                if (nativeBridge && fps <= 0) {
+                  fps = nativeBridge.writerFps;
+                }
+                this.callbacks.onShareStats?.({
+                  bitrateKbps,
+                  fps,
+                  browserReportedFps,
+                  framesSentFps,
+                  framesEncodedFps,
+                  qualityLimitationReason: qualityLimitation,
+                  packetLossPercent,
+                  frameWidth,
+                  frameHeight,
+                  pliCount,
+                  nackCount,
+                  availableBandwidthKbps,
+                  nativeBridge,
+                });
+              } catch {
+                console.warn(LOG, 'screen share stats parsing failed, skipping cycle');
               }
-              prevBytesSent = bytesSent;
-              prevTimestamp = timestamp;
-
-              let framesSentFps = 0;
-              let framesEncodedFps = 0;
-              if (this.prevShareFrameTimestamp > 0 && timestamp > this.prevShareFrameTimestamp) {
-                const deltaSec = (timestamp - this.prevShareFrameTimestamp) / 1000;
-                framesSentFps = Math.max(0, (framesSentCumulative - this.prevShareFramesSent) / deltaSec);
-                framesEncodedFps = Math.max(0, (framesEncodedCumulative - this.prevShareFramesEncoded) / deltaSec);
-              }
-              this.prevShareFramesSent = framesSentCumulative;
-              this.prevShareFramesEncoded = framesEncodedCumulative;
-              this.prevShareFrameTimestamp = timestamp;
-              fps = framesSentFps > 0
-                ? framesSentFps
-                : framesEncodedFps > 0
-                  ? framesEncodedFps
-                  : browserReportedFps;
-
-              // Compute outbound packet loss percentage
-              const totalPackets = packetsSent + packetsLost;
-              const packetLossPercent = totalPackets > 0
-                ? Math.round((packetsLost / totalPackets) * 1000) / 10
-                : 0;
-
-              // Compute per-interval deltas for PLI and NACK (avoid reporting ever-growing cumulative totals)
-              const pliCount = Math.max(0, pliCountCumulative - this.prevSharePliCount);
-              const nackCount = Math.max(0, nackCountCumulative - this.prevShareNackCount);
-              this.prevSharePliCount = pliCountCumulative;
-              this.prevShareNackCount = nackCountCumulative;
-
-              console.log(LOG, `screen share stats: bitrate=${bitrateKbps}kbps fps=${fps} ${frameWidth}x${frameHeight} qualityLimitation=${qualityLimitation} loss=${packetLossPercent}% pli=${pliCount} nack=${nackCount}`);
-
-              // Feed packet loss and quality limitation to adaptive quality logic
-              this.processAdaptiveQuality(packetLossPercent, qualityLimitation);
-
-              // Forward stats to diagnostics window (optional callback, 5s cadence)
-              await this.refreshWindowsNativeCaptureDiagnosticsForStats();
-              const nativeBridge = this.nativeBridgeCadenceStats
-                ? this.snapshotNativeBridgeStatsForReport()
-                : undefined;
-              if (nativeBridge && fps <= 0) {
-                fps = nativeBridge.writerFps;
-              }
-              this.callbacks.onShareStats?.({
-                bitrateKbps,
-                fps,
-                browserReportedFps,
-                framesSentFps,
-                framesEncodedFps,
-                qualityLimitationReason: qualityLimitation,
-                packetLossPercent,
-                frameWidth,
-                frameHeight,
-                pliCount,
-                nackCount,
-                availableBandwidthKbps,
-                nativeBridge,
-              });
-            } catch {
-              console.warn(LOG, 'screen share stats parsing failed, skipping cycle');
-            }
-          }).catch(() => {
-            console.warn(LOG, 'screen share stats polling failed, skipping cycle');
-            this.emitNativeBridgeShareStatsFallback();
-          });
+            })
+            .catch(() => {
+              console.warn(LOG, 'screen share stats polling failed, skipping cycle');
+              this.emitNativeBridgeShareStatsFallback();
+            });
         } else {
           this.emitNativeBridgeShareStatsFallback();
         }
@@ -4417,7 +4858,11 @@ export class LiveKitModule {
     }
 
     // --- Recovery logic (requires both low loss AND no bandwidth limitation) ---
-    if (oldTier !== 'full' && packetLossPercent < ADAPTIVE_RECOVERY_THRESHOLD && !isBandwidthLimited) {
+    if (
+      oldTier !== 'full' &&
+      packetLossPercent < ADAPTIVE_RECOVERY_THRESHOLD &&
+      !isBandwidthLimited
+    ) {
       state.consecutiveRecoveryPolls++;
       state.consecutiveLossPolls = 0;
       if (state.consecutiveRecoveryPolls >= ADAPTIVE_RECOVERY_POLLS) {
@@ -4479,7 +4924,7 @@ export class LiveKitModule {
       }
       // Reduce resolution by one tier from the base preset's resolution
       const currentResIdx = RESOLUTION_TIERS.findIndex(
-        r => r.width === preset.resolution.width && r.height === preset.resolution.height,
+        (r) => r.width === preset.resolution.width && r.height === preset.resolution.height,
       );
       if (currentResIdx >= 0 && currentResIdx < RESOLUTION_TIERS.length - 1) {
         targetWidth = RESOLUTION_TIERS[currentResIdx + 1].width;
@@ -4545,14 +4990,29 @@ export class LiveKitModule {
       // Both jitterBufferTargetDelay and jitterBufferDelay are cumulative totals (seconds)
       // across all emitted samples — divide by jitterBufferEmittedCount to get the average.
       // Prefer jitterBufferTargetDelay (target) over jitterBufferDelay (actual) when present.
-      if (jitterBufferDelayMs === 0 && typeof entry.jitterBufferTargetDelay === 'number' && typeof entry.jitterBufferEmittedCount === 'number' && entry.jitterBufferEmittedCount > 0) {
-        jitterBufferDelayMs = Math.round((entry.jitterBufferTargetDelay / entry.jitterBufferEmittedCount) * 1000);
+      if (
+        jitterBufferDelayMs === 0 &&
+        typeof entry.jitterBufferTargetDelay === 'number' &&
+        typeof entry.jitterBufferEmittedCount === 'number' &&
+        entry.jitterBufferEmittedCount > 0
+      ) {
+        jitterBufferDelayMs = Math.round(
+          (entry.jitterBufferTargetDelay / entry.jitterBufferEmittedCount) * 1000,
+        );
       }
-      if (jitterBufferDelayMs === 0 && typeof entry.jitterBufferDelay === 'number' && typeof entry.jitterBufferEmittedCount === 'number' && entry.jitterBufferEmittedCount > 0) {
-        jitterBufferDelayMs = Math.round((entry.jitterBufferDelay / entry.jitterBufferEmittedCount) * 1000);
+      if (
+        jitterBufferDelayMs === 0 &&
+        typeof entry.jitterBufferDelay === 'number' &&
+        typeof entry.jitterBufferEmittedCount === 'number' &&
+        entry.jitterBufferEmittedCount > 0
+      ) {
+        jitterBufferDelayMs = Math.round(
+          (entry.jitterBufferDelay / entry.jitterBufferEmittedCount) * 1000,
+        );
       }
       if (typeof entry.freezeCount === 'number') freezeCountCum = entry.freezeCount;
-      if (typeof entry.totalFreezesDuration === 'number') totalFreezesDurationCum = entry.totalFreezesDuration;
+      if (typeof entry.totalFreezesDuration === 'number')
+        totalFreezesDurationCum = entry.totalFreezesDuration;
       if (typeof entry.pliCount === 'number') pliCountCum = entry.pliCount;
       if (typeof entry.nackCount === 'number') nackCountCum = entry.nackCount;
       if (typeof entry.totalDecodeTime === 'number') totalDecodeTimeSec = entry.totalDecodeTime;
@@ -4565,9 +5025,8 @@ export class LiveKitModule {
     }
 
     const totalPackets = packetsReceived + packetsLost;
-    const packetLossPercent = totalPackets > 0
-      ? Math.round((packetsLost / totalPackets) * 1000) / 10
-      : 0;
+    const packetLossPercent =
+      totalPackets > 0 ? Math.round((packetsLost / totalPackets) * 1000) / 10 : 0;
 
     const framesDropped = Math.max(0, framesDroppedCum - this.prevVideoRecvFramesDropped);
     const freezeCount = Math.max(0, freezeCountCum - this.prevVideoRecvFreezeCount);
@@ -4583,9 +5042,8 @@ export class LiveKitModule {
     this.prevVideoRecvPliCount = pliCountCum;
     this.prevVideoRecvNackCount = nackCountCum;
 
-    const avgDecodeTimeMs = framesDecoded > 0
-      ? Math.round((totalDecodeTimeSec / framesDecoded) * 1000 * 10) / 10
-      : 0;
+    const avgDecodeTimeMs =
+      framesDecoded > 0 ? Math.round((totalDecodeTimeSec / framesDecoded) * 1000 * 10) / 10 : 0;
 
     const stats: VideoReceiveStats = {
       fps,
@@ -4661,7 +5119,11 @@ export class LiveKitModule {
       }, 50);
       console.log(LOG, 'local mic monitor started');
     } catch (err) {
-      console.warn(LOG, 'failed to start local mic monitor:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        'failed to start local mic monitor:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
@@ -4769,7 +5231,11 @@ export class LiveKitModule {
       throw { kind: 'publish_failed' } satisfies CameraStartError;
     }
 
-    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera start', { deviceId: opts.deviceId, quality: opts.quality.tier });
+    if (DEBUG_VIDEO_FEED)
+      console.log(LOG, '[video-feed] publishCamera start', {
+        deviceId: opts.deviceId,
+        quality: opts.quality.tier,
+      });
     let mediaTrack: MediaStreamTrack | null = null;
     try {
       // openCameraDevice uses AbortController so a slow camera that resolves
@@ -4777,7 +5243,12 @@ export class LiveKitModule {
       mediaTrack = await openCameraDevice(opts.deviceId).catch((err) => {
         throw classifyCameraCaptureError(err);
       });
-      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera getUserMedia ok', { trackId: mediaTrack.id, readyState: mediaTrack.readyState, label: mediaTrack.label });
+      if (DEBUG_VIDEO_FEED)
+        console.log(LOG, '[video-feed] publishCamera getUserMedia ok', {
+          trackId: mediaTrack.id,
+          readyState: mediaTrack.readyState,
+          label: mediaTrack.label,
+        });
 
       // publishTrack timeout: if the SDK resolves after we've already rejected,
       // the then-handler below unpublishes the phantom publication best-effort.
@@ -4789,23 +5260,27 @@ export class LiveKitModule {
         capturedTrack,
         buildCameraPublishOptions(opts.quality),
       );
-      const publication = await withTimeout(
-        publishPromise,
-        CAMERA_PUBLISH_TIMEOUT_MS,
-        { kind: 'publish_failed' } satisfies CameraStartError,
-      ).catch((err) => {
+      const publication = await withTimeout(publishPromise, CAMERA_PUBLISH_TIMEOUT_MS, {
+        kind: 'publish_failed',
+      } satisfies CameraStartError).catch((err) => {
         // Best-effort cleanup of a phantom publication that may arrive after
         // the timeout sentinel already rejected.
-        publishPromise.then((pub) => {
-          room.localParticipant.unpublishTrack(pub?.track ?? capturedTrack).catch(() => {});
-        }).catch(() => {});
+        publishPromise
+          .then((pub) => {
+            room.localParticipant.unpublishTrack(pub?.track ?? capturedTrack).catch(() => {});
+          })
+          .catch(() => {});
         throw err;
       });
 
       this.localCameraPublication = publication;
       this.localCameraMediaTrack = mediaTrack;
       const trackId = publication?.trackSid ?? publication?.track?.sid ?? mediaTrack.id;
-      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] publishCamera published', { trackId, trackSid: publication?.trackSid });
+      if (DEBUG_VIDEO_FEED)
+        console.log(LOG, '[video-feed] publishCamera published', {
+          trackId,
+          trackSid: publication?.trackSid,
+        });
       return { trackId };
     } catch (error) {
       if (mediaTrack) {
@@ -4814,14 +5289,23 @@ export class LiveKitModule {
       this.localCameraPublication = null;
       this.localCameraMediaTrack = null;
       if (isCameraStartError(error)) {
-        if (DEBUG_VIDEO_FEED) console.warn(LOG, '[video-feed] publishCamera CameraStartError', error);
+        if (DEBUG_VIDEO_FEED)
+          console.warn(LOG, '[video-feed] publishCamera CameraStartError', error);
         throw error;
       }
       if (mediaTrack) {
-        console.warn(LOG, 'publishCamera: publishTrack failed, classifying as publish_failed', error);
+        console.warn(
+          LOG,
+          'publishCamera: publishTrack failed, classifying as publish_failed',
+          error,
+        );
         throw { kind: 'publish_failed' } satisfies CameraStartError;
       }
-      console.warn(LOG, 'publishCamera: getUserMedia failed, classifying camera capture error', error);
+      console.warn(
+        LOG,
+        'publishCamera: getUserMedia failed, classifying camera capture error',
+        error,
+      );
       throw classifyCameraCaptureError(error);
     }
   }
@@ -4831,14 +5315,16 @@ export class LiveKitModule {
       this.localCameraPublication ??
       this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
       null;
-    const mediaTrack =
-      this.localCameraMediaTrack ??
-      publication?.track?.mediaStreamTrack ??
-      null;
+    const mediaTrack = this.localCameraMediaTrack ?? publication?.track?.mediaStreamTrack ?? null;
     // Prefer the LiveKit LocalTrack wrapper so the SDK can cleanly remove its own publication.
     const localTrack = publication?.track ?? null;
 
-    if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] unpublishCamera start', { hasPub: !!publication, hasLocalTrack: !!localTrack, hasMediaTrack: !!mediaTrack });
+    if (DEBUG_VIDEO_FEED)
+      console.log(LOG, '[video-feed] unpublishCamera start', {
+        hasPub: !!publication,
+        hasLocalTrack: !!localTrack,
+        hasMediaTrack: !!mediaTrack,
+      });
     this.localCameraPublication = null;
     this.localCameraMediaTrack = null;
 
@@ -4854,7 +5340,9 @@ export class LiveKitModule {
   }
 
   getLocalCameraTrack(): MediaStreamTrack | null {
-    return this.localCameraMediaTrack ?? this.localCameraPublication?.track?.mediaStreamTrack ?? null;
+    return (
+      this.localCameraMediaTrack ?? this.localCameraPublication?.track?.mediaStreamTrack ?? null
+    );
   }
 
   /**
@@ -4907,10 +5395,7 @@ export class LiveKitModule {
       this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
       null;
     const localTrack = publication?.track ?? null;
-    const mediaTrack =
-      this.localCameraMediaTrack ??
-      localTrack?.mediaStreamTrack ??
-      null;
+    const mediaTrack = this.localCameraMediaTrack ?? localTrack?.mediaStreamTrack ?? null;
 
     if (!publication || !mediaTrack) {
       return;
@@ -4924,7 +5409,11 @@ export class LiveKitModule {
       // bitrate cap still applies and we don't loop-retry pointlessly.
       const name = err instanceof Error ? err.name : '';
       if (name === 'OverconstrainedError') {
-        console.warn(LOG, '[video-feed] setCameraQuality: OverconstrainedError on resolution constraint, retrying fps-only', quality.tier);
+        console.warn(
+          LOG,
+          '[video-feed] setCameraQuality: OverconstrainedError on resolution constraint, retrying fps-only',
+          quality.tier,
+        );
         await mediaTrack.applyConstraints({ frameRate: quality.maxFps });
       } else {
         throw err;
@@ -4936,7 +5425,7 @@ export class LiveKitModule {
       const nextParameters =
         typeof sender.getParameters === 'function'
           ? sender.getParameters()
-          : {} as RTCRtpSendParameters;
+          : ({} as RTCRtpSendParameters);
       nextParameters.encodings = buildCameraSenderParameters(quality).encodings;
       await sender.setParameters(nextParameters);
     }
@@ -4959,10 +5448,7 @@ export class LiveKitModule {
       this.room?.localParticipant.getTrackPublication(Track.Source.Camera) ??
       null;
     const localTrack = publication?.track ?? null;
-    const currentMediaTrack =
-      this.localCameraMediaTrack ??
-      localTrack?.mediaStreamTrack ??
-      null;
+    const currentMediaTrack = this.localCameraMediaTrack ?? localTrack?.mediaStreamTrack ?? null;
 
     if (!publication || !localTrack || !currentMediaTrack) {
       throw { kind: 'publish_failed' } satisfies CameraStartError;
@@ -4977,7 +5463,10 @@ export class LiveKitModule {
       });
 
       const replaceableTrack = localTrack as LocalVideoTrack & {
-        replaceTrack?: (track: MediaStreamTrack, options?: { userProvidedTrack?: boolean }) => Promise<void>;
+        replaceTrack?: (
+          track: MediaStreamTrack,
+          options?: { userProvidedTrack?: boolean },
+        ) => Promise<void>;
       };
       if (typeof replaceableTrack.replaceTrack !== 'function') {
         throw { kind: 'publish_failed' } satisfies CameraStartError;
@@ -4991,7 +5480,13 @@ export class LiveKitModule {
       this.localCameraPublication = publication;
       this.localCameraMediaTrack = newMediaTrack;
       const trackId = publication.trackSid ?? localTrack.sid ?? newMediaTrack.id;
-      if (DEBUG_VIDEO_FEED) console.log(LOG, '[video-feed] replaceCameraDevice success', { oldId: currentMediaTrack.id, newId: newMediaTrack.id, trackId, deviceId });
+      if (DEBUG_VIDEO_FEED)
+        console.log(LOG, '[video-feed] replaceCameraDevice success', {
+          oldId: currentMediaTrack.id,
+          newId: newMediaTrack.id,
+          trackId,
+          deviceId,
+        });
       return { trackId };
     } catch (error) {
       if (newMediaTrack) {
@@ -5018,15 +5513,18 @@ export class LiveKitModule {
     this.wasapiFrameCount = 0; // reset diagnostic counter
     // Tear down any existing bridge before starting a new one (e.g. share switch).
     if (this.wasapiWorkletNode || this.wasapiAudioPublication) {
-      if (DEBUG_WASAPI) console.log(LOG, '[wasapi] existing bridge active — stopping before restart');
+      if (DEBUG_WASAPI)
+        console.log(LOG, '[wasapi] existing bridge active — stopping before restart');
       await this.stopWasapiAudioBridge();
     }
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi] startWasapiAudioBridge — room ok, getting audio context');
+    if (DEBUG_WASAPI)
+      console.log(LOG, '[wasapi] startWasapiAudioBridge — room ok, getting audio context');
     if (!this.wasapiAudioCtx || this.wasapiAudioCtx.state === 'closed') {
       this.wasapiAudioCtx = new AudioContext({ sampleRate: 48_000 });
     }
     const ctx = this.wasapiAudioCtx;
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi] AudioContext state:', ctx.state, 'sampleRate:', ctx.sampleRate);
+    if (DEBUG_WASAPI)
+      console.log(LOG, '[wasapi] AudioContext state:', ctx.state, 'sampleRate:', ctx.sampleRate);
 
     // Resume the AudioContext if suspended — WebKit (macOS) creates contexts
     // in suspended state and is stricter than WebView2 (Windows) about
@@ -5036,12 +5534,23 @@ export class LiveKitModule {
       try {
         await ctx.resume();
         if (DEBUG_WASAPI) console.log(LOG, '[wasapi] AudioContext resumed, state now:', ctx.state);
-        if (DEBUG_MAC_SHARE_AUDIO) console.log(LOG, '[mac-share-audio] AudioContext was suspended — resumed, state now: %s', ctx.state);
+        if (DEBUG_MAC_SHARE_AUDIO)
+          console.log(
+            LOG,
+            '[mac-share-audio] AudioContext was suspended — resumed, state now: %s',
+            ctx.state,
+          );
       } catch (e) {
         console.warn(LOG, '[wasapi] AudioContext resume failed (will try anyway):', e);
       }
     }
-    if (DEBUG_MAC_SHARE_AUDIO) console.log(LOG, '[mac-share-audio] AudioContext state before worklet load: %s sampleRate: %d', ctx.state, ctx.sampleRate);
+    if (DEBUG_MAC_SHARE_AUDIO)
+      console.log(
+        LOG,
+        '[mac-share-audio] AudioContext state before worklet load: %s sampleRate: %d',
+        ctx.state,
+        ctx.sampleRate,
+      );
 
     // Load the worklet processor (Vite resolves the URL at build time).
     const workletUrl = new URL('./wasapi-audio-worklet.js', import.meta.url).href;
@@ -5067,7 +5576,14 @@ export class LiveKitModule {
     this.wasapiWorkletNode.connect(this.wasapiDestNode);
 
     const audioTrack = this.wasapiDestNode.stream.getAudioTracks()[0];
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi] audio tracks on dest stream:', this.wasapiDestNode.stream.getAudioTracks().length, 'track:', audioTrack);
+    if (DEBUG_WASAPI)
+      console.log(
+        LOG,
+        '[wasapi] audio tracks on dest stream:',
+        this.wasapiDestNode.stream.getAudioTracks().length,
+        'track:',
+        audioTrack,
+      );
     if (!audioTrack) throw new Error('no audio track from WASAPI worklet destination');
 
     // Snapshot transceivers before publish so we can identify the new one by set-difference.
@@ -5078,34 +5594,39 @@ export class LiveKitModule {
 
     // Publish as ScreenShareAudio via LiveKit.
     if (DEBUG_WASAPI) console.log(LOG, '[wasapi] publishing ScreenShareAudio track via LiveKit');
-    this.wasapiAudioPublication = await this.room.localParticipant.publishTrack(
-      audioTrack,
-      {
-        source: Track.Source.ScreenShareAudio,
-        audioPreset: { maxBitrate: SYS_AUDIO_OPUS_BITRATE_BPS },
-        audioBitrate: SYS_AUDIO_OPUS_BITRATE_BPS,
-        // Keep the synthetic share-audio track grouped under a stable logical
-        // stream so remote subscribers can map it back to the publisher instead
-        // of treating the browser-generated MediaStream UUID as a participant sid.
-        stream: Track.Source.ScreenShare,
-        // System-audio share is typically continuous (music, video, app sound)
-        // so DTX rarely fires, but explicit defaults document intent and match
-        // the mic publish path. red is kept on for packet-loss resilience.
-        dtx: true,
-        red: true,
-      } as TrackPublishOptionsWithAudioBitrate,
-    );
+    this.wasapiAudioPublication = await this.room.localParticipant.publishTrack(audioTrack, {
+      source: Track.Source.ScreenShareAudio,
+      audioPreset: { maxBitrate: SYS_AUDIO_OPUS_BITRATE_BPS },
+      audioBitrate: SYS_AUDIO_OPUS_BITRATE_BPS,
+      // Keep the synthetic share-audio track grouped under a stable logical
+      // stream so remote subscribers can map it back to the publisher instead
+      // of treating the browser-generated MediaStream UUID as a participant sid.
+      stream: Track.Source.ScreenShare,
+      // System-audio share is typically continuous (music, video, app sound)
+      // so DTX rarely fires, but explicit defaults document intent and match
+      // the mic publish path. red is kept on for packet-loss resilience.
+      dtx: true,
+      red: true,
+    } as TrackPublishOptionsWithAudioBitrate);
     // Find the transceiver that was added by publishTrack via set-difference.
     // This survives AudioContext.close() (which nulls sender.track) and is unaffected
     // by any LiveKit-internal track cloning that would break a sender.track identity check.
     const pcAfterPublish = this.getPublisherPeerConnection();
     const transceiversAfterPublish = pcAfterPublish?.getTransceivers() ?? [];
-    this.wasapiAudioTransceiver = transceiversAfterPublish.find(t => !transceiversBeforePublish.has(t)) ?? null;
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi] ScreenShareAudio published, publication:', this.wasapiAudioPublication);
+    this.wasapiAudioTransceiver =
+      transceiversAfterPublish.find((t) => !transceiversBeforePublish.has(t)) ?? null;
+    if (DEBUG_WASAPI)
+      console.log(
+        LOG,
+        '[wasapi] ScreenShareAudio published, publication:',
+        this.wasapiAudioPublication,
+      );
     if (DEBUG_MAC_SHARE_AUDIO) {
       const pub = this.wasapiAudioPublication;
       const mst = pub?.track?.mediaStreamTrack;
-      console.log(LOG, '[mac-share-audio] ScreenShareAudio published — trackSid=%s source=%s muted=%s readyState=%s enabled=%s ctxState=%s',
+      console.log(
+        LOG,
+        '[mac-share-audio] ScreenShareAudio published — trackSid=%s source=%s muted=%s readyState=%s enabled=%s ctxState=%s',
         pub?.trackSid ?? 'null',
         pub?.source ?? 'null',
         pub?.isMuted ?? 'null',
@@ -5129,19 +5650,30 @@ export class LiveKitModule {
     // while bare SCK falls back to the SharePicker echo warning instead of muting.
     const shouldMuteForEchoPrevention = !loopbackExclusionAvailable && !isMac();
     if (!loopbackExclusionAvailable && isMac() && DEBUG_SHARE_AUDIO) {
-      console.log(LOG, '[share-audio] macOS bare-SCK fallback active - keeping masterGain live and relying on echo warning UX');
+      console.log(
+        LOG,
+        '[share-audio] macOS bare-SCK fallback active - keeping masterGain live and relying on echo warning UX',
+      );
     }
     if (shouldMuteForEchoPrevention && this.masterGain && this.audioContext) {
-      if (this.preShareGain === null) {         // guard: don't overwrite if already muted
+      if (this.preShareGain === null) {
+        // guard: don't overwrite if already muted
         this.preShareGain = this.masterGain.gain.value;
       }
       this.masterGain.gain.setValueAtTime(0, this.audioContext.currentTime);
-      console.log(LOG, '[share-audio] local playback muted for echo prevention (preShareGain=%f)', this.preShareGain);
-      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] masterGain was %f → 0', this.preShareGain);
+      console.log(
+        LOG,
+        '[share-audio] local playback muted for echo prevention (preShareGain=%f)',
+        this.preShareGain,
+      );
+      if (DEBUG_SHARE_AUDIO)
+        console.log(LOG, '[share-audio] masterGain was %f → 0', this.preShareGain);
     } else if (loopbackExclusionAvailable) {
-      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] echo prevention skipped — loopbackExclusionAvailable=true');
+      if (DEBUG_SHARE_AUDIO)
+        console.log(LOG, '[share-audio] echo prevention skipped — loopbackExclusionAvailable=true');
     } else {
-      if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] masterGain not available yet — echo prevention skipped');
+      if (DEBUG_SHARE_AUDIO)
+        console.log(LOG, '[share-audio] masterGain not available yet — echo prevention skipped');
     }
 
     // Register Tauri event listeners to feed PCM frames from the Rust capture
@@ -5150,7 +5682,11 @@ export class LiveKitModule {
       this.onWasapiAudioFrame(event.payload);
     });
     this.wasapiStoppedUnlisten = await listen('wasapi_audio_stopped', async () => {
-      console.warn(LOG, '[wasapi] wasapi_audio_stopped event received — tearing down bridge (framesReceived=%d)', this.wasapiFrameCount);
+      console.warn(
+        LOG,
+        '[wasapi] wasapi_audio_stopped event received — tearing down bridge (framesReceived=%d)',
+        this.wasapiFrameCount,
+      );
       await this.stopWasapiAudioBridge();
     });
     console.log(LOG, '[wasapi] Tauri event listeners registered');
@@ -5160,9 +5696,15 @@ export class LiveKitModule {
     const frameCountAtStart = this.wasapiFrameCount;
     setTimeout(() => {
       if (this.wasapiWorkletNode && this.wasapiFrameCount === frameCountAtStart) {
-        console.warn(LOG, '[wasapi] WATCHDOG: 0 audio frames received 5s after bridge start — Rust SCK may not be emitting events');
+        console.warn(
+          LOG,
+          '[wasapi] WATCHDOG: 0 audio frames received 5s after bridge start — Rust SCK may not be emitting events',
+        );
       } else if (this.wasapiWorkletNode) {
-        console.log(LOG, `[wasapi] WATCHDOG: ${this.wasapiFrameCount} frames received in first 5s ✓`);
+        console.log(
+          LOG,
+          `[wasapi] WATCHDOG: ${this.wasapiFrameCount} frames received in first 5s ✓`,
+        );
       }
     }, 5000);
   }
@@ -5186,12 +5728,21 @@ export class LiveKitModule {
     this.wasapiFrameCount++;
     if (DEBUG_WASAPI && (this.wasapiFrameCount === 1 || this.wasapiFrameCount % 500 === 0)) {
       const peak = f32.reduce((max, s) => Math.max(max, Math.abs(s)), 0);
-      console.log(LOG, `[wasapi] frame #${this.wasapiFrameCount} — samples: ${f32.length}, peak: ${peak.toFixed(4)}`);
+      console.log(
+        LOG,
+        `[wasapi] frame #${this.wasapiFrameCount} — samples: ${f32.length}, peak: ${peak.toFixed(4)}`,
+      );
     }
-    if (DEBUG_MAC_SHARE_AUDIO && (this.wasapiFrameCount <= 3 || this.wasapiFrameCount % 250 === 0)) {
+    if (
+      DEBUG_MAC_SHARE_AUDIO &&
+      (this.wasapiFrameCount <= 3 || this.wasapiFrameCount % 250 === 0)
+    ) {
       const peak = f32.reduce((max, s) => Math.max(max, Math.abs(s)), 0);
       const rms = Math.sqrt(f32.reduce((sum, s) => sum + s * s, 0) / f32.length);
-      console.log(LOG, `[mac-share-audio] worklet frame #${this.wasapiFrameCount} — samples: ${f32.length}, peak: ${peak.toFixed(4)}, rms: ${rms.toFixed(4)}, ctx: ${this.wasapiAudioCtx?.state ?? 'null'}`);
+      console.log(
+        LOG,
+        `[mac-share-audio] worklet frame #${this.wasapiFrameCount} — samples: ${f32.length}, peak: ${peak.toFixed(4)}, rms: ${rms.toFixed(4)}, ctx: ${this.wasapiAudioCtx?.state ?? 'null'}`,
+      );
     }
 
     // Post to the worklet's ring buffer.
@@ -5212,8 +5763,13 @@ export class LiveKitModule {
     if (DEBUG_MAC_SHARE_AUDIO) {
       const hasWorklet = !!this.wasapiWorkletNode;
       const hasPub = !!this.wasapiAudioPublication;
-      console.log(LOG, '[mac-share-audio] stopWasapiAudioBridge called — hasWorklet=%s hasPub=%s framesReceived=%d',
-        hasWorklet, hasPub, this.wasapiFrameCount);
+      console.log(
+        LOG,
+        '[mac-share-audio] stopWasapiAudioBridge called — hasWorklet=%s hasPub=%s framesReceived=%d',
+        hasWorklet,
+        hasPub,
+        this.wasapiFrameCount,
+      );
       if (hasWorklet || hasPub) console.trace('[mac-share-audio] stopWasapiAudioBridge call stack');
     }
     // Unregister Tauri event listeners first to stop feeding frames.
@@ -5233,12 +5789,15 @@ export class LiveKitModule {
     if (this.room) {
       // Find and unpublish any screen_share_audio track — works even if the
       // stored publication object has a stale/null .track reference.
-      const screenAudioPub = [...this.room.localParticipant.trackPublications.values()]
-        .find(p => p.source === Track.Source.ScreenShareAudio);
+      const screenAudioPub = [...this.room.localParticipant.trackPublications.values()].find(
+        (p) => p.source === Track.Source.ScreenShareAudio,
+      );
       if (screenAudioPub?.track) {
         try {
           await this.room.localParticipant.unpublishTrack(screenAudioPub.track);
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
       }
     }
     // Stop the audio transceiver to free its MID from Chrome's global RTP
@@ -5247,7 +5806,9 @@ export class LiveKitModule {
     if (audioTransceiverToStop) {
       try {
         audioTransceiverToStop.stop();
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }
     this.wasapiAudioPublication = null;
     if (this.wasapiWorkletNode) {
@@ -5266,10 +5827,15 @@ export class LiveKitModule {
       if (this.masterGain && this.audioContext) {
         this.masterGain.gain.setValueAtTime(this.preShareGain, this.audioContext.currentTime);
         console.log(LOG, '[share-audio] local playback restored (gain=%f)', this.preShareGain);
-        if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] masterGain restored to %f', this.preShareGain);
+        if (DEBUG_SHARE_AUDIO)
+          console.log(LOG, '[share-audio] masterGain restored to %f', this.preShareGain);
       } else {
         // masterGain was torn down before stop (e.g. room disconnect) — just clear state.
-        if (DEBUG_SHARE_AUDIO) console.log(LOG, '[share-audio] masterGain gone on stop — clearing preShareGain without restore');
+        if (DEBUG_SHARE_AUDIO)
+          console.log(
+            LOG,
+            '[share-audio] masterGain gone on stop — clearing preShareGain without restore',
+          );
       }
       this.preShareGain = null; // always clear, regardless of whether restore succeeded
     }
@@ -5283,32 +5849,60 @@ export class LiveKitModule {
    * the JS AudioWorklet bridge.
    */
   private async startWasapiScreenShareAudio(): Promise<void> {
-    if (DEBUG_WASAPI) console.log(LOG, '[wasapi] startWasapiScreenShareAudio — invoking audio_share_start sourceId=system');
+    if (DEBUG_WASAPI)
+      console.log(
+        LOG,
+        '[wasapi] startWasapiScreenShareAudio — invoking audio_share_start sourceId=system',
+      );
     // Stop any existing native capture session before starting a new one
     // (handles share switching without the Rust-side "already in progress" guard firing).
     await this.stopWasapiScreenShareAudio().catch(() => {});
     try {
-      const result = await invoke<AudioShareStartResult>('audio_share_start', { sourceId: 'system' });
+      const result = await invoke<AudioShareStartResult>('audio_share_start', {
+        sourceId: 'system',
+      });
       emitAudioCaptureSelectionTelemetry(result);
       // Always log loopback_exclusion_available — it determines whether echo prevention is needed.
-      console.log(LOG, '[share-audio] audio_share_start → loopback_exclusion_available=%s',
-        result?.loopback_exclusion_available);
+      console.log(
+        LOG,
+        '[share-audio] audio_share_start → loopback_exclusion_available=%s',
+        result?.loopback_exclusion_available,
+      );
       if (result?.real_output_device_id) {
-        console.log(LOG, '[share-audio] audio_share_start -> real_output_device_id=%s name=%s', result.real_output_device_id, result.real_output_device_name ?? '(none)');
-        await this.pinShareAudioOutputToRealDevice(result.real_output_device_id, result.real_output_device_name);
+        console.log(
+          LOG,
+          '[share-audio] audio_share_start -> real_output_device_id=%s name=%s',
+          result.real_output_device_id,
+          result.real_output_device_name ?? '(none)',
+        );
+        await this.pinShareAudioOutputToRealDevice(
+          result.real_output_device_id,
+          result.real_output_device_name,
+        );
       }
       if (DEBUG_SHARE_AUDIO && !result?.loopback_exclusion_available && isMac()) {
-        console.warn(LOG, '[share-audio] loopback isolation unavailable on macOS bare-SCK fallback â€” SharePicker echo warning stays active and local playback remains live');
+        console.warn(
+          LOG,
+          '[share-audio] loopback isolation unavailable on macOS bare-SCK fallback â€” SharePicker echo warning stays active and local playback remains live',
+        );
       }
       if (DEBUG_SHARE_AUDIO && !result?.loopback_exclusion_available && !isMac()) {
-        console.warn(LOG, '[share-audio] loopback exclusion NOT available (macOS <14.2 or Windows) — ' +
-          'masterGain will be zeroed during share to prevent echo');
+        console.warn(
+          LOG,
+          '[share-audio] loopback exclusion NOT available (macOS <14.2 or Windows) — ' +
+            'masterGain will be zeroed during share to prevent echo',
+        );
       }
       await this.startWasapiAudioBridge(result?.loopback_exclusion_available ?? false);
       console.log(LOG, 'native screen share audio started');
     } catch (err) {
       await this.stopWasapiScreenShareAudio().catch(() => {});
-      console.warn(LOG, '[wasapi] startWasapiScreenShareAudio FAILED:', err instanceof Error ? err.message : String(err), err);
+      console.warn(
+        LOG,
+        '[wasapi] startWasapiScreenShareAudio FAILED:',
+        err instanceof Error ? err.message : String(err),
+        err,
+      );
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -5327,7 +5921,12 @@ export class LiveKitModule {
       console.log(LOG, 'linux screen share audio started');
     } catch (err) {
       await this.stopLinuxScreenShareAudio().catch(() => {});
-      console.warn(LOG, '[linux-share-audio] start failed:', err instanceof Error ? err.message : String(err), err);
+      console.warn(
+        LOG,
+        '[linux-share-audio] start failed:',
+        err instanceof Error ? err.message : String(err),
+        err,
+      );
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -5338,7 +5937,8 @@ export class LiveKitModule {
       await invoke('audio_share_stop');
       if (DEBUG_SHARE_AUDIO) console.log(LOG, '[linux-share-audio] audio_share_stop invoked');
     } catch (e) {
-      if (DEBUG_SHARE_AUDIO) console.warn(LOG, '[linux-share-audio] audio_share_stop failed (best-effort):', e);
+      if (DEBUG_SHARE_AUDIO)
+        console.warn(LOG, '[linux-share-audio] audio_share_stop failed (best-effort):', e);
     }
   }
 
@@ -5357,7 +5957,11 @@ export class LiveKitModule {
       if (DEBUG_WASAPI) console.warn(LOG, '[wasapi] audio_share_stop failed (best-effort):', e);
     } finally {
       await this.restoreAudioOutputDeviceAfterShare().catch((err) => {
-        console.warn(LOG, '[share-audio] failed to restore room audio output after share stop:', err instanceof Error ? err.message : String(err));
+        console.warn(
+          LOG,
+          '[share-audio] failed to restore room audio output after share stop:',
+          err instanceof Error ? err.message : String(err),
+        );
       });
     }
   }
@@ -5444,7 +6048,8 @@ export class LiveKitModule {
     // adaptiveStream's IntersectionObserver reports ratio > 0 and does not pause
     // the track. top/left:-9999px would be outside the viewport (ratio=0) and
     // cause adaptiveStream to repeatedly fight our setEnabled(true) calls.
-    dummyVideo.style.cssText = 'position:fixed;bottom:0;right:0;width:1px;height:1px;pointer-events:none;opacity:0;z-index:-9999;';
+    dummyVideo.style.cssText =
+      'position:fixed;bottom:0;right:0;width:1px;height:1px;pointer-events:none;opacity:0;z-index:-9999;';
     document.body.appendChild(dummyVideo);
     dummyVideo.play().catch(() => {});
 
@@ -5475,9 +6080,15 @@ export class LiveKitModule {
         const currentEntry = this.screenShareElements.get(participant.identity);
         if (!currentEntry || !currentEntry.stream.getTracks().some((t) => t === mst)) return;
         const freshStream = new MediaStream(currentEntry.stream.getTracks());
-        this.screenShareElements.set(participant.identity, { ...currentEntry, stream: freshStream });
+        this.screenShareElements.set(participant.identity, {
+          ...currentEntry,
+          stream: freshStream,
+        });
         if (currentEntry.dummyVideo) currentEntry.dummyVideo.srcObject = freshStream;
-        console.log(LOG, `screen share track unmuted for ${participant.identity} — emitting fresh stream ${freshStream.id}`);
+        console.log(
+          LOG,
+          `screen share track unmuted for ${participant.identity} — emitting fresh stream ${freshStream.id}`,
+        );
         this.callbacks.onScreenShareSubscribed(participant.identity, freshStream);
       };
       mst.addEventListener('unmute', onUnmute);
@@ -5501,7 +6112,10 @@ export class LiveKitModule {
     if (publication.source === Track.Source.ScreenShareAudio) return true;
 
     const screenShareAudioKey = `${participant.identity}:screen-share`;
-    if (this.screenShareAudioTracks.has(participant.identity) || this.audioElementMap.has(screenShareAudioKey)) {
+    if (
+      this.screenShareAudioTracks.has(participant.identity) ||
+      this.audioElementMap.has(screenShareAudioKey)
+    ) {
       return false;
     }
 
@@ -5521,7 +6135,6 @@ export class LiveKitModule {
     return false;
   }
 
-
   /**
    * Apply suppressLocalAudioPlayback on a MediaStreamTrack post-capture.
    *
@@ -5536,16 +6149,21 @@ export class LiveKitModule {
   private suppressLocalAudioOnTrack(track: MediaStreamTrack | undefined): void {
     if (!track) return;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ('suppressLocalAudioPlayback' in track && typeof (track as any).suppressLocalAudioPlayback !== 'undefined') {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (track as any).suppressLocalAudioPlayback = true;
+      const suppressible = track as MediaStreamTrack & { suppressLocalAudioPlayback?: boolean };
+      if (
+        'suppressLocalAudioPlayback' in track &&
+        typeof suppressible.suppressLocalAudioPlayback !== 'undefined'
+      ) {
+        suppressible.suppressLocalAudioPlayback = true;
         console.log(LOG, 'suppressLocalAudioPlayback applied on screen share audio track');
       } else {
         // Fallback: try applyConstraints (older Chromium path)
-        track.applyConstraints({ suppressLocalAudioPlayback: true } as MediaTrackConstraints)
+        track
+          .applyConstraints({ suppressLocalAudioPlayback: true } as MediaTrackConstraints)
           .then(() => console.log(LOG, 'suppressLocalAudioPlayback applied via applyConstraints'))
-          .catch(() => console.log(LOG, 'suppressLocalAudioPlayback not supported by this webview'));
+          .catch(() =>
+            console.log(LOG, 'suppressLocalAudioPlayback not supported by this webview'),
+          );
       }
     } catch {
       console.log(LOG, 'suppressLocalAudioPlayback not supported by this webview');
@@ -5620,16 +6238,23 @@ export class LiveKitModule {
     const ctx = this.audioContext;
     if (!analyser || !gain || !ctx) return;
 
-    try { analyser.disconnect(); } catch {}
+    try {
+      analyser.disconnect();
+    } catch {}
     const existing = this.participantFilters.get(identity);
     if (existing) {
-      try { existing.highShelf.disconnect(); } catch {}
-      try { existing.lowPass.disconnect(); } catch {}
+      try {
+        existing.highShelf.disconnect();
+      } catch {}
+      try {
+        existing.lowPass.disconnect();
+      } catch {}
     }
 
-    const active = this.participantPassthrough.has(identity)
-      && this.passthroughFilterSettings.enabled
-      && this.passthroughFilterSettings.strength > 0;
+    const active =
+      this.participantPassthrough.has(identity) &&
+      this.passthroughFilterSettings.enabled &&
+      this.passthroughFilterSettings.strength > 0;
     if (!active) {
       this.participantFilters.delete(identity);
       analyser.connect(gain);
@@ -5643,9 +6268,21 @@ export class LiveKitModule {
     filters.highShelf.type = 'highshelf';
     filters.lowPass.type = 'lowpass';
     const params = mapPassthroughFilterParams(this.passthroughFilterSettings.strength);
-    filters.highShelf.frequency.setTargetAtTime(3_000, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
-    filters.highShelf.gain.setTargetAtTime(params.highShelfDb, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
-    filters.lowPass.frequency.setTargetAtTime(params.cutoffHz, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
+    filters.highShelf.frequency.setTargetAtTime(
+      3_000,
+      ctx.currentTime,
+      PASSTHROUGH_FILTER_RAMP_SECONDS,
+    );
+    filters.highShelf.gain.setTargetAtTime(
+      params.highShelfDb,
+      ctx.currentTime,
+      PASSTHROUGH_FILTER_RAMP_SECONDS,
+    );
+    filters.lowPass.frequency.setTargetAtTime(
+      params.cutoffHz,
+      ctx.currentTime,
+      PASSTHROUGH_FILTER_RAMP_SECONDS,
+    );
     filters.lowPass.Q.setTargetAtTime(0.707, ctx.currentTime, PASSTHROUGH_FILTER_RAMP_SECONDS);
     analyser.connect(filters.highShelf);
     filters.highShelf.connect(filters.lowPass);
@@ -5668,16 +6305,27 @@ export class LiveKitModule {
 
     if (screenShareVideoPub && this.remoteShareTypes.get(participant.identity) === 'audio_only') {
       if (DEBUG_SHARE_AUDIO) {
-        console.log(LOG, '[audio-only-diag] clearing inferred audio_only: ScreenShare video present during sync', { identity: participant.identity, reason });
+        console.log(
+          LOG,
+          '[audio-only-diag] clearing inferred audio_only: ScreenShare video present during sync',
+          { identity: participant.identity, reason },
+        );
       }
       this.setRemoteShareType(participant.identity, undefined);
     }
 
     if (screenShareAudioPub) {
       this.screenShareAudioPublications.set(participant.identity, screenShareAudioPub);
-      if (!screenShareVideoPub && this.remoteShareTypes.get(participant.identity) !== 'audio_only') {
+      if (
+        !screenShareVideoPub &&
+        this.remoteShareTypes.get(participant.identity) !== 'audio_only'
+      ) {
         if (DEBUG_SHARE_AUDIO) {
-          console.log(LOG, '[audio-only-diag] inferred audio_only during participant sync: no ScreenShare video', { identity: participant.identity, reason });
+          console.log(
+            LOG,
+            '[audio-only-diag] inferred audio_only during participant sync: no ScreenShare video',
+            { identity: participant.identity, reason },
+          );
         }
         this.setRemoteShareType(participant.identity, 'audio_only');
       }
@@ -5686,7 +6334,7 @@ export class LiveKitModule {
       const screenShareAudioTrack = screenShareAudioPub.track;
       if (screenShareAudioTrack && screenShareAudioTrack.kind === Track.Kind.Audio) {
         this.screenShareAudioTracks.set(participant.identity, {
-          track: screenShareAudioTrack as RemoteTrack,
+          track: screenShareAudioTrack,
           participant,
         });
         if (this.shouldPlayScreenShareAudio(participant.identity)) {
@@ -5704,7 +6352,7 @@ export class LiveKitModule {
       this.attachRemoteScreenShareTrack(
         participant,
         screenShareVideoPub,
-        screenShareVideoTrack as RemoteTrack,
+        screenShareVideoTrack,
         'participant_connected_recovery',
       );
     }
@@ -5762,7 +6410,10 @@ export class LiveKitModule {
       publication.setSubscribed(true);
     }
     if (DEBUG_SHARE_TRACK_SUB) {
-      console.log(LOG, `[screen-share-audio] attachScreenShareAudio called for ${participantIdentity}, cached: ${this.screenShareAudioTracks.has(participantIdentity)}, pending: ${this.screenShareAudioPending.has(participantIdentity)}`);
+      console.log(
+        LOG,
+        `[screen-share-audio] attachScreenShareAudio called for ${participantIdentity}, cached: ${this.screenShareAudioTracks.has(participantIdentity)}, pending: ${this.screenShareAudioPending.has(participantIdentity)}`,
+      );
     }
     let entry = this.screenShareAudioTracks.get(participantIdentity);
     if (!entry) {
@@ -5772,9 +6423,12 @@ export class LiveKitModule {
       if (participant) {
         for (const pub of participant.trackPublications.values()) {
           if (pub.source === Track.Source.ScreenShareAudio && pub.track) {
-            entry = { track: pub.track as RemoteTrack, participant };
+            entry = { track: pub.track, participant };
             this.screenShareAudioTracks.set(participantIdentity, entry);
-            console.log(LOG, `[screen-share-audio] recovered track for ${participantIdentity} via room scan`);
+            console.log(
+              LOG,
+              `[screen-share-audio] recovered track for ${participantIdentity} via room scan`,
+            );
             break;
           }
         }
@@ -5783,7 +6437,10 @@ export class LiveKitModule {
     if (!entry) {
       // Track not yet available — remember to attach when it arrives.
       // If publication is also missing the sharer likely did not enable audio capture.
-      console.log(LOG, `[screen-share-audio] no track for ${participantIdentity} — publication: ${publication ? 'found (setSubscribed(true) called)' : 'missing (sharer may have no audio)'}, pending until TrackSubscribed fires`);
+      console.log(
+        LOG,
+        `[screen-share-audio] no track for ${participantIdentity} — publication: ${publication ? 'found (setSubscribed(true) called)' : 'missing (sharer may have no audio)'}, pending until TrackSubscribed fires`,
+      );
       this.screenShareAudioPending.add(participantIdentity);
       return;
     }
@@ -5791,7 +6448,10 @@ export class LiveKitModule {
     const audioKey = `${participantIdentity}:screen-share`;
     // Avoid double-attach
     if (this.audioElementMap.has(audioKey)) {
-      console.log(LOG, `[screen-share-audio] already attached for ${participantIdentity}, skipping`);
+      console.log(
+        LOG,
+        `[screen-share-audio] already attached for ${participantIdentity}, skipping`,
+      );
       return;
     }
 
@@ -5808,7 +6468,8 @@ export class LiveKitModule {
     if (DEBUG_SHARE_TRACK_SUB || DEBUG_SHARE_AUDIO) {
       const mst = entry.track.mediaStreamTrack;
       const settings = typeof mst.getSettings === 'function' ? mst.getSettings() : undefined;
-      const constraints = typeof mst.getConstraints === 'function' ? mst.getConstraints() : undefined;
+      const constraints =
+        typeof mst.getConstraints === 'function' ? mst.getConstraints() : undefined;
       console.log(LOG, '[screen-share-audio] receiver attach diagnostics', {
         participantIdentity,
         trackId: mst.id,
@@ -5831,7 +6492,10 @@ export class LiveKitModule {
     this.participantSources.set(audioKey, source);
     this.participantGains.set(audioKey, gain);
 
-    console.log(LOG, `[mac-share-audio] attached screen share audio — identity=${participantIdentity} trackReadyState=${entry.track.mediaStreamTrack.readyState} trackMuted=${entry.track.isMuted} gainValue=${gain.gain.value.toFixed(3)} masterGainValue=${this.masterGain?.gain.value.toFixed(3) ?? 'null'} audioCtxState=${this.audioContext?.state ?? 'null'}`);
+    console.log(
+      LOG,
+      `[mac-share-audio] attached screen share audio — identity=${participantIdentity} trackReadyState=${entry.track.mediaStreamTrack.readyState} trackMuted=${entry.track.isMuted} gainValue=${gain.gain.value.toFixed(3)} masterGainValue=${this.masterGain?.gain.value.toFixed(3) ?? 'null'} audioCtxState=${this.audioContext?.state ?? 'null'}`,
+    );
   }
 
   /**
@@ -5854,7 +6518,8 @@ export class LiveKitModule {
     // than reusing a stale entry that TrackUnsubscribed will tear down later.
     this.screenShareAudioTracks.delete(participantIdentity);
     this.cleanupParticipantAudio(`${participantIdentity}:screen-share`);
-    if (DEBUG_SHARE_AUDIO) console.log(LOG, `[screen-share-audio] detached for ${participantIdentity}`);
+    if (DEBUG_SHARE_AUDIO)
+      console.log(LOG, `[screen-share-audio] detached for ${participantIdentity}`);
   }
 
   /* ─── Native Capture Bridge (Windows custom share picker) ────── */
@@ -5922,17 +6587,21 @@ export class LiveKitModule {
     if (this.nativeCaptureFailureListenerPromise) {
       return this.nativeCaptureFailureListenerPromise;
     }
-    this.nativeCaptureFailureListenerPromise =
-      listen<{ reason: string }>('windows-native-capture-failed', ({ payload }) => {
+    this.nativeCaptureFailureListenerPromise = listen<{ reason: string }>(
+      'windows-native-capture-failed',
+      ({ payload }) => {
         this.nativeCaptureFailureReason = payload.reason;
         this.nativeCaptureFailureReject?.(new Error(payload.reason));
-      }).then((unlisten) => {
+      },
+    )
+      .then((unlisten) => {
         if (this.nativeCaptureUnlisten) {
           this.nativeCaptureFailureUnlisten = unlisten;
         } else {
           unlisten();
         }
-      }).catch((err) => {
+      })
+      .catch((err) => {
         console.warn(LOG, 'native capture: failed to register native failure listener:', err);
       });
     return this.nativeCaptureFailureListenerPromise;
@@ -5977,18 +6646,24 @@ export class LiveKitModule {
         }
       }
       if (this.nativeCaptureEarlyFrames.length === 1) {
-        console.log(LOG, `native capture: first early frame buffered (${payload.width}x${payload.height})`);
+        console.log(
+          LOG,
+          `native capture: first early frame buffered (${payload.width}x${payload.height})`,
+        );
       }
     };
 
     // Set a no-op marker so subsequent calls are no-ops and
     // startNativeCapture knows preparation has happened.
-    this.nativeCaptureUnlisten = () => { /* no-op: latest-frame polling has no listener */ };
+    this.nativeCaptureUnlisten = () => {
+      /* no-op: latest-frame polling has no listener */
+    };
 
     void this.ensureNativeCaptureFailureListener();
 
     console.log(LOG, 'native capture: prepared frame handler for latest-frame polling');
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: pre-registration complete, timestamp:', performance.now());
+    if (DEBUG_CAPTURE)
+      console.log(LOG, 'native capture: pre-registration complete, timestamp:', performance.now());
   }
 
   /**
@@ -6003,7 +6678,9 @@ export class LiveKitModule {
 
   private async captureWindowsNativeDiagnosticsSnapshot(): Promise<WindowsNativeCaptureDiagnostics | null> {
     try {
-      return await invoke<WindowsNativeCaptureDiagnostics | null>('screen_share_get_capture_diagnostics');
+      return await invoke<WindowsNativeCaptureDiagnostics | null>(
+        'screen_share_get_capture_diagnostics',
+      );
     } catch {
       return null;
     }
@@ -6027,7 +6704,9 @@ export class LiveKitModule {
     }
   }
 
-  private async pollNativeCaptureFrame(preferI420: boolean): Promise<NativeI420PollFrame | NativeJpegPollFrame | null> {
+  private async pollNativeCaptureFrame(
+    preferI420: boolean,
+  ): Promise<NativeI420PollFrame | NativeJpegPollFrame | null> {
     if (!preferI420) {
       await this.enableNativeJpegFallback();
       return invoke<NativeJpegPollFrame | null>('screen_share_poll_frame');
@@ -6039,7 +6718,11 @@ export class LiveKitModule {
       } catch (error) {
         this.nativeCaptureI420Unavailable = true;
         await this.enableNativeJpegFallback();
-        console.warn(LOG, 'native capture: raw I420 polling unavailable, falling back to JPEG:', error);
+        console.warn(
+          LOG,
+          'native capture: raw I420 polling unavailable, falling back to JPEG:',
+          error,
+        );
       }
     }
     if (this.nativeCaptureI420Unavailable) {
@@ -6130,7 +6813,7 @@ export class LiveKitModule {
     if (!stats) return;
     stats.jsDecodedFrames++;
     stats.avgDecodeMs =
-      ((stats.avgDecodeMs * (stats.jsDecodedFrames - 1)) + durationMs) / stats.jsDecodedFrames;
+      (stats.avgDecodeMs * (stats.jsDecodedFrames - 1) + durationMs) / stats.jsDecodedFrames;
     stats.realDecodeAvgMs = stats.avgDecodeMs;
   }
 
@@ -6147,17 +6830,23 @@ export class LiveKitModule {
     } else {
       stats.jpegFallbackFrames++;
     }
-    const update = (field: 'base64FetchAvgMs' | 'jpegDecodeAvgMs' | 'videoFrameCreateAvgMs', value?: number) => {
+    const update = (
+      field: 'base64FetchAvgMs' | 'jpegDecodeAvgMs' | 'videoFrameCreateAvgMs',
+      value?: number,
+    ) => {
       if (value === undefined) return;
       const n = Math.max(1, stats.jsDecodedFrames);
-      stats[field] = ((stats[field] * (n - 1)) + value) / n;
+      stats[field] = (stats[field] * (n - 1) + value) / n;
     };
     update('base64FetchAvgMs', parts.base64FetchMs);
     update('jpegDecodeAvgMs', parts.jpegDecodeMs);
     update('videoFrameCreateAvgMs', parts.videoFrameCreateMs);
   }
 
-  private recordNativeBridgeWrite(durationMs: number, kind: 'generator' | 'canvas' | 'keepalive'): void {
+  private recordNativeBridgeWrite(
+    durationMs: number,
+    kind: 'generator' | 'canvas' | 'keepalive',
+  ): void {
     const stats = this.nativeBridgeCadenceStats;
     if (!stats) return;
     if (kind === 'generator') stats.generatorWrites++;
@@ -6168,14 +6857,14 @@ export class LiveKitModule {
         this.nativeCaptureLeakSession.summary.counters.keepaliveWrites++;
       }
       stats.keepaliveWriteAvgMs =
-        ((stats.keepaliveWriteAvgMs * (stats.keepaliveWrites - 1)) + durationMs) / stats.keepaliveWrites;
+        (stats.keepaliveWriteAvgMs * (stats.keepaliveWrites - 1) + durationMs) /
+        stats.keepaliveWrites;
     } else {
       const realWrites = stats.generatorWrites + stats.canvasPaints;
-      stats.realWriteAvgMs =
-        ((stats.realWriteAvgMs * (realWrites - 1)) + durationMs) / realWrites;
+      stats.realWriteAvgMs = (stats.realWriteAvgMs * (realWrites - 1) + durationMs) / realWrites;
     }
     const totalWrites = stats.generatorWrites + stats.canvasPaints + stats.keepaliveWrites;
-    stats.avgWriteMs = ((stats.avgWriteMs * (totalWrites - 1)) + durationMs) / totalWrites;
+    stats.avgWriteMs = (stats.avgWriteMs * (totalWrites - 1) + durationMs) / totalWrites;
     stats.writerAvgMs = stats.avgWriteMs;
   }
 
@@ -6191,7 +6880,7 @@ export class LiveKitModule {
     stats.streamReads++;
     stats.streamBytes += bytes;
     stats.streamReadAvgMs =
-      ((stats.streamReadAvgMs * (stats.streamReads - 1)) + durationMs) / stats.streamReads;
+      (stats.streamReadAvgMs * (stats.streamReads - 1) + durationMs) / stats.streamReads;
   }
 
   private refreshNativeBridgeIntervalStats(startedAtMs: number, lastRustSeqAtMs: number): void {
@@ -6248,11 +6937,23 @@ export class LiveKitModule {
     };
     const elapsedSeconds = Math.max(0.001, (now - baseline.atMs) / 1000);
     const snapshot = { ...stats };
-    snapshot.jsObservedRustSeqFps = Math.max(0, (stats.newSeqCount - baseline.newSeqCount) / elapsedSeconds);
+    snapshot.jsObservedRustSeqFps = Math.max(
+      0,
+      (stats.newSeqCount - baseline.newSeqCount) / elapsedSeconds,
+    );
     snapshot.writerFps = Math.max(0, (writes - baseline.writes) / elapsedSeconds);
-    snapshot.streamBytesPerSec = Math.max(0, (stats.streamBytes - baseline.streamBytes) / elapsedSeconds);
-    snapshot.pollSkippedForWorkFps = Math.max(0, (stats.pollSkippedForWork - baseline.pollSkippedForWork) / elapsedSeconds);
-    snapshot.keepaliveFps = Math.max(0, (stats.keepaliveWrites - baseline.keepaliveWrites) / elapsedSeconds);
+    snapshot.streamBytesPerSec = Math.max(
+      0,
+      (stats.streamBytes - baseline.streamBytes) / elapsedSeconds,
+    );
+    snapshot.pollSkippedForWorkFps = Math.max(
+      0,
+      (stats.pollSkippedForWork - baseline.pollSkippedForWork) / elapsedSeconds,
+    );
+    snapshot.keepaliveFps = Math.max(
+      0,
+      (stats.keepaliveWrites - baseline.keepaliveWrites) / elapsedSeconds,
+    );
     this.nativeBridgeReportBaseline = {
       atMs: now,
       newSeqCount: stats.newSeqCount,
@@ -6273,7 +6974,11 @@ export class LiveKitModule {
     }
   }
 
-  private replaceNativeCaptureDecodedCache(bitmap: ImageBitmap, width: number, height: number): void {
+  private replaceNativeCaptureDecodedCache(
+    bitmap: ImageBitmap,
+    width: number,
+    height: number,
+  ): void {
     const previous = this.nativeCaptureDecodedBitmap;
     this.nativeCaptureDecodedBitmap = bitmap;
     this.nativeCaptureDecodedWidth = width;
@@ -6302,15 +7007,19 @@ export class LiveKitModule {
    * If `prepareNativeCapture()` was called first, the handler is already
    * active and buffered frames are drained immediately — no frames lost.
    */
-  async startNativeCapture(options: {
-    firstFrameTimeoutMs?: number;
-    lowJsBridgeFpsRetry?: { thresholdFps: number; durationMs: number; reason: string };
-  } = {}): Promise<void> {
+  async startNativeCapture(
+    options: {
+      firstFrameTimeoutMs?: number;
+      lowJsBridgeFpsRetry?: { thresholdFps: number; durationMs: number; reason: string };
+    } = {},
+  ): Promise<void> {
     if (!this.room) throw new Error('not connected to a room');
     // If already fully active (not just prepared), skip.
     if (this.nativeCapturePublication) return;
     if (!this.nativeCaptureUnlisten) {
-      this.nativeCaptureUnlisten = () => { /* no-op */ };
+      this.nativeCaptureUnlisten = () => {
+        /* no-op */
+      };
     }
     await this.ensureNativeCaptureFailureListener();
     this.releaseNativeCaptureDecodedCache();
@@ -6351,7 +7060,8 @@ export class LiveKitModule {
       canvas = document.createElement('canvas');
       canvas.width = 1920;
       canvas.height = 1080;
-      canvas.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;opacity:0;';
+      canvas.style.cssText =
+        'position:fixed;top:-9999px;left:-9999px;pointer-events:none;opacity:0;';
       document.body.appendChild(canvas);
       this.nativeCaptureCanvas = canvas;
       ctx = canvas.getContext('2d');
@@ -6366,10 +7076,16 @@ export class LiveKitModule {
       canvasStream = canvas.captureStream(bridgeTransportFps);
       videoTrack = canvasStream.getVideoTracks()[0];
       if (!videoTrack) throw new Error('canvas captureStream produced no video track');
-      console.log(LOG, `native capture: using canvas.captureStream(${bridgeTransportFps}) fallback (DOM-attached)`);
+      console.log(
+        LOG,
+        `native capture: using canvas.captureStream(${bridgeTransportFps}) fallback (DOM-attached)`,
+      );
     }
-    this.nativeBridgeCadenceStats =
-      this.createNativeBridgeCadenceStats(targetFps, bridgeTransportFps, videoTrack);
+    this.nativeBridgeCadenceStats = this.createNativeBridgeCadenceStats(
+      targetFps,
+      bridgeTransportFps,
+      videoTrack,
+    );
     this.nativeBridgeReportBaseline = null;
     const nativeBridgeStatsStartedAtMs = performance.now();
     this.emitNativeBridgeShareStatsFallback();
@@ -6388,7 +7104,9 @@ export class LiveKitModule {
     let pendingFrame: NativeBridgeFrame | null = null;
     let lastRustSeqAtMs = 0;
     let firstFrameResolve: (() => void) | null = null;
-    const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
+    const firstFramePromise = new Promise<void>((resolve) => {
+      firstFrameResolve = resolve;
+    });
 
     const resolveFirstFrame = () => {
       if (firstFrameResolve) {
@@ -6420,23 +7138,25 @@ export class LiveKitModule {
         let writePromise: Promise<void>;
         try {
           writePromise = Promise.resolve(trackWriter.write(vf));
-        } catch (err) {
+        } catch {
           vf.close();
           frameWorkInFlight = false;
           processNextPendingFrame();
           return;
         }
-        writePromise.then(() => {
-          vf.close();
-          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'keepalive');
-          this.refreshNativeBridgeTrackState(videoTrack);
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        }).catch(() => {
-          vf.close();
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        });
+        writePromise
+          .then(() => {
+            vf.close();
+            this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'keepalive');
+            this.refreshNativeBridgeTrackState(videoTrack);
+            frameWorkInFlight = false;
+            processNextPendingFrame();
+          })
+          .catch(() => {
+            vf.close();
+            frameWorkInFlight = false;
+            processNextPendingFrame();
+          });
         return;
       }
       if (canvas && ctx) {
@@ -6467,14 +7187,19 @@ export class LiveKitModule {
       frameWorkInFlight = true;
       const { frame, width, height } = payload;
       const isI420Frame = typeof frame !== 'string';
-      if (DEBUG_CAPTURE) console.log(LOG, 'native capture: frame received #' + frameCount, width + 'x' + height);
+      if (DEBUG_CAPTURE)
+        console.log(LOG, 'native capture: frame received #' + frameCount, width + 'x' + height);
       if (!firstJsFrameSeen) {
         firstJsFrameSeen = true;
         this.markNativeCaptureLeakStage('first_js_frame_seen');
-        const payloadLength = typeof frame === 'string'
-          ? frame.length
-          : this.nativeI420Bytes(payload as NativeI420PollFrame).byteLength;
-        console.log(LOG, `native capture: first event received (${width}x${height}, payload_len=${payloadLength})`);
+        const payloadLength =
+          typeof frame === 'string'
+            ? frame.length
+            : this.nativeI420Bytes(payload as NativeI420PollFrame).byteLength;
+        console.log(
+          LOG,
+          `native capture: first event received (${width}x${height}, payload_len=${payloadLength})`,
+        );
       }
 
       if (trackWriter && isI420Frame) {
@@ -6485,17 +7210,17 @@ export class LiveKitModule {
         const raw = payload as NativeI420PollFrame;
         const bytes = this.nativeI420Bytes(raw);
         const decodeStartedAt = performance.now();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let vf: any;
+        let vf: VideoFrame | undefined;
         const videoFrameCreateStartedAt = performance.now();
         try {
-          vf = new (globalThis as any).VideoFrame(bytes, {
+          // Runtime absence of WebCodecs VideoFrame lands in the catch below.
+          vf = new VideoFrame(bytes, {
             format: 'I420',
             codedWidth: width,
             codedHeight: height,
             timestamp: raw.timestampUs || performance.now() * 1000,
           });
-        } catch (err) {
+        } catch {
           this.nativeCaptureI420Unavailable = true;
           void this.enableNativeJpegFallback();
           if (this.nativeBridgeCadenceStats) {
@@ -6512,7 +7237,7 @@ export class LiveKitModule {
         const writeStartedAt = performance.now();
         try {
           writePromise = Promise.resolve(trackWriter.write(vf));
-        } catch (err) {
+        } catch {
           vf.close();
           frameWorkInFlight = false;
           processNextPendingFrame();
@@ -6522,23 +7247,29 @@ export class LiveKitModule {
         if (frameCount === 1) {
           this.markNativeCaptureLeakStage('first_js_frame_decoded');
           this.markNativeCaptureLeakStage('first_generator_write_queued');
-          if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first raw I420 VideoFrame queued to generator');
+          if (DEBUG_CAPTURE)
+            console.log(LOG, 'native capture: first raw I420 VideoFrame queued to generator');
           resolveFirstFrame();
         }
         if (frameCount === 1 || frameCount % 60 === 0) {
-          console.log(LOG, `native capture: queued raw I420 VideoFrame #${frameCount} (${width}x${height})`);
+          console.log(
+            LOG,
+            `native capture: queued raw I420 VideoFrame #${frameCount} (${width}x${height})`,
+          );
         }
-        writePromise.then(() => {
-          vf.close();
-          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
-          this.refreshNativeBridgeTrackState(videoTrack);
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        }).catch(() => {
-          vf.close();
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        });
+        writePromise
+          .then(() => {
+            vf.close();
+            this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+            this.refreshNativeBridgeTrackState(videoTrack);
+            frameWorkInFlight = false;
+            processNextPendingFrame();
+          })
+          .catch(() => {
+            vf.close();
+            frameWorkInFlight = false;
+            processNextPendingFrame();
+          });
       } else if (trackWriter && typeof frame === 'string') {
         if (frameCount === 0) {
           this.markNativeCaptureLeakStage('first_js_decode_start');
@@ -6548,67 +7279,76 @@ export class LiveKitModule {
         const decodeStartedAt = performance.now();
         let base64FetchMs = 0;
         let jpegDecodeMs = 0;
-        decodeBase64(frame).then((buf) => {
-          base64FetchMs = performance.now() - decodeStartedAt;
-          const blob = new Blob([buf], { type: 'image/jpeg' });
-          return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
-        }).then((bitmap) => {
-          jpegDecodeMs = performance.now() - decodeStartedAt - base64FetchMs;
-          this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
-          this.replaceNativeCaptureDecodedCache(bitmap, width, height);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const videoFrameCreateStartedAt = performance.now();
-          const vf = new (globalThis as any).VideoFrame(bitmap, {
-            timestamp: performance.now() * 1000, // microseconds
-          });
-          this.recordNativeBridgeDecodeParts({
-            base64FetchMs,
-            jpegDecodeMs,
-            videoFrameCreateMs: performance.now() - videoFrameCreateStartedAt,
-            rawI420: false,
-          });
-          let writePromise: Promise<void>;
-          const writeStartedAt = performance.now();
-          try {
-            writePromise = Promise.resolve(trackWriter.write(vf));
-          } catch (err) {
-            vf.close();
-            throw err;
-          }
-          frameCount++;
-          if (frameCount === 1) {
-            this.markNativeCaptureLeakStage('first_js_frame_decoded');
-            this.markNativeCaptureLeakStage('first_generator_write_queued');
-            if (DEBUG_CAPTURE) console.log(LOG, 'native capture: first VideoFrame queued to generator');
-            resolveFirstFrame();
-          }
-          if (frameCount === 1 || frameCount % 60 === 0) {
-            console.log(LOG, `native capture: queued VideoFrame #${frameCount} (${width}x${height})`);
-          }
-          writePromise.then(() => {
-            vf.close();
-            this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
-            this.refreshNativeBridgeTrackState(videoTrack);
+        decodeBase64(frame)
+          .then((buf) => {
+            base64FetchMs = performance.now() - decodeStartedAt;
+            const blob = new Blob([buf], { type: 'image/jpeg' });
+            return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+          })
+          .then((bitmap) => {
+            jpegDecodeMs = performance.now() - decodeStartedAt - base64FetchMs;
+            this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
+            this.replaceNativeCaptureDecodedCache(bitmap, width, height);
+
+            const videoFrameCreateStartedAt = performance.now();
+            const vf = new VideoFrame(bitmap, {
+              timestamp: performance.now() * 1000, // microseconds
+            });
+            this.recordNativeBridgeDecodeParts({
+              base64FetchMs,
+              jpegDecodeMs,
+              videoFrameCreateMs: performance.now() - videoFrameCreateStartedAt,
+              rawI420: false,
+            });
+            let writePromise: Promise<void>;
+            const writeStartedAt = performance.now();
+            try {
+              writePromise = Promise.resolve(trackWriter.write(vf));
+            } catch (err) {
+              vf.close();
+              throw err;
+            }
+            frameCount++;
+            if (frameCount === 1) {
+              this.markNativeCaptureLeakStage('first_js_frame_decoded');
+              this.markNativeCaptureLeakStage('first_generator_write_queued');
+              if (DEBUG_CAPTURE)
+                console.log(LOG, 'native capture: first VideoFrame queued to generator');
+              resolveFirstFrame();
+            }
+            if (frameCount === 1 || frameCount % 60 === 0) {
+              console.log(
+                LOG,
+                `native capture: queued VideoFrame #${frameCount} (${width}x${height})`,
+              );
+            }
+            writePromise
+              .then(() => {
+                vf.close();
+                this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+                this.refreshNativeBridgeTrackState(videoTrack);
+                frameWorkInFlight = false;
+                processNextPendingFrame();
+              })
+              .catch(() => {
+                vf.close();
+                frameWorkInFlight = false;
+                processNextPendingFrame();
+              });
+          })
+          .catch((err) => {
+            if (this.nativeCaptureLeakSession) {
+              this.nativeCaptureLeakSession.summary.counters.decodeFailures++;
+            }
+            if (this.nativeBridgeCadenceStats) {
+              this.nativeBridgeCadenceStats.decodeFailures++;
+            }
+            if (frameCount === 0) {
+              console.warn(LOG, 'native capture: first frame decode failed:', err);
+            }
             frameWorkInFlight = false;
             processNextPendingFrame();
-          }).catch(() => {
-            vf.close();
-            frameWorkInFlight = false;
-            processNextPendingFrame();
           });
-        }).catch((err) => {
-          if (this.nativeCaptureLeakSession) {
-            this.nativeCaptureLeakSession.summary.counters.decodeFailures++;
-          }
-          if (this.nativeBridgeCadenceStats) {
-            this.nativeBridgeCadenceStats.decodeFailures++;
-          }
-          if (frameCount === 0) {
-            console.warn(LOG, 'native capture: first frame decode failed:', err);
-          }
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        });
       } else if (canvas && ctx && typeof frame === 'string') {
         if (frameCount === 0) {
           this.markNativeCaptureLeakStage('first_js_decode_start');
@@ -6643,7 +7383,11 @@ export class LiveKitModule {
           this.refreshNativeBridgeTrackState(videoTrack);
           frameCount++;
           if (DEBUG_CAPTURE && frameCount === 1) {
-            console.log(LOG, 'native capture: first canvas frame painted, timestamp:', performance.now());
+            console.log(
+              LOG,
+              'native capture: first canvas frame painted, timestamp:',
+              performance.now(),
+            );
           }
           if (frameCount === 1) {
             resolveFirstFrame();
@@ -6688,13 +7432,18 @@ export class LiveKitModule {
 
     // Mark as prepared if not already.
     if (!this.nativeCaptureUnlisten) {
-      this.nativeCaptureUnlisten = () => { /* no-op */ };
+      this.nativeCaptureUnlisten = () => {
+        /* no-op */
+      };
     }
 
     // Poll the Windows native bridge at a capped transport FPS. If decode/write
     // falls behind, pause polling and let Rust keep only the latest frame.
     const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
-    const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      });
     const preferI420Polling = Boolean(trackWriter);
     const noteNewRustFrame = (result: NativeI420PollFrame | NativeJpegPollFrame) => {
       lastRustSeqAtMs = performance.now();
@@ -6812,7 +7561,11 @@ export class LiveKitModule {
             scheduleNextWrite();
             return;
           }
-          if (lastStreamWriterSeq > 0 && frame.seq > lastStreamWriterSeq + 1 && this.nativeBridgeCadenceStats) {
+          if (
+            lastStreamWriterSeq > 0 &&
+            frame.seq > lastStreamWriterSeq + 1 &&
+            this.nativeBridgeCadenceStats
+          ) {
             this.nativeBridgeCadenceStats.staleFrameDrops += frame.seq - lastStreamWriterSeq - 1;
           }
           lastStreamWriterSeq = frame.seq;
@@ -6844,11 +7597,17 @@ export class LiveKitModule {
         try {
           const result = await this.pollNativeCaptureFrame(preferI420Polling);
           if (result && result.seq > this.nativeCapturePollLastSeq) {
-            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_poll_frame) {
+            if (
+              this.nativeCaptureLeakSession &&
+              !this.nativeCaptureLeakSession.summary.stages.first_poll_frame
+            ) {
               this.markNativeCaptureLeakStage('first_poll_frame');
               console.log(LOG, `native capture: first poll hit seq=${result.seq}`);
             }
-            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+            if (
+              this.nativeCaptureLeakSession &&
+              !this.nativeCaptureLeakSession.summary.stages.first_rust_frame
+            ) {
               this.markNativeCaptureLeakStage('first_rust_frame');
             }
             noteNewRustFrame(result);
@@ -6863,7 +7622,10 @@ export class LiveKitModule {
             }
           }
           const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`native capture: screen_share_poll_frame failed during startup: ${message}`);
+          throw new Error(
+            `native capture: screen_share_poll_frame failed during startup: ${message}`,
+            { cause: error },
+          );
         }
         if (!firstFrameResolved) {
           await sleep(POLL_INTERVAL_MS);
@@ -6907,7 +7669,10 @@ export class LiveKitModule {
         try {
           const result = await this.pollNativeCaptureFrame(preferI420Polling);
           if (result && result.seq > this.nativeCapturePollLastSeq) {
-            if (this.nativeCaptureLeakSession && !this.nativeCaptureLeakSession.summary.stages.first_rust_frame) {
+            if (
+              this.nativeCaptureLeakSession &&
+              !this.nativeCaptureLeakSession.summary.stages.first_rust_frame
+            ) {
               this.markNativeCaptureLeakStage('first_rust_frame');
             }
             noteNewRustFrame(result);
@@ -6983,7 +7748,16 @@ export class LiveKitModule {
       console.log(LOG, 'native capture: binary I420 stream reader/writer started');
     }
 
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: startup transport started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS, 'stream:', Boolean(nativeI420StreamUrl));
+    if (DEBUG_CAPTURE)
+      console.log(
+        LOG,
+        'native capture: startup transport started, timestamp:',
+        performance.now(),
+        'interval_ms:',
+        POLL_INTERVAL_MS,
+        'stream:',
+        Boolean(nativeI420StreamUrl),
+      );
 
     // ── Wait for first frame with timeout ──
     // If early frames already resolved the gate, this resolves immediately.
@@ -7005,9 +7779,19 @@ export class LiveKitModule {
     await Promise.race([
       firstFramePromise,
       nativeFailurePromise,
-      nativeI420StreamUrl ? nativeStreamReaderPromise ?? firstFramePromise : pollNativeFrameForStartup(),
+      nativeI420StreamUrl
+        ? (nativeStreamReaderPromise ?? firstFramePromise)
+        : pollNativeFrameForStartup(),
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error(`native capture: first frame timeout (${FIRST_FRAME_TIMEOUT_MS}ms); diagnostics=${nativeStartupDiagnostics()}`)), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `native capture: first frame timeout (${FIRST_FRAME_TIMEOUT_MS}ms); diagnostics=${nativeStartupDiagnostics()}`,
+              ),
+            ),
+          FIRST_FRAME_TIMEOUT_MS,
+        ),
       ),
     ]).catch(async (err) => {
       const diagnostics = await this.captureWindowsNativeDiagnosticsSnapshot();
@@ -7018,7 +7802,9 @@ export class LiveKitModule {
       const enrichedError = message.includes('diagnostics=')
         ? new Error(`${message}; rust=${JSON.stringify(diagnostics ?? null)}`)
         : err;
-      this.markNativeCaptureFailure(enrichedError instanceof Error ? enrichedError.message : String(enrichedError));
+      this.markNativeCaptureFailure(
+        enrichedError instanceof Error ? enrichedError.message : String(enrichedError),
+      );
       // Clean up the polling interval, canvas, and any state we set up before the
       // first-frame gate. Without this, a first-frame timeout (or a concurrent
       // stopNativeCapture() that races with this startup) leaves the poll
@@ -7052,8 +7838,18 @@ export class LiveKitModule {
       startSteadyNativePoll();
     }
     startNativeKeepalive();
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: steady transport loop started, timestamp:', performance.now(), 'interval_ms:', POLL_INTERVAL_MS, 'stream:', Boolean(nativeI420StreamUrl));
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
+    if (DEBUG_CAPTURE)
+      console.log(
+        LOG,
+        'native capture: steady transport loop started, timestamp:',
+        performance.now(),
+        'interval_ms:',
+        POLL_INTERVAL_MS,
+        'stream:',
+        Boolean(nativeI420StreamUrl),
+      );
+    if (DEBUG_CAPTURE)
+      console.log(LOG, 'native capture: about to call publishTrack, timestamp:', performance.now());
     let publication;
     try {
       this.stopAllInactiveVideoTransceivers();
@@ -7067,13 +7863,14 @@ export class LiveKitModule {
         name: 'native-screen-share',
         source: Track.Source.ScreenShare,
         stream: Track.Source.ScreenShare,
-      } as unknown as TrackPublishOptions);
+      });
     } catch (err) {
       this.markNativeCaptureFailure(err instanceof Error ? err.message : String(err));
       await this.stopNativeCapture();
       throw err;
     }
-    if (DEBUG_CAPTURE) console.log(LOG, 'native capture: publishTrack completed, timestamp:', performance.now());
+    if (DEBUG_CAPTURE)
+      console.log(LOG, 'native capture: publishTrack completed, timestamp:', performance.now());
     this.nativeCapturePublication = publication;
     this.captureShareLeakPublishDiagnostics();
     if (this.nativeCaptureLeakSession) {
@@ -7094,7 +7891,10 @@ export class LiveKitModule {
     this.startScreenShareStatsPolling();
     this.markNativeCaptureLeakStage('stats_polling_start');
 
-    console.log(LOG, `native capture bridge started (publish_fps=${targetFps}, bridge_fps=${bridgeTransportFps})`);
+    console.log(
+      LOG,
+      `native capture bridge started (publish_fps=${targetFps}, bridge_fps=${bridgeTransportFps})`,
+    );
   }
 
   /**
@@ -7112,9 +7912,11 @@ export class LiveKitModule {
    */
   async replaceNativeCaptureSource(): Promise<void> {
     if (!this.room) throw new Error('not connected to a room');
-    if (!this.nativeCapturePublication) throw new Error('replaceNativeCaptureSource: no active publication');
+    if (!this.nativeCapturePublication)
+      throw new Error('replaceNativeCaptureSource: no active publication');
     const tw = this.nativeCaptureTrackWriter;
-    if (!tw) throw new Error('replaceNativeCaptureSource: no active track writer — generator path only');
+    if (!tw)
+      throw new Error('replaceNativeCaptureSource: no active track writer — generator path only');
 
     console.log(LOG, '[replace-source] reusing existing generator — swapping Rust capture source');
 
@@ -7125,7 +7927,9 @@ export class LiveKitModule {
     }
     this.nativeCaptureEarlyFrames = [];
     this.nativeCapturePollLastSeq = 0;
-    this.nativeCaptureUnlisten = () => { /* no-op */ };
+    this.nativeCaptureUnlisten = () => {
+      /* no-op */
+    };
     this.releaseNativeCaptureDecodedCache();
 
     // Build a new frame handler that writes into the SAME writer.
@@ -7133,7 +7937,9 @@ export class LiveKitModule {
     let frameWorkInFlight = false;
     let pendingFrame: { frame: string; width: number; height: number } | null = null;
     let firstFrameResolve: (() => void) | null = null;
-    const firstFramePromise = new Promise<void>((resolve) => { firstFrameResolve = resolve; });
+    const firstFramePromise = new Promise<void>((resolve) => {
+      firstFrameResolve = resolve;
+    });
 
     const decodeBase64 = async (b64: string): Promise<ArrayBuffer> => {
       const resp = await fetch(`data:application/octet-stream;base64,${b64}`);
@@ -7166,52 +7972,69 @@ export class LiveKitModule {
       frameWorkInFlight = true;
       const { frame, width, height } = payload;
       const decodeStartedAt = performance.now();
-      decodeBase64(frame).then((buf) => {
-        const blob = new Blob([buf], { type: 'image/jpeg' });
-        return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
-      }).then((bitmap) => {
-        this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
-        this.replaceNativeCaptureDecodedCache(bitmap, width, height);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const vf = new (globalThis as any).VideoFrame(bitmap, { timestamp: performance.now() * 1000 });
-        let writePromise: Promise<void>;
-        const writeStartedAt = performance.now();
-        try {
-          writePromise = Promise.resolve(tw.write(vf));
-        } catch (err) {
-          vf.close();
-          throw err;
-        }
-        frameCount++;
-        if (frameCount === 1) {
-          console.log(LOG, `[replace-source] first frame queued to existing generator (${width}x${height})`);
-          resolveFirstFrame();
-        }
-        if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
-          console.log(LOG, `[replace-source] queued VideoFrame #${frameCount} (${width}x${height})`);
-        }
-        writePromise.then(() => {
-          vf.close();
-          this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
-          frameWorkInFlight = false;
-          processNextPendingFrame();
-        }).catch(() => {
-          vf.close();
+      decodeBase64(frame)
+        .then((buf) => {
+          const blob = new Blob([buf], { type: 'image/jpeg' });
+          return createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+        })
+        .then((bitmap) => {
+          this.recordNativeBridgeDecode(performance.now() - decodeStartedAt);
+          this.replaceNativeCaptureDecodedCache(bitmap, width, height);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const vf = new (globalThis as any).VideoFrame(bitmap, {
+            timestamp: performance.now() * 1000,
+          });
+          let writePromise: Promise<void>;
+          const writeStartedAt = performance.now();
+          try {
+            writePromise = Promise.resolve(tw.write(vf));
+          } catch (err) {
+            vf.close();
+            throw err;
+          }
+          frameCount++;
+          if (frameCount === 1) {
+            console.log(
+              LOG,
+              `[replace-source] first frame queued to existing generator (${width}x${height})`,
+            );
+            resolveFirstFrame();
+          }
+          if (DEBUG_CAPTURE && (frameCount === 1 || frameCount % 60 === 0)) {
+            console.log(
+              LOG,
+              `[replace-source] queued VideoFrame #${frameCount} (${width}x${height})`,
+            );
+          }
+          writePromise
+            .then(() => {
+              vf.close();
+              this.recordNativeBridgeWrite(performance.now() - writeStartedAt, 'generator');
+              frameWorkInFlight = false;
+              processNextPendingFrame();
+            })
+            .catch(() => {
+              vf.close();
+              frameWorkInFlight = false;
+              processNextPendingFrame();
+            });
+        })
+        .catch((err) => {
+          if (frameCount === 0)
+            console.warn(LOG, '[replace-source] first frame decode failed:', err);
           frameWorkInFlight = false;
           processNextPendingFrame();
         });
-      }).catch((err) => {
-        if (frameCount === 0) console.warn(LOG, '[replace-source] first frame decode failed:', err);
-        frameWorkInFlight = false;
-        processNextPendingFrame();
-      });
     };
 
     this.nativeCaptureFrameHandler = handleFrame;
 
     // ── Start new polling loop for the new Rust source ──
     await this.prepareWindowsNativeCapturePublishOptions();
-    const targetFps = this.currentPublishOptions.screenShareEncoding.maxFramerate || windowsNativeCapturePreset(this.currentQuality).maxFramerate || 30;
+    const targetFps =
+      this.currentPublishOptions.screenShareEncoding.maxFramerate ||
+      windowsNativeCapturePreset(this.currentQuality).maxFramerate ||
+      30;
     const bridgeTransportFps = targetFps;
     const POLL_INTERVAL_MS = Math.max(16, Math.round(1000 / Math.max(1, bridgeTransportFps)));
     let pollInFlight = false;
@@ -7240,15 +8063,19 @@ export class LiveKitModule {
       }
       pollInFlight = true;
       try {
-        const result = await invoke<{ frame: string; width: number; height: number; seq: number } | null>(
-          'screen_share_poll_frame',
-        );
+        const result = await invoke<{
+          frame: string;
+          width: number;
+          height: number;
+          seq: number;
+        } | null>('screen_share_poll_frame');
         if (result && result.seq > this.nativeCapturePollLastSeq) {
           this.nativeCapturePollLastSeq = result.seq;
           handleFrame({ frame: result.frame, width: result.width, height: result.height });
         }
-      } catch { /* capture may have stopped */ }
-      finally {
+      } catch {
+        /* capture may have stopped */
+      } finally {
         pollInFlight = false;
         scheduleNextPoll();
       }
@@ -7260,7 +8087,10 @@ export class LiveKitModule {
     await Promise.race([
       firstFramePromise,
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('[replace-source] first frame timeout (2s)')), FIRST_FRAME_TIMEOUT_MS),
+        setTimeout(
+          () => reject(new Error('[replace-source] first frame timeout (2s)')),
+          FIRST_FRAME_TIMEOUT_MS,
+        ),
       ),
     ]).catch((err) => {
       if (this.nativeCapturePollInterval !== null) {
@@ -7270,11 +8100,18 @@ export class LiveKitModule {
       this.releaseNativeCaptureDecodedCache();
       this.nativeCaptureFrameHandler = null;
       this.nativeCaptureUnlisten = null;
-      console.warn(LOG, '[replace-source] aborting:', err instanceof Error ? err.message : String(err));
+      console.warn(
+        LOG,
+        '[replace-source] aborting:',
+        err instanceof Error ? err.message : String(err),
+      );
       throw err;
     });
 
-    console.log(LOG, '[replace-source] source replaced — new frames flowing through existing generator');
+    console.log(
+      LOG,
+      '[replace-source] source replaced — new frames flowing through existing generator',
+    );
   }
 
   /**
@@ -7306,7 +8143,8 @@ export class LiveKitModule {
     this.nativeCaptureFailureReject = null;
     this.nativeCaptureFailureListenerPromise = null;
     if (leakSession) {
-      leakSession.summary.cleanupFlags.pollIntervalCleared = this.nativeCapturePollInterval === null;
+      leakSession.summary.cleanupFlags.pollIntervalCleared =
+        this.nativeCapturePollInterval === null;
     }
 
     // Clear the no-op marker
@@ -7322,8 +8160,10 @@ export class LiveKitModule {
     this.nativeBridgeCadenceStats = null;
     this.nativeBridgeReportBaseline = null;
     if (leakSession) {
-      leakSession.summary.cleanupFlags.frameHandlerCleared = this.nativeCaptureFrameHandler === null;
-      leakSession.summary.cleanupFlags.earlyFramesCleared = this.nativeCaptureEarlyFrames.length === 0;
+      leakSession.summary.cleanupFlags.frameHandlerCleared =
+        this.nativeCaptureFrameHandler === null;
+      leakSession.summary.cleanupFlags.earlyFramesCleared =
+        this.nativeCaptureEarlyFrames.length === 0;
     }
 
     // Unpublish the track from LiveKit. Null the reference eagerly (before the
@@ -7341,9 +8181,10 @@ export class LiveKitModule {
       // ID namespace — without this the next publish collides (ERROR_CONTENT:
       // "RTP extension ID reassignment not supported").
       const peerConnection = this.getPublisherPeerConnection();
-      const screenShareTransceiver = track && peerConnection
-        ? peerConnection.getTransceivers().find((t) => t.sender.track === track) ?? null
-        : null;
+      const screenShareTransceiver =
+        track && peerConnection
+          ? (peerConnection.getTransceivers().find((t) => t.sender.track === track) ?? null)
+          : null;
 
       if (track) {
         if (leakSession) {
@@ -7354,7 +8195,9 @@ export class LiveKitModule {
           if (leakSession) {
             leakSession.summary.cleanupFlags.unpublishSucceeded = true;
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
         this.markNativeCaptureLeakStage('unpublish_done');
         track.stop();
         if (leakSession) {
