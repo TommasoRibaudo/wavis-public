@@ -135,6 +135,8 @@ pub struct AppState {
     pub refresh_token_pepper: Arc<Vec<u8>>,
     /// Previous pepper for zero-downtime pepper rotation.
     pub refresh_token_pepper_previous: Option<Arc<Vec<u8>>>,
+    /// HMAC pepper for closed-alpha invite code hashing.
+    pub alpha_invite_code_pepper: Arc<Vec<u8>>,
     /// Channel_ID → active Room_ID mapping. A Channel has at most one active Room.
     /// Lock ordering position 0: active_room_map (0) → rooms (1) → per-room (2) → peer_to_room (3).
     pub active_room_map: ActiveRoomMap,
@@ -251,6 +253,21 @@ impl AppState {
         #[cfg(windows)]
         let ec2_controller = None;
 
+        let alpha_invite_code_pepper = match std::env::var("ALPHA_INVITE_CODE_PEPPER") {
+            Ok(s) => s,
+            Err(_) => {
+                if cfg!(debug_assertions) {
+                    "dev-alpha-invite-pepper-32b!!XX".to_string()
+                } else {
+                    panic!("ALPHA_INVITE_CODE_PEPPER must be set in release builds");
+                }
+            }
+        };
+        if alpha_invite_code_pepper.len() < 32 {
+            panic!("ALPHA_INVITE_CODE_PEPPER must be at least 32 bytes");
+        }
+        let alpha_invite_code_pepper = Arc::new(alpha_invite_code_pepper.into_bytes());
+
         Self {
             room_state: Arc::new(InMemoryRoomState::new()),
             connections: Arc::new(LiveConnections::new()),
@@ -316,6 +333,7 @@ impl AppState {
             admin_token: std::env::var("ADMIN_TOKEN").ok().filter(|s| !s.is_empty()),
             refresh_token_pepper,
             refresh_token_pepper_previous,
+            alpha_invite_code_pepper,
             active_room_map: Arc::new(RwLock::new(HashMap::new())),
             dummy_verifier,
             pairing_code_pepper,

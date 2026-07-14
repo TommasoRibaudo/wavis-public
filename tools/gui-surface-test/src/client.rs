@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 /// Authenticated HTTP client for surface tests.
 ///
-/// Registers a device, obtains a bearer token, and provides helpers
+/// Registers a closed-alpha user, obtains a bearer token, and provides helpers
 /// for making authenticated requests to the backend REST API.
 pub struct AuthenticatedClient {
     pub http: reqwest::Client,
@@ -22,11 +22,19 @@ struct RegisterResponse {
 }
 
 impl AuthenticatedClient {
-    /// Register a new device and return an authenticated client.
+    /// Register a new user and return an authenticated client.
     pub async fn register(base_url: &str, http: &reqwest::Client) -> Result<Self, String> {
-        let url = format!("{base_url}/auth/register_device");
+        let invite_code = std::env::var("ALPHA_INVITE_CODE")
+            .map_err(|_| "ALPHA_INVITE_CODE must be set for surface auth seeding".to_string())?;
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let url = format!("{base_url}/auth/register");
         let resp = http
             .post(&url)
+            .json(&serde_json::json!({
+                "phrase": format!("surface-password-{suffix}"),
+                "username": format!("Surface-{suffix}"),
+                "inviteCode": invite_code,
+            }))
             .send()
             .await
             .map_err(|e| format!("register request failed: {e}"))?;

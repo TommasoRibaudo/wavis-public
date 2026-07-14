@@ -1,7 +1,7 @@
 /// Auth Flow Scenarios
 ///
 /// Tests the REST endpoints the GUI auth layer depends on:
-/// - POST /auth/register_device  — success, response shape
+/// - POST /auth/register  — success, response shape
 /// - POST /auth/refresh           — valid refresh, invalid token
 /// - Authenticated request with valid token succeeds
 /// - Authenticated request without token returns 401
@@ -66,12 +66,34 @@ async fn check_register_success(
     ctx: &TestContext,
     failures: &mut Vec<AssertionFailure>,
 ) -> Option<RegisterResponse> {
-    let url = format!("{}/auth/register_device", ctx.base_url);
-    let resp = match ctx.http_client.post(&url).send().await {
+    let invite_code = match std::env::var("ALPHA_INVITE_CODE") {
+        Ok(code) => code,
+        Err(_) => {
+            failures.push(AssertionFailure {
+                check: "ALPHA_INVITE_CODE env".into(),
+                expected: "configured invite code".into(),
+                actual: "missing".into(),
+            });
+            return None;
+        }
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let url = format!("{}/auth/register", ctx.base_url);
+    let resp = match ctx
+        .http_client
+        .post(&url)
+        .json(&serde_json::json!({
+            "phrase": format!("surface-auth-flow-{suffix}"),
+            "username": format!("SurfaceAuth-{suffix}"),
+            "inviteCode": invite_code,
+        }))
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             failures.push(AssertionFailure {
-                check: "POST /auth/register_device request".into(),
+                check: "POST /auth/register request".into(),
                 expected: "response".into(),
                 actual: format!("error: {e}"),
             });
@@ -81,7 +103,7 @@ async fn check_register_success(
 
     if resp.status() != reqwest::StatusCode::CREATED {
         failures.push(AssertionFailure {
-            check: "POST /auth/register_device status".into(),
+            check: "POST /auth/register status".into(),
             expected: "201".into(),
             actual: format!("{}", resp.status()),
         });

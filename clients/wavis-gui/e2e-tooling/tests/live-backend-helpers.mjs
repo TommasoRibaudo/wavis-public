@@ -75,14 +75,25 @@ export async function waitForBackendHealth(timeoutMs = 30_000) {
 }
 
 /**
- * POST /auth/register_device — mints a full session with no UI/phrase step.
+ * POST /auth/register — mints a full closed-alpha session with no UI step.
  * Use this for identities that never need to touch the GUI (e.g. a channel
  * owner in room-join.spec.mjs), not as a substitute for exercising the real
  * auth UI (that's what registerViaUi / login.spec.mjs are for).
  */
 export async function registerDevice() {
-  const res = await fetch(`${SERVER_URL}/auth/register_device`, { method: 'POST' });
-  if (!res.ok) throw new Error(`register_device failed: ${res.status}`);
+  const inviteCode = process.env.ALPHA_INVITE_CODE;
+  if (!inviteCode) throw new Error('ALPHA_INVITE_CODE must be set for REST auth seeding');
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const res = await fetch(`${SERVER_URL}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phrase: `e2e-password-${suffix}`,
+      username: `E2E-${suffix}`,
+      inviteCode,
+    }),
+  });
+  if (!res.ok) throw new Error(`register failed: ${res.status}`);
   return res.json(); // { user_id, device_id, recovery_id, access_token, refresh_token }
 }
 
@@ -102,7 +113,7 @@ export async function createInvite(
   ); // { code, channel_id, ... }
 }
 
-/** REST-seeds a channel + invite owned by a fresh register_device identity. */
+/** REST-seeds a channel + invite owned by a fresh closed-alpha identity. */
 export async function seedChannelWithInvite(name) {
   const owner = await registerDevice();
   const channel = await createChannel(owner.access_token, name);

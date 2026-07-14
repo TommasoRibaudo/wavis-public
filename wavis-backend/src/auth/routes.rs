@@ -53,6 +53,8 @@ pub struct RegisterRequest {
     pub phrase: String,
     #[serde(alias = "device_name", alias = "displayName", alias = "display_name")]
     pub username: String,
+    #[serde(alias = "inviteCode")]
+    pub invite_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -178,6 +180,9 @@ fn validate_username(username: &str) -> Result<&str, AuthErrorResponse> {
 }
 fn map_register_error(err: &AuthError) -> AuthErrorResponse {
     match err {
+        AuthError::InviteInvalid => {
+            error_response(StatusCode::UNAUTHORIZED, "authentication failed")
+        }
         AuthError::DatabaseError(_) | AuthError::SigningFailed(_) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
@@ -270,7 +275,7 @@ pub async fn register_device(
     State(app_state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<(StatusCode, Json<RegisterResponse>), AuthErrorResponse> {
+) -> Result<(StatusCode, Json<ErrorResponse>), AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
     let now = Instant::now();
 
@@ -283,31 +288,13 @@ pub async fn register_device(
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
 
-    let result = auth::register_device(
-        &app_state.db_pool,
-        &app_state.auth_jwt_secret,
-        ACCESS_TOKEN_TTL_SECS,
-        app_state.refresh_token_ttl_days,
-        &app_state.refresh_token_pepper,
-    )
-    .await;
-
-    match result {
-        Ok(reg) => Ok((
-            StatusCode::CREATED,
-            Json(RegisterResponse {
-                user_id: reg.user_id.to_string(),
-                device_id: reg.device_id.to_string(),
-                recovery_id: reg.recovery_id,
-                access_token: reg.access_token,
-                refresh_token: reg.refresh_token,
-            }),
-        )),
-        Err(err) => {
-            warn!(ip = %client_ip, error = %err, "register_device failed");
-            Err(map_register_error(&err))
-        }
-    }
+    warn!(ip = %client_ip, "legacy register_device rejected");
+    Ok((
+        StatusCode::GONE,
+        Json(ErrorResponse {
+            error: "gone".to_string(),
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -332,15 +319,21 @@ pub async fn register(
     }
     app_state.auth_rate_limiter.record_register(client_ip, now);
     let username = validate_username(&body.username)?;
+    let invite_code = body
+        .invite_code
+        .as_deref()
+        .ok_or_else(|| error_response(StatusCode::UNAUTHORIZED, "authentication failed"))?;
 
-    let result = auth::register_user(
+    let result = auth::register_user_with_invite(
         &app_state.db_pool,
         &body.phrase,
         username,
+        invite_code,
         &app_state.auth_jwt_secret,
         ACCESS_TOKEN_TTL_SECS,
         app_state.refresh_token_ttl_days,
         &app_state.refresh_token_pepper,
+        &app_state.alpha_invite_code_pepper,
         &app_state.phrase_config,
         &app_state.phrase_encryption_key,
     )
