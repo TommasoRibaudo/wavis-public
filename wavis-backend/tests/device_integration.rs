@@ -311,7 +311,9 @@ async fn prop16_device_listing_completeness() {
         primary.revoked_at.is_none(),
         "primary device should not be revoked"
     );
-    assert_eq!(primary.device_name, "device-primary");
+    // register_user names the initial device "primary"; the string passed to
+    // register_user is the account username, not the device label.
+    assert_eq!(primary.device_name, "primary");
 
     let laptop = devices.iter().find(|d| d.device_id == dev2).unwrap();
     assert!(laptop.revoked_at.is_none(), "laptop should not be revoked");
@@ -328,11 +330,12 @@ async fn prop16_device_listing_completeness() {
     );
     assert_eq!(old_phone.device_name, "device-old-phone");
 
-    // Verify created_at is set for all devices
+    // Verify created_at is set for all devices. Allow a small tolerance since
+    // created_at comes from the DB server's clock, not this process's clock.
     for d in &devices {
         assert!(
-            d.created_at <= chrono::Utc::now(),
-            "created_at should be in the past"
+            d.created_at <= chrono::Utc::now() + chrono::Duration::seconds(5),
+            "created_at should be roughly now, not far in the future"
         );
     }
 }
