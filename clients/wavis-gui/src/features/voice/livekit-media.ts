@@ -986,6 +986,29 @@ function getTrackSettingsSafe(track: MediaStreamTrack | undefined): Partial<Medi
   }
 }
 
+/**
+ * Fits a quality preset's resolution box to the source track's actual aspect
+ * ratio instead of stamping the preset's own (16:9) box directly. Non-16:9
+ * sources (e.g. ultrawide captures) would otherwise get re-adapted by the
+ * browser's video adapter on every profile switch, causing visible
+ * aspect-ratio churn for viewers. Returns null when source dimensions are
+ * unknown — callers should skip width/height constraints in that case.
+ */
+export function fitPresetToSourceAspect(
+  preset: { width: number; height: number },
+  sourceSettings: Partial<MediaTrackSettings>,
+): { width: number; height: number } | null {
+  const srcWidth = sourceSettings.width;
+  const srcHeight = sourceSettings.height;
+  if (!srcWidth || !srcHeight) return null;
+  const scale = Math.min(preset.width / srcWidth, preset.height / srcHeight, 1);
+  const evenRound = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+  return {
+    width: evenRound(srcWidth * scale),
+    height: evenRound(srcHeight * scale),
+  };
+}
+
 function getTrackCapabilitiesSafe(track: MediaStreamTrack | undefined): Record<string, unknown> {
   if (!track || typeof track.getCapabilities !== 'function') return {};
   try {
@@ -4133,17 +4156,24 @@ export class LiveKitModule {
     const pub = this.room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
     if (!pub || !pub.track) return;
 
-    const preset = this.nativeCapturePublication
-      ? windowsNativeCapturePreset(quality)
-      : QUALITY_PRESETS[quality];
+    const isNativeCapture = this.nativeCapturePublication !== null;
+    const preset = isNativeCapture ? windowsNativeCapturePreset(quality) : QUALITY_PRESETS[quality];
     try {
       const track = pub.track.mediaStreamTrack;
       track.contentHint = preset.contentHint;
-      await track.applyConstraints({
-        width: { ideal: preset.resolution.width },
-        height: { ideal: preset.resolution.height },
-        frameRate: { max: preset.maxFramerate },
-      });
+      const constraints: MediaTrackConstraints = { frameRate: { max: preset.maxFramerate } };
+      // Native Rust capture already emits AR-preserving frames at a fixed size —
+      // stamping a 16:9 box here just makes Chromium's video adapter re-scale
+      // the encoder output on every switch. Only browser (getDisplayMedia)
+      // captures need the AR-fitted box.
+      if (!isNativeCapture) {
+        const fitted = fitPresetToSourceAspect(preset.resolution, getTrackSettingsSafe(track));
+        if (fitted) {
+          constraints.width = { ideal: fitted.width };
+          constraints.height = { ideal: fitted.height };
+        }
+      }
+      await track.applyConstraints(constraints);
       this.callbacks.onSystemEvent(`screen share quality: ${quality}`);
       // Re-report actual quality info so the UI updates
       const settings = getTrackSettingsSafe(track);
@@ -4670,10 +4700,17 @@ export class LiveKitModule {
     const preset = QUALITY_PRESETS[this.currentQuality];
     const idealFps = preset.maxFramerate;
     const constraints: MediaTrackConstraints = {
-      width: { ideal: preset.resolution.width },
-      height: { ideal: preset.resolution.height },
       frameRate: { min: 24, ideal: idealFps },
     };
+    // Native Rust capture already produces AR-preserving frames at a fixed
+    // size; only fit a width/height box for browser (getDisplayMedia) captures.
+    if (!this.nativeCapturePublication) {
+      const fitted = fitPresetToSourceAspect(preset.resolution, getTrackSettingsSafe(mediaTrack));
+      if (fitted) {
+        constraints.width = { ideal: fitted.width };
+        constraints.height = { ideal: fitted.height };
+      }
+    }
 
     const reportQualityInfo = () => {
       const settings = getTrackSettingsSafe(mediaTrack);

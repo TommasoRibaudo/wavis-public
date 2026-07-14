@@ -23,12 +23,12 @@ function pushSamples(det: MotionDetector, count: number, ratio: number, startMs:
  *   - 5 samples: t=0,250,500,750,1000ms → dwell = 1000ms >= 1000ms ✓
  *   - 4 samples: t=0,...,750ms → dwell = 750ms < 1000ms ✗
  *
- * Switch-OUT (motion→detail), switchOutDwellMs=5000, starting at t=1250ms after 5 high samples:
+ * Switch-OUT (motion→detail), switchOutDwellMs=10000, starting at t=1250ms after 5 high samples:
  *   - rolling window needs 4 low samples (1s) to clear out high-ratio history
  *   - avg drops below 0.10 at the 4th low sample (t=2000ms): only low samples in window
- *   - dwell timer starts at t=2000ms; triggers at t=7000ms (20 more samples × 250ms = 5000ms)
- *   - total low samples needed: 4 (window clear) + 20 (dwell) = 24 → last at t=7000ms
- *   - 23 low samples: dwell = 6750 - 2000 = 4750ms < 5000ms ✗
+ *   - dwell timer starts at t=2000ms; triggers at t=12000ms (40 more samples × 250ms = 10000ms)
+ *   - total low samples needed: 4 (window clear) + 40 (dwell) = 44 → last at t=12000ms
+ *   - 43 low samples: dwell = 11750 - 2000 = 9750ms < 10000ms ✗
  */
 
 describe('MotionDetector', () => {
@@ -53,24 +53,24 @@ describe('MotionDetector', () => {
     expect(det.currentRecommendation()).toBe('detail');
   });
 
-  it('switches motion→detail after ≥5 s sustained <10% motion (accounting for rolling window)', () => {
+  it('switches motion→detail after ≥10 s sustained <10% motion (accounting for rolling window)', () => {
     const det = new MotionDetector();
     const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
-    // 44 low samples: well past the 5 s dwell (triggers at t=7000ms)
-    pushSamples(det, 44, 0.05, t);
+    // 48 low samples: well past the 10 s dwell (triggers at t=12000ms)
+    pushSamples(det, 48, 0.05, t);
     expect(det.currentRecommendation()).toBe('detail');
     expect(det.lastSwitchReason()).toBe('auto_switch_out');
   });
 
-  it('does NOT switch-out before the 5 s dwell elapses', () => {
+  it('does NOT switch-out before the 10 s dwell elapses', () => {
     const det = new MotionDetector();
     const t = pushSamples(det, 5, 0.5, 0);
     expect(det.currentRecommendation()).toBe('motion');
 
-    // 23 low samples: dwell = 6750 - 2000 = 4750ms < 5000ms → no switch
-    pushSamples(det, 23, 0.05, t);
+    // 43 low samples: dwell = 11750 - 2000 = 9750ms < 10000ms → no switch
+    pushSamples(det, 43, 0.05, t);
     expect(det.currentRecommendation()).toBe('motion');
   });
 
@@ -137,8 +137,8 @@ describe('MotionDetector', () => {
     const t = pushSamples(det, 5, 0.5, 0);
     expect(det.lastSwitchReason()).toBe('auto_switch_in');
 
-    // 44 low samples to clear window and expire dwell
-    pushSamples(det, 44, 0.05, t);
+    // 48 low samples to clear window and expire dwell
+    pushSamples(det, 48, 0.05, t);
     expect(det.lastSwitchReason()).toBe('auto_switch_out');
   });
 
