@@ -7159,11 +7159,16 @@ describe('fitPresetToSourceAspect', () => {
 
   it('returns null when source dimensions are unknown, so callers skip width/height constraints', () => {
     expect(fitPresetToSourceAspect({ width: 1920, height: 1080 }, {})).toBeNull();
-    expect(fitPresetToSourceAspect({ width: 1920, height: 1080 }, { width: 0, height: 720 })).toBeNull();
+    expect(
+      fitPresetToSourceAspect({ width: 1920, height: 1080 }, { width: 0, height: 720 }),
+    ).toBeNull();
   });
 
   it('never upscales beyond the source resolution', () => {
-    const fit = fitPresetToSourceAspect({ width: 2560, height: 1440 }, { width: 1280, height: 720 });
+    const fit = fitPresetToSourceAspect(
+      { width: 2560, height: 1440 },
+      { width: 1280, height: 720 },
+    );
     expect(fit).not.toBeNull();
     expect(fit!.width).toBe(1280);
     expect(fit!.height).toBe(720);
