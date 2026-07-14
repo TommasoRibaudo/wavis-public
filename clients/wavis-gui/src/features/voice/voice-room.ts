@@ -977,6 +977,11 @@ let _currentShareProfile: ShareProfileId = 'detail';
 let _stopAutoSwitchPoll: (() => void) | null = null;
 let selectedShareQuality: ShareQuality = 'high';
 
+/** Minimum time between applied auto-switches, independent of detector dwell,
+ *  to bound worst-case encoder churn regardless of content. */
+const MIN_PROFILE_SWITCH_INTERVAL_MS = 5_000;
+let _lastProfileSwitchAppliedAtMs = 0;
+
 /** Maps a ShareProfileId to the legacy ShareQuality for the existing setScreenShareQuality path. */
 function profileToQuality(profile: ShareProfileId): ShareQuality {
   return profile === 'motion' ? 'low' : 'high';
@@ -1017,6 +1022,9 @@ function startAutoSwitchPoll(): () => void {
       if (stopped || !_motionDetector) return;
       const recommendation = _motionDetector.currentRecommendation();
       if (recommendation === _currentShareProfile) return;
+      const now = Date.now();
+      if (now - _lastProfileSwitchAppliedAtMs < MIN_PROFILE_SWITCH_INTERVAL_MS) return;
+      _lastProfileSwitchAppliedAtMs = now;
       const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
       await applyProfileSwitch(recommendation, reason).catch(() => {});
     })();
@@ -1028,6 +1036,7 @@ function startAutoSwitchPoll(): () => void {
 }
 
 async function initializeProfileSwitchAfterShareStart(): Promise<void> {
+  _lastProfileSwitchAppliedAtMs = 0;
   if (selectedShareQuality === 'max') {
     const from = _currentShareProfile;
     _currentShareProfile = 'detail';
