@@ -67,3 +67,17 @@ Rust-based interactive WebSocket test client (async, tokio). Same idea as `ws-te
 $env:WS_URL = "ws://localhost:3000/ws"   # optional, defaults to localhost
 cargo run -p ws-sfu-test
 ```
+# Alpha Invite Seeding
+
+Closed-alpha registration stores only HMAC hashes of invite codes. Use the
+seed helper to create a dev/CI invite without hand-computing the hash:
+
+```bash
+ALPHA_INVITE_CODE='example-alpha-code' \
+ALPHA_INVITE_CODE_PEPPER='real-32-byte-minimum-pepper-value' \
+DATABASE_URL='postgres://...' \
+python3 scripts/seed-alpha-invite.py --execute
+```
+
+The default `max_redemptions` is `1000000` so shared dev/CI smoke invites do
+not silently exhaust. Use `--max-redemptions 1` for one-time invites.

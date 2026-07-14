@@ -257,7 +257,7 @@ impl AppState {
             Ok(s) => s,
             Err(_) => {
                 if cfg!(debug_assertions) {
-                    "dev-alpha-invite-pepper-32b!!XX".to_string()
+                    "dev-alpha-invite-pepper-32b!!XXX".to_string()
                 } else {
                     panic!("ALPHA_INVITE_CODE_PEPPER must be set in release builds");
                 }

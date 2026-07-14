@@ -277,16 +277,6 @@ pub async fn register_device(
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<ErrorResponse>), AuthErrorResponse> {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
-    let now = Instant::now();
-
-    let retry_after_secs = app_state
-        .auth_rate_limiter
-        .seconds_until_register(client_ip, now);
-    if retry_after_secs.is_some() {
-        warn!(ip = %client_ip, retry_after = retry_after_secs, "register_device rate-limited");
-        return Err(rate_limited_response(retry_after_secs));
-    }
-    app_state.auth_rate_limiter.record_register(client_ip, now);
 
     warn!(ip = %client_ip, "legacy register_device rejected");
     Ok((
@@ -818,6 +808,62 @@ pub async fn refresh_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
+    use crate::auth::auth_rate_limiter::{AuthRateLimiter, AuthRateLimiterConfig};
+    use crate::auth::recovery_rate_limiter::{RecoveryRateLimiter, RecoveryRateLimiterConfig};
+    use crate::channel::invite::{InviteStore, InviteStoreConfig};
+    use crate::diagnostics::bug_report::MockGitHubClient;
+    use crate::diagnostics::llm_client::NoOpLlmClient;
+    use crate::ip::IpConfig;
+    use crate::voice::mock_sfu_bridge::MockSfuBridge;
+    use crate::voice::sfu_bridge::SfuRoomManager;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    const TEST_AUTH_SECRET: &[u8] = b"test-auth-secret-at-least-32-bytes!!";
+    const TEST_REFRESH_PEPPER: &[u8] = b"test-pepper-at-least-32-bytes!!!!!!";
+
+    fn test_app_state() -> AppState {
+        let mock = Arc::new(MockSfuBridge::new());
+        AppState::new(
+            mock as Arc<dyn SfuRoomManager>,
+            None,
+            "sfu://localhost".to_string(),
+            Arc::new(InviteStore::new(InviteStoreConfig::default())),
+            Arc::new(JoinRateLimiter::new(JoinRateLimiterConfig::default())),
+            IpConfig {
+                trust_proxy_headers: false,
+                trusted_proxy_cidrs: vec![],
+            },
+            Arc::new(b"dev-secret-32-bytes-minimum!!!XX".to_vec()),
+            None,
+            "wavis-backend".to_string(),
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://wavis:wavis@localhost:5432/wavis")
+                .unwrap(),
+            Arc::new(TEST_AUTH_SECRET.to_vec()),
+            None,
+            Arc::new(AuthRateLimiter::new(AuthRateLimiterConfig::default())),
+            30,
+            72,
+            Arc::new(TEST_REFRESH_PEPPER.to_vec()),
+            None,
+            Arc::new(crate::auth::phrase::generate_dummy_verifier(
+                &crate::auth::phrase::PhraseConfig::default(),
+            )),
+            Arc::new(b"test-pairing-pepper-32-bytes!!XX".to_vec()),
+            Arc::new(RecoveryRateLimiter::new(
+                RecoveryRateLimiterConfig::default(),
+            )),
+            Arc::new(crate::auth::phrase::PhraseConfig::default()),
+            Arc::new(vec![0u8; 32]),
+            24,
+            7,
+            Arc::new(MockGitHubClient::new()),
+            "owner/test-repo".to_string(),
+            Arc::new(NoOpLlmClient),
+        )
+    }
 
     #[test]
     fn validate_username_trims_valid_names() {
@@ -854,5 +900,55 @@ mod tests {
         assert_eq!(missing.username.as_deref().unwrap_or(""), "");
         assert_eq!(empty.username.as_deref().unwrap_or(""), "");
         assert!(validate_username("").is_err());
+    }
+
+    #[test]
+    fn register_request_accepts_invite_code_aliases() {
+        let snake: RegisterRequest = serde_json::from_value(json!({
+            "phrase": "phrase",
+            "username": "alice",
+            "invite_code": "ALPHA-SNAKE",
+        }))
+        .unwrap();
+        assert_eq!(snake.invite_code.as_deref(), Some("ALPHA-SNAKE"));
+
+        let camel: RegisterRequest = serde_json::from_value(json!({
+            "phrase": "phrase",
+            "username": "alice",
+            "inviteCode": "ALPHA-CAMEL",
+        }))
+        .unwrap();
+        assert_eq!(camel.invite_code.as_deref(), Some("ALPHA-CAMEL"));
+    }
+
+    #[tokio::test]
+    async fn register_device_returns_gone_without_consuming_register_limit() {
+        let app_state = test_app_state();
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+        assert!(
+            app_state
+                .auth_rate_limiter
+                .check_register(ip, std::time::Instant::now())
+        );
+
+        let result = register_device(
+            State(app_state.clone()),
+            ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))),
+            HeaderMap::new(),
+        )
+        .await;
+        let (status, Json(body)) = match result {
+            Ok(response) => response,
+            Err(_) => panic!("register_device should return 410, not an error response"),
+        };
+
+        assert_eq!(status, StatusCode::GONE);
+        assert_eq!(body.error, "gone");
+        assert!(
+            app_state
+                .auth_rate_limiter
+                .check_register(ip, std::time::Instant::now())
+        );
     }
 }
