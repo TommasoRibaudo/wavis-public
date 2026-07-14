@@ -117,19 +117,34 @@ pub fn handle_start_share_with_type(
             }));
         }
 
-        // Check sender not already sharing
+        // Check sender not already sharing this specific slot. A participant
+        // may run one video-type share (ScreenAudio/Window/Browser) and one
+        // AudioOnly share concurrently — those are independent slots keyed
+        // by WireShareType::is_audio_only(), so starting the second kind
+        // must add alongside the first, not replace it.
         if members.info.active_shares.contains(sender_id) {
-            if members.info.active_share_types.get(sender_id).copied() == share_type {
-                return ShareResult::Noop;
-            }
+            let existing_types = members
+                .info
+                .active_share_types
+                .entry(sender_id.to_string())
+                .or_default();
+
             if let Some(share_type) = share_type {
-                members
-                    .info
-                    .active_share_types
-                    .insert(sender_id.to_string(), share_type);
+                if existing_types.contains(&share_type) {
+                    return ShareResult::Noop;
+                }
+                // Replace any existing slot in the same category; keep the
+                // other category's slot (if any) untouched.
+                existing_types.retain(|t| t.is_audio_only() != share_type.is_audio_only());
+                existing_types.insert(share_type);
+            } else if existing_types.is_empty() {
+                return ShareResult::Noop;
             } else {
-                members.info.active_share_types.remove(sender_id);
+                // Legacy client with no type metadata restarting its share —
+                // can't reason about slots, so clear all recorded types.
+                existing_types.clear();
             }
+
             let display_name = lookup_display_name(&members.info.participants, sender_id);
             return ShareResult::Ok(vec![OutboundSignal::broadcast_all(
                 SignalingMessage::ShareStarted(ShareStartedPayload {
@@ -146,7 +161,9 @@ pub fn handle_start_share_with_type(
             members
                 .info
                 .active_share_types
-                .insert(sender_id.to_string(), share_type);
+                .entry(sender_id.to_string())
+                .or_default()
+                .insert(share_type);
         }
 
         let display_name = lookup_display_name(&members.info.participants, sender_id);
@@ -186,12 +203,17 @@ pub fn handle_start_share_with_type(
 /// - Target is in `active_shares`
 ///
 /// On success, removes target from `active_shares` and returns a `BroadcastAll` `ShareStopped` signal.
+///
+/// `share_type_to_stop`: when set, only that slot (video-type or AudioOnly)
+/// is stopped — the target keeps sharing if the other slot is still active.
+/// `None` stops every slot the target has (legacy behavior).
 pub fn handle_stop_share(
     state: &InMemoryRoomState,
     room_id: &str,
     peer_id: &str,
     target_participant_id: Option<&str>,
     role: ParticipantRole,
+    share_type_to_stop: Option<WireShareType>,
 ) -> ShareResult {
     let effective_target = target_participant_id.unwrap_or(peer_id);
 
@@ -221,7 +243,30 @@ pub fn handle_stop_share(
             return ShareResult::Noop;
         }
 
-        // All preconditions pass — atomically remove from active_shares
+        // If a specific slot was requested, try to remove just that one and
+        // leave the target sharing if another slot remains active.
+        if let Some(stop_type) = share_type_to_stop
+            && let Some(types) = members.info.active_share_types.get_mut(effective_target)
+        {
+            if !types.remove(&stop_type) {
+                // Wasn't sharing that slot — nothing to do.
+                return ShareResult::Noop;
+            }
+            if !types.is_empty() {
+                let display_name =
+                    lookup_display_name(&members.info.participants, effective_target);
+                return ShareResult::Ok(vec![OutboundSignal::broadcast_all(
+                    SignalingMessage::ShareStopped(ShareStoppedPayload {
+                        participant_id: effective_target.to_string(),
+                        display_name,
+                        share_type: Some(stop_type),
+                    }),
+                )]);
+            }
+        }
+
+        // Either no specific slot was requested, or the removed slot was the
+        // last one active — fully stop the target.
         members.info.active_shares.remove(effective_target);
         members.info.active_share_types.remove(effective_target);
 
@@ -230,6 +275,7 @@ pub fn handle_stop_share(
             OutboundSignal::broadcast_all(SignalingMessage::ShareStopped(ShareStoppedPayload {
                 participant_id: effective_target.to_string(),
                 display_name,
+                share_type: None,
             }));
         ShareResult::Ok(vec![signal])
     });
@@ -284,6 +330,7 @@ pub fn handle_stop_all_shares(
                 OutboundSignal::broadcast_all(SignalingMessage::ShareStopped(ShareStoppedPayload {
                     participant_id,
                     display_name,
+                    share_type: None,
                 }))
             })
             .collect();
@@ -311,12 +358,26 @@ pub fn share_state_snapshot(
         .get_room_info(room_id)
         .map(|info| {
             let participant_ids: Vec<String> = info.active_shares.iter().cloned().collect();
+            // One entry per active slot, so a participant with both a
+            // video-type share and an AudioOnly share concurrently produces
+            // two entries — a fresh joiner must see both, not just one.
             let active_shares = participant_ids
                 .iter()
-                .map(|participant_id| ActiveSharePayload {
-                    participant_id: participant_id.clone(),
-                    share_type: info.active_share_types.get(participant_id).copied(),
-                })
+                .flat_map(
+                    |participant_id| match info.active_share_types.get(participant_id) {
+                        Some(types) if !types.is_empty() => types
+                            .iter()
+                            .map(|&share_type| ActiveSharePayload {
+                                participant_id: participant_id.clone(),
+                                share_type: Some(share_type),
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => vec![ActiveSharePayload {
+                            participant_id: participant_id.clone(),
+                            share_type: None,
+                        }],
+                    },
+                )
                 .collect();
             (participant_ids, active_shares)
         })
@@ -351,6 +412,7 @@ pub fn cleanup_share_on_disconnect(
             OutboundSignal::broadcast_all(SignalingMessage::ShareStopped(ShareStoppedPayload {
                 participant_id: peer_id.to_string(),
                 display_name,
+                share_type: None,
             }));
         Some(vec![signal])
     });
@@ -417,6 +479,7 @@ mod tests {
     use crate::state::RoomInfo;
     use crate::voice::sfu_bridge::SfuRoomHandle;
     use proptest::prelude::*;
+    use std::collections::HashSet;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -572,7 +635,14 @@ mod tests {
         make_sfu_room(&state, "room-1", &["peer-a"]);
         set_active_share(&state, "room-1", "peer-a");
 
-        let result = handle_stop_share(&state, "room-1", "peer-a", None, ParticipantRole::Guest);
+        let result = handle_stop_share(
+            &state,
+            "room-1",
+            "peer-a",
+            None,
+            ParticipantRole::Guest,
+            None,
+        );
         assert!(matches!(result, ShareResult::Ok(_)));
         assert_eq!(get_active_share(&state, "room-1"), None);
     }
@@ -589,6 +659,7 @@ mod tests {
             "host",
             Some("sharer"),
             ParticipantRole::Host,
+            None,
         );
         assert!(matches!(result, ShareResult::Ok(_)));
         assert_eq!(get_active_share(&state, "room-1"), None);
@@ -599,7 +670,14 @@ mod tests {
         let state = InMemoryRoomState::new();
         make_sfu_room(&state, "room-1", &["peer-a"]);
 
-        let result = handle_stop_share(&state, "room-1", "peer-a", None, ParticipantRole::Guest);
+        let result = handle_stop_share(
+            &state,
+            "room-1",
+            "peer-a",
+            None,
+            ParticipantRole::Guest,
+            None,
+        );
         assert!(matches!(result, ShareResult::Noop));
     }
 
@@ -609,7 +687,14 @@ mod tests {
         make_sfu_room(&state, "room-1", &["peer-a", "peer-b"]);
         set_active_share(&state, "room-1", "peer-a");
 
-        let result = handle_stop_share(&state, "room-1", "peer-b", None, ParticipantRole::Guest);
+        let result = handle_stop_share(
+            &state,
+            "room-1",
+            "peer-b",
+            None,
+            ParticipantRole::Guest,
+            None,
+        );
         assert!(matches!(result, ShareResult::Noop));
         // State unchanged
         assert_eq!(
@@ -676,6 +761,7 @@ mod tests {
             "peer-b",
             Some("peer-a"),
             ParticipantRole::Guest,
+            None,
         );
         assert!(matches!(result, ShareResult::Error(_)));
         // Share still active
@@ -696,6 +782,7 @@ mod tests {
             "host",
             Some("sharer-a"),
             ParticipantRole::Host,
+            None,
         );
         assert!(
             matches!(result, ShareResult::Ok(ref sigs) if signals_contain_share_stopped(sigs, "sharer-a"))
@@ -771,6 +858,107 @@ mod tests {
             }
             _ => panic!("expected ShareState message"),
         }
+    }
+
+    #[test]
+    fn concurrent_video_and_audio_only_shares_both_survive_to_late_joiner_snapshot() {
+        // Regression test: a participant sharing video (no companion audio)
+        // who then ALSO starts a standalone audio-only share used to have the
+        // audio-only start silently overwrite the recorded video share type
+        // server-side. A client joining afterward would see only one of the
+        // two active shares in its ShareState snapshot.
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["sharer", "late-joiner"]);
+
+        let video_result = handle_start_share_with_type(
+            &state,
+            "room-1",
+            "sharer",
+            ParticipantRole::Guest,
+            Some(WireShareType::Window),
+        );
+        assert!(matches!(video_result, ShareResult::Ok(_)));
+
+        let audio_result = handle_start_share_with_type(
+            &state,
+            "room-1",
+            "sharer",
+            ParticipantRole::Guest,
+            Some(WireShareType::AudioOnly),
+        );
+        assert!(matches!(audio_result, ShareResult::Ok(_)));
+
+        let signal = share_state_snapshot(&state, "room-1", "late-joiner");
+        match signal.msg {
+            SignalingMessage::ShareState(payload) => {
+                let types: HashSet<WireShareType> = payload
+                    .active_shares
+                    .iter()
+                    .filter(|s| s.participant_id == "sharer")
+                    .filter_map(|s| s.share_type)
+                    .collect();
+                assert_eq!(
+                    types,
+                    HashSet::from([WireShareType::Window, WireShareType::AudioOnly]),
+                    "late joiner must see both the video-type share and the audio-only share"
+                );
+            }
+            _ => panic!("expected ShareState message"),
+        }
+    }
+
+    #[test]
+    fn stopping_one_slot_leaves_the_other_slot_active() {
+        let state = InMemoryRoomState::new();
+        make_sfu_room(&state, "room-1", &["sharer"]);
+
+        handle_start_share_with_type(
+            &state,
+            "room-1",
+            "sharer",
+            ParticipantRole::Guest,
+            Some(WireShareType::Window),
+        );
+        handle_start_share_with_type(
+            &state,
+            "room-1",
+            "sharer",
+            ParticipantRole::Guest,
+            Some(WireShareType::AudioOnly),
+        );
+
+        // Stop only the audio-only slot.
+        let result = handle_stop_share(
+            &state,
+            "room-1",
+            "sharer",
+            None,
+            ParticipantRole::Guest,
+            Some(WireShareType::AudioOnly),
+        );
+        assert!(matches!(result, ShareResult::Ok(_)));
+
+        // Sharer must still be sharing (video slot untouched).
+        assert!(get_active_shares(&state, "room-1").contains("sharer"));
+        let info = state.get_room_info("room-1").unwrap();
+        let remaining = info
+            .active_share_types
+            .get("sharer")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(remaining, HashSet::from([WireShareType::Window]));
+
+        // Stopping the remaining video slot now fully clears the sharer.
+        let result2 = handle_stop_share(
+            &state,
+            "room-1",
+            "sharer",
+            None,
+            ParticipantRole::Guest,
+            Some(WireShareType::Window),
+        );
+        assert!(matches!(result2, ShareResult::Ok(_)));
+        assert!(!get_active_shares(&state, "room-1").contains("sharer"));
     }
 
     #[test]
@@ -997,7 +1185,7 @@ mod tests {
             make_sfu_room(&state, &room_id, &[&owner_id]);
             set_active_share(&state, &room_id, &owner_id);
 
-            let result = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest);
+            let result = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest, None);
 
             prop_assert!(
                 matches!(result, ShareResult::Ok(_)),
@@ -1029,7 +1217,7 @@ mod tests {
             make_sfu_room(&state, &room_id, &[&host_id, &sharer_id]);
             set_active_share(&state, &room_id, &sharer_id);
 
-            let result = handle_stop_share(&state, &room_id, &host_id, Some(sharer_id.as_str()), ParticipantRole::Host);
+            let result = handle_stop_share(&state, &room_id, &host_id, Some(sharer_id.as_str()), ParticipantRole::Host, None);
 
             prop_assert!(
                 matches!(result, ShareResult::Ok(_)),
@@ -1064,7 +1252,7 @@ mod tests {
             make_sfu_room(&state, &room_id, &[&sender_id]);
             // No active share
 
-            let result = handle_stop_share(&state, &room_id, &sender_id, None, ParticipantRole::Guest);
+            let result = handle_stop_share(&state, &room_id, &sender_id, None, ParticipantRole::Guest, None);
             prop_assert!(
                 matches!(result, ShareResult::Noop),
                 "no active share must return Noop"
@@ -1084,7 +1272,7 @@ mod tests {
             make_sfu_room(&state, &room_id, &[&owner_id, &other_id]);
             set_active_share(&state, &room_id, &owner_id);
 
-            let result = handle_stop_share(&state, &room_id, &other_id, None, ParticipantRole::Guest);
+            let result = handle_stop_share(&state, &room_id, &other_id, None, ParticipantRole::Guest, None);
             prop_assert!(
                 matches!(result, ShareResult::Noop),
                 "non-owner guest must return Noop"
@@ -1106,11 +1294,11 @@ mod tests {
             set_active_share(&state, &room_id, &owner_id);
 
             // First stop — should succeed
-            let r1 = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest);
+            let r1 = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest, None);
             prop_assert!(matches!(r1, ShareResult::Ok(_)));
 
             // Second stop — should be Noop
-            let r2 = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest);
+            let r2 = handle_stop_share(&state, &room_id, &owner_id, None, ParticipantRole::Guest, None);
             prop_assert!(
                 matches!(r2, ShareResult::Noop),
                 "second stop must be Noop (idempotent)"

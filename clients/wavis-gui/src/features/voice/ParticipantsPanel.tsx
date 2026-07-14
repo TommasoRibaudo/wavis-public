@@ -85,6 +85,7 @@ function areParticipantsPanelPropsEqual(
       a.volume !== b.volume ||
       a.cameraOn !== b.cameraOn ||
       a.isAudioOnlySharer !== b.isAudioOnlySharer ||
+      a.hasVideoShare !== b.hasVideoShare ||
       a.hasScreenShareStream !== b.hasScreenShareStream
     )
       return false;

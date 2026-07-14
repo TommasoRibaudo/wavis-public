@@ -177,6 +177,8 @@ export interface ShareStoppedMessage {
   type: 'share_stopped';
   participantId: string;
   displayName?: string;
+  /** Which slot stopped (video-type or 'audio_only'); undefined means every slot stopped. */
+  shareType?: unknown;
 }
 
 export interface WireActiveShare {

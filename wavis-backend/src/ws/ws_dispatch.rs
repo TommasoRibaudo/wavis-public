@@ -1866,7 +1866,7 @@ pub(crate) async fn dispatch_message(
             }
             DispatchOutcome::Continue
         }
-        SignalingMessage::StopShare(_payload) => {
+        SignalingMessage::StopShare(payload) => {
             // Session is guaranteed Some here (pre-join gate already handled above)
             let session_ref = ctx.session.as_ref().unwrap();
             let sender_id = session_ref.participant_id.as_str();
@@ -1889,8 +1889,9 @@ pub(crate) async fn dispatch_message(
                 ctx.app_state.room_state.as_ref(),
                 &room_id,
                 sender_id,
-                _payload.target_participant_id.as_deref(),
+                payload.target_participant_id.as_deref(),
                 sender_role,
+                payload.share_type,
             ) {
                 ShareResult::Ok(signals) => {
                     dispatch_signals(

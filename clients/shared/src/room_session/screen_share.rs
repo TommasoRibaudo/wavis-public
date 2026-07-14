@@ -61,6 +61,7 @@ where
         self.signaling
             .send(&SignalingMessage::StopShare(StopSharePayload {
                 target_participant_id: target.map(|participant_id| participant_id.to_string()),
+                share_type: None,
             }))
             .map_err(|e| RoomError::Signaling(e.to_string()))
     }

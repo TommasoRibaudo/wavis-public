@@ -198,7 +198,7 @@ proptest! {
 
         let shares_before = get_active_shares(&state, "room-1");
 
-        let result = handle_stop_share(&state, "room-1", target, None, ParticipantRole::Guest);
+        let result = handle_stop_share(&state, "room-1", target, None, ParticipantRole::Guest, None);
 
         let shares_after = get_active_shares(&state, "room-1");
 
@@ -326,7 +326,7 @@ proptest! {
 
         // Test 1: Non-host targeted stop → permission error
         let result = handle_stop_share(
-            &state, "room-1", guest, Some(target), ParticipantRole::Guest,
+            &state, "room-1", guest, Some(target), ParticipantRole::Guest, None,
         );
         match &result {
             ShareResult::Error(SignalingMessage::Error(e)) => {
@@ -571,7 +571,7 @@ proptest! {
                 RoomOp::StopShare(peer) => {
                     if participants.contains(peer) {
                         let _ = handle_stop_share(
-                            &state, "room-1", peer, None, ParticipantRole::Guest,
+                            &state, "room-1", peer, None, ParticipantRole::Guest, None,
                         );
                     }
                 }
@@ -637,7 +637,14 @@ fn integration_full_share_lifecycle() {
     assert_eq!(shares.len(), 2);
 
     // peer-0 stops sharing
-    let r2 = handle_stop_share(&state, "room-1", "peer-0", None, ParticipantRole::Guest);
+    let r2 = handle_stop_share(
+        &state,
+        "room-1",
+        "peer-0",
+        None,
+        ParticipantRole::Guest,
+        None,
+    );
     match r2 {
         ShareResult::Ok(signals) => {
             assert_eq!(signals.len(), 1);

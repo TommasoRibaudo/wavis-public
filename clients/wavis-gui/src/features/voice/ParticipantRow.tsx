@@ -20,6 +20,13 @@ export interface ParticipantRowViewModel {
   volume: number;
   cameraOn: boolean;
   isAudioOnlySharer: boolean;
+  /**
+   * True when this participant has an active video-type share, independent
+   * of isAudioOnlySharer — a participant can run a video share and a
+   * standalone audio-only share at the same time, so both badges must be
+   * able to render together instead of one hiding the other.
+   */
+  hasVideoShare: boolean;
   hasScreenShareStream: boolean;
 }
 
@@ -183,53 +190,56 @@ export function ParticipantRow({
               )}
             </>
           )}
-          {!isSelf &&
-            p.isSharing &&
-            (p.isAudioOnlySharer ? (
-              <button
-                className="text-sm leading-none hover:opacity-70 transition-opacity"
-                style={{
-                  color: shareMuted ? 'var(--wavis-danger)' : 'transparent',
-                  WebkitTextStroke: shareMuted ? undefined : '1px var(--wavis-danger)',
-                  animation: shareMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
-                }}
-                title={shareMuted ? 'unmute audio share' : 'mute audio share'}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSyncShareMuted(!shareMuted);
-                }}
-              >
-                {'♪'}
-              </button>
-            ) : (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!p.hasScreenShareStream) return;
-                  onToggleWatchShare();
-                }}
-                className="text-sm leading-none"
-                style={
-                  isWatchingShare
-                    ? { color: 'var(--wavis-danger)' }
-                    : p.hasScreenShareStream
-                      ? {
-                          color: 'var(--wavis-danger)',
-                          animation: 'watchPulse 2s ease-in-out infinite',
-                        }
-                      : { color: 'var(--wavis-text-secondary)', opacity: 0.4 }
-                }
-                title={
-                  isWatchingShare
-                    ? 'close share'
-                    : p.hasScreenShareStream
-                      ? 'watch share'
-                      : 'waiting for stream...'
-                }
-              >
-                {isWatchingShare ? '◎' : '◉'}
-              </button>
-            ))}
+          {!isSelf && p.isSharing && (
+            <>
+              {p.isAudioOnlySharer && (
+                <button
+                  className="text-sm leading-none hover:opacity-70 transition-opacity"
+                  style={{
+                    color: shareMuted ? 'var(--wavis-danger)' : 'transparent',
+                    WebkitTextStroke: shareMuted ? undefined : '1px var(--wavis-danger)',
+                    animation: shareMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+                  }}
+                  title={shareMuted ? 'unmute audio share' : 'mute audio share'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSyncShareMuted(!shareMuted);
+                  }}
+                >
+                  {'♪'}
+                </button>
+              )}
+              {p.hasVideoShare && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!p.hasScreenShareStream) return;
+                    onToggleWatchShare();
+                  }}
+                  className="text-sm leading-none"
+                  style={
+                    isWatchingShare
+                      ? { color: 'var(--wavis-danger)' }
+                      : p.hasScreenShareStream
+                        ? {
+                            color: 'var(--wavis-danger)',
+                            animation: 'watchPulse 2s ease-in-out infinite',
+                          }
+                        : { color: 'var(--wavis-text-secondary)', opacity: 0.4 }
+                  }
+                  title={
+                    isWatchingShare
+                      ? 'close share'
+                      : p.hasScreenShareStream
+                        ? 'watch share'
+                        : 'waiting for stream...'
+                  }
+                >
+                  {isWatchingShare ? '◎' : '◉'}
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
       {isExpanded && !isSelf && (
