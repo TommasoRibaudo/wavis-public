@@ -322,8 +322,11 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('clients/wavis-gui/package-lock.json') }}
           restore-keys: ${{ runner.os }}-npm-
 
+      # npm install (not ci): package-lock.json is gitignored in this repo,
+      # so there is no lockfile for npm ci to install from. If the lockfile
+      # is ever committed, switch this to npm ci for reproducible installs.
       - name: Install GUI dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
         working-directory: clients/wavis-gui
 
       - name: GUI Prettier check
