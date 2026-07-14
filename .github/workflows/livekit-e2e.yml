@@ -3,8 +3,11 @@ name: LiveKit E2E
 on:
   pull_request:
     paths:
-      - 'wavis-backend/src/domain/livekit_bridge.rs'
-      - 'wavis-backend/src/domain/sfu_relay.rs'
+      - 'wavis-backend/src/voice/livekit_bridge.rs'
+      - 'wavis-backend/src/voice/sfu_bridge.rs'
+      - 'wavis-backend/src/voice/sfu_relay.rs'
+      - 'wavis-backend/src/voice/sfu_sdp.rs'
+      - 'wavis-backend/tests/livekit_e2e_integration.rs'
       - 'deploy/livekit.yaml'
       - 'docker-compose.yml'
       - '.github/workflows/livekit-e2e.yml'
