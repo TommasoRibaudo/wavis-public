@@ -23,7 +23,6 @@ const TAURI_IMPORT_BASELINE = [
   'src/features/screen-share/ScreenSharePage.tsx',
   'src/features/screen-share/ShareIndicator.tsx',
   'src/features/screen-share/SharePicker.tsx',
-  'src/features/screen-share/WatchAllPage.tsx',
   'src/features/settings/Settings.tsx',
   'src/features/voice/VideoPopoutPage.tsx',
   'src/shared/AppUpdatePrompt.tsx',

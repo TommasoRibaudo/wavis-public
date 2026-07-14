@@ -57,7 +57,7 @@ function parseHashParams(): ShareWindowParams | null {
   try {
     const hash = window.location.hash.slice(1);
     if (!hash) return null;
-    return JSON.parse(decodeURIComponent(hash));
+    return JSON.parse(decodeURIComponent(hash)) as ShareWindowParams;
   } catch {
     return null;
   }
@@ -226,6 +226,11 @@ export default function ScreenSharePage() {
               lastSeq,
             },
           );
+          // TS narrows cancelled/mjpegActive to false from the early-return guard above and
+          // doesn't see that the effect cleanup (a separate closure over the same variables)
+          // can flip them to true while this invoke() call was in flight. Real re-check, not
+          // dead code — do not remove.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (frame && !cancelled) {
             lastSeq = frame.seq;
             await handleFrame(frame);
@@ -233,12 +238,18 @@ export default function ScreenSharePage() {
         } catch {
           // Non-Linux builds and older builds may not expose the polling command.
         } finally {
+          // Same post-await re-check as above.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (!cancelled && !mjpegActive) {
-            pollFrameId = requestAnimationFrame(pollLatestFrame);
+            pollFrameId = requestAnimationFrame(() => {
+              void pollLatestFrame();
+            });
           }
         }
       };
-      pollFrameId = requestAnimationFrame(pollLatestFrame);
+      pollFrameId = requestAnimationFrame(() => {
+        void pollLatestFrame();
+      });
 
       invoke<string>('media_get_screen_share_stream_url', { identity: nativeIdentity })
         .then((url) => {
@@ -279,8 +290,8 @@ export default function ScreenSharePage() {
       return () => {
         cancelled = true;
         if (pollFrameId !== null) cancelAnimationFrame(pollFrameId);
-        unlistenLinux.then((fn) => fn());
-        unlistenWindows.then((fn) => fn());
+        void unlistenLinux.then((fn) => fn());
+        void unlistenWindows.then((fn) => fn());
       };
     }
 
@@ -310,20 +321,26 @@ export default function ScreenSharePage() {
       });
       void emit('viewer-subscribed', { targetId: p.participantId });
 
+      // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always-defined
+      // even though an audio-only stream (no video track) makes it genuinely undefined —
+      // every `vt`/`!vt` check below guards a real case, not dead code.
       const vt = s.getVideoTracks()[0];
       const updateDebug = () => {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (cancelled || !vt) return;
         setDebugInfo(`viewer: ${vt.readyState}, muted=${vt.muted}, enabled=${vt.enabled}`);
       };
       updateDebug();
       // Poll track state every second to detect muted→unmuted transitions
       const pollId = setInterval(updateDebug, 1000);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (vt) {
         vt.addEventListener('unmute', updateDebug);
         vt.addEventListener('mute', updateDebug);
       }
       debugCleanup = () => {
         clearInterval(pollId);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (vt) {
           vt.removeEventListener('unmute', updateDebug);
           vt.removeEventListener('mute', updateDebug);
@@ -359,10 +376,10 @@ export default function ScreenSharePage() {
 
   useEffect(() => {
     const unlisten = listen('screen-share:close', () => {
-      getCurrentWindow().close();
+      void getCurrentWindow().close();
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -370,10 +387,10 @@ export default function ScreenSharePage() {
   // window closed, user kicked, or leaveRoom() called for any reason).
   useEffect(() => {
     const unlisten = listen('voice-session:ended', () => {
-      getCurrentWindow().close();
+      void getCurrentWindow().close();
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -384,7 +401,7 @@ export default function ScreenSharePage() {
       await emit('screen-share:closed', { participantId: p?.participantId });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [p]);
 
@@ -399,7 +416,7 @@ export default function ScreenSharePage() {
       },
     );
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, [p]);
 
@@ -411,7 +428,7 @@ export default function ScreenSharePage() {
       });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -423,7 +440,7 @@ export default function ScreenSharePage() {
       },
     );
     return () => {
-      unlisten.then((fn) => fn());
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -521,17 +538,17 @@ export default function ScreenSharePage() {
 
   const handleQualityChange = (q: ShareQuality) => {
     setQuality(q);
-    emit('screen-share:quality', { quality: q });
+    void emit('screen-share:quality', { quality: q });
   };
 
   const handleToggleAudio = () => {
     const next = !sharingAudio;
     setSharingAudio(next);
-    emit('screen-share:toggle-audio', { withAudio: next });
+    void emit('screen-share:toggle-audio', { withAudio: next });
   };
 
   const handleChangeSource = () => {
-    emit('screen-share:change-source', {});
+    void emit('screen-share:change-source', {});
   };
 
   const handleVolumeChange = useCallback(
@@ -539,7 +556,10 @@ export default function ScreenSharePage() {
       if (!p) return;
       setVolume(nextVolume);
       setMuted(nextVolume === 0);
-      emit('screen-share:volume-change', { participantId: p.participantId, volume: nextVolume });
+      void emit('screen-share:volume-change', {
+        participantId: p.participantId,
+        volume: nextVolume,
+      });
     },
     [p],
   );
@@ -548,7 +568,7 @@ export default function ScreenSharePage() {
     if (!p) return;
     setMuted((prev) => {
       const nextMuted = !prev;
-      emit('screen-share:mute-change', { participantId: p.participantId, muted: nextMuted });
+      void emit('screen-share:mute-change', { participantId: p.participantId, muted: nextMuted });
       return nextMuted;
     });
   }, [p, volume]);
@@ -584,7 +604,7 @@ export default function ScreenSharePage() {
   }, []);
 
   const handleClose = () => {
-    getCurrentWindow().close();
+    void getCurrentWindow().close();
   };
 
   /** Double-click on video area: request pop-back-in to Watch All grid.
@@ -594,7 +614,7 @@ export default function ScreenSharePage() {
     (e: React.MouseEvent) => {
       if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
       if (!p) return;
-      emit('screen-share:pop-back-in', { participantId: p.participantId });
+      void emit('screen-share:pop-back-in', { participantId: p.participantId });
     },
     [p],
   );

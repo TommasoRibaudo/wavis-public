@@ -17,10 +17,9 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["node"],
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@features/*": ["src/features/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@features/*": ["./src/features/*"]
     }
   },
   "include": ["src"]

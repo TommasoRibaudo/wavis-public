@@ -95,6 +95,7 @@ import {
   normalizeLinuxCompositor,
   normalizeLinuxDesktopEnv,
 } from './linux-capability-normalize';
+import { parseSignalingMessage } from './signaling/parse';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
   playNotificationSound,
@@ -437,6 +438,10 @@ function makeShareSessionId(): string {
   return `share-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+interface MediaTokenPayload {
+  sub?: unknown;
+}
+
 /** Decode the `sub` (LiveKit participant identity) claim from a media JWT without verifying it. */
 function decodeMediaTokenIdentity(token: string): string | null {
   try {
@@ -444,7 +449,7 @@ function decodeMediaTokenIdentity(token: string): string | null {
     if (parts.length !== 3) return null;
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded));
+    const payload = JSON.parse(atob(padded)) as MediaTokenPayload;
     return typeof payload.sub === 'string' ? payload.sub : null;
   } catch {
     return null;
@@ -688,7 +693,7 @@ function clearSelfAudioActivity(self: RoomParticipant): void {
 }
 
 function setLocalMicPublishing(enabled: boolean): void {
-  lkModule?.setMicEnabled(enabled);
+  void lkModule?.setMicEnabled(enabled);
 }
 
 function detachAllScreenShareAudioPlayback(): void {
@@ -996,12 +1001,14 @@ async function applyProfileSwitch(
  */
 function startAutoSwitchPoll(): () => void {
   let stopped = false;
-  const id = setInterval(async () => {
-    if (stopped || !_motionDetector) return;
-    const recommendation = _motionDetector.currentRecommendation();
-    if (recommendation === _currentShareProfile) return;
-    const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
-    await applyProfileSwitch(recommendation, reason).catch(() => {});
+  const id = setInterval(() => {
+    void (async () => {
+      if (stopped || !_motionDetector) return;
+      const recommendation = _motionDetector.currentRecommendation();
+      if (recommendation === _currentShareProfile) return;
+      const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
+      await applyProfileSwitch(recommendation, reason).catch(() => {});
+    })();
   }, 1_000);
   return () => {
     stopped = true;
@@ -1061,6 +1068,9 @@ function shouldUseNativeMedia(): boolean {
   const hasRtc = 'RTCPeerConnection' in window;
   const hasGetUserMedia =
     'mediaDevices' in navigator &&
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices !== undefined &&
     typeof navigator.mediaDevices.getUserMedia === 'function';
 
@@ -1080,7 +1090,7 @@ function isLinuxPlatform(): boolean {
 }
 
 function getWindowsSharePathOverride(): WindowsSharePath | null {
-  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH;
+  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH as string | undefined;
   return value === 'browser' || value === 'native' ? value : null;
 }
 
@@ -1393,9 +1403,9 @@ export function getPendingSharePickerData(): PendingSharePickerData | null {
 
 function setupSharePickerListener(): void {
   if (unlistenSharePickerRequest) return; // already listening
-  listen('share-picker:request-sources', () => {
+  void listen('share-picker:request-sources', () => {
     if (pendingSharePickerData) {
-      emit('share-picker:sources', pendingSharePickerData);
+      void emit('share-picker:sources', pendingSharePickerData);
     }
   }).then((unlisten) => {
     unlistenSharePickerRequest = unlisten;
@@ -1412,7 +1422,7 @@ function teardownSharePickerListener(): void {
 
 function setupLinuxCaptureFallbackListener(): void {
   if (unlistenLinuxCaptureFallback) return;
-  listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
+  void listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
     emitTelemetryEvent({
       name: 'capture.fallback.activated',
       os: 'linux',
@@ -1437,7 +1447,7 @@ function setupExternalShareHelperListeners(): void {
   if (unlistenExternalShareStarted || unlistenExternalShareStopped || unlistenExternalShareError)
     return;
 
-  listen<{ sessionId: string }>('external-share-started', () => {
+  void listen<{ sessionId: string }>('external-share-started', () => {
     if (state.joinedSubRoomId === null) {
       invoke('external_share_stop').catch(() => {});
       return;
@@ -1456,7 +1466,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStarted = unlisten;
   });
 
-  listen<{ sessionId: string }>('external-share-stopped', () => {
+  void listen<{ sessionId: string }>('external-share-stopped', () => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1473,7 +1483,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStopped = unlisten;
   });
 
-  listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
+  void listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1581,7 +1591,6 @@ function cleanupPublishedMediaForSessionEnd(): void {
     externalShareHelperActive = false;
     if (!sentStopShare && client && client.status === 'connected') {
       client.send({ type: 'stop-share' });
-      sentStopShare = true;
     }
   }
 
@@ -1782,6 +1791,9 @@ async function enumerateVideoInputs(): Promise<MediaDeviceInfo[]> {
   if (
     typeof navigator === 'undefined' ||
     !('mediaDevices' in navigator) ||
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices === undefined ||
     typeof navigator.mediaDevices.enumerateDevices !== 'function'
   ) {
@@ -2508,25 +2520,34 @@ function connectMedia(
       }
     },
     onAudioLevels: (levels) => {
+      // Audio levels arrive at ~20Hz per participant, but only the isSpeaking
+      // transition is rendered (see voiceIcon in ActiveRoom.tsx) — notifying
+      // on every tick forces a full re-render of the room UI for no visible
+      // change. Only broadcast when a participant's speaking state flips.
+      let changed = false;
       for (const [identity, data] of levels) {
         const participantId = participantIdForLiveKitIdentity(identity);
         const p = state.participants.find((pp) => pp.id === participantId);
         if (p) {
           p.rmsLevel = data.rmsLevel;
+          const wasSpeaking = p.isSpeaking;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
+          if (p.isSpeaking !== wasSpeaking) changed = true;
         } else {
           warnUnknownIdentity(identity);
         }
       }
-      notify();
+      if (changed) notify();
     },
     onLocalAudioLevel: (level) => {
       updateSelfRms(level);
     },
     onActiveSpeakers: (speakerIdentities) => {
       const speakerParticipantIds = speakerIdentities.map(participantIdForLiveKitIdentity);
+      let changed = false;
       for (const p of state.participants) {
         const isSpeaker = speakerParticipantIds.includes(p.id);
+        const wasSpeaking = p.isSpeaking;
         if (isSpeaker && !p.isMuted) {
           // Boost the smoothed RMS in the tracker so the debounce logic
           // converges to speaking within 1–2 frames instead of fighting
@@ -2542,13 +2563,24 @@ function connectMedia(
             p.isMuted,
           );
           p.rmsLevel = Math.max(p.rmsLevel, RMS_START_THRESHOLD + 0.05);
-        } else if (!isSpeaker && p.isSpeaking) {
-          // Let the tracker decay naturally — feed a zero-level sample
-          // so the EMA + debounce handles the off-transition smoothly.
-          p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+        } else if (!isSpeaker) {
+          if (p.isSpeaking) {
+            // Let the tracker decay naturally — feed a zero-level sample
+            // so the EMA + debounce handles the off-transition smoothly.
+            p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+          }
+          // Always clear rmsLevel here, even when isSpeaking was already
+          // false — the boost branch above can set rmsLevel via Math.max
+          // without necessarily flipping isSpeaking through the debounce
+          // (a hangover flap), which would otherwise freeze rmsLevel at
+          // 0.11 forever (above the 0.03 threshold other code checks
+          // against). Harmless: the analyser rewrites a real value within
+          // 50ms whenever audio actually decodes.
+          p.rmsLevel = 0;
         }
+        if (p.isSpeaking !== wasSpeaking) changed = true;
       }
-      notify();
+      if (changed) notify();
     },
     onConnectionQuality: (stats) => {
       state.networkStats = stats;
@@ -2627,7 +2659,7 @@ function connectMedia(
         if (state.joinedSubRoomId === null) {
           clearSelfAudioActivity(p);
           if (!isMuted) {
-            lkModule?.setMicEnabled(false);
+            void lkModule?.setMicEnabled(false);
           }
           notify();
           return;
@@ -2679,6 +2711,9 @@ function connectMedia(
     onRemoteCameraMutedChanged: (identity, muted) => {
       const participantId = participantIdForLiveKitIdentity(identity);
       const current = remoteCameraTilesById[participantId];
+      // Without noUncheckedIndexedAccess, TS types Record index access as always
+      // defined even though a missing key makes it genuinely undefined at runtime.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!current) {
         return;
       }
@@ -2782,8 +2817,17 @@ function connectMedia(
 /* ─── Signaling Dispatcher ──────────────────────────────────────── */
 
 function dispatchMessage(raw: unknown): void {
-  const msg = raw as Record<string, unknown>;
-  const type = msg.type as string;
+  const parsed = parseSignalingMessage(raw);
+  if (parsed.kind === 'invalid') {
+    console.warn(LOG, 'invalid message received:', raw);
+    return;
+  }
+  if (parsed.kind === 'unknown') {
+    console.warn(LOG, 'unknown message type:', parsed.type);
+    return;
+  }
+  const msg = parsed.msg;
+  const type = msg.type;
 
   // Diagnostic: log media_token arrival
   if (type === 'media_token' || type === 'joined') {
@@ -2830,17 +2874,17 @@ function dispatchMessage(raw: unknown): void {
           LOG,
           `auth_failed — refreshing token (attempt ${authRefreshRetries}/${MAX_AUTH_REFRESH_RETRIES})`,
         );
-        refreshTokens().then((result) => {
+        void refreshTokens().then((result) => {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
-            state.error = (msg.reason as string) || 'Authentication failed';
+            state.error = msg.reason || 'Authentication failed';
             playLocalDisconnectSoundOnce();
             cleanupPublishedMediaForSessionEnd();
             state.machineState = 'idle';
             notify();
             return;
           }
-          getServerUrl().then((serverUrl) => {
+          void getServerUrl().then((serverUrl) => {
             if (!serverUrl || !client) return;
             client.reconnectWithNewToken(toWsUrl(serverUrl)).catch((err) => {
               console.error(LOG, 'reconnect after refresh failed:', err);
@@ -2855,7 +2899,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      state.error = (msg.reason as string) || 'Authentication failed';
+      state.error = msg.reason || 'Authentication failed';
       if (client) {
         client.disconnect();
       }
@@ -2871,49 +2915,39 @@ function dispatchMessage(raw: unknown): void {
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
       state.lastRateLimitError = null;
-      state.selfParticipantId = msg.peerId as string;
-      state.roomId = msg.roomId as string;
-      bufferedIceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ?? null;
+      state.selfParticipantId = msg.peerId;
+      state.roomId = msg.roomId;
+      bufferedIceConfig = msg.iceConfig ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
       }
       syncDerivedSubRoomState();
       syncDesiredSubRoomPreference();
-      state.sharePermission =
-        (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
-      const participants = (msg.participants as Array<Record<string, unknown>>) || [];
+      state.sharePermission = msg.sharePermission === 'host_only' ? 'host_only' : 'anyone';
+      const participants = msg.participants || [];
       const incomingParticipants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const pUserId = p.userId as string | undefined;
+        const pUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: pUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: pUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: pUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
         };
@@ -2974,7 +3008,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'join_rejected': {
-      const rawReason = (msg.reason as string) || 'unknown';
+      const rawReason = msg.reason || 'unknown';
       console.warn(LOG, `join_rejected reason=${rawReason} channelId=${state.channelId}`);
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
@@ -2982,7 +3016,7 @@ function dispatchMessage(raw: unknown): void {
         cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
-        state.rejectionReason = (msg.reason as string) || 'Server failed to start';
+        state.rejectionReason = msg.reason || 'Server failed to start';
         notify();
         break;
       }
@@ -3010,15 +3044,15 @@ function dispatchMessage(raw: unknown): void {
 
     case 'participant_joined': {
       if (state.participants.length >= MAX_PARTICIPANTS) return;
-      const pjId = msg.participantId as string;
-      const pjName = msg.displayName as string;
-      const pjUserId = msg.userId as string | undefined;
+      const pjId = msg.participantId;
+      const pjName = msg.displayName;
+      const pjUserId = msg.userId;
       displayNameCache.set(pjId, pjName);
       const newParticipant: RoomParticipant = {
         id: pjId,
         userId: pjUserId,
         displayName: pjName,
-        color: (msg.profileColor as string | undefined) ?? colorFor({ userId: pjUserId, id: pjId }),
+        color: msg.profileColor ?? colorFor({ userId: pjUserId, id: pjId }),
         role: 'guest',
         isSpeaking: false,
         isMuted: false,
@@ -3045,7 +3079,7 @@ function dispatchMessage(raw: unknown): void {
     case 'participant_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const leftId = msg.participantId as string;
+      const leftId = msg.participantId;
       const leftP = state.participants.find((p) => p.id === leftId);
       mediaConnectedParticipantIds.delete(leftId);
       suppressReconnectJoinForParticipantIds.delete(leftId);
@@ -3093,10 +3127,10 @@ function dispatchMessage(raw: unknown): void {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const previousPassthrough = state.passthrough;
-      const rooms = ((msg.rooms as Array<Record<string, unknown>>) || [])
+      const rooms = (msg.rooms || [])
         .map((room) => ({
-          id: room.subRoomId as string,
-          roomNumber: room.roomNumber as number,
+          id: room.subRoomId,
+          roomNumber: room.roomNumber,
           isDefault: Boolean(room.isDefault),
           participantIds: Array.isArray(room.participantIds)
             ? (room.participantIds as string[]).slice()
@@ -3105,7 +3139,7 @@ function dispatchMessage(raw: unknown): void {
         }))
         .sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
-      const passthrough = msg.passthrough as Record<string, unknown> | null | undefined;
+      const passthrough = msg.passthrough;
       state.passthrough =
         passthrough &&
         typeof passthrough.sourceSubRoomId === 'string' &&
@@ -3186,11 +3220,11 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'sub_room_created': {
-      const room = msg.room as Record<string, unknown> | undefined;
+      const room = msg.room;
       if (!room) break;
       const createdRoom: VoiceSubRoom = {
-        id: room.subRoomId as string,
-        roomNumber: room.roomNumber as number,
+        id: room.subRoomId,
+        roomNumber: room.roomNumber,
         isDefault: Boolean(room.isDefault),
         participantIds: Array.isArray(room.participantIds)
           ? (room.participantIds as string[]).slice()
@@ -3212,9 +3246,9 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_joined': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
-      const source = (msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
+      const source = msg.source === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
       state.subRooms = state.subRooms.map((room) => {
         if (room.id === subRoomId) {
           return room.participantIds.includes(participantId)
@@ -3275,8 +3309,8 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
       const srlRoom = state.subRooms.find((r) => r.id === subRoomId);
       const srlRoomLabel = srlRoom ? `Room ${srlRoom.roomNumber}` : 'a room';
       state.subRooms = state.subRooms.map((room) =>
@@ -3319,7 +3353,7 @@ function dispatchMessage(raw: unknown): void {
 
     case 'sub_room_deleted': {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const subRoomId = msg.subRoomId as string;
+      const subRoomId = msg.subRoomId;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
@@ -3340,30 +3374,29 @@ function dispatchMessage(raw: unknown): void {
       // room_state contains only pre-join participants (excludes the joiner).
       // Merge with existing list to preserve self and any participants already
       // added via participant_joined that arrived before this snapshot.
-      const rsParticipants = (msg.participants as Array<Record<string, unknown>>) || [];
+      const rsParticipants = msg.participants || [];
       const incoming = rsParticipants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const rsUserId = p.userId as string | undefined;
+        const rsUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: rsUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: rsUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: rsUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
         };
@@ -3400,7 +3433,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_kicked': {
-      const kickedId = msg.participantId as string;
+      const kickedId = msg.participantId;
       const kickedP = state.participants.find((p) => p.id === kickedId);
       mediaConnectedParticipantIds.delete(kickedId);
       suppressReconnectJoinForParticipantIds.delete(kickedId);
@@ -3463,7 +3496,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_muted': {
-      const mutedId = msg.participantId as string;
+      const mutedId = msg.participantId;
       const p = state.participants.find((pp) => pp.id === mutedId);
       if (p) {
         p.isMuted = true;
@@ -3474,7 +3507,7 @@ function dispatchMessage(raw: unknown): void {
           p.isSpeaking = false;
           p.rmsLevel = 0;
         }
-        lkModule?.setMicEnabled(false);
+        void lkModule?.setMicEnabled(false);
         appendEvent({
           id: makeEventId(),
           timestamp: timestamp(),
@@ -3496,7 +3529,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_unmuted': {
-      const unmutedId = msg.participantId as string;
+      const unmutedId = msg.participantId;
       const up = state.participants.find((pp) => pp.id === unmutedId);
       if (up) {
         up.isHostMuted = false;
@@ -3524,7 +3557,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_muted': {
-      const selfMutedId = msg.participantId as string;
+      const selfMutedId = msg.participantId;
       console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
       const smp = state.participants.find((pp) => pp.id === selfMutedId);
       if (smp) {
@@ -3548,7 +3581,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_unmuted': {
-      const selfUnmutedId = msg.participantId as string;
+      const selfUnmutedId = msg.participantId;
       console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
       const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
       if (sup) {
@@ -3570,7 +3603,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_deafened': {
-      const deafId = msg.participantId as string;
+      const deafId = msg.participantId;
       const dp = state.participants.find((pp) => pp.id === deafId);
       if (dp) {
         dp.isDeafened = true;
@@ -3591,7 +3624,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_undeafened': {
-      const undeafId = msg.participantId as string;
+      const undeafId = msg.participantId;
       const udp = state.participants.find((pp) => pp.id === undeafId);
       if (udp) {
         udp.isDeafened = false;
@@ -3612,10 +3645,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_color_updated': {
-      const coloredId = msg.participantId as string;
+      const coloredId = msg.participantId;
       const cp = state.participants.find((pp) => pp.id === coloredId);
       if (cp) {
-        cp.color = msg.profileColor as string;
+        cp.color = msg.profileColor;
       }
       rebuildVideoTiles();
       notify();
@@ -3623,8 +3656,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_username_updated': {
-      const participantId = msg.participantId as string;
-      const username = msg.username as string;
+      const participantId = msg.participantId;
+      const username = msg.username;
       const participant = state.participants.find((pp) => pp.id === participantId);
       if (participant) {
         participant.displayName = username;
@@ -3636,8 +3669,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_started': {
-      const shareStartId = msg.participantId as string;
-      const shareStartName = msg.displayName as string | undefined;
+      const shareStartId = msg.participantId;
+      const shareStartName = msg.displayName;
       const remoteShareType = parseRemoteShareType(msg.shareType);
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
@@ -3696,8 +3729,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_stopped': {
-      const shareStopId = msg.participantId as string;
-      const shareStopName = msg.displayName as string | undefined;
+      const shareStopId = msg.participantId;
+      const shareStopName = msg.displayName;
       const ssp = state.participants.find((pp) => pp.id === shareStopId);
       if (ssp) {
         ssp.isSharing = false;
@@ -3742,9 +3775,9 @@ function dispatchMessage(raw: unknown): void {
 
     case 'share_state': {
       // share_state is an authoritative snapshot — reconcile all participants
-      const shareIds = new Set((msg.participantIds as string[]) || []);
+      const shareIds = new Set(msg.participantIds || []);
       const typedShares = new Map<string, RemoteShareType | undefined>(
-        ((msg.activeShares as Array<{ participantId: string; shareType?: unknown }>) || []).map(
+        (msg.activeShares || []).map(
           (share) =>
             [share.participantId, parseRemoteShareType(share.shareType)] as [
               string,
@@ -3808,7 +3841,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_permission_changed': {
-      const newPerm = (msg.permission as string) === 'host_only' ? 'host_only' : 'anyone';
+      const newPerm = msg.permission === 'host_only' ? 'host_only' : 'anyone';
       const oldPerm = state.sharePermission;
       state.sharePermission = newPerm;
       if (newPerm !== oldPerm) {
@@ -3825,7 +3858,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'error': {
-      const errorMessage = (msg.message as string) || 'Unknown error';
+      const errorMessage = msg.message || 'Unknown error';
       appendEvent({
         id: makeEventId(),
         timestamp: timestamp(),
@@ -3841,7 +3874,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'peer_left': {
-      const peerId = (msg.participantId as string) || (msg.peerId as string);
+      const peerId = msg.participantId || msg.peerId;
       if (peerId) {
         const peerP = state.participants.find((p) => p.id === peerId);
         state.participants = state.participants.filter((p) => p.id !== peerId);
@@ -3866,20 +3899,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'media_token': {
-      const token = msg.token as string;
-      const sfuUrl = msg.sfuUrl as string;
+      const token = msg.token;
+      const sfuUrl = msg.sfuUrl;
       // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
-      const iceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ??
-        bufferedIceConfig ??
-        undefined;
+      const iceConfig = msg.iceConfig ?? bufferedIceConfig ?? undefined;
 
       console.log(LOG, 'media_token received:', {
         hasToken: !!token,
@@ -3950,7 +3973,7 @@ function dispatchMessage(raw: unknown): void {
 
       // When media is in failed state, check if auto-reconnect retries remain
       if (state.mediaState === 'failed') {
-        getReconnectConfig().then((config) => {
+        void getReconnectConfig().then((config) => {
           if (state.mediaReconnectFailures < config.maxRetries) {
             connectMedia(sfuUrl, token, iceConfig);
           } else {
@@ -3972,7 +3995,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'viewer_token': {
-      const windowId = msg.windowId as string;
+      const windowId = msg.windowId;
       const windowLabel = pendingViewerTokenRequests.get(windowId);
       if (!windowLabel) {
         if (DEBUG_VIEWER_CONNECTION) {
@@ -3986,24 +4009,24 @@ function dispatchMessage(raw: unknown): void {
       }
       void emitTo(windowLabel, 'viewer-token:response', {
         windowId,
-        token: msg.token as string,
-        sfuUrl: msg.sfuUrl as string,
-        identity: msg.identity as string,
+        token: msg.token,
+        sfuUrl: msg.sfuUrl,
+        identity: msg.identity,
       });
       break;
     }
 
     case 'chat_message': {
-      const participant = state.participants.find((p) => p.id === (msg.participantId as string));
+      const participant = state.participants.find((p) => p.id === msg.participantId);
       const chatMsg: ChatMessage = {
         id: makeEventId(),
-        messageId: (msg.messageId as string) || undefined,
-        timestamp: msg.timestamp as string,
-        participantId: msg.participantId as string,
-        userId: (msg.userId as string) || undefined,
-        displayName: msg.displayName as string,
+        messageId: msg.messageId || undefined,
+        timestamp: msg.timestamp,
+        participantId: msg.participantId,
+        userId: msg.userId || undefined,
+        displayName: msg.displayName,
         color: participant?.color ?? '',
-        text: msg.text as string,
+        text: msg.text,
       };
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
@@ -4017,14 +4040,14 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'chat_history_response': {
-      const messages = (msg.messages as Array<Record<string, unknown>>) || [];
+      const messages = msg.messages || [];
       const historyPayload = messages.map((m) => ({
-        messageId: m.messageId as string,
-        participantId: m.participantId as string,
-        userId: (m.userId as string) || undefined,
-        displayName: m.displayName as string,
-        text: m.text as string,
-        timestamp: m.timestamp as string,
+        messageId: m.messageId,
+        participantId: m.participantId,
+        userId: m.userId || undefined,
+        displayName: m.displayName,
+        text: m.text,
+        timestamp: m.timestamp,
       }));
       state.chatMessages = mergeHistoryMessages(historyPayload, state.chatMessages);
       state.historyLoaded = true;
@@ -4099,7 +4122,7 @@ export function initSession(
 
   // Forward viewer-subscribed events from WatchAllPage/ScreenSharePage to the signaling server
   if (!unlistenViewerJoined) {
-    listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
+    void listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
       if (client) {
         client.send({ type: 'viewer_subscribed', targetId: payload.targetId });
       }
@@ -4112,19 +4135,22 @@ export function initSession(
   // signaling server over this window's WS and relay the response back to the
   // requesting window (children have no WS of their own).
   if (!unlistenViewerTokenRequest) {
-    listen<{ windowId: string; windowLabel: string }>('viewer-token:request', ({ payload }) => {
-      if (!payload?.windowId || !payload?.windowLabel) return;
-      pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
-      if (DEBUG_VIEWER_CONNECTION) {
-        console.log(
-          LOG,
-          `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
-        );
-      }
-      if (client) {
-        client.send({ type: 'request_viewer_token', windowId: payload.windowId });
-      }
-    }).then((unlisten) => {
+    void listen<{ windowId: string; windowLabel: string }>(
+      'viewer-token:request',
+      ({ payload }) => {
+        if (!payload.windowId || !payload.windowLabel) return;
+        pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
+        if (DEBUG_VIEWER_CONNECTION) {
+          console.log(
+            LOG,
+            `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
+          );
+        }
+        if (client) {
+          client.send({ type: 'request_viewer_token', windowId: payload.windowId });
+        }
+      },
+    ).then((unlisten) => {
       unlistenViewerTokenRequest = unlisten;
     });
   }
@@ -4196,14 +4222,14 @@ export function initSession(
   });
 
   // Connect with auth
-  getServerUrl().then((serverUrl) => {
+  void getServerUrl().then((serverUrl) => {
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
     // Load display name, default volume, profile color, persisted channel volumes,
     // notification volumes, and the Windows share-path preference before connecting.
     // Notification volumes are pre-cached here so playNotificationSound() on the
     // first join does not make IPC calls that break the user-activation chain.
-    Promise.all([
+    void Promise.all([
       getUsername(),
       getDefaultVolume(),
       getProfileColor(),
@@ -4310,6 +4336,10 @@ export function leaveRoom(): void {
     clearTimeout(volumeSaveTimer);
     volumeSaveTimer = null;
     const flushParticipantVols: Record<string, number> = {
+      // channelVolumePrefs is deserialized from a Tauri-persisted JSON store
+      // with no runtime validation — older/malformed persisted data can
+      // genuinely lack `participants` despite the type declaring it required.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       ...(channelVolumePrefs.participants ?? {}),
     };
     for (const p of state.participants) {
@@ -4417,7 +4447,7 @@ function startPeriodicMediaRetry(): void {
     console.log(LOG, 'periodic media retry attempt');
     state.mediaReconnectFailures = 0;
     lastReconnectMediaTime = 0;
-    reconnectMedia();
+    void reconnectMedia();
   }, PERIODIC_MEDIA_RETRY_MS);
 }
 
@@ -4513,11 +4543,11 @@ export function toggleSelfMute(): void {
   }
   if (state.joinedSubRoomId === null) {
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     notify();
     return;
   }
-  lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+  void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
   client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
@@ -4550,11 +4580,11 @@ export function toggleSelfDeafen(): void {
     }
     clearSelfAudioActivity(self);
     if (state.joinedSubRoomId === null) {
-      lkModule?.setMicEnabled(false);
+      void lkModule?.setMicEnabled(false);
       notify();
       return;
     }
-    lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+    void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
       id: makeEventId(),
@@ -4576,7 +4606,7 @@ export function toggleSelfDeafen(): void {
       self.isMuted = true;
     }
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     if (state.joinedSubRoomId === null) {
       notify();
       return;
@@ -4965,7 +4995,7 @@ export async function startCustomShare(
           console.log(
             LOG,
             '[wasapi] lkModule:',
-            lkModule?.constructor?.name,
+            lkModule?.constructor.name,
             'is LiveKitModule:',
             lkModule instanceof LiveKitModule,
           );
@@ -5278,7 +5308,7 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
     console.log(LOG, '[share-audio] toggleShareAudio called', {
       withAudio,
       hasLkModule: !!lkModule,
-      lkModuleType: lkModule?.constructor?.name,
+      lkModuleType: lkModule?.constructor.name,
       userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } })
         .userActivation?.isActive,
     });
@@ -5578,8 +5608,13 @@ export function updateSelfRms(level: number): void {
   const p = state.participants.find((pp) => pp.id === state.selfParticipantId);
   if (!p) return;
   p.rmsLevel = level;
+  // The local mic monitor polls every 50ms for the lifetime of the call, but
+  // rmsLevel itself isn't rendered — only the isSpeaking transition is. Skip
+  // the broadcast (and the full ActiveRoom re-render it triggers) on ticks
+  // that don't actually flip speaking state.
+  const wasSpeaking = p.isSpeaking;
   p.isSpeaking = updateSpeakingTracker(p.id, level, p.isSpeaking, p.isMuted);
-  notify();
+  if (p.isSpeaking !== wasSpeaking) notify();
 }
 
 /* ─── Screen Share Audio ─────────────────────────────────────────── */

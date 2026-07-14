@@ -83,7 +83,6 @@ import {
 import { redactToken } from '@shared/helpers';
 import { useDebug } from '@shared/debug-context';
 import {
-  formatHotkeyCombination,
   unregisterMuteHotkey,
   unregisterWatchAllHotkey,
   unregisterFocusMainHotkey,
@@ -94,6 +93,7 @@ import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
 import ChannelDetail from '@features/channels/ChannelDetail';
+import { useHotkeyRecorder } from './useHotkeyRecorder';
 
 /* ─── Audio Types ───────────────────────────────────────────────── */
 interface AudioDevice {
@@ -204,7 +204,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const handleNavigateAway = useCallback(
     (path: string) => {
       if (onNavigateAway) onNavigateAway(path);
-      else navigate(path);
+      else void navigate(path);
     },
     [onNavigateAway, navigate],
   );
@@ -212,7 +212,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const handleAuthNavigateAway = useCallback(
     (path: string) => {
       if (onNavigateAway) onNavigateAway(path);
-      else navigate(path, { replace: true });
+      else void navigate(path, { replace: true });
     },
     [onNavigateAway, navigate],
   );
@@ -269,19 +269,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
   const [notificationVolume, setNotificationVolumeState] = useState<number>(50);
   const [soundVolumes, setSoundVolumesState] = useState<Record<string, number>>({});
   const [showSoundVolumes, setShowSoundVolumes] = useState(false);
-  const [recordingHotkey, setRecordingHotkey] = useState(false);
-  const [recordedModifiers, setRecordedModifiers] = useState<string[]>([]);
-  const [_recordedKey, setRecordedKey] = useState<string | null>(null);
-  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  const [recordingWatchAllHotkey, setRecordingWatchAllHotkey] = useState(false);
-  const [recordedWatchAllModifiers, setRecordedWatchAllModifiers] = useState<string[]>([]);
-  const [_recordedWatchAllKey, setRecordedWatchAllKey] = useState<string | null>(null);
-  const [watchAllHotkeyError, setWatchAllHotkeyError] = useState<string | null>(null);
   const [focusMainHotkey, setFocusMainHotkeyState] = useState<string>(DEFAULT_FOCUS_MAIN_HOTKEY);
-  const [recordingFocusMainHotkey, setRecordingFocusMainHotkey] = useState(false);
-  const [recordedFocusMainModifiers, setRecordedFocusMainModifiers] = useState<string[]>([]);
-  const [_recordedFocusMainKey, setRecordedFocusMainKey] = useState<string | null>(null);
-  const [focusMainHotkeyError, setFocusMainHotkeyError] = useState<string | null>(null);
   const denoiseStatus = describeDenoiseStatus({
     denoiseEnabled,
     connectionMode: getVoiceRoomState().connectionMode,
@@ -298,27 +286,27 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     : null;
 
   useEffect(() => {
-    getServerUrl().then(setServerUrl);
-    getDeviceId().then(setDeviceId);
-    getUsername().then((name) => setUsernameState(name ?? ''));
-    getProfileColor().then(setSelectedColor);
-    getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
-    getDefaultVolume().then(setVolume);
-    getStoreValue<string>(STORE_KEYS.audioInputDevice, '').then(setSelectedInputDevice);
-    getStoreValue<string>(STORE_KEYS.audioOutputDevice, '').then(setSelectedOutputDevice);
-    getAccessToken().then(setAccessTokenVal);
-    getMinimizeToTray().then(setMinimizeToTrayState);
-    getNotificationToggles().then(setNotifyToggles);
+    void getServerUrl().then(setServerUrl);
+    void getDeviceId().then(setDeviceId);
+    void getUsername().then((name) => setUsernameState(name ?? ''));
+    void getProfileColor().then(setSelectedColor);
+    void getStoreValue(STORE_KEYS.tlsEnabled, true).then(setTlsEnabled);
+    void getDefaultVolume().then(setVolume);
+    void getStoreValue<string>(STORE_KEYS.audioInputDevice, '').then(setSelectedInputDevice);
+    void getStoreValue<string>(STORE_KEYS.audioOutputDevice, '').then(setSelectedOutputDevice);
+    void getAccessToken().then(setAccessTokenVal);
+    void getMinimizeToTray().then(setMinimizeToTrayState);
+    void getNotificationToggles().then(setNotifyToggles);
     setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
     setPassthroughFiltersEnabledState(getVoiceRoomState().passthroughFiltersEnabled);
     setPassthroughFilterStrengthState(getVoiceRoomState().passthroughFilterStrength);
-    getMuteHotkey().then(setMuteHotkeyState);
-    getWatchAllHotkey().then(setWatchAllHotkeyState);
-    getFocusMainHotkey().then(setFocusMainHotkeyState);
-    getDenoiseEnabled().then(setDenoiseEnabledState);
-    getInputVolume().then(setInputVolumeState);
-    getNotificationVolume().then(setNotificationVolumeState);
-    getSoundVolumes().then(setSoundVolumesState);
+    void getMuteHotkey().then(setMuteHotkeyState);
+    void getWatchAllHotkey().then(setWatchAllHotkeyState);
+    void getFocusMainHotkey().then(setFocusMainHotkeyState);
+    void getDenoiseEnabled().then(setDenoiseEnabledState);
+    void getInputVolume().then(setInputVolumeState);
+    void getNotificationVolume().then(setNotificationVolumeState);
+    void getSoundVolumes().then(setSoundVolumesState);
     getVersion()
       .then(setAppVersion)
       .catch(() => {});
@@ -333,7 +321,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     invoke<AudioDevice[]>('list_audio_devices')
       .then(setAudioDevices)
       .catch(() => setAudioError('Failed to load audio devices'));
-    getVideoInputDevice().then(setSelectedVideoDevice);
+    void getVideoInputDevice().then(setSelectedVideoDevice);
     if (supportedCapturePlatform) {
       navigator.mediaDevices
         .enumerateDevices()
@@ -344,7 +332,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   // Startup sync: emit minimize-to-tray-changed to Rust after store loads
   useEffect(() => {
-    getMinimizeToTray().then((enabled) => {
+    void getMinimizeToTray().then((enabled) => {
       emit('minimize-to-tray-changed', { enabled }).catch(() => {});
     });
   }, []);
@@ -365,7 +353,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
   const handleMinimizeToTrayChange = useCallback((checked: boolean) => {
     setMinimizeToTrayState(checked);
-    setMinimizeToTray(checked);
+    void setMinimizeToTray(checked);
     emit('minimize-to-tray-changed', { enabled: checked }).catch(() => {});
   }, []);
 
@@ -435,189 +423,39 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     }
   }, [username]);
 
-  // Hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+  const muteRecorder = useHotkeyRecorder({
+    hotkey: muteHotkey,
+    setHotkeyState: setMuteHotkeyState,
+    persist: setMuteHotkey,
+    unregister: unregisterMuteHotkey,
+    isRegistered: isHotkeyRegistered,
+  });
 
-      // Escape cancels recording
-      if (e.key === 'Escape') {
-        setRecordingHotkey(false);
-        setRecordedModifiers([]);
-        setRecordedKey(null);
-        setHotkeyError(null);
-        return;
-      }
+  const watchAllRecorder = useHotkeyRecorder({
+    hotkey: watchAllHotkey,
+    setHotkeyState: setWatchAllHotkeyState,
+    persist: setWatchAllHotkey,
+    unregister: unregisterWatchAllHotkey,
+    isRegistered: isHotkeyRegistered,
+  });
 
-      // Collect modifiers
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
+  // Re-register new hotkey immediately so it works without reconnecting
+  const handleFocusMainReRegistered = useCallback((combo: string) => {
+    void registerFocusMainHotkey(combo, () => {
+      void getCurrentWindow()
+        .unminimize()
+        .then(() => getCurrentWindow().setFocus());
+    });
+  }, []);
 
-      // Ignore bare modifier presses
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedModifiers(mods);
-        return;
-      }
-
-      // We have a main key — finalize the combo
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedModifiers(mods);
-      setRecordedKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingHotkey(false);
-      setRecordedModifiers([]);
-      setRecordedKey(null);
-      setHotkeyError(null);
-
-      // Persist and register
-      const oldHotkey = muteHotkey;
-      setMuteHotkeyState(combo);
-      setMuteHotkey(combo);
-
-      // Try to re-register if currently registered (active session)
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterMuteHotkey(oldHotkey);
-              // Re-registration will happen via voice-room's hotkey change detection
-            } catch {
-              // best effort
-            }
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingHotkey, muteHotkey]);
-
-  // Watch All hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingWatchAllHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        setRecordingWatchAllHotkey(false);
-        setRecordedWatchAllModifiers([]);
-        setRecordedWatchAllKey(null);
-        setWatchAllHotkeyError(null);
-        return;
-      }
-
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
-
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedWatchAllModifiers(mods);
-        return;
-      }
-
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedWatchAllModifiers(mods);
-      setRecordedWatchAllKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingWatchAllHotkey(false);
-      setRecordedWatchAllModifiers([]);
-      setRecordedWatchAllKey(null);
-      setWatchAllHotkeyError(null);
-
-      const oldHotkey = watchAllHotkey;
-      setWatchAllHotkeyState(combo);
-      setWatchAllHotkey(combo);
-
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterWatchAllHotkey(oldHotkey);
-            } catch {
-              // best effort
-            }
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingWatchAllHotkey, watchAllHotkey]);
-
-  // Focus Main hotkey recording: capture keydown events when in recording mode
-  useEffect(() => {
-    if (!recordingFocusMainHotkey) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        setRecordingFocusMainHotkey(false);
-        setRecordedFocusMainModifiers([]);
-        setRecordedFocusMainKey(null);
-        setFocusMainHotkeyError(null);
-        return;
-      }
-
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push('Ctrl');
-      if (e.shiftKey) mods.push('Shift');
-      if (e.altKey) mods.push('Alt');
-      if (e.metaKey) mods.push('Meta');
-
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        setRecordedFocusMainModifiers(mods);
-        return;
-      }
-
-      const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-      setRecordedFocusMainModifiers(mods);
-      setRecordedFocusMainKey(mainKey);
-
-      const combo = formatHotkeyCombination(mods, mainKey);
-      setRecordingFocusMainHotkey(false);
-      setRecordedFocusMainModifiers([]);
-      setRecordedFocusMainKey(null);
-      setFocusMainHotkeyError(null);
-
-      const oldHotkey = focusMainHotkey;
-      setFocusMainHotkeyState(combo);
-      setFocusMainHotkey(combo);
-
-      isHotkeyRegistered(oldHotkey)
-        .then(async (wasRegistered) => {
-          if (wasRegistered) {
-            try {
-              await unregisterFocusMainHotkey(oldHotkey);
-            } catch {
-              // best effort
-            }
-            // Re-register new hotkey immediately so it works without reconnecting
-            registerFocusMainHotkey(combo, () => {
-              void getCurrentWindow()
-                .unminimize()
-                .then(() => getCurrentWindow().setFocus());
-            });
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [recordingFocusMainHotkey, focusMainHotkey]);
+  const focusMainRecorder = useHotkeyRecorder({
+    hotkey: focusMainHotkey,
+    setHotkeyState: setFocusMainHotkeyState,
+    persist: setFocusMainHotkey,
+    unregister: unregisterFocusMainHotkey,
+    isRegistered: isHotkeyRegistered,
+    onReRegistered: handleFocusMainReRegistered,
+  });
 
   return (
     <div className="h-full flex flex-col min-w-0 bg-wavis-bg font-mono text-wavis-text">
@@ -647,7 +485,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
             </button>
           ) : (
             <button
-              onClick={() => navigate('/')}
+              onClick={() => {
+                void navigate('/');
+              }}
               className="text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
             >
               ← /channels
@@ -807,7 +647,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
               </button>
             ) : !channelId ? (
               <button
-                onClick={() => navigate('/')}
+                onClick={() => {
+                  void navigate('/');
+                }}
                 className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
               >
                 ← /channels
@@ -869,7 +711,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 </button>
                 <div className="border-t border-wavis-text-secondary/30 pt-2 mt-2">
                   <button
-                    onClick={handleLogout}
+                    onClick={() => {
+                      void handleLogout();
+                    }}
                     disabled={loggingOut}
                     className="block text-sm text-wavis-warn hover:text-wavis-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -930,7 +774,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         style={{ backgroundColor: color }}
                         onClick={() => {
                           setSelectedColor(color);
-                          setProfileColor(color);
+                          void setProfileColor(color);
                           updateSessionProfileColor(color);
                         }}
                         aria-label={`Select color ${color}`}
@@ -962,7 +806,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         checked={tlsEnabled}
                         onCheckedChange={(checked: boolean) => {
                           setTlsEnabled(checked);
-                          setStoreValue(STORE_KEYS.tlsEnabled, checked);
+                          void setStoreValue(STORE_KEYS.tlsEnabled, checked);
                         }}
                         aria-label="Toggle TLS verification"
                       />
@@ -997,7 +841,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         onChange={(e) => {
                           const deviceId = e.target.value;
                           setSelectedInputDevice(deviceId);
-                          setStoreValue(STORE_KEYS.audioInputDevice, deviceId);
+                          void setStoreValue(STORE_KEYS.audioInputDevice, deviceId);
                           setAudioDevice(deviceId, 'input').catch(() => {});
                         }}
                         className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
@@ -1020,7 +864,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                             value={inputVolume}
                             onChange={(v) => {
                               setInputVolumeState(v);
-                              setInputVolume(v);
+                              void setInputVolume(v);
                               setAudioInputVolume(v).catch(() => {});
                             }}
                           />
@@ -1043,7 +887,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         onChange={(e) => {
                           const deviceId = e.target.value;
                           setSelectedOutputDevice(deviceId);
-                          setStoreValue(STORE_KEYS.audioOutputDevice, deviceId);
+                          void setStoreValue(STORE_KEYS.audioOutputDevice, deviceId);
                           setAudioDevice(deviceId, 'output').catch(() => {});
                         }}
                         className="w-full bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
@@ -1094,7 +938,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                         value={notificationVolume}
                         onChange={(v) => {
                           setNotificationVolumeState(v);
-                          setNotificationVolume(v);
+                          void setNotificationVolume(v);
                           updateCachedNotificationVolume(v);
                         }}
                       />
@@ -1128,7 +972,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                                   onChange={(next_v) => {
                                     const next = { ...soundVolumes, [key]: next_v };
                                     setSoundVolumesState(next);
-                                    setSoundVolumes(next);
+                                    void setSoundVolumes(next);
                                     updateCachedSoundVolumes(next);
                                   }}
                                 />
@@ -1147,7 +991,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">Noise Suppression (RNNoise)</span>
                   <Switch
                     checked={denoiseEnabled}
-                    onCheckedChange={handleDenoiseToggle}
+                    onCheckedChange={(checked) => {
+                      void handleDenoiseToggle(checked);
+                    }}
                     aria-label="Toggle noise suppression"
                   />
                 </div>
@@ -1232,79 +1078,66 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">Mute toggle hotkey</label>
                   <button
-                    onClick={() => {
-                      setRecordingHotkey(true);
-                      setRecordedModifiers([]);
-                      setRecordedKey(null);
-                      setHotkeyError(null);
-                    }}
+                    onClick={muteRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record mute hotkey"
                   >
-                    {recordingHotkey
-                      ? recordedModifiers.length > 0
-                        ? `${recordedModifiers.join('+')}+...`
+                    {muteRecorder.recording
+                      ? muteRecorder.modifiers.length > 0
+                        ? `${muteRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : muteHotkey}
                   </button>
                 </div>
-                {recordingHotkey && (
+                {muteRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {hotkeyError && <p className="text-wavis-danger text-xs">{hotkeyError}</p>}
+                {muteRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{muteRecorder.error}</p>
+                )}
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">
                     Watch All toggle hotkey
                   </label>
                   <button
-                    onClick={() => {
-                      setRecordingWatchAllHotkey(true);
-                      setRecordedWatchAllModifiers([]);
-                      setRecordedWatchAllKey(null);
-                      setWatchAllHotkeyError(null);
-                    }}
+                    onClick={watchAllRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record watch all hotkey"
                   >
-                    {recordingWatchAllHotkey
-                      ? recordedWatchAllModifiers.length > 0
-                        ? `${recordedWatchAllModifiers.join('+')}+...`
+                    {watchAllRecorder.recording
+                      ? watchAllRecorder.modifiers.length > 0
+                        ? `${watchAllRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : watchAllHotkey}
                   </button>
                 </div>
-                {recordingWatchAllHotkey && (
+                {watchAllRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {watchAllHotkeyError && (
-                  <p className="text-wavis-danger text-xs">{watchAllHotkeyError}</p>
+                {watchAllRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{watchAllRecorder.error}</p>
                 )}
                 <div>
                   <label className="text-wavis-text-secondary block mb-1">
                     Focus main window hotkey
                   </label>
                   <button
-                    onClick={() => {
-                      setRecordingFocusMainHotkey(true);
-                      setRecordedFocusMainModifiers([]);
-                      setRecordedFocusMainKey(null);
-                      setFocusMainHotkeyError(null);
-                    }}
+                    onClick={focusMainRecorder.startRecording}
                     className="w-full text-left bg-wavis-bg border border-wavis-text-secondary text-wavis-text font-mono text-sm px-2 py-1 outline-none focus:border-wavis-accent"
                     aria-label="Record focus main hotkey"
                   >
-                    {recordingFocusMainHotkey
-                      ? recordedFocusMainModifiers.length > 0
-                        ? `${recordedFocusMainModifiers.join('+')}+...`
+                    {focusMainRecorder.recording
+                      ? focusMainRecorder.modifiers.length > 0
+                        ? `${focusMainRecorder.modifiers.join('+')}+...`
                         : 'Press keys...'
                       : focusMainHotkey}
                   </button>
                 </div>
-                {recordingFocusMainHotkey && (
+                {focusMainRecorder.recording && (
                   <p className="text-xs text-wavis-text-secondary">Press Escape to cancel</p>
                 )}
-                {focusMainHotkeyError && (
-                  <p className="text-wavis-danger text-xs">{focusMainHotkeyError}</p>
+                {focusMainRecorder.error && (
+                  <p className="text-wavis-danger text-xs">{focusMainRecorder.error}</p>
                 )}
               </div>
             </div>
@@ -1331,7 +1164,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                       checked={notifyToggles[key]}
                       onCheckedChange={(checked: boolean) => {
                         setNotifyToggles((prev) => ({ ...prev, [key]: checked }));
-                        setNotificationToggle(key, checked);
+                        void setNotificationToggle(key, checked);
                       }}
                     />
                   </div>
@@ -1447,7 +1280,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">sounds: </span>
                   <span>Universfield, floraphonic, humordome, pixabay, SoundReality - </span>
                   <button
-                    onClick={() => open('https://pixabay.com')}
+                    onClick={() => {
+                      void open('https://pixabay.com');
+                    }}
                     className="hover:text-wavis-accent hover:underline"
                   >
                     pixabay.com
@@ -1457,7 +1292,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                   <span className="text-wavis-text-secondary">icons: </span>
                   <span>video camera by Kiranshastry — </span>
                   <button
-                    onClick={() => open('https://www.flaticon.com/free-icons/video-camera')}
+                    onClick={() => {
+                      void open('https://www.flaticon.com/free-icons/video-camera');
+                    }}
                     className="hover:text-wavis-accent hover:underline"
                   >
                     flaticon.com
@@ -1492,7 +1329,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     requiredText="RESET"
                     busy={resetting}
                     busyLabel="resetting..."
-                    onConfirm={handleReset}
+                    onConfirm={() => {
+                      void handleReset();
+                    }}
                     onCancel={() => setShowConfirm(false)}
                   />
                 )}

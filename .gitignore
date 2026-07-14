@@ -59,7 +59,6 @@ tools/agent-memory/
 .codex
 .codex/
 CLAUDE.md
-GEMINI.md
 AGENTS.md
 CODEX.md
 codex-*.txt
@@ -84,4 +83,4 @@ clients/shared/SECURITY.md
 deploy/MIGRATION-RUNBOOK.md
 /compat-results
 /tools/compat
-clients/wavis-gui/bash.exe.stackdump
+*.stackdump

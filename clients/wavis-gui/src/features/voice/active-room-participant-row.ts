@@ -1,7 +1,7 @@
 import type { RoomParticipant } from './voice-room';
 
 export function participantNameVisualState(
-  p: RoomParticipant,
+  p: Pick<RoomParticipant, 'mediaConnected' | 'color' | 'isSpeaking' | 'isMuted'>,
   isSelf = false,
 ): {
   color: string;

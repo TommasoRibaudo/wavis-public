@@ -11,7 +11,12 @@ import { load } from '@tauri-apps/plugin-store';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 // --- Constants ---
-const STORE_NAME = 'wavis-auth.json';
+/**
+ * Overridable so live-backend e2e runs (clients/wavis-gui/e2e-tooling) can
+ * point at a store file distinct from a developer's real persisted session
+ * on the same machine — see VITE_AUTH_STORE_NAME in .env.example.
+ */
+const STORE_NAME = import.meta.env.VITE_AUTH_STORE_NAME || 'wavis-auth.json';
 /** Fallback TTL if JWT exp parsing fails */
 const ACCESS_TOKEN_TTL_SECS = 900;
 const LOG_PREFIX = '[wavis:auth]';

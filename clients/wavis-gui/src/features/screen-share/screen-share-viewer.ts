@@ -86,6 +86,10 @@ function preferH264(transceiver: RTCRtpTransceiver): void {
       typeof transceiver.setCodecPreferences !== 'function'
     )
       return;
+    // TS's lib.dom types getCapabilities as always-present, but some runtimes (test
+    // environments) genuinely lack it despite typeof RTCRtpSender !== 'undefined'.
+    // Do not remove this optional chain.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     const caps = RTCRtpSender.getCapabilities?.('video');
     if (!caps) return;
     const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
@@ -103,28 +107,30 @@ function preferH264(transceiver: RTCRtpTransceiver): void {
  * names = GPU). Sampled once, shortly after the connection is established.
  */
 function logEncoderStats(key: string, pc: RTCPeerConnection): void {
-  setTimeout(async () => {
-    try {
-      const stats = await pc.getStats();
-      stats.forEach((s) => {
-        const stat = s as {
-          type?: string;
-          kind?: string;
-          encoderImplementation?: string;
-          frameWidth?: number;
-          frameHeight?: number;
-          framesPerSecond?: number;
-        };
-        if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
-          console.log(
-            LOG,
-            `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`,
-          );
-        }
-      });
-    } catch {
-      // stats are best-effort diagnostics
-    }
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const stats = await pc.getStats();
+        stats.forEach((s) => {
+          const stat = s as {
+            type?: string;
+            kind?: string;
+            encoderImplementation?: string;
+            frameWidth?: number;
+            frameHeight?: number;
+            framesPerSecond?: number;
+          };
+          if (stat.type === 'outbound-rtp' && stat.kind === 'video') {
+            console.log(
+              LOG,
+              `sender[${key}] encoder=${stat.encoderImplementation ?? 'unknown'} ${stat.frameWidth}x${stat.frameHeight}@${stat.framesPerSecond ?? '?'}fps`,
+            );
+          }
+        });
+      } catch {
+        // stats are best-effort diagnostics
+      }
+    })();
   }, 2000);
 }
 
@@ -186,7 +192,7 @@ export async function startSending(
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
-      emit(`ss-bridge:ice-sender:${key}`, { candidate: JSON.stringify(e.candidate) });
+      void emit(`ss-bridge:ice-sender:${key}`, { candidate: JSON.stringify(e.candidate) });
     }
   };
 
@@ -199,7 +205,7 @@ export async function startSending(
   const sendOffer = () => {
     const e = senders.get(key);
     if (e?.offerSdp) {
-      emit(`ss-bridge:offer:${key}`, { sdp: e.offerSdp });
+      void emit(`ss-bridge:offer:${key}`, { sdp: e.offerSdp });
     }
   };
 
@@ -214,33 +220,35 @@ export async function startSending(
     listen<{ candidate: string }>(`ss-bridge:ice-receiver:${key}`, (event) => {
       const e = senders.get(key);
       if (!e) return;
-      const candidate = JSON.parse(event.payload.candidate);
+      const candidate = JSON.parse(event.payload.candidate) as RTCIceCandidateInit;
       e.pc.addIceCandidate(candidate).catch((err) => {
         console.warn(LOG, `sender[${key}] addIceCandidate failed:`, err);
       });
     }),
-    listen<{ sdp: string }>(`ss-bridge:answer:${key}`, async (event) => {
-      const e = senders.get(key);
-      if (!e) return;
-      // Guard: only accept an answer when we have a local offer pending.
-      // Duplicate offers can cause duplicate answers — ignore if already stable.
-      if (processingAnswer || e.pc.signalingState !== 'have-local-offer') {
-        console.warn(
-          LOG,
-          `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`,
-        );
-        return;
-      }
-      processingAnswer = true;
-      try {
-        await e.pc.setRemoteDescription({ type: 'answer', sdp: event.payload.sdp });
-        console.log(LOG, `sender[${key}] got answer, connection established`);
-        if (DEBUG_SHARE_VIEW) logEncoderStats(key, e.pc);
-      } catch (err) {
-        console.warn(LOG, `sender[${key}] setRemoteDescription(answer) failed:`, err);
-      } finally {
-        processingAnswer = false;
-      }
+    listen<{ sdp: string }>(`ss-bridge:answer:${key}`, (event) => {
+      void (async () => {
+        const e = senders.get(key);
+        if (!e) return;
+        // Guard: only accept an answer when we have a local offer pending.
+        // Duplicate offers can cause duplicate answers — ignore if already stable.
+        if (processingAnswer || e.pc.signalingState !== 'have-local-offer') {
+          console.warn(
+            LOG,
+            `sender[${key}] ignoring duplicate answer, signalingState=${e.pc.signalingState}`,
+          );
+          return;
+        }
+        processingAnswer = true;
+        try {
+          await e.pc.setRemoteDescription({ type: 'answer', sdp: event.payload.sdp });
+          console.log(LOG, `sender[${key}] got answer, connection established`);
+          if (DEBUG_SHARE_VIEW) logEncoderStats(key, e.pc);
+        } catch (err) {
+          console.warn(LOG, `sender[${key}] setRemoteDescription(answer) failed:`, err);
+        } finally {
+          processingAnswer = false;
+        }
+      })();
     }),
     listen(`ss-bridge:receiver-ready:${key}`, () => {
       console.log(LOG, `sender[${key}] got receiver-ready`);
@@ -322,6 +330,10 @@ export async function resendStream(
   if (existing && existing.pc.connectionState === 'connected') {
     const newVideoTrack = stream.getVideoTracks()[0];
     const videoSender = existing.pc.getSenders().find((s) => s.track?.kind === 'video');
+    // Without noUncheckedIndexedAccess, TS types getVideoTracks()[0] as always-defined
+    // even though an empty track array (stream with no video) makes it genuinely
+    // undefined at runtime.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (newVideoTrack && videoSender) {
       try {
         applyScreenContentHint(newVideoTrack);
@@ -456,7 +468,9 @@ export class StreamReceiver {
 
           this.pc.onicecandidate = (e) => {
             if (e.candidate) {
-              emit(`ss-bridge:ice-receiver:${key}`, { candidate: JSON.stringify(e.candidate) });
+              void emit(`ss-bridge:ice-receiver:${key}`, {
+                candidate: JSON.stringify(e.candidate),
+              });
             }
           };
 
@@ -472,46 +486,52 @@ export class StreamReceiver {
           const [unlistenIce, unlistenOffer] = await Promise.all([
             listen<{ candidate: string }>(`ss-bridge:ice-sender:${key}`, (event) => {
               if (this.startGeneration !== startGeneration) return;
-              if (!pc || pc.connectionState === 'closed') return;
-              const candidate = JSON.parse(event.payload.candidate);
+              if (pc.connectionState === 'closed') return;
+              const candidate = JSON.parse(event.payload.candidate) as RTCIceCandidateInit;
               pc.addIceCandidate(candidate).catch((err) => {
                 console.warn(LOG, `receiver[${key}] addIceCandidate failed:`, err);
               });
             }),
-            listen<{ sdp: string }>(`ss-bridge:offer:${key}`, async (event) => {
-              if (this.startGeneration !== startGeneration) return;
-              if (!pc || pc.connectionState === 'closed') return;
-              // Guard: only accept an offer when in 'stable' state and not already
-              // processing one. The sender fires the offer both on creation and on
-              // receiver-ready, so two offers can arrive before either async handler
-              // has had time to change signalingState — the processingOffer flag
-              // closes that TOCTOU window.
-              if (processingOffer || pc.signalingState !== 'stable') {
-                console.warn(
-                  LOG,
-                  `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
-                );
-                return;
-              }
-              processingOffer = true;
-              try {
-                await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
-                if (DEBUG_SHARE_VIEW)
-                  console.log(
+            listen<{ sdp: string }>(`ss-bridge:offer:${key}`, (event) => {
+              void (async () => {
+                if (this.startGeneration !== startGeneration) return;
+                if (pc.connectionState === 'closed') return;
+                // Guard: only accept an offer when in 'stable' state and not already
+                // processing one. The sender fires the offer both on creation and on
+                // receiver-ready, so two offers can arrive before either async handler
+                // has had time to change signalingState — the processingOffer flag
+                // closes that TOCTOU window.
+                if (processingOffer || pc.signalingState !== 'stable') {
+                  console.warn(
                     LOG,
-                    `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`,
+                    `receiver[${key}] ignoring duplicate offer, signalingState=${pc.signalingState}, processing=${processingOffer}`,
                   );
-                console.log(LOG, `receiver[${key}] got offer, answer sent`);
-              } finally {
-                processingOffer = false;
-              }
+                  return;
+                }
+                processingOffer = true;
+                try {
+                  await pc.setRemoteDescription({ type: 'offer', sdp: event.payload.sdp });
+                  const answer = await pc.createAnswer();
+                  await pc.setLocalDescription(answer);
+                  void emit(`ss-bridge:answer:${key}`, { sdp: answer.sdp });
+                  if (DEBUG_SHARE_VIEW)
+                    console.log(
+                      LOG,
+                      `receiver[${key}] answer sent, sdp length: ${answer.sdp?.length}`,
+                    );
+                  console.log(LOG, `receiver[${key}] got offer, answer sent`);
+                } finally {
+                  processingOffer = false;
+                }
+              })();
             }),
           ]);
           if (
             this.startGeneration !== startGeneration ||
+            // this.pc is a mutable field that stop() can null out concurrently while this
+            // async listener registration was in flight (unlike `pc`, the local const
+            // captured just above, which can never change). Real staleness guard.
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             !this.pc ||
             this.pc !== pc ||
             pc.connectionState === 'closed'
@@ -528,7 +548,7 @@ export class StreamReceiver {
           onListenersReady?.();
 
           // Signal readiness — sender will (re-)send the offer
-          emit(`ss-bridge:receiver-ready:${key}`, {});
+          void emit(`ss-bridge:receiver-ready:${key}`, {});
           console.log(LOG, `receiver[${key}] started, waiting for offer`);
 
           this.startTimeout = setTimeout(() => {
