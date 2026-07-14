@@ -6,6 +6,9 @@ authors = ["Wavis"]
 edition = "2021"
 default-run = "wavis-gui"
 
+[lints]
+workspace = true
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

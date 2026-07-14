@@ -40,6 +40,35 @@
       },
       "problemMatcher": []
     },
+    {
+      // Full docker stack for the GUI e2e suite (postgres + redis + livekit
+      // + wavis-backend). AUTH_REGISTER_RATE_LIMIT must be raised from its
+      // default 5/hr: a full 7-spec run does ~14 registrations from one
+      // window (see e2e-tooling/README.md). Compose recreates wavis-backend
+      // automatically if the running container was started with a different
+      // limit. Uses the existing backend image — if you've changed backend
+      // code, rebuild it first: docker compose up -d --build
+      "label": "Ensure E2E Backend Stack",
+      "type": "shell",
+      "command": "docker compose up -d",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "AUTH_REGISTER_RATE_LIMIT": "200"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "E2E Stack Ready",
+      "dependsOn": ["Ensure E2E Backend Stack", "Wait for Backend Ready"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
 
     // ─── Test Tasks (multi-binary, can't use LLDB launch) ─────
     {

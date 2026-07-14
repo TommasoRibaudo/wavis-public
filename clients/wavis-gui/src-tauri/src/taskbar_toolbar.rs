@@ -56,6 +56,11 @@ struct TrayEventPayload {
     action: &'static str,
 }
 
+// SAFETY: installed as the window procedure via `SetWindowLongPtrW` below, so
+// Windows calls this only on the UI thread with a valid `hwnd` for this
+// window. `PREV_WNDPROC` is only ever populated with the `WNDPROC` returned
+// by that same `SetWindowLongPtrW` call, so the `transmute` back to
+// `WNDPROC` reconstructs a value of the type it was stored from.
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND => {
@@ -113,6 +118,11 @@ pub fn setup_taskbar_toolbar(app: &App) -> Result<(), Box<dyn std::error::Error>
         state: TaskbarVoiceState::default(),
     });
 
+    // SAFETY: `hwnd` was just obtained from `window.hwnd()` on the still-live
+    // main window, so it's a valid handle on this thread. `wndproc` has the
+    // `unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT`
+    // signature `SetWindowLongPtrW` requires for `GWLP_WNDPROC`, and it stays
+    // valid for the app's lifetime (it's a `static fn`, no captures to drop).
     unsafe {
         let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wndproc as *const () as isize);
         if prev == 0 {
@@ -139,6 +149,11 @@ pub fn setup_taskbar_toolbar(app: &App) -> Result<(), Box<dyn std::error::Error>
             g.state = new_state;
             g.hwnd_raw
         };
+        // SAFETY: `PostMessageW` only enqueues a message on the window's
+        // message queue — it doesn't dereference `hwnd_raw`. `hwnd_raw` was
+        // captured from the same valid `HWND` used to install `wndproc`
+        // above, and a stale/closed handle just makes the call return an
+        // ignorable error (`let _ =`), not a safety violation.
         unsafe {
             let _ = PostMessageW(
                 HWND(hwnd_raw as *mut _),

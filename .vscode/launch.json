@@ -25,7 +25,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "1_binaries", "order": 0 }
     },
     {
       "type": "lldb",
@@ -47,7 +48,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "1_binaries", "order": 1 }
     },
     {
       "type": "lldb",
@@ -69,7 +71,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "1_binaries", "order": 2 }
     },
     {
       "type": "lldb",
@@ -91,7 +94,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "1_binaries", "order": 3 }
     },
     {
       "type": "lldb",
@@ -114,10 +118,11 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "1_binaries", "order": 4 }
     },
 
-    // ─── Unit Tests (all tests in a crate) ──────────────────────
+    // ─── Unit Tests (paired: run-all, then single-test-by-name) ─
     {
       "type": "lldb",
       "request": "launch",
@@ -138,52 +143,9 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 0 }
     },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Test Shared Signaling (all)",
-      "cargo": {
-        "args": ["test", "--package=shared", "--lib", "--no-run"]
-      },
-      "args": [],
-      "env": {
-        "RUST_LOG": "debug,shared=trace",
-        "RUST_BACKTRACE": "full"
-      },
-      "cwd": "${workspaceFolder}",
-      "sourceMap": {
-        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
-      },
-      "initCommands": [
-        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
-        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
-    },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Test Client Shared (all)",
-      "cargo": {
-        "args": ["test", "--package=wavis-client-shared", "--lib", "--no-run"]
-      },
-      "args": [],
-      "env": {
-        "RUST_LOG": "debug,wavis_client_shared=trace",
-        "RUST_BACKTRACE": "full"
-      },
-      "cwd": "${workspaceFolder}",
-      "sourceMap": {
-        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
-      },
-      "initCommands": [
-        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
-        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
-    },
-
-    // ─── Unit Test: Single Test by Name ─────────────────────────
     {
       "type": "lldb",
       "request": "launch",
@@ -205,7 +167,75 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 1 }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Shared Signaling (all)",
+      "cargo": {
+        "args": ["test", "--package=shared", "--lib", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 2 }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Shared Signaling (single)",
+      "cargo": {
+        "args": ["test", "--package=shared", "--lib", "--no-run"]
+      },
+      "args": ["${input:testName}"],
+      "env": {
+        "RUST_LOG": "debug,shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": true,
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 3 }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test Client Shared (all)",
+      "cargo": {
+        "args": ["test", "--package=wavis-client-shared", "--lib", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 4 }
     },
     {
       "type": "lldb",
@@ -227,13 +257,15 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "2_unit-tests", "order": 5 }
     },
 
     // ─── Integration Tests ──────────────────────────────────────
-    // NOTE: "Integration Tests Backend (all)" is a Task, not a launch config,
-    //       because --tests produces 32 separate binaries and LLDB needs exactly one.
-    //       Use: Terminal > Run Task > Integration Tests Backend (all)
+    // NOTE: "Integration Tests Backend (all)" and
+    //       "Integration Tests Client Shared (all)" are Tasks, not launch
+    //       configs, because --tests produces one binary per test file and
+    //       LLDB needs exactly one. Use: Terminal > Run Task > ...
     {
       "type": "lldb",
       "request": "launch",
@@ -254,7 +286,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "3_integration-tests", "order": 0 }
     },
     {
       "type": "lldb",
@@ -277,10 +310,54 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "3_integration-tests", "order": 1 }
     },
-    // NOTE: "Integration Tests Client Shared (all)" is a Task, not a launch config.
-    //       Use: Terminal > Run Task > Integration Tests Client Shared (all)
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Integration Test Client Shared (single file)",
+      "cargo": {
+        "args": ["test", "--package=wavis-client-shared", "--test", "${input:clientSharedIntegrationTestFile}", "--no-run"]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "debug,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ],
+      "presentation": { "group": "3_integration-tests", "order": 2 }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Integration Test Client Shared (single test)",
+      "cargo": {
+        "args": ["test", "--package=wavis-client-shared", "--test", "${input:clientSharedIntegrationTestFile}", "--no-run"]
+      },
+      "args": ["${input:testName}"],
+      "env": {
+        "RUST_LOG": "debug,wavis_client_shared=trace",
+        "RUST_BACKTRACE": "full"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": true,
+      "sourceMap": {
+        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
+      },
+      "initCommands": [
+        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
+        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
+      ],
+      "presentation": { "group": "3_integration-tests", "order": 3 }
+    },
 
     // ─── Stress Testing ─────────────────────────────────────────
     {
@@ -304,7 +381,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "4_stress", "order": 0 }
     },
     {
       "type": "lldb",
@@ -327,7 +405,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "4_stress", "order": 1 }
     },
     {
       "type": "lldb",
@@ -350,7 +429,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "4_stress", "order": 2 }
     },
     {
       "type": "lldb",
@@ -374,31 +454,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
-    },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Stress Harness (external, localhost)",
-      "preLaunchTask": "Wait for Backend Ready",
-      "cargo": {
-        "args": ["build", "--bin=stress-harness", "--package=stress-harness"]
-      },
-      "args": ["--ci", "--url", "ws://127.0.0.1:3000/ws", "--metrics-url", "http://127.0.0.1:3001/test/metrics"],
-      "env": {
-        "RUST_LOG": "info,stress_harness=debug",
-        "RUST_BACKTRACE": "1",
-        "TEST_METRICS_TOKEN": "stress-harness-default-token"
-      },
-      "envFile": "${workspaceFolder}/.env",
-      "cwd": "${workspaceFolder}",
-      "sourceMap": {
-        "/rustc/": "${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/"
-      },
-      "initCommands": [
-        "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
-        "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "4_stress", "order": 3 }
     },
 
     // ─── GUI Surface Tests ──────────────────────────────────────
@@ -424,7 +481,8 @@
       "initCommands": [
         "command script import \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_lookup.py\"",
         "command source \"${env:USERPROFILE}/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/etc/lldb_commands\""
-      ]
+      ],
+      "presentation": { "group": "5_gui-surface", "order": 0 }
     },
 
     // ─── Python / Terraform Tests ───────────────────────────────
@@ -436,7 +494,8 @@
       "args": ["tests/validate_plan.py", "-v", "--plan-json", "${input:planJsonPath}"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "presentation": { "group": "6_python-terraform", "order": 0 }
     },
     {
       "type": "debugpy",
@@ -446,7 +505,8 @@
       "args": ["tests/test_workflow.py", "-v"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "presentation": { "group": "6_python-terraform", "order": 1 }
     },
     {
       "type": "debugpy",
@@ -459,7 +519,8 @@
         "BACKEND_URL": "http://localhost:3000"
       },
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "presentation": { "group": "6_python-terraform", "order": 2 }
     },
     {
       "type": "debugpy",
@@ -469,7 +530,8 @@
       "args": ["tests/", "-v", "--plan-json", "${input:planJsonPath}"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "presentation": { "group": "6_python-terraform", "order": 3 }
     },
 
     // ─── GUI (Tauri) ────────────────────────────────────────────
@@ -481,40 +543,51 @@
       "cwd": "${workspaceFolder}/clients/wavis-gui",
       "env": {
         "RUST_BACKTRACE": "1"
-      }
+      },
+      "presentation": { "group": "7_gui-tauri", "order": 0 }
+    },
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "Test: GUI E2E (Playwright)",
+      // Brings the docker stack up (with the raised e2e register limit) and
+      // waits for /health before running — no manual docker compose needed.
+      "preLaunchTask": "E2E Stack Ready",
+      "command": "npm run test",
+      "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling",
+      "presentation": { "group": "7_gui-tauri", "order": 1 }
+    },
+    {
+      "type": "node-terminal",
+      "request": "launch",
+      "name": "Build GUI Debug Exe (for E2E tests)",
+      "command": "npx tauri build --debug",
+      "cwd": "${workspaceFolder}/clients/wavis-gui",
+      // Both vars are REQUIRED for e2e (see e2e-tooling/README.md). Without
+      // them the exe reads the developer's real wavis-auth.json and the
+      // live-backend specs drive the real session (log it out, hang on the
+      // missing insecure-TLS toggle). Never build the e2e exe without these.
+      "env": {
+        "VITE_ALLOW_INSECURE_TLS": "true",
+        "VITE_AUTH_STORE_NAME": "wavis-auth-e2e.json"
+      },
+      "presentation": { "group": "7_gui-tauri", "order": 2 }
     },
 
-    // ─── CI Legs (used by "Full CI Check" compound) ───────────
-    // These are shell-based launch configs so they appear in Run & Debug.
-    // Each runs one verification step; the compound above runs all three.
-
-    // Leg 1: Clippy lint — workspace-wide, all targets, deny warnings.
-    // Catches lint violations, unused imports, and clippy-level issues.
+    // ─── CI Checks ─────────────────────────────────────────────
+    // Reuses the canonical "Full CI Check" task so Run & Debug keeps its
+    // fail-fast, cheap-first ordering and Problems-panel matchers. Individual
+    // gates (Rustfmt, Clippy, Arch Check, Prettier, ESLint, deps, typecheck,
+    // vitest) are available via Terminal > Run Task for ad-hoc use.
     {
       "type": "node-terminal",
       "request": "launch",
-      "name": "CI: Clippy (workspace)",
-      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-      "cwd": "${workspaceFolder}"
-    },
-    // Leg 2: Cargo test — workspace-wide, all features.
-    // Runs every Rust unit + integration test across all crates.
-    {
-      "type": "node-terminal",
-      "request": "launch",
-      "name": "CI: Cargo Test (workspace)",
-      "command": "cargo test --workspace --all-features",
-      "cwd": "${workspaceFolder}"
-    },
-    // Leg 3: npm test — GUI client Vitest suite.
-    // Runs the TypeScript/React test suite for wavis-gui.
-    {
-      "type": "node-terminal",
-      "request": "launch",
-      "name": "CI: npm Test (GUI)",
-      "command": "npm test",
-      "cwd": "${workspaceFolder}/clients/wavis-gui"
-    },
+      "name": "CI: Full CI Check",
+      "preLaunchTask": "Full CI Check",
+      "command": "Write-Host 'Full CI Check passed'",
+      "cwd": "${workspaceFolder}",
+      "presentation": { "group": "8_ci", "order": 0 }
+    }
 
     // ─── Workspace-Wide ─────────────────────────────────────────
     // NOTE: "Test Entire Workspace" is a Task, not a launch config,
@@ -524,96 +597,47 @@
 
   // ─── Compound Launch Configurations ─────────────────────────
   "compounds": [
-    // ── Full CI Check ───────────────────────────────────────
-    // Runs Clippy, Cargo Test, and npm Test in parallel.
-    // Appears in the Run & Debug dropdown as "▶ Full CI Check".
-    // Each leg opens its own integrated terminal so output is separate.
-    // Equivalent to the one-liner:
-    //   clippy --workspace | cargo test --workspace | npm test (parallel)
-    {
-      "name": "Full CI Check",
-      "configurations": [
-        "CI: Clippy (workspace)",
-        "CI: Cargo Test (workspace)",
-        "CI: npm Test (GUI)"
-      ],
-      "stopAll": false,
-      "presentation": {
-        "group": "ci",
-        "order": 0
-      }
-    },
     {
       "name": "Backend + CLI Client (P2P)",
       "configurations": ["Run Backend", "Run CLI Test Client (server)"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 1
-      }
+      "presentation": { "group": "9_compound", "order": 0 }
     },
     {
       "name": "Backend + CLI Client (SFU)",
       "configurations": ["Run Backend", "Run CLI Test Client (SFU)"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 2
-      }
+      "presentation": { "group": "9_compound", "order": 1 }
     },
     {
       "name": "Backend + Full CLI Client",
       "configurations": ["Run Backend", "Run CLI Client"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 3
-      }
+      "presentation": { "group": "9_compound", "order": 2 }
     },
     {
       "name": "Backend + Stress (single scenario)",
       "configurations": ["Run Backend", "Stress Harness (single scenario, in-process)"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 4
-      }
+      "presentation": { "group": "9_compound", "order": 3 }
     },
     {
       "name": "Backend + GUI Surface Test",
       "configurations": ["Run Backend", "GUI Surface Test"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 5
-      }
-    },
-    {
-      "name": "Backend + Stress (external, localhost)",
-      "configurations": ["Run Backend", "Stress Harness (external, localhost)"],
-      "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 6
-      }
+      "presentation": { "group": "9_compound", "order": 4 }
     },
     {
       "name": "Backend + Stress (external, custom URL)",
       "configurations": ["Run Backend", "Stress Harness (external backend)"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 7
-      }
+      "presentation": { "group": "9_compound", "order": 5 }
     },
     {
       "name": "Backend + Wavis GUI",
       "configurations": ["Run Backend", "Run Wavis GUI (Tauri Dev)"],
       "stopAll": true,
-      "presentation": {
-        "group": "compound",
-        "order": 8
-      }
+      "presentation": { "group": "9_compound", "order": 6 }
     }
   ],
 
@@ -626,9 +650,15 @@
     },
     {
       "id": "integrationTestFile",
-      "description": "Integration test file name (without .rs)",
+      "description": "Integration test file name for wavis-backend (without .rs)",
       "type": "promptString",
       "default": "signaling_relay_integration"
+    },
+    {
+      "id": "clientSharedIntegrationTestFile",
+      "description": "Integration test file name for wavis-client-shared (without .rs)",
+      "type": "promptString",
+      "default": "full_call_flow_integration"
     },
     {
       "id": "stressScenario",

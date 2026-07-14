@@ -1322,6 +1322,10 @@ export class LiveKitModule {
   private callbacks: MediaCallbacks;
   private analyserMap: Map<string, AnalyserNode> = new Map();
   private analyserInterval: ReturnType<typeof setInterval> | null = null;
+  // True once any analyser tick has observed real signal since the last
+  // trailing-silence emission — lets startAnalyserPolling() emit exactly one
+  // all-zero update when audio actually goes silent (see there for why).
+  private analyserHadSignal = false;
   private localMicAnalyser: AnalyserNode | null = null;
   private localMicSource: MediaStreamAudioSourceNode | null = null;
   private localMicInterval: ReturnType<typeof setInterval> | null = null;
@@ -3478,10 +3482,8 @@ export class LiveKitModule {
     }
     this.nativeCaptureStreamAbort?.abort();
     this.nativeCaptureStreamAbort = null;
-    if (this.nativeCaptureFailureUnlisten) {
-      this.nativeCaptureFailureUnlisten();
-      this.nativeCaptureFailureUnlisten = null;
-    }
+    this.nativeCaptureFailureUnlisten?.();
+    this.nativeCaptureFailureUnlisten = null;
     this.nativeCaptureFailureReason = null;
     this.nativeCaptureFailureReject = null;
     this.nativeCaptureFailureListenerPromise = null;
@@ -3511,6 +3513,7 @@ export class LiveKitModule {
     // 4e. Clear analyser polling
     if (this.analyserInterval !== null) clearInterval(this.analyserInterval);
     this.analyserMap.clear();
+    this.analyserHadSignal = false;
 
     // 4f. Clear local mic monitor
     this.stopLocalMicMonitor();
@@ -5243,9 +5246,15 @@ export class LiveKitModule {
         if (rms > 0.001) hasNonZero = true;
         levels.set(identity, { isSpeaking: rms > 0.02, rmsLevel: rms });
       }
-      // Only emit when there's actual audio signal to avoid flooding
-      // the voice-room layer with zero-level updates
-      if (hasNonZero && levels.size > 0) {
+      // Only emit when there's actual audio signal to avoid flooding the
+      // voice-room layer with zero-level updates — except for exactly one
+      // trailing emission when signal drops to silence, so a stored
+      // rmsLevel can decay to zero instead of freezing at its last nonzero
+      // value forever (levels already contains every analyser identity each
+      // tick, near-zero included, so no extra data is needed here).
+      const emitTrailingSilence = this.analyserHadSignal && !hasNonZero;
+      this.analyserHadSignal = hasNonZero;
+      if ((hasNonZero || emitTrailingSilence) && levels.size > 0) {
         this.callbacks.onAudioLevels(levels);
       }
     }, 50);
@@ -6323,6 +6332,7 @@ export class LiveKitModule {
     if (this.analyserMap.size === 0 && this.analyserInterval !== null) {
       clearInterval(this.analyserInterval);
       this.analyserInterval = null;
+      this.analyserHadSignal = false;
     }
   }
 

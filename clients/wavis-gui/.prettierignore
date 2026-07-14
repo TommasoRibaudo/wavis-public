@@ -10,3 +10,7 @@ package-lock.json
 # Generated code — owned by scripts/gen-linux-matrix.mjs; reformatting it
 # would break the check:linux-matrix codegen comparison
 src/features/voice/linux-capability-matrix.ts
+
+# Playwright run artifacts (gitignored; Prettier does not read .gitignore)
+e2e-tooling/test-results
+e2e-tooling/playwright-report

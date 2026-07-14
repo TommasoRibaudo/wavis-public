@@ -2563,10 +2563,20 @@ function connectMedia(
             p.isMuted,
           );
           p.rmsLevel = Math.max(p.rmsLevel, RMS_START_THRESHOLD + 0.05);
-        } else if (!isSpeaker && p.isSpeaking) {
-          // Let the tracker decay naturally — feed a zero-level sample
-          // so the EMA + debounce handles the off-transition smoothly.
-          p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+        } else if (!isSpeaker) {
+          if (p.isSpeaking) {
+            // Let the tracker decay naturally — feed a zero-level sample
+            // so the EMA + debounce handles the off-transition smoothly.
+            p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+          }
+          // Always clear rmsLevel here, even when isSpeaking was already
+          // false — the boost branch above can set rmsLevel via Math.max
+          // without necessarily flipping isSpeaking through the debounce
+          // (a hangover flap), which would otherwise freeze rmsLevel at
+          // 0.11 forever (above the 0.03 threshold other code checks
+          // against). Harmless: the analyser rewrites a real value within
+          // 50ms whenever audio actually decodes.
+          p.rmsLevel = 0;
         }
         if (p.isSpeaking !== wasSpeaking) changed = true;
       }

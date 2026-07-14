@@ -6,7 +6,24 @@ rtc:
   tcp_port: 7881
   port_range_start: 51000
   port_range_end: 51100
-  use_external_ip: true
+  use_external_ip: false
+  # Local dev only (deploy/livekit.prod.yaml is the real-deployment config):
+  # this docker-compose LiveKit and its client always run on the same host,
+  # so candidates must be loopback-reachable. use_external_ip: true made
+  # LiveKit advertise a STUN-discovered public IP as its host ICE candidate —
+  # unreachable from the same machine, so every real WebRTC media connection
+  # failed with "could not establish pc connection" after ~13s (confirmed via
+  # LiveKit's own logs showing a non-loopback host candidate).
+  node_ip: 127.0.0.1
+  # Tried to resolve the browser's mDNS-obfuscated ICE candidates
+  # server-side; didn't work (Docker Desktop for Windows doesn't forward the
+  # UDP multicast mDNS needs between the container and host — see
+  # clients/wavis-gui/e2e-tooling/README.md's "Known local media blocker").
+  # The e2e driver disables mDNS obfuscation client-side instead
+  # (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS in driver.mjs), which makes this
+  # moot for that path. Left enabled — harmless, and still correct for any
+  # other client that does send an mDNS candidate.
+  use_mdns: true
 
 keys:
   LIVEKIT_API_KEY_PLACEHOLDER: LIVEKIT_API_SECRET_PLACEHOLDER

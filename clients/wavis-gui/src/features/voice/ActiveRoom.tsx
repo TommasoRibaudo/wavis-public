@@ -1,24 +1,10 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
-import { VolumeSlider } from '@shared/VolumeSlider';
 import { LoadingBars } from '@shared/LoadingBars';
 import { useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
 import type { Channel } from '@features/channels/channels';
 import { ChannelSwitcherPanel } from '@features/channels/ChannelSwitcherPanel';
-import type {
-  VoiceRoomState,
-  VoiceRoomMachineState,
-  RoomParticipant,
-  ShareQuality,
-} from './voice-room';
-import {
-  buildChatDisplayItems,
-  buildRoomEventDisplayItems,
-  resolveChatMessageDisplayColor,
-  type RoomEvent,
-  type RoomEventType,
-} from './chat-display-model';
-import type { MediaState } from './livekit-media';
+import type { VoiceRoomState, ShareQuality } from './voice-room';
 import {
   initSession,
   leaveRoom,
@@ -32,18 +18,10 @@ import {
   setMasterVolume,
   kickParticipant,
   muteParticipant,
-  unmuteParticipant,
-  createSubRoom,
-  joinSubRoom,
-  leaveSubRoom,
-  setPassthrough,
-  clearPassthrough,
   stopParticipantShare,
   stopAllShares,
   setSharePermission,
-  sendChatMessage,
   reconnectMedia,
-  resetMediaReconnectFailures,
   setShareQuality,
   toggleShareAudio,
   changeShareSource,
@@ -59,9 +37,7 @@ import {
 import type { EnumerationResult } from '@features/screen-share/share-types';
 import SharePicker from '@features/screen-share/SharePicker';
 import type { OccupiedSlots } from '@features/screen-share/SharePicker';
-import { openExternalUrl } from '@shared/shell-bridge';
 import { setCurrentWindowSize } from '@shared/window-bridge';
-import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import {
   ensureScreenRecordingAccess,
   listShareSources,
@@ -78,7 +54,6 @@ import {
 import { setLastChannel, clearLastChannel } from '@features/settings/settings-store';
 
 const DEBUG_SHARE_AUDIO = import.meta.env.VITE_DEBUG_SHARE_AUDIO === 'true';
-const ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS = 10_000;
 import { useHotkeys } from '@shared/useHotkeys';
 import { useTrayIntegration } from './useTrayIntegration';
 import { useRoomNavigationGuard } from './useRoomNavigationGuard';
@@ -89,10 +64,13 @@ import { useMainWindowLifecycle } from './useMainWindowLifecycle';
 import { useRoomHotkeys } from './useRoomHotkeys';
 import { useVideoPopoutWindow } from './useVideoPopoutWindow';
 import { useShareViewerWindows } from './useShareViewerWindows';
-import { useAutoScrollAnchor } from '@shared/hooks/useAutoScrollAnchor';
 import { useDebug } from '@shared/debug-context';
-import { connectionModeBadgeText } from '@shared/helpers';
-import { isShareEnabled, shareButtonLabel, appendSystemEvent } from './voice-room';
+import {
+  isShareEnabled,
+  shareButtonLabel,
+  appendSystemEvent,
+  selectRoomPanelTab,
+} from './voice-room';
 import { navigateCliHistory, pushCliHistory, resetCliHistoryNavigation } from './cli-history';
 import { Toaster, toast } from 'sonner';
 import Settings from '@features/settings/Settings';
@@ -109,245 +87,25 @@ import {
   SHARE_STARTING_LOADING_LABEL,
   isVideoShareSelectionMode,
 } from './active-room-share-loading';
-import { participantNameVisualState } from './active-room-participant-row';
-import { selectRoomPanelTab } from './voice-room';
 import { VideoTab } from './VideoTab';
-import { chatLinkTarget } from './chat-links';
+import {
+  RoomHeaderBar,
+  MediaStatusBanners,
+  ChannelSwitcherToggle,
+  StatusDot,
+  signalingIndicator,
+  mediaIndicator,
+  rttColor,
+} from './RoomHeaderBar';
+import { ChatPanel } from './ChatPanel';
+import { LogsPanel } from './LogsPanel';
+import { ParticipantsPanel, ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS } from './ParticipantsPanel';
+import type { ParticipantRowViewModel } from './ParticipantRow';
+
 /* ─── Helpers ───────────────────────────────────────────────────── */
-
-function voiceIcon(
-  p: RoomParticipant,
-  isDeafened?: boolean,
-): { char: string; color: string; strikethrough?: boolean; transform?: string } {
-  if (isDeafened)
-    return { char: '¤', color: 'var(--wavis-danger)', transform: 'scale(1.25) translateY(8%)' };
-  if (p.isMuted) return { char: '○', color: 'var(--wavis-danger)' };
-  if (p.isSpeaking) return { char: '●', color: 'var(--wavis-accent)' };
-  return { char: '○', color: 'var(--wavis-text-secondary)' };
-}
-
-function getEventColor(type: RoomEventType): string {
-  switch (type) {
-    case 'join':
-      return 'var(--wavis-accent)';
-    case 'leave':
-    case 'kicked':
-      return 'var(--wavis-danger)';
-    case 'host-mute':
-      return 'var(--wavis-warn)';
-    case 'host-unmute':
-      return 'var(--wavis-accent)';
-    case 'share-start':
-    case 'share-stop':
-      return 'var(--wavis-purple)';
-    case 'share-permission':
-      return 'var(--wavis-warn)';
-    case 'deafen':
-      return 'var(--wavis-warn)';
-    case 'undeafen':
-      return 'var(--wavis-accent)';
-    case 'muted':
-    case 'unmuted':
-      return 'var(--wavis-text)';
-    default:
-      return 'var(--wavis-text)';
-  }
-}
-
-function rttColor(rttMs: number): string {
-  if (rttMs < 100) return 'var(--wavis-accent)';
-  if (rttMs <= 300) return 'var(--wavis-warn)';
-  return 'var(--wavis-danger)';
-}
-
-function roomRemovalCountdownText(deleteAtMs: number | null, nowMs: number): string | null {
-  if (deleteAtMs === null) return null;
-  const remainingMs = Math.max(0, deleteAtMs - nowMs);
-  const seconds = Math.max(
-    10,
-    Math.ceil(remainingMs / ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS) *
-      (ROOM_REMOVAL_COUNTDOWN_INTERVAL_MS / 1000),
-  );
-  return `Removing in less than ${seconds} seconds`;
-}
-
-function formatTime(isoString: string): string {
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleTimeString('en-US', { hour12: false });
-  } catch {
-    return '??:??:??';
-  }
-}
-
-const CHAT_LINK_RE = /(https?:\/\/[^\s<]+|www\.[^\s<]+)/gi;
-const TRAILING_LINK_PUNCTUATION_RE = /[.,!?;:)\]]+$/;
-
-function normalizeChatLink(raw: string): string {
-  return raw.toLowerCase().startsWith('www.') ? `https://${raw}` : raw;
-}
-
-function splitChatLink(raw: string): { hrefText: string; trailingText: string } {
-  const trailingText = raw.match(TRAILING_LINK_PUNCTUATION_RE)?.[0] ?? '';
-  return trailingText
-    ? { hrefText: raw.slice(0, -trailingText.length), trailingText }
-    : { hrefText: raw, trailingText: '' };
-}
-
-function renderChatText(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-
-  for (const match of text.matchAll(CHAT_LINK_RE)) {
-    const raw = match[0];
-    const index = match.index;
-    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
-
-    const { hrefText, trailingText } = splitChatLink(raw);
-    const href = normalizeChatLink(hrefText);
-    nodes.push(
-      <a
-        key={`link-${index}-${hrefText}`}
-        href={href}
-        target={chatLinkTarget(href)}
-        className="text-wavis-accent underline underline-offset-2 break-words hover:opacity-80"
-        onClick={(event) => {
-          event.preventDefault();
-          void openExternalUrl(href);
-        }}
-        rel="noreferrer"
-        title={href}
-      >
-        {hrefText}
-      </a>,
-    );
-    if (trailingText) nodes.push(trailingText);
-    lastIndex = index + raw.length;
-  }
-
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
-  return nodes;
-}
-
-function getUserColor(participants: RoomParticipant[], participantId?: string): string {
-  if (!participantId) return 'var(--wavis-text)';
-  const p = participants.find((pp) => pp.id === participantId);
-  return p?.color ?? 'var(--wavis-text)';
-}
-
-function getEventUsername(event: RoomEvent): string | null {
-  const msg = event.message;
-  const patterns = [
-    ' joined',
-    ' muted',
-    ' unmuted',
-    ' started',
-    ' stopped',
-    ' was kicked',
-    ' was muted',
-    ' was unmuted',
-  ];
-  for (const pat of patterns) {
-    const idx = msg.indexOf(pat);
-    if (idx > 0) return msg.slice(0, idx);
-  }
-  return null;
-}
-
-/* ─── Sub-components ────────────────────────────────────────────── */
-
-function signalingIndicator(
-  state: VoiceRoomMachineState,
-  lastRateLimitError: string | null,
-): { color: string; label: string } {
-  switch (state) {
-    case 'active':
-      return { color: 'var(--wavis-accent)', label: 'Signaling: connected' };
-    case 'connecting':
-    case 'authenticated':
-    case 'joining':
-      return { color: 'var(--wavis-warn)', label: 'Signaling: connecting...' };
-    case 'reconnecting':
-      return {
-        color: 'var(--wavis-warn)',
-        label: lastRateLimitError
-          ? 'Signaling: reconnecting after rate limit...'
-          : 'Signaling: reconnecting...',
-      };
-    case 'idle':
-    default:
-      return { color: 'var(--wavis-text-secondary)', label: 'Signaling: disconnected' };
-  }
-}
-
-function mediaIndicator(state: MediaState, error: string | null): { color: string; label: string } {
-  switch (state) {
-    case 'connected':
-      return { color: 'var(--wavis-accent)', label: 'Media: connected' };
-    case 'connecting':
-      return { color: 'var(--wavis-warn)', label: 'Media: connecting...' };
-    case 'reconnecting':
-      return { color: 'var(--wavis-warn)', label: 'Media: reconnecting...' };
-    case 'failed':
-      return { color: 'var(--wavis-danger)', label: `Media: failed${error ? ` — ${error}` : ''}` };
-    case 'disconnected':
-    default:
-      return { color: 'var(--wavis-text-secondary)', label: 'Media: disconnected' };
-  }
-}
 
 function shareLoadingNotice(label: string, className: string): ReactNode {
   return <LoadingBars label={label} className={className} />;
-}
-
-function combinedStatusBadge(
-  machine: VoiceRoomMachineState,
-  media: MediaState,
-): { text: string; color: string } {
-  // Failed media takes priority
-  if (media === 'failed') return { text: 'FAILED', color: 'var(--wavis-danger)' };
-  // Media reconnecting takes priority over live/connected state
-  if (media === 'reconnecting') return { text: 'RECONNECTING', color: 'var(--wavis-warn)' };
-  // Both fully connected = live
-  if (machine === 'active' && media === 'connected')
-    return { text: 'LIVE', color: 'var(--wavis-accent)' };
-  // Reconnecting signaling
-  if (machine === 'reconnecting') return { text: 'RECONNECTING', color: 'var(--wavis-warn)' };
-  // Any connecting state
-  if (
-    machine === 'connecting' ||
-    machine === 'authenticated' ||
-    machine === 'joining' ||
-    media === 'connecting'
-  )
-    return { text: 'CONNECTING', color: 'var(--wavis-warn)' };
-  // Idle / disconnected
-  return { text: 'OFFLINE', color: 'var(--wavis-text-secondary)' };
-}
-
-function StatusDot({ color, label }: { color: string; label: string }) {
-  const isAnimating = label.includes('connecting') || label.includes('reconnecting');
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className="inline-block w-2 h-2 rounded-full cursor-default"
-          style={{
-            backgroundColor: color,
-            boxShadow: color === 'var(--wavis-accent)' ? `0 0 6px ${color}` : undefined,
-            animation: isAnimating ? 'pulse 3s ease-in-out infinite' : undefined,
-          }}
-          aria-label={label}
-        />
-      </TooltipTrigger>
-      <TooltipContent
-        side="bottom"
-        className="bg-wavis-panel text-wavis-text border border-wavis-text-secondary font-mono text-xs"
-      >
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
 }
 
 /**
@@ -394,13 +152,8 @@ export default function ActiveRoom() {
 
   const [, setLeaving] = useState(false);
   const [cliInput, setCliInput] = useState('');
-  const [chatInput, setChatInput] = useState('');
-  // Event log + chat auto-scroll anchors
-  const logEndRef = useAutoScrollAnchor<HTMLDivElement>(roomState?.events.length);
-  const chatEndRef = useAutoScrollAnchor<HTMLDivElement>(roomState?.chatMessages.length);
   const cliInputRef = useRef<HTMLInputElement>(null);
   const initRef = useRef(false);
-  const chatThrottledRef = useRef(false);
   const [cliFocused, setCliFocused] = useState(false);
   const cliHistoryRef = useRef<string[]>([]);
   const cliHistoryIndexRef = useRef(-1);
@@ -419,9 +172,6 @@ export default function ActiveRoom() {
       const current = prev[key] ?? true;
       return { ...prev, [key]: !current };
     });
-
-  // Per-participant expanded host controls
-  const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
   // Mobile tab state
   type MobileTab = 'participants' | 'chat' | 'log' | 'video';
@@ -505,8 +255,6 @@ export default function ActiveRoom() {
     });
   }, [groupedPanelVideoActivityKey]);
 
-  // Local mute state: key = participantId, value = pre-mute volume (presence means muted).
-  const [localMicMuted, setLocalMicMuted] = useState<Map<string, number>>(new Map());
   const [shareQualityState, setShareQualityState] = useState<ShareQuality>('high');
   const [shareAudioOn, setShareAudioOn] = useState(false);
   const [showPostShareAudioPrompt, setShowPostShareAudioPrompt] = useState(false);
@@ -543,21 +291,6 @@ export default function ActiveRoom() {
       setScreenShareError(null);
       shareErrorTimerRef.current = null;
     }, 5000);
-  }, []);
-
-  const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
-    setLocalMicMuted((prev) => {
-      const next = new Map(prev);
-      if (next.has(participantId)) {
-        const saved = next.get(participantId)!;
-        next.delete(participantId);
-        setParticipantVolume(participantId, saved);
-      } else {
-        next.set(participantId, currentVolume || 70);
-        setParticipantVolume(participantId, 0);
-      }
-      return next;
-    });
   }, []);
 
   // Self-share owner actions from child windows (quality / audio / source —
@@ -1087,18 +820,6 @@ export default function ActiveRoom() {
     });
   };
 
-  const handleSendChat = () => {
-    if (chatThrottledRef.current) return;
-    const text = chatInput.trim();
-    if (!text) return;
-    setChatInput('');
-    sendChatMessage(text);
-    chatThrottledRef.current = true;
-    setTimeout(() => {
-      chatThrottledRef.current = false;
-    }, 200);
-  };
-
   /* ── CLI autocomplete ── */
   const CLI_COMMANDS = [
     '/help',
@@ -1256,587 +977,98 @@ export default function ActiveRoom() {
 
   /* ── Reusable panel fragments ── */
 
+  // Mobile compact header renders its own StatusDots directly (no room-name/badge/loss
+  // row), so it needs sigDot/mediaDot independently of <RoomHeaderBar>, which
+  // recomputes the same values internally for the intermediate/desktop layouts.
   const sigDot = signalingIndicator(roomState.machineState, roomState.lastRateLimitError);
   const mediaDot = mediaIndicator(roomState.mediaState, roomState.mediaError);
-  const statusBadge = combinedStatusBadge(roomState.machineState, roomState.mediaState);
 
-  const renderChannelSwitcherToggle = () => (
-    <button
-      onClick={() => {
-        setChannelSwitcherOpen((v) => !v);
-        setShowSettings(false);
-      }}
-      className={`shrink-0 border px-2 py-1 text-xs transition-colors ${
-        channelSwitcherOpen
-          ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
-          : 'border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent'
-      }`}
-      title="Change channel"
-    >
-      {channelSwitcherOpen ? '<' : '>'}
-    </button>
-  );
-
-  const roomHeader = (
-    <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex items-center gap-3 overflow-hidden">
-      <div className="flex-1 flex flex-col justify-center gap-0.5 min-w-0">
-        <div className="flex items-center gap-2">
-          <StatusDot color={sigDot.color} label={sigDot.label} />
-          <StatusDot color={mediaDot.color} label={mediaDot.label} />
-          {(() => {
-            const badge = connectionModeBadgeText(showSecrets, roomState.connectionMode);
-            return badge ? (
-              <span className="text-[0.625rem] text-wavis-purple">[{badge}]</span>
-            ) : null;
-          })()}
-          <span className="text-sm" style={{ color: statusBadge.color }}>
-            {statusBadge.text}
-          </span>
-          <span className="text-[0.625rem] text-wavis-text-secondary">
-            {Object.keys(roomState.participantSubRoomById).length}/6
-          </span>
-          <span
-            className="text-[0.625rem]"
-            style={{ color: rttColor(roomState.networkStats.rttMs) }}
-          >
-            {roomState.networkStats.rttMs}ms
-          </span>
-          <span className="text-[0.625rem] text-wavis-text-secondary">
-            {roomState.networkStats.packetLossPercent.toFixed(1)}% loss
-          </span>
-        </div>
-        <div
-          className={`font-bold truncate min-w-0${roomState.channelName.length > 20 ? ' text-xs' : ' text-sm'}`}
-          title={roomState.channelName}
-        >
-          {roomState.channelName}
-        </div>
-      </div>
-      {renderChannelSwitcherToggle()}
-    </div>
-  );
-
-  const mediaRetryBanner =
-    roomState.mediaState === 'failed' && roomState.mediaReconnectFailures > 0 ? (
-      <div className="px-3 py-2 border-b border-wavis-danger bg-wavis-panel text-xs flex items-center justify-between gap-2">
-        <span className="text-wavis-danger">media disconnected — automatic retries exhausted</span>
-        <button
-          className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs text-center shrink-0"
-          onClick={() => {
-            resetMediaReconnectFailures();
-            void reconnectMedia();
-          }}
-        >
-          /retry
-        </button>
-      </div>
-    ) : null;
-
-  const mediaReconnectingBanner =
-    roomState.mediaState === 'reconnecting' ? (
-      <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
-        Audio reconnecting... still in room
-      </div>
-    ) : null;
-
-  const reconnectBanner =
-    roomState.lastRateLimitError &&
-    (roomState.machineState === 'reconnecting' ||
-      roomState.machineState === 'authenticated' ||
-      roomState.machineState === 'joining') ? (
-      <div className="px-3 py-2 border-b border-wavis-warn bg-wavis-panel text-xs text-wavis-warn">
-        {roomState.lastRateLimitError}
-      </div>
-    ) : null;
-
-  const renderParticipantRow = (p: RoomParticipant) => {
-    const isSelf = p.id === roomState.selfParticipantId;
-    const icon = voiceIcon(p, isSelf ? roomState.isDeafened : p.isDeafened);
-    const videoTile = roomState.videoTilesById[p.id];
-    // Without noUncheckedIndexedAccess, TS types this index access as always-defined even
-    // though a participant with no video tile entry makes it genuinely undefined.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    const cameraOn = !!videoTile && !videoTile.isMuted && !videoTile.hasError;
-    const nameVisual = participantNameVisualState(p, isSelf);
-
-    return (
-      <div key={p.id} className="pl-2">
-        <div
-          role="button"
-          tabIndex={isSelf ? -1 : 0}
-          onClick={() => {
-            if (!isSelf) setExpandedUser((prev) => (prev === p.id ? null : p.id));
-          }}
-          onKeyDown={(e) => {
-            if (!isSelf && (e.key === 'Enter' || e.key === ' '))
-              setExpandedUser((prev) => (prev === p.id ? null : p.id));
-          }}
-          className="w-full text-left flex items-center gap-2 hover:opacity-80"
-          style={{ cursor: isSelf ? 'default' : 'pointer' }}
-        >
-          {isSelf ? (
-            <span className="text-xs text-wavis-accent inline-block w-6 text-center flex-none">
-              &gt;
-            </span>
-          ) : (
-            <span className="text-[0.625rem] text-wavis-text-secondary inline-block w-6 text-center flex-none">
-              {expandedUser === p.id ? '[-]' : '[+]'}
-            </span>
-          )}
-          <span className="inline-flex min-h-5 items-center gap-1.5">
-            <span
-              style={{
-                color: nameVisual.color,
-                opacity: nameVisual.opacity,
-                animation: nameVisual.animation,
-                filter: nameVisual.filter,
-              }}
-            >
-              {p.displayName}
-            </span>
-          </span>
-          <span
-            style={{
-              color: icon.color,
-              textDecoration: icon.strikethrough ? 'line-through' : undefined,
-              ...(icon.transform ? { display: 'inline-block', transform: icon.transform } : {}),
-            }}
-          >
-            {icon.char}
-          </span>
-          {nameVisual.showConnecting && (
-            <span className="inline-flex h-4 items-center gap-1 text-[0.625rem] leading-none text-wavis-text-secondary opacity-80">
-              <LoadingBars size="sm" />
-              <span>connecting</span>
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-1">
-            {cameraOn && (
-              <span
-                aria-label={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
-                title={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
-                style={{
-                  display: 'inline-block',
-                  width: '0.75rem',
-                  height: '0.75rem',
-                  backgroundColor: 'var(--wavis-accent)',
-                  WebkitMaskImage: 'url(/video-camera.png)',
-                  WebkitMaskSize: 'contain',
-                  WebkitMaskRepeat: 'no-repeat',
-                  WebkitMaskPosition: 'center',
-                  maskImage: 'url(/video-camera.png)',
-                  maskSize: 'contain',
-                  maskRepeat: 'no-repeat',
-                  maskPosition: 'center',
-                  pointerEvents: 'none',
-                }}
-              />
-            )}
-            {isSelf && p.isSharing && (
-              <>
-                {(roomState.activeVideoShare !== null || roomState.activeAudioShare === null) && (
-                  <span
-                    className="text-sm leading-none"
-                    style={{
-                      color: 'var(--wavis-danger)',
-                      animation: 'watchPulse 2s ease-in-out infinite',
-                    }}
-                    title="you are sharing"
-                  >
-                    {'\u25C9'}
-                  </span>
-                )}
-                {roomState.activeAudioShare !== null && (
-                  <span
-                    className="text-sm leading-none"
-                    style={{
-                      color: 'var(--wavis-danger)',
-                      animation: 'watchPulse 2s ease-in-out infinite',
-                    }}
-                    title="you are sharing audio"
-                  >
-                    {'\u266A'}
-                  </span>
-                )}
-              </>
-            )}
-            {!isSelf &&
-              p.isSharing &&
-              (() => {
-                const isAudioOnly = roomState.audioOnlySharers.has(p.id);
-                if (isAudioOnly) {
-                  const isAudioMuted = getSavedShareMuted(p.id);
-                  return (
-                    <button
-                      className="text-sm leading-none hover:opacity-70 transition-opacity"
-                      style={{
-                        color: isAudioMuted ? 'var(--wavis-danger)' : 'transparent',
-                        WebkitTextStroke: isAudioMuted ? undefined : '1px var(--wavis-danger)',
-                        animation: isAudioMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
-                      }}
-                      title={isAudioMuted ? 'unmute audio share' : 'mute audio share'}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        syncScreenShareMuted(p.id, !isAudioMuted);
-                      }}
-                    >
-                      {'\u266A'}
-                    </button>
-                  );
-                }
-                const hasStream = roomState.screenShareStreams.has(p.id);
-                const isWatching = watchingShareIds.has(p.id);
-                return (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!hasStream) return;
-                      if (isWatching) {
-                        closeShareWindow(p.id);
-                      } else {
-                        void openShareWindow(p.id, p, roomState.screenShareStreams.get(p.id)!);
-                      }
-                    }}
-                    className="text-sm leading-none"
-                    style={
-                      isWatching
-                        ? { color: 'var(--wavis-danger)' }
-                        : hasStream
-                          ? {
-                              color: 'var(--wavis-danger)',
-                              animation: 'watchPulse 2s ease-in-out infinite',
-                            }
-                          : { color: 'var(--wavis-text-secondary)', opacity: 0.4 }
-                    }
-                    title={
-                      isWatching
-                        ? 'close share'
-                        : hasStream
-                          ? 'watch share'
-                          : 'waiting for stream...'
-                    }
-                  >
-                    {isWatching ? '\u25CE' : '\u25C9'}
-                  </button>
-                );
-              })()}
-          </div>
-        </div>
-        {expandedUser === p.id && !isSelf && (
-          <div className="pl-6 py-1 space-y-0.5 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-wavis-text-secondary shrink-0">mic</span>
-              <div className="flex-1">
-                <VolumeSlider
-                  value={p.volume}
-                  onChange={(v) => {
-                    if (localMicMuted.has(p.id))
-                      setLocalMicMuted((prev) => {
-                        const next = new Map(prev);
-                        next.delete(p.id);
-                        return next;
-                      });
-                    setParticipantVolume(p.id, v);
-                  }}
-                  color={p.color}
-                />
-              </div>
-              <span className="text-wavis-text-secondary w-6 text-right">
-                {localMicMuted.has(p.id) ? 0 : p.volume}
-              </span>
-              <button
-                onClick={() => toggleLocalMicMute(p.id, p.volume)}
-                className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
-                style={
-                  localMicMuted.has(p.id)
-                    ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }
-                    : undefined
-                }
-                title={localMicMuted.has(p.id) ? 'unmute mic (local)' : 'mute mic (local)'}
-              >
-                {localMicMuted.has(p.id) ? '/unmute' : '/mute'}
-              </button>
-            </div>
-            {p.isSharing && (
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-wavis-text-secondary shrink-0">share vol</span>
-                <div className="flex-1">
-                  <VolumeSlider
-                    value={shareVolumes.get(p.id) ?? getSavedShareVolume(p.id)}
-                    onChange={(v) => {
-                      syncScreenShareVolume(p.id, v);
-                    }}
-                    color={p.color}
-                  />
-                </div>
-                <span className="text-wavis-text-secondary w-6 text-right">
-                  {getSavedShareMuted(p.id)
-                    ? 0
-                    : (shareVolumes.get(p.id) ?? getSavedShareVolume(p.id))}
-                </span>
-                <button
-                  onClick={() => syncScreenShareMuted(p.id, !getSavedShareMuted(p.id))}
-                  className="text-xs border px-1 py-0.5 transition-colors hover:opacity-70 shrink-0"
-                  style={
-                    getSavedShareMuted(p.id)
-                      ? { color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }
-                      : undefined
-                  }
-                  title={
-                    getSavedShareMuted(p.id) ? 'unmute sys audio (local)' : 'mute sys audio (local)'
-                  }
-                >
-                  {getSavedShareMuted(p.id) ? '/unmute' : '/mute'}
-                </button>
-              </div>
-            )}
-            {isHost && (
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  onClick={() => kickParticipant(p.id)}
-                  className="text-xs text-center border border-wavis-danger text-wavis-danger px-1 py-0.5 transition-colors hover:opacity-70"
-                >
-                  /kick
-                </button>
-                {p.isHostMuted ? (
-                  <button
-                    onClick={() => unmuteParticipant(p.id)}
-                    className="text-xs text-center border border-wavis-accent text-wavis-accent px-1 py-0.5 transition-colors hover:opacity-70"
-                  >
-                    /unmute
-                  </button>
-                ) : (
-                  !p.isMuted && (
-                    <button
-                      onClick={() => muteParticipant(p.id)}
-                      className="text-xs text-center border px-1 py-0.5 transition-colors hover:opacity-70"
-                      style={{ color: 'var(--wavis-warn)', borderColor: 'var(--wavis-warn)' }}
-                    >
-                      /mute
-                    </button>
-                  )
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
+  const handleToggleChannelSwitcher = () => {
+    setChannelSwitcherOpen((v) => !v);
+    setShowSettings(false);
   };
 
-  const participantsSections = (
-    <div className="flex-1 overflow-y-auto">
-      {roomState.subRooms.map((subRoom) => {
-        const sectionKey = `sub-room:${subRoom.id}`;
-        const roomPanelId = `sub-room-panel-${subRoom.id}`;
-        const isExpanded = expandedSections[sectionKey] ?? true;
-        const roomParticipantIds = new Set(subRoom.participantIds);
-        const roomParticipants = roomState.participants.filter((participant) =>
-          roomParticipantIds.has(participant.id),
-        );
-        const roomRemoteSharers = roomParticipants.filter(
-          (participant) => participant.isSharing && participant.id !== roomState.selfParticipantId,
-        );
-        const isJoinedRoom = roomState.joinedSubRoomId === subRoom.id;
-        const passthrough = roomState.passthrough;
-        const pairedSubRoomId =
-          passthrough?.sourceSubRoomId === roomState.joinedSubRoomId
-            ? passthrough.targetSubRoomId
-            : passthrough?.targetSubRoomId === roomState.joinedSubRoomId
-              ? passthrough.sourceSubRoomId
-              : null;
-        const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
-        const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
-        const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
-        const roomRemovalText =
-          roomParticipants.length === 0
-            ? roomRemovalCountdownText(subRoom.deleteAtMs, countdownNowMs)
-            : null;
-        const activePassthrough = roomState.passthrough;
-        const activePassthroughInvolvesRoom =
-          !!activePassthrough &&
-          (activePassthrough.sourceSubRoomId === subRoom.id ||
-            activePassthrough.targetSubRoomId === subRoom.id);
-        const activePassthroughInvolvesLocalRoom =
-          !!activePassthrough &&
-          !!roomState.joinedSubRoomId &&
-          (activePassthrough.sourceSubRoomId === roomState.joinedSubRoomId ||
-            activePassthrough.targetSubRoomId === roomState.joinedSubRoomId);
-        const canSetPassthrough =
-          roomState.passthroughEnabled &&
-          !activePassthrough &&
-          !!roomState.joinedSubRoomId &&
-          !isJoinedRoom;
-        const canClearPassthrough =
-          activePassthroughInvolvesRoom && activePassthroughInvolvesLocalRoom;
-        const passthroughDisabled = !(canSetPassthrough || canClearPassthrough);
-        // activePassthroughInvolvesRoom being true doesn't narrow activePassthrough's type here
-        // (it's a separately-computed boolean) — activePassthrough is still genuinely
-        // VoicePassthroughState | null at this point, so the ?. is load-bearing.
-        const passthroughLabel =
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-          activePassthroughInvolvesRoom && activePassthrough?.label
-            ? `“${activePassthrough.label}”`
-            : '“ ”';
-        const passthroughClassName = activePassthroughInvolvesRoom
-          ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
-          : passthroughDisabled
-            ? 'border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed'
-            : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg';
-        const passthroughButton = (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                disabled={passthroughDisabled}
-                aria-label="Passthrough: listen and talk to this room at a lower volume"
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                }}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (canClearPassthrough) {
-                    clearPassthrough();
-                  } else if (canSetPassthrough) {
-                    setPassthrough(subRoom.id);
-                  }
-                }}
-                className={`min-w-7 text-xs py-0.5 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
-              >
-                {passthroughLabel}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              className="bg-wavis-panel text-wavis-text border border-wavis-text-secondary font-mono text-xs"
-            >
-              Passthrough: listen and talk to this room at a lower volume
-            </TooltipContent>
-          </Tooltip>
-        );
-        const roomActionButton = isJoinedRoom ? (
-          <button
-            type="button"
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
-            onClick={(event) => {
-              event.stopPropagation();
-              leaveSubRoom();
-            }}
-            className="text-xs py-0.5 px-1 border border-wavis-danger text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg cursor-pointer"
-          >
-            /leave
-          </button>
-        ) : (
-          <button
-            type="button"
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
-            onClick={(event) => {
-              event.stopPropagation();
-              joinSubRoom(subRoom.id);
-            }}
-            className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer"
-          >
-            /join
-          </button>
-        );
+  const roomHeader = (
+    <RoomHeaderBar
+      machineState={roomState.machineState}
+      mediaState={roomState.mediaState}
+      mediaError={roomState.mediaError}
+      lastRateLimitError={roomState.lastRateLimitError}
+      connectionMode={roomState.connectionMode}
+      showSecrets={showSecrets}
+      channelName={roomState.channelName}
+      participantCount={Object.keys(roomState.participantSubRoomById).length}
+      rttMs={roomState.networkStats.rttMs}
+      packetLossPercent={roomState.networkStats.packetLossPercent}
+      channelSwitcherOpen={channelSwitcherOpen}
+      onToggleChannelSwitcher={handleToggleChannelSwitcher}
+    />
+  );
 
-        return (
-          <div key={subRoom.id} className="border-b border-wavis-text-secondary">
-            <div
-              role="button"
-              tabIndex={0}
-              aria-expanded={isExpanded}
-              aria-controls={roomPanelId}
-              onPointerDown={(event) => {
-                if (!event.isPrimary || event.button !== 0) return;
-                event.preventDefault();
-                event.currentTarget.focus();
-                toggleSection(sectionKey);
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                toggleSection(sectionKey);
-              }}
-              className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
-            >
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
-                <span>{`ROOM ${subRoom.roomNumber}`}</span>
-                <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
-              </div>
-              <div className="shrink-0 flex items-center gap-1">
-                {passthroughButton}
-                {roomActionButton}
-              </div>
-            </div>
-            {isExpanded && (
-              <div id={roomPanelId} className="px-3 py-2 space-y-1 text-sm">
-                {roomParticipants.length > 0 ? (
-                  roomParticipants.map(renderParticipantRow)
-                ) : (
-                  <div className="pl-8 text-xs text-wavis-text-secondary space-y-1">
-                    <div>No participants in this room.</div>
-                    {roomRemovalText && <div>{roomRemovalText}</div>}
-                  </div>
-                )}
-                {(showEnabledWatchAll || showDisabledWatchAll) && (
-                  <div className="pt-2 flex items-center justify-end gap-2">
-                    {showEnabledWatchAll && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void toggleWatchAllWindow();
-                        }}
-                        title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${hotkeys.watchAll})`}
-                        className={`text-xs py-0.5 px-1 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-                      >
-                        {watchAllOpen ? '/close-all' : '/watch-all'}
-                      </button>
-                    )}
-                    {showDisabledWatchAll && (
-                      <button
-                        type="button"
-                        disabled
-                        aria-disabled="true"
-                        title="Join this room to watch all streams together."
-                        className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
-                      >
-                        /watch-all
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      <div className="px-3 py-2 flex items-center justify-between gap-2 border-b border-wavis-text-secondary">
-        <button
-          onClick={() => createSubRoom()}
-          className="text-xs py-0.5 px-1 border border-wavis-accent text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
-        >
-          /create room
-        </button>
-        {isHost && sharers.length > 1 ? (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={stopAllShares}
-              className="text-wavis-danger text-xs border border-wavis-danger py-0.5 px-1 hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
-            >
-              /stopall
-            </button>
-          </div>
-        ) : (
-          <span />
-        )}
-      </div>
-    </div>
+  const mediaStatusBanners = (
+    <MediaStatusBanners
+      machineState={roomState.machineState}
+      mediaState={roomState.mediaState}
+      mediaReconnectFailures={roomState.mediaReconnectFailures}
+      lastRateLimitError={roomState.lastRateLimitError}
+    />
+  );
+
+  const participantsViewModel: ParticipantRowViewModel[] = roomState.participants.map((p) => {
+    const videoTile = roomState.videoTilesById[p.id];
+    return {
+      id: p.id,
+      userId: p.userId,
+      displayName: p.displayName,
+      color: p.color,
+      isMuted: p.isMuted,
+      isHostMuted: p.isHostMuted,
+      isDeafened: p.isDeafened,
+      isSpeaking: p.isSpeaking,
+      isSharing: p.isSharing,
+      mediaConnected: p.mediaConnected,
+      volume: p.volume,
+      // Without noUncheckedIndexedAccess, TS types the videoTilesById index access as
+      // always-defined even though a participant with no video tile entry makes it
+      // genuinely undefined.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      cameraOn: !!videoTile && !videoTile.isMuted && !videoTile.hasError,
+      isAudioOnlySharer: roomState.audioOnlySharers.has(p.id),
+      hasScreenShareStream: roomState.screenShareStreams.has(p.id),
+    };
+  });
+
+  const participantsPanel = (
+    <ParticipantsPanel
+      participants={participantsViewModel}
+      subRooms={roomState.subRooms}
+      joinedSubRoomId={roomState.joinedSubRoomId}
+      selfParticipantId={roomState.selfParticipantId}
+      passthrough={roomState.passthrough}
+      passthroughEnabled={roomState.passthroughEnabled}
+      isHost={isHost}
+      sharersCount={sharers.length}
+      countdownNowMs={countdownNowMs}
+      selfIsDeafened={roomState.isDeafened}
+      hasActiveVideoShare={roomState.activeVideoShare !== null}
+      hasActiveAudioShare={roomState.activeAudioShare !== null}
+      expandedSections={expandedSections}
+      toggleSection={toggleSection}
+      watchAllHotkeyLabel={hotkeys.watchAll}
+      shareViewerWindows={{
+        watchingShareIds,
+        shareVolumes,
+        watchAllOpen,
+        getSavedShareVolume,
+        getSavedShareMuted,
+        syncScreenShareVolume,
+        syncScreenShareMuted,
+        openShareWindow,
+        closeShareWindow,
+        toggleWatchAllWindow,
+      }}
+      getRoomSnapshot={() => roomStateRef.current}
+    />
   );
 
   const youBar = (
@@ -2219,113 +1451,28 @@ export default function ActiveRoom() {
   );
 
   const chatPanel = (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-3 py-3 border-b border-wavis-text-secondary h-[4.5rem] flex flex-col justify-center">
-        <div className="font-bold text-sm">CHAT</div>
-      </div>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-1 text-sm">
-        {roomState.chatMessages.length === 0 && (
-          <div className="text-wavis-text-secondary">No messages yet</div>
-        )}
-        {buildChatDisplayItems(roomState.chatMessages).map((item) =>
-          item.type === 'date-divider' ? (
-            <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
-              {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
-            </div>
-          ) : (
-            <div key={item.message.id} className="break-words">
-              <span className="text-wavis-text-secondary">
-                [{formatTime(item.message.timestamp)}]
-              </span>{' '}
-              <span
-                style={{
-                  color: resolveChatMessageDisplayColor(item.message, roomState.participants),
-                }}
-              >
-                {item.message.displayName}
-              </span>
-              <span>: {renderChatText(item.message.text)}</span>
-            </div>
-          ),
-        )}
-        {chatError && <div className="text-wavis-text-secondary italic text-xs">{chatError}</div>}
-        <div ref={chatEndRef} />
-      </div>
-      <div className="p-4 border-t border-wavis-text-secondary">
-        <div className="flex items-center gap-2">
-          <span className="text-wavis-accent">&gt;</span>
-          <input
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
-            maxLength={2000}
-            className="flex-1 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text"
-            placeholder="type message..."
-          />
-        </div>
-      </div>
-    </div>
+    <ChatPanel
+      chatMessages={roomState.chatMessages}
+      participants={roomState.participants}
+      chatError={chatError}
+    />
   );
 
   const currentPanelTab = roomState.roomPanelTab;
   const videoTilesById = roomState.videoTilesById;
 
   const logsContent = (
-    <>
-      <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
-        {buildRoomEventDisplayItems(roomState.events).map((item) => {
-          if (item.type === 'date-divider') {
-            return (
-              <div key={item.id} className="text-wavis-text-secondary text-xs py-1 text-center">
-                {'─'.repeat(12)} {item.label} {'─'.repeat(12)}
-              </div>
-            );
-          }
-
-          const evt = item.event;
-          const username = getEventUsername(evt);
-          const userColor = getUserColor(roomState.participants, evt.participantId);
-          return (
-            <div
-              key={evt.id}
-              style={{ whiteSpace: evt.message.includes('\n') ? 'pre-line' : undefined }}
-            >
-              <span className="text-wavis-text-secondary">[{formatTime(evt.timestamp)}]</span>{' '}
-              {username && evt.participantId ? (
-                <>
-                  <span style={{ color: userColor }}>{username}</span>{' '}
-                  <span style={{ color: getEventColor(evt.type) }}>
-                    {evt.message.slice(username.length + 1)}
-                  </span>
-                </>
-              ) : (
-                <span style={{ color: getEventColor(evt.type) }}>{evt.message}</span>
-              )}
-            </div>
-          );
-        })}
-        <div ref={logEndRef} />
-      </div>
-      <div className="p-4 border-t border-wavis-text-secondary">
-        <div className="flex items-center gap-2">
-          <span className="text-wavis-accent">&gt;</span>
-          <input
-            type="text"
-            value={cliInput}
-            onChange={(e) => handleCliInputChange(e.target.value)}
-            onKeyDown={handleCliKeyDown}
-            onFocus={() => setCliFocused(true)}
-            onBlur={() => setCliFocused(false)}
-            ref={cliInputRef}
-            data-cli-input="true"
-            className="flex-1 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text"
-            placeholder={cliFocused ? '' : 'type command... try /help'}
-            autoFocus
-          />
-        </div>
-      </div>
-    </>
+    <LogsPanel
+      events={roomState.events}
+      participants={roomState.participants}
+      cliInput={cliInput}
+      onCliInputChange={handleCliInputChange}
+      onCliKeyDown={handleCliKeyDown}
+      cliFocused={cliFocused}
+      onCliFocus={() => setCliFocused(true)}
+      onCliBlur={() => setCliFocused(false)}
+      cliInputRef={cliInputRef}
+    />
   );
 
   const videoPanel = (
@@ -2486,12 +1633,13 @@ export default function ActiveRoom() {
               {roomState.networkStats.rttMs}ms
             </span>
           </div>
-          {renderChannelSwitcherToggle()}
+          <ChannelSwitcherToggle
+            channelSwitcherOpen={channelSwitcherOpen}
+            onToggleChannelSwitcher={handleToggleChannelSwitcher}
+          />
         </div>
 
-        {mediaReconnectingBanner}
-        {mediaRetryBanner}
-        {reconnectBanner}
+        {mediaStatusBanners}
 
         {/* Tab bar */}
         <div className="flex border-b border-wavis-text-secondary bg-wavis-panel">
@@ -2547,7 +1695,7 @@ export default function ActiveRoom() {
             <>
               {mobileTab === 'participants' && (
                 <div className="flex flex-col flex-1 min-h-0">
-                  {participantsSections}
+                  {participantsPanel}
                   {youBar}
                 </div>
               )}
@@ -2563,10 +1711,8 @@ export default function ActiveRoom() {
       <div className="wavis-room-intermediate-layout flex-1 overflow-hidden">
         <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
-          {mediaReconnectingBanner}
-          {mediaRetryBanner}
-          {reconnectBanner}
-          {participantsSections}
+          {mediaStatusBanners}
+          {participantsPanel}
           {youBar}
         </div>
         <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">{groupedPanel}</div>
@@ -2576,10 +1722,8 @@ export default function ActiveRoom() {
       <div className="hidden md:flex flex-1 overflow-hidden">
         <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
           {roomHeader}
-          {mediaReconnectingBanner}
-          {mediaRetryBanner}
-          {reconnectBanner}
-          {participantsSections}
+          {mediaStatusBanners}
+          {participantsPanel}
           {youBar}
         </div>
         <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">

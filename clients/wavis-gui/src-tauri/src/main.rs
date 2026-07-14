@@ -905,6 +905,13 @@ fn parse_pactl_devices(
 
 const KEYRING_SERVICE: &str = "com.wavis.gui";
 
+/// Overridable so live-backend e2e runs (clients/wavis-gui/e2e-tooling) use a
+/// keychain service distinct from a developer's real persisted session on the
+/// same machine — driver.mjs sets WAVIS_KEYRING_SERVICE per-launch.
+fn keyring_service() -> String {
+    std::env::var("WAVIS_KEYRING_SERVICE").unwrap_or_else(|_| KEYRING_SERVICE.to_string())
+}
+
 /// In-memory cache for keyring values.
 ///
 /// Each keyring read on macOS triggers a system "allow" prompt. By caching
@@ -950,9 +957,9 @@ async fn store_token(
 ) -> Result<(), String> {
     let key_for_keyring = key.clone();
     let value_for_keyring = value.clone();
+    let service = keyring_service();
     run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         entry
             .set_password(&value_for_keyring)
             .map_err(|e| e.to_string())?;
@@ -977,9 +984,9 @@ async fn get_token(
     }
     // Cache miss — read from keychain once and populate the cache.
     let key_for_keyring = key.clone();
+    let service = keyring_service();
     let result = run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(val) => Ok(Some(val)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -997,9 +1004,9 @@ async fn get_token(
 async fn delete_token(key: String, cache: tauri::State<'_, KeyringCache>) -> Result<(), String> {
     cache.0.lock().unwrap().remove(&key);
     let key_for_keyring = key.clone();
+    let service = keyring_service();
     run_keyring_blocking(move || {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, &key_for_keyring).map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(&service, &key_for_keyring).map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // already gone — idempotent
