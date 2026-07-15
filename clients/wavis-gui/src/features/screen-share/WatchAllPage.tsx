@@ -91,25 +91,30 @@ export default function WatchAllPage() {
   // One direct LiveKit viewer connection for the whole window — every live
   // tile subscribes over this single Room. Constructor is side-effect free;
   // the Room only connects once the first tile calls watch().
-  const viewerConn = useMemo(
-    () =>
-      isDiagnosticsTestMode
-        ? null
-        : new ViewerRoomConnection({
-            windowLabel: 'watch-all',
-            // Unconditional: this is an error path, not diagnostic chatter, and it's
-            // the only signal a bug report has when the Watch All connection fails.
-            onConnectionError: (err) => {
-              console.warn('[wavis:viewer-connection] watch-all connect failed', err);
-              setConnectionErrorCount((c) => c + 1);
-            },
-          }),
-    [isDiagnosticsTestMode],
-  );
+  //
+  // MUST be created inside the effect (like ScreenSharePage's), not useMemo:
+  // dispose() is permanent, and StrictMode's simulated unmount runs the
+  // cleanup while a memoized instance survives the remount — leaving every
+  // tile watch()ing a dead connection that never requests a token, stuck on
+  // "connecting..." forever.
+  const [viewerConn, setViewerConn] = useState<ViewerRoomConnection | null>(null);
   useEffect(() => {
-    if (!viewerConn) return;
-    return () => viewerConn.dispose();
-  }, [viewerConn]);
+    if (isDiagnosticsTestMode) return;
+    const conn = new ViewerRoomConnection({
+      windowLabel: 'watch-all',
+      // Unconditional: this is an error path, not diagnostic chatter, and it's
+      // the only signal a bug report has when the Watch All connection fails.
+      onConnectionError: (err) => {
+        console.warn('[wavis:viewer-connection] watch-all connect failed', err);
+        setConnectionErrorCount((c) => c + 1);
+      },
+    });
+    setConnectionErrorCount(0);
+    setViewerConn(conn);
+    return () => {
+      conn.dispose();
+    };
+  }, [isDiagnosticsTestMode]);
 
   const { tiles, setTiles, audioTiles, setAudioTiles } = useWatchAllTiles({
     diagnosticsTestSessionId,
