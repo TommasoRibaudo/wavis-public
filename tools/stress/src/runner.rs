@@ -293,13 +293,19 @@ impl ScenarioRunner {
                     // Already failed — no need to run more repetitions.
                     break;
                 }
-                // Reset global rate limiters between repetitions so token buckets
-                // don't carry over depletion from the previous rep.
+                // Reset rate limiters between repetitions so token buckets/sliding
+                // windows don't carry over depletion from the previous rep. All
+                // in-process clients share source IP 127.0.0.1 (see server.rs), so
+                // without this a scenario that intentionally produces some failed
+                // joins each rep (e.g. auth-state-machine-race's Test 4) can trip
+                // join_rate_limiter's ip_failed window on a later rep even though
+                // that rep's own behavior was correct.
                 if let Some(ref app_state) = ctx.app_state {
                     app_state.global_ws_limiter.reconfigure();
                     app_state.global_join_limiter.reconfigure();
                     app_state.auth_rate_limiter.clear();
                 }
+                apply_preset(ctx, scenario.config_preset());
                 let rep_result = match tokio::time::timeout(
                     scenario_timeout,
                     run_scenario_with_panic_detection(scenario.as_ref(), ctx),
