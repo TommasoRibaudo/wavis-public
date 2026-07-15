@@ -41,6 +41,7 @@ pub struct WindowsNativeCaptureDiagnostics {
     pub adapter_shared_system_memory_mb: Option<u64>,
     pub border_required_disabled: Option<bool>,
     pub border_required_error: Option<String>,
+    pub borderless_access_status: Option<String>,
     pub capture_indicator_note: Option<String>,
     pub environment: WindowsNativeCaptureEnvironment,
     pub timing: WindowsNativeCaptureTiming,
@@ -167,6 +168,7 @@ impl WindowsNativeCaptureDiagnostics {
             adapter_shared_system_memory_mb: None,
             border_required_disabled: None,
             border_required_error: None,
+            borderless_access_status: None,
             capture_indicator_note: None,
             environment: WindowsNativeCaptureEnvironment {
                 process_id: std::process::id(),
@@ -290,6 +292,10 @@ impl WindowsNativeCaptureDiagnostics {
         );
     }
 
+    pub fn record_borderless_access_status(&mut self, status_or_error: impl std::fmt::Display) {
+        self.borderless_access_status = Some(status_or_error.to_string());
+    }
+
     pub fn record_startup_stage(&mut self, stage: &str, current_operation: &str, elapsed_ms: u64) {
         self.startup_stage = stage.to_string();
         self.current_operation = current_operation.to_string();
@@ -349,7 +355,7 @@ impl WindowsNativeCaptureDiagnostics {
 
     pub fn compact_summary(&self) -> String {
         format!(
-            "backend={} source_kind={} stalled_in={} current_operation={} startup_elapsed_ms={} last_stage_update_at_ms={} capture_thread_alive={} border_required_disabled={} border_required_error={} callbacks={} raw_callback_fps={:.1} usable_frames={} emitted_pollable_frames={} emitted_pollable_fps={:.1} throttle_drops={} throttle_drop_fps={:.1} readback_failures={} poll_calls={} poll_hits={} poll_misses={} latest_polled_seq={} startup_step_timings={} first_error={}",
+            "backend={} source_kind={} stalled_in={} current_operation={} startup_elapsed_ms={} last_stage_update_at_ms={} capture_thread_alive={} border_required_disabled={} border_required_error={} borderless_access_status={} callbacks={} raw_callback_fps={:.1} usable_frames={} emitted_pollable_frames={} emitted_pollable_fps={:.1} throttle_drops={} throttle_drop_fps={:.1} readback_failures={} poll_calls={} poll_hits={} poll_misses={} latest_polled_seq={} startup_step_timings={} first_error={}",
             self.backend,
             self.source_kind,
             self.startup_stage,
@@ -365,6 +371,7 @@ impl WindowsNativeCaptureDiagnostics {
                 .map(|disabled| disabled.to_string())
                 .unwrap_or_else(|| "unknown".to_string()),
             self.border_required_error.as_deref().unwrap_or("none"),
+            self.borderless_access_status.as_deref().unwrap_or("none"),
             self.frame_arrived_callbacks,
             self.raw_backend_callback_fps,
             self.usable_frames,
@@ -1069,6 +1076,47 @@ impl WinCapture {
                 e,
             );
         }
+        // Win11 gates SetIsBorderRequired(false) behind a borderless capture
+        // access request; for unpackaged Win32 apps it is auto-granted with
+        // no user prompt (same as OBS). On older Windows the type doesn't
+        // exist at runtime — treat any error as non-fatal and continue.
+        {
+            use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+            use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+            match GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless)
+                .and_then(|op| op.get())
+            {
+                Ok(status) => {
+                    // AppCapabilityAccessStatus derives Debug as a raw tuple
+                    // (e.g. "AppCapabilityAccessStatus(4)"); name it so the
+                    // diagnostics string is actually readable.
+                    let name = match status {
+                        AppCapabilityAccessStatus::Allowed => "Allowed",
+                        AppCapabilityAccessStatus::DeniedBySystem => "DeniedBySystem",
+                        AppCapabilityAccessStatus::DeniedByUser => "DeniedByUser",
+                        AppCapabilityAccessStatus::NotDeclaredByApp => "NotDeclaredByApp",
+                        AppCapabilityAccessStatus::UserPromptRequired => "UserPromptRequired",
+                        _ => "Unknown",
+                    };
+                    if status != AppCapabilityAccessStatus::Allowed {
+                        log::warn!(
+                            "{LOG} GraphicsCaptureAccess::RequestAccessAsync(Borderless) returned {name}; the yellow capture border may remain visible"
+                        );
+                    }
+                    if let Ok(mut diag) = diagnostics.lock() {
+                        diag.record_borderless_access_status(name);
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "{LOG} GraphicsCaptureAccess::RequestAccessAsync(Borderless) failed: {e}"
+                    );
+                    if let Ok(mut diag) = diagnostics.lock() {
+                        diag.record_borderless_access_status(&e);
+                    }
+                }
+            }
+        }
         match session.SetIsBorderRequired(false) {
             Ok(()) => {
                 if let Ok(mut diag) = diagnostics.lock() {
@@ -1677,6 +1725,12 @@ mod tests {
         assert!(diag
             .compact_summary()
             .contains("border_required_error=E_ACCESSDENIED"));
+
+        diag.record_borderless_access_status("Allowed");
+        assert_eq!(diag.borderless_access_status.as_deref(), Some("Allowed"));
+        assert!(diag
+            .compact_summary()
+            .contains("borderless_access_status=Allowed"));
     }
 
     #[test]
