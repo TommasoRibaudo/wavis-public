@@ -1,3 +1,4 @@
+import { House } from 'lucide-react';
 import { useHotkeys } from '@shared/useHotkeys';
 
 interface FocusMainButtonProps {
@@ -28,7 +29,7 @@ export default function FocusMainButton({ onClick }: FocusMainButtonProps) {
       aria-label="Focus main window"
       title={`focus main window (${focusMain})`}
     >
-      ⌂
+      <House size={14} strokeWidth={1.8} aria-hidden="true" />
     </button>
   );
 }

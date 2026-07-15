@@ -1,8 +1,7 @@
 /* Shared quick action buttons (mute/deafen) used by StreamHoverBar and WatchAllPage. */
+import { Mic, MicOff, Headphones, HeadphoneOff } from 'lucide-react';
 import { useHotkeys } from '@shared/useHotkeys';
 
-const SELF_MUTE_ICON = '\u25cb';
-const DEAFEN_ICON = '\u00a4';
 const SEPARATOR = '\u2502';
 
 export { SEPARATOR };
@@ -44,7 +43,11 @@ export default function QuickActionButtons({
         title={`${quickActionMuteTitle(isMuted)} (${hotkeys.mute})`}
         aria-label={quickActionMuteAriaLabel(isMuted)}
       >
-        {SELF_MUTE_ICON}
+        {isMuted ? (
+          <MicOff size={14} strokeWidth={1.8} aria-hidden="true" />
+        ) : (
+          <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
+        )}
       </button>
       <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
         {SEPARATOR}
@@ -59,9 +62,11 @@ export default function QuickActionButtons({
         title={isDeafened ? '/undeafen' : '/deafen'}
         aria-label={isDeafened ? 'Undeafen yourself' : 'Deafen yourself'}
       >
-        <span style={{ display: 'inline-block', transform: 'scale(1.25) translateY(8%)' }}>
-          {DEAFEN_ICON}
-        </span>
+        {isDeafened ? (
+          <HeadphoneOff size={14} strokeWidth={1.8} aria-hidden="true" />
+        ) : (
+          <Headphones size={14} strokeWidth={1.8} aria-hidden="true" />
+        )}
       </button>
     </div>
   );

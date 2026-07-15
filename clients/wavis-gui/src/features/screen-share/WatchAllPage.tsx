@@ -545,20 +545,20 @@ export default function WatchAllPage() {
             pointerEvents: bottomBarActive ? 'auto' : 'none',
           }}
         >
-          <QuickActionButtons
-            isMuted={userState.isMuted}
-            isDeafened={userState.isDeafened}
-            onToggleMute={() => {
-              emitShareToggleMute();
-            }}
-            onToggleDeafen={() => {
-              emitShareToggleDeafen();
-            }}
-          />
-          <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">
-            │
-          </span>
-          <FocusMainButton onClick={handleFocusMain} />
+          <div className="flex items-center leading-none shrink-0">
+            <QuickActionButtons
+              isMuted={userState.isMuted}
+              isDeafened={userState.isDeafened}
+              onToggleMute={() => {
+                emitShareToggleMute();
+              }}
+              onToggleDeafen={() => {
+                emitShareToggleDeafen();
+              }}
+            />
+            <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
+            <FocusMainButton onClick={handleFocusMain} />
+          </div>
           <div className="flex-1" />
           <div className="relative flex items-center gap-1 shrink-0">
             <button

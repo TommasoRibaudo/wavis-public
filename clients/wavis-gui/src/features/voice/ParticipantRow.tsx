@@ -1,3 +1,13 @@
+import {
+  Mic,
+  MicOff,
+  HeadphoneOff,
+  Camera,
+  ScreenShare,
+  ScreenShareOff,
+  Music,
+  type LucideIcon,
+} from 'lucide-react';
 import { LoadingBars } from '@shared/LoadingBars';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { participantNameVisualState } from './active-room-participant-row';
@@ -33,12 +43,11 @@ export interface ParticipantRowViewModel {
 function voiceIcon(
   p: Pick<ParticipantRowViewModel, 'isMuted' | 'isSpeaking'>,
   isDeafened?: boolean,
-): { char: string; color: string; strikethrough?: boolean; transform?: string } {
-  if (isDeafened)
-    return { char: '¤', color: 'var(--wavis-danger)', transform: 'scale(1.25) translateY(8%)' };
-  if (p.isMuted) return { char: '○', color: 'var(--wavis-danger)' };
-  if (p.isSpeaking) return { char: '●', color: 'var(--wavis-accent)' };
-  return { char: '○', color: 'var(--wavis-text-secondary)' };
+): { Icon: LucideIcon; color: string } {
+  if (isDeafened) return { Icon: HeadphoneOff, color: 'var(--wavis-danger)' };
+  if (p.isMuted) return { Icon: MicOff, color: 'var(--wavis-danger)' };
+  if (p.isSpeaking) return { Icon: Mic, color: 'var(--wavis-accent)' };
+  return { Icon: Mic, color: 'var(--wavis-text-secondary)' };
 }
 
 export interface ParticipantRowProps {
@@ -125,15 +134,7 @@ export function ParticipantRow({
             {p.displayName}
           </span>
         </span>
-        <span
-          style={{
-            color: icon.color,
-            textDecoration: icon.strikethrough ? 'line-through' : undefined,
-            ...(icon.transform ? { display: 'inline-block', transform: icon.transform } : {}),
-          }}
-        >
-          {icon.char}
-        </span>
+        <icon.Icon size={14} strokeWidth={1.8} color={icon.color} aria-hidden="true" />
         {nameVisual.showConnecting && (
           <span className="inline-flex h-4 items-center gap-1 text-[0.625rem] leading-none text-wavis-text-secondary opacity-80">
             <LoadingBars size="sm" />
@@ -142,39 +143,28 @@ export function ParticipantRow({
         )}
         <div className="ml-auto flex items-center gap-1">
           {p.cameraOn && (
-            <span
+            <Camera
+              size={14}
+              strokeWidth={1.8}
+              color="var(--wavis-accent)"
               aria-label={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
-              title={isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}
-              style={{
-                display: 'inline-block',
-                width: '0.75rem',
-                height: '0.75rem',
-                backgroundColor: 'var(--wavis-accent)',
-                WebkitMaskImage: 'url(/video-camera.png)',
-                WebkitMaskSize: 'contain',
-                WebkitMaskRepeat: 'no-repeat',
-                WebkitMaskPosition: 'center',
-                maskImage: 'url(/video-camera.png)',
-                maskSize: 'contain',
-                maskRepeat: 'no-repeat',
-                maskPosition: 'center',
-                pointerEvents: 'none',
-              }}
-            />
+            >
+              <title>{isSelf ? 'your camera is on' : `${p.displayName}'s camera is on`}</title>
+            </Camera>
           )}
           {isSelf && p.isSharing && (
             <>
               {(hasActiveVideoShare || !hasActiveAudioShare) && (
-                <span
-                  className="text-sm leading-none"
+                <ScreenShare
+                  size={14}
+                  strokeWidth={1.8}
                   style={{
                     color: 'var(--wavis-danger)',
                     animation: 'watchPulse 2s ease-in-out infinite',
                   }}
-                  title="you are sharing"
                 >
-                  {'◉'}
-                </span>
+                  <title>you are sharing</title>
+                </ScreenShare>
               )}
               {hasActiveAudioShare && (
                 <span
@@ -194,19 +184,23 @@ export function ParticipantRow({
             <>
               {p.isAudioOnlySharer && (
                 <button
-                  className="text-sm leading-none hover:opacity-70 transition-opacity"
-                  style={{
-                    color: shareMuted ? 'var(--wavis-danger)' : 'transparent',
-                    WebkitTextStroke: shareMuted ? undefined : '1px var(--wavis-danger)',
-                    animation: shareMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
-                  }}
-                  title={shareMuted ? 'unmute audio share' : 'mute audio share'}
+                  className="flex items-center justify-center hover:opacity-70 transition-opacity"
                   onClick={(e) => {
                     e.stopPropagation();
                     onSyncShareMuted(!shareMuted);
                   }}
+                  title={shareMuted ? 'unmute audio share' : 'mute audio share'}
                 >
-                  {'♪'}
+                  <Music
+                    size={14}
+                    strokeWidth={1.8}
+                    color="var(--wavis-danger)"
+                    fill={shareMuted ? 'var(--wavis-danger)' : 'none'}
+                    style={{
+                      animation: shareMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
+                    }}
+                    aria-hidden="true"
+                  />
                 </button>
               )}
               {p.hasVideoShare && (
@@ -216,7 +210,7 @@ export function ParticipantRow({
                     if (!p.hasScreenShareStream) return;
                     onToggleWatchShare();
                   }}
-                  className="text-sm leading-none"
+                  className="flex items-center justify-center hover:opacity-70 transition-opacity"
                   style={
                     isWatchingShare
                       ? { color: 'var(--wavis-danger)' }
@@ -235,7 +229,11 @@ export function ParticipantRow({
                         : 'waiting for stream...'
                   }
                 >
-                  {isWatchingShare ? '◎' : '◉'}
+                  {isWatchingShare ? (
+                    <ScreenShareOff size={14} strokeWidth={1.8} aria-hidden="true" />
+                  ) : (
+                    <ScreenShare size={14} strokeWidth={1.8} aria-hidden="true" />
+                  )}
                 </button>
               )}
             </>

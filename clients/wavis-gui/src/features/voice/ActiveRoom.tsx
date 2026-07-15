@@ -1,4 +1,14 @@
 import { type ReactNode, useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Mic,
+  MicOff,
+  Headphones,
+  HeadphoneOff,
+  Camera,
+  CameraOff,
+  ScreenShare,
+  ScreenShareOff,
+} from 'lucide-react';
 import { LoadingBars } from '@shared/LoadingBars';
 import { useLocation, useNavigate } from 'react-router';
 import type { ChannelRole } from '@features/channels/channels';
@@ -1103,9 +1113,11 @@ export default function ActiveRoom() {
               }}
               title={selfP?.isMuted ? `/unmute (${hotkeys.mute})` : `/mute (${hotkeys.mute})`}
             >
-              <span className="inline-flex w-3 h-3 items-center justify-center leading-none -translate-y-px">
-                ○
-              </span>
+              {selfP?.isMuted ? (
+                <MicOff size={14} strokeWidth={1.8} aria-hidden="true" />
+              ) : (
+                <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
+              )}
             </button>
             <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
             <button
@@ -1116,12 +1128,11 @@ export default function ActiveRoom() {
               }}
               title={roomState.isDeafened ? '/undeafen' : '/deafen'}
             >
-              <span
-                className="inline-flex w-3 h-3 items-center justify-center leading-none"
-                style={{ fontSize: '1.1em' }}
-              >
-                ¤
-              </span>
+              {roomState.isDeafened ? (
+                <HeadphoneOff size={14} strokeWidth={1.8} aria-hidden="true" />
+              ) : (
+                <Headphones size={14} strokeWidth={1.8} aria-hidden="true" />
+              )}
             </button>
             {showCameraButton && (
               <>
@@ -1142,22 +1153,11 @@ export default function ActiveRoom() {
                   title={cameraLabel}
                   aria-label={videoButtonLabel}
                 >
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: '0.75rem',
-                      height: '0.75rem',
-                      backgroundColor: 'currentColor',
-                      WebkitMaskImage: 'url(/video-camera.png)',
-                      WebkitMaskSize: 'contain',
-                      WebkitMaskRepeat: 'no-repeat',
-                      WebkitMaskPosition: 'center',
-                      maskImage: 'url(/video-camera.png)',
-                      maskSize: 'contain',
-                      maskRepeat: 'no-repeat',
-                      maskPosition: 'center',
-                    }}
-                  />
+                  {roomState.cameraIntent ? (
+                    <Camera size={14} strokeWidth={1.8} aria-hidden="true" />
+                  ) : (
+                    <CameraOff size={14} strokeWidth={1.8} aria-hidden="true" />
+                  )}
                 </button>
               </>
             )}
@@ -1175,9 +1175,11 @@ export default function ActiveRoom() {
               }}
               title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
             >
-              <span className="inline-flex w-3 h-3 items-center justify-center leading-none">
-                ◉
-              </span>
+              {isVideoOrFallbackSharing ? (
+                <ScreenShareOff size={14} strokeWidth={1.8} aria-hidden="true" />
+              ) : (
+                <ScreenShare size={14} strokeWidth={1.8} aria-hidden="true" />
+              )}
             </button>
           </div>
         )}
