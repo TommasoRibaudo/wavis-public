@@ -147,6 +147,10 @@ const ShareTile = memo(function ShareTile({
   /* ── Stream lifecycle ── */
 
   const [retryCount, setRetryCount] = useState(0);
+  // Consecutive automatic dead-track retries since the last successfully
+  // delivered stream — escalates from per-identity refresh to a full Room
+  // reconnect so one poisoned publication can't loop the whole Watch All room.
+  const consecutiveDeadTrackRetriesRef = useRef(0);
 
   useEffect(() => {
     if (canvasFallback || isDiagnosticTest || !viewerConn) return;
@@ -168,6 +172,7 @@ const ShareTile = memo(function ShareTile({
         setStream(null);
         return;
       }
+      consecutiveDeadTrackRetriesRef.current = 0;
       setError(null);
       setStream(s);
       emitScreenShareViewerReady(participantId, 'watch-all');
@@ -317,6 +322,24 @@ const ShareTile = memo(function ShareTile({
     setRetryCount((c) => c + 1);
   }, [viewerConn]);
 
+  // Automatic dead-track recovery, escalating: the first two attempts
+  // resubscribe only this identity's publication (refreshIdentity) so a
+  // single poisoned track can't tear down the Room other tiles share; a
+  // third consecutive failure falls back to a full reconnect.
+  const handleDeadTrack = useCallback(() => {
+    setStream(null);
+    setError(null);
+    const identity = liveKitIdentity ?? participantId;
+    consecutiveDeadTrackRetriesRef.current += 1;
+    if (consecutiveDeadTrackRetriesRef.current >= 3) {
+      consecutiveDeadTrackRetriesRef.current = 0;
+      viewerConn?.forceReconnect();
+    } else {
+      viewerConn?.refreshIdentity(identity);
+    }
+    setRetryCount((c) => c + 1);
+  }, [liveKitIdentity, participantId, viewerConn]);
+
   // Frame-health + dead-track recovery. Canvas-fallback/diagnostic-test tiles
   // don't use a real <video> element, so pass stream: null to no-op the hook
   // for them (mirrors the previous effect's early-return guard).
@@ -324,7 +347,7 @@ const ShareTile = memo(function ShareTile({
     videoRef,
     stream: canvasFallback || isDiagnosticTest ? null : stream,
     onFrameDetected: markFrameRendered,
-    onDeadTrack: handleRetry,
+    onDeadTrack: handleDeadTrack,
     onReattach: markFrameRendered,
   });
 

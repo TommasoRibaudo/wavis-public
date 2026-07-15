@@ -137,6 +137,29 @@ export class ViewerRoomConnection {
     };
   }
 
+  /**
+   * Per-identity dead-track recovery: resubscribe one identity's screen-share
+   * publication without tearing down the Room shared by other watched tiles.
+   */
+  refreshIdentity(identity: string): void {
+    if (this.disposed) return;
+    if (DEBUG_VIEWER_CONNECTION) {
+      console.log(LOG, `[${this.windowLabel}] refreshIdentity ${identity}`);
+    }
+    this.deliverNull(identity);
+
+    const participant = this.room?.remoteParticipants.get(identity);
+    if (!this.room || this.room.state !== ConnectionState.Connected || !participant) {
+      void this.ensureConnected();
+      return;
+    }
+
+    const publication = pickScreenSharePublication(participant);
+    if (!publication) return;
+    publication.setSubscribed(false);
+    this.pinPublication(publication);
+  }
+
   /** Tear down the Room and reconnect immediately (dead-track escape hatch). */
   forceReconnect(): void {
     if (this.disposed) return;
