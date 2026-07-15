@@ -81,6 +81,13 @@ export default function WatchAllPage() {
   const diagnosticsTestSessionId = p?.testSessionId ?? null;
   const isDiagnosticsTestMode = diagnosticsTestSessionId !== null;
 
+  // Consecutive Room-level connect failures (token request or LiveKit connect
+  // itself) — shared across every tile since they all ride the same Room.
+  // ScreenSharePage's per-pop-out connection surfaces the same threshold to
+  // its own tile; Watch All previously only logged this and left tiles
+  // stuck showing "connecting..." forever with no escalation path.
+  const [connectionErrorCount, setConnectionErrorCount] = useState(0);
+
   // One direct LiveKit viewer connection for the whole window — every live
   // tile subscribes over this single Room. Constructor is side-effect free;
   // the Room only connects once the first tile calls watch().
@@ -94,6 +101,7 @@ export default function WatchAllPage() {
             // the only signal a bug report has when the Watch All connection fails.
             onConnectionError: (err) => {
               console.warn('[wavis:viewer-connection] watch-all connect failed', err);
+              setConnectionErrorCount((c) => c + 1);
             },
           }),
     [isDiagnosticsTestMode],
@@ -482,6 +490,7 @@ export default function WatchAllPage() {
                     nativeHeight={tile.nativeHeight}
                     aspectRatio={tile.aspectRatio}
                     viewerConn={viewerConn}
+                    connectionErrorCount={connectionErrorCount}
                     onToggleMute={handleToggleMute}
                     onVolumeChange={handleVolumeChange}
                     onPopOut={handlePopOut}
