@@ -85,7 +85,17 @@ export default function WatchAllPage() {
   // tile subscribes over this single Room. Constructor is side-effect free;
   // the Room only connects once the first tile calls watch().
   const viewerConn = useMemo(
-    () => (isDiagnosticsTestMode ? null : new ViewerRoomConnection({ windowLabel: 'watch-all' })),
+    () =>
+      isDiagnosticsTestMode
+        ? null
+        : new ViewerRoomConnection({
+            windowLabel: 'watch-all',
+            // Unconditional: this is an error path, not diagnostic chatter, and it's
+            // the only signal a bug report has when the Watch All connection fails.
+            onConnectionError: (err) => {
+              console.warn('[wavis:viewer-connection] watch-all connect failed', err);
+            },
+          }),
     [isDiagnosticsTestMode],
   );
   useEffect(() => {
