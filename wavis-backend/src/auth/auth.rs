@@ -30,6 +30,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
+use crate::auth::alpha_invite;
 use crate::auth::device;
 use crate::auth::jwt::sign_access_token;
 use crate::auth::phrase::{self, DummyVerifier, PhraseConfig};
@@ -80,6 +81,8 @@ pub enum AuthError {
     RecoveryIdNotFound,
     #[error("device revoked")]
     DeviceRevoked,
+    #[error("invite code invalid")]
+    InviteInvalid,
 }
 
 /// Check that the token's epoch matches the current DB epoch for the user.
@@ -169,6 +172,7 @@ pub fn generate_recovery_id() -> String {
 /// Returns `DeviceRegistration` with `user_id`, `device_id`, `recovery_id`,
 /// `access_token`, `refresh_token`.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub async fn register_user(
     pool: &sqlx::PgPool,
     phrase: &str,
@@ -269,11 +273,143 @@ pub async fn register_user(
     })
 }
 
+/// Register a new user only after redeeming a valid closed-alpha invite.
+///
+/// Invite redemption and all auth row creation are committed atomically. If
+/// any step fails, the invite is not consumed and no partial auth rows remain.
+#[allow(clippy::too_many_arguments)]
+pub async fn register_user_with_invite(
+    pool: &sqlx::PgPool,
+    phrase: &str,
+    username: &str,
+    invite_code: &str,
+    auth_secret: &[u8],
+    access_ttl_secs: u64,
+    refresh_ttl_days: u32,
+    refresh_pepper: &[u8],
+    alpha_invite_pepper: &[u8],
+    phrase_config: &PhraseConfig,
+    encryption_key: &[u8],
+) -> Result<DeviceRegistration, AuthError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    let invite_id = alpha_invite::redeem_alpha_invite(&mut tx, invite_code, alpha_invite_pepper)
+        .await
+        .map_err(|e| match e {
+            alpha_invite::AlphaInviteError::Invalid => AuthError::InviteInvalid,
+            alpha_invite::AlphaInviteError::DatabaseError(e) => AuthError::DatabaseError(e),
+        })?;
+
+    let user_id: Uuid = sqlx::query_scalar("INSERT INTO users DEFAULT VALUES RETURNING user_id")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    let mut phrase_copy = phrase.to_string();
+    let hash = phrase::hash_phrase(&phrase_copy, &user_id, phrase_config)
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+    phrase_copy.zeroize();
+
+    let (enc_salt, enc_verifier) =
+        phrase::encrypt_phrase_data(&hash.salt, &hash.verifier, encryption_key)
+            .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    let recovery_id = generate_unique_recovery_id_in_tx(&mut tx).await?;
+
+    sqlx::query(
+        "UPDATE users \
+         SET phrase_salt = $1, phrase_verifier = $2, recovery_id = $3, username = $4 \
+         WHERE user_id = $5",
+    )
+    .bind(&enc_salt)
+    .bind(&enc_verifier)
+    .bind(&recovery_id)
+    .bind(username)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    let device_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO devices (device_id, user_id, device_name, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, now()) \
+         RETURNING device_id",
+    )
+    .bind(user_id)
+    .bind("primary")
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    let raw_refresh = generate_refresh_token();
+    let token_hash = hash_refresh_token(&raw_refresh, refresh_pepper);
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(refresh_ttl_days as i64);
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (refresh_id, device_id, token_hash, family_id, expires_at) \
+         VALUES (gen_random_uuid(), $1, $2, gen_random_uuid(), $3)",
+    )
+    .bind(device_id)
+    .bind(&token_hash)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    alpha_invite::record_redemption(&mut tx, invite_id, user_id, device_id)
+        .await
+        .map_err(|e| match e {
+            alpha_invite::AlphaInviteError::Invalid => AuthError::InviteInvalid,
+            alpha_invite::AlphaInviteError::DatabaseError(e) => AuthError::DatabaseError(e),
+        })?;
+
+    let access_token = sign_access_token(&user_id, &device_id, auth_secret, access_ttl_secs, 0)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+    Ok(DeviceRegistration {
+        user_id,
+        device_id,
+        recovery_id,
+        access_token,
+        refresh_token: raw_refresh,
+    })
+}
+
+async fn generate_unique_recovery_id_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<String, AuthError> {
+    let max_retries = 5;
+    for _ in 0..=max_retries {
+        let recovery_id = generate_recovery_id();
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE recovery_id = $1)")
+                .bind(&recovery_id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
+
+        if !exists {
+            return Ok(recovery_id);
+        }
+    }
+
+    Err(AuthError::DatabaseError(
+        "failed to generate unique recovery_id".to_string(),
+    ))
+}
+
 /// Register a new device: create user + initial refresh token.
 /// Returns DeviceRegistration with user_id, access_token, refresh_token.
 ///
 /// DEPRECATED: Use `register_user` instead. This function is kept for backward
 /// compatibility with existing tests and the old `/auth/register_device` endpoint.
+#[allow(dead_code)]
 pub async fn register_device(
     pool: &sqlx::PgPool,
     auth_secret: &[u8],

@@ -114,9 +114,23 @@ aws ssm put-parameter --region us-east-2 `
   --type SecureString --overwrite
 
 # Repeat for other secrets: AUTH_JWT_SECRET, AUTH_REFRESH_PEPPER,
-# PHRASE_ENCRYPTION_KEY, PAIRING_CODE_PEPPER, SFU_JWT_SECRET,
-# LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+# ALPHA_INVITE_CODE_PEPPER, PHRASE_ENCRYPTION_KEY, PAIRING_CODE_PEPPER,
+# SFU_JWT_SECRET, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 ```
+
+Closed-alpha registration also requires a seeded invite row and a matching
+GitHub Actions secret before deploy smoke tests can pass:
+
+```powershell
+$env:ALPHA_INVITE_CODE = "shared-dev-ci-code"
+$env:ALPHA_INVITE_CODE_PEPPER = "real-32-byte-minimum-pepper-value"
+$env:DATABASE_URL = "postgres://..."
+python scripts/seed-alpha-invite.py --execute
+```
+
+Set the GitHub Actions secret `ALPHA_INVITE_CODE` to the raw invite code used
+above. The seed helper defaults to `1000000` max redemptions so shared dev/CI
+invites do not silently exhaust.
 
 ### 7. Verify No Placeholders Remain
 

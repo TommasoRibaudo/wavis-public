@@ -66,13 +66,34 @@ impl Scenario for RefreshTokenReuseScenario {
 
 async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation>) {
     let base_url = ws_url_to_http(&ctx.ws_url);
-    let register_url = format!("{base_url}/auth/register_device");
+    let register_url = format!("{base_url}/auth/register");
     let refresh_url = format!("{base_url}/auth/refresh");
+    let invite_code = match std::env::var("ALPHA_INVITE_CODE") {
+        Ok(code) => code,
+        Err(_) => {
+            violations.push(InvariantViolation {
+                invariant: "refresh_reuse: alpha invite configured".to_owned(),
+                expected: "ALPHA_INVITE_CODE env var".to_owned(),
+                actual: "missing".to_owned(),
+            });
+            return;
+        }
+    };
 
     // =========================================================================
     // Step 1: Register a device
     // =========================================================================
-    let resp = match ctx.http_client.post(&register_url).send().await {
+    let resp = match ctx
+        .http_client
+        .post(&register_url)
+        .json(&serde_json::json!({
+            "phrase": "refresh-reuse-password",
+            "username": "RefreshReuse",
+            "inviteCode": invite_code,
+        }))
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             violations.push(InvariantViolation {

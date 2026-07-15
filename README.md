@@ -86,7 +86,16 @@ Set `REQUIRE_INVITE_CODE=false` to bypass invite validation in local development
 
 ## Identity
 
-Wavis uses credential-free device registration — no passwords, no OAuth. Each device gets a recovery phrase (Argon2id, AES-256-GCM encrypted at rest). Additional devices can be paired via QR or a short code. Recovery on a new device requires only the recovery phrase. Refresh tokens use HMAC-SHA256 hashing with reuse detection and session epoch for atomic logout-all.
+Wavis uses closed-alpha registration: `POST /auth/register` requires an
+`invite_code` / `inviteCode` value before the backend creates a user, device,
+or tokens. Alpha invite codes are stored only as HMAC-SHA256 hashes in Postgres
+and track expiry, disabled state, and redemption count. The legacy
+`POST /auth/register_device` endpoint is retired and returns `410 Gone`.
+
+Each account has a recovery phrase (Argon2id, AES-256-GCM encrypted at rest).
+Additional devices can be paired via QR or a short code. Recovery on a new
+device requires only the recovery phrase. Refresh tokens use HMAC-SHA256 hashing
+with reuse detection and session epoch for atomic logout-all.
 
 ## Voice Modes
 

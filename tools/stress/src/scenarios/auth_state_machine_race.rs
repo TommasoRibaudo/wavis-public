@@ -354,10 +354,17 @@ async fn get_access_token(ctx: &TestContext) -> Result<String, String> {
         .map_err(|e| format!("register_device failed: {e}"))?;
         Ok(reg.access_token)
     } else {
-        // External: register a device via REST.
+        // External: register a closed-alpha user via REST.
         let base_url = ws_url_to_http(&ctx.ws_url);
+        let invite_code = std::env::var("ALPHA_INVITE_CODE")
+            .map_err(|_| "ALPHA_INVITE_CODE must be set for external auth seeding".to_string())?;
         let resp = reqwest::Client::new()
-            .post(format!("{base_url}/auth/register_device"))
+            .post(format!("{base_url}/auth/register"))
+            .json(&serde_json::json!({
+                "phrase": "auth-state-machine-race-password",
+                "username": "AuthStateMachineRace",
+                "inviteCode": invite_code,
+            }))
             .send()
             .await
             .map_err(|e| format!("register request failed: {e}"))?;

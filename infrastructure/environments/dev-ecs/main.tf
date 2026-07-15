@@ -131,6 +131,7 @@ locals {
   secrets = {
     AUTH_JWT_SECRET         = "CHANGE-ME-auth-secret-32-bytes!!"
     AUTH_REFRESH_PEPPER     = "CHANGE-ME-pepper-32-bytes-min!!!"
+    ALPHA_INVITE_CODE_PEPPER = "CHANGE-ME-alpha-invite-pepper-32b"
     PHRASE_ENCRYPTION_KEY   = "CHANGE-ME-base64-32-byte-key!!!!"
     PAIRING_CODE_PEPPER     = "CHANGE-ME-pairing-pepper-32b!!!!"
     SFU_JWT_SECRET          = "CHANGE-ME-sfu-secret-32-bytes!!!"

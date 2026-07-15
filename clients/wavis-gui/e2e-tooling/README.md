@@ -208,10 +208,10 @@ by registering a fresh, timestamp-suffixed throwaway account via the real
 registration has no email/CAPTCHA step, so this is cheap. `login.spec.mjs`
 is the one spec that exercises that UI as the thing under test; the other
 three treat it as setup. Channel/invite seeding for `room-join`/`chat`/
-`participants` uses REST (`POST /auth/register_device`,
-`POST /channels`, `POST /channels/:id/invites` — see `doc/QUICKSTART.md`
-§11) for the channel _owner_, so that identity never needs to touch the GUI
-at all.
+`participants` uses REST (`POST /auth/register`, `POST /channels`,
+`POST /channels/:id/invites`) for the channel _owner_, so that identity never
+needs to touch the GUI at all. Closed-alpha registration requires
+`ALPHA_INVITE_CODE` to point at a pre-seeded multi-use invite.
 
 **Second participant (chat/participants specs).** These need a second
 connected participant to assert anything meaningful. Two real
@@ -382,17 +382,15 @@ tests/audio-received.spec.mjs` — must connect and read a real decoded
 
 All three specs, plus the full pre-existing suite, pass now.
 
-**Rate limiting.** The backend's register/register_device rate limiter is
+**Rate limiting.** The backend's registration rate limiter is
 in-process, per-IP, and allows only **5 registrations per hour** by default
 (`AuthRateLimiterConfig` in `wavis-backend/src/auth/auth_rate_limiter.rs`) —
-and `/auth/register` (each spec's `registerViaUi`) and
-`/auth/register_device` (each spec's `seedChannelWithInvite` owner) draw
-from the **same** window. At ~2 registrations per spec, one full 7-spec run
-needs ~14, so specs past the first two or three fail setup with `429`
-(`register_device failed: 429` from `live-backend-helpers.mjs`) even on a
-freshly restarted backend. For e2e use, raise the limit when starting the
-stack — the backend reads `AUTH_REGISTER_RATE_LIMIT` and docker-compose.yml
-passes it through (default stays 5):
+and `/auth/register` calls from both `registerViaUi` and
+`seedChannelWithInvite` draw from the **same** window. At ~2 registrations per
+spec, one full 7-spec run needs ~14, so specs past the first two or three fail
+setup with `429` even on a freshly restarted backend. For e2e use, raise the
+limit when starting the stack — the backend reads `AUTH_REGISTER_RATE_LIMIT`
+and docker-compose.yml passes it through (default stays 5):
 
 ```powershell
 $env:AUTH_REGISTER_RATE_LIMIT="200"; docker compose up -d --build

@@ -1,3 +1,4 @@
+pub mod alpha_invite;
 #[allow(clippy::module_inception)]
 pub mod auth;
 pub mod auth_rate_limiter;
