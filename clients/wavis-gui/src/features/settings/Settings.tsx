@@ -1288,18 +1288,6 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     pixabay.com
                   </button>
                 </div>
-                <div>
-                  <span className="text-wavis-text-secondary">icons: </span>
-                  <span>video camera by Kiranshastry — </span>
-                  <button
-                    onClick={() => {
-                      void open('https://www.flaticon.com/free-icons/video-camera');
-                    }}
-                    className="hover:text-wavis-accent hover:underline"
-                  >
-                    flaticon.com
-                  </button>
-                </div>
               </div>
             </div>
 

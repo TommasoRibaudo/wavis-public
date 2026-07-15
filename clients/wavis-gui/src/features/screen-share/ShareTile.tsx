@@ -36,6 +36,8 @@ export interface ShareTileProps {
   aspectRatio: number;
   /** Window-wide direct LiveKit viewer connection (null in diagnostics test mode). */
   viewerConn: ViewerRoomConnection | null;
+  /** Consecutive Room-level connect failures, shared across every tile in the window. */
+  connectionErrorCount: number;
   onToggleMute: (participantId: string) => void;
   onVolumeChange: (participantId: string, volume: number) => void;
   onPopOut: (participantId: string, volume: number, muted: boolean) => void;
@@ -55,6 +57,7 @@ const ShareTile = memo(function ShareTile({
   nativeHeight,
   aspectRatio,
   viewerConn,
+  connectionErrorCount,
   onToggleMute,
   onVolumeChange,
   onPopOut,
@@ -184,6 +187,16 @@ const ShareTile = memo(function ShareTile({
       unwatch();
     };
   }, [canvasFallback, isDiagnosticTest, liveKitIdentity, participantId, retryCount, viewerConn]);
+
+  // Room-level connect failures (token request or LiveKit connect itself)
+  // never resolve per-identity, so a tile with no stream yet would otherwise
+  // sit on "connecting..." forever with no escalation path. Mirror
+  // ScreenSharePage's own threshold: surface the retry UI after 3 consecutive
+  // failures. Clears itself once a stream arrives (see the branch above).
+  useEffect(() => {
+    if (canvasFallback || isDiagnosticTest || !viewerConn || stream) return;
+    if (connectionErrorCount >= 3) setError('connection failed');
+  }, [canvasFallback, isDiagnosticTest, viewerConn, stream, connectionErrorCount]);
 
   // Attach stream to video element and detect aspect ratio from metadata
   useEffect(() => {

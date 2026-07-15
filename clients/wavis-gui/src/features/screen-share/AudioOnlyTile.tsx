@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { Music } from 'lucide-react';
 import { VolumeSlider } from '@shared/VolumeSlider';
 import { STREAM_MUTED_ICON, STREAM_UNMUTED_ICON } from './watch-all-constants';
 
@@ -24,17 +25,19 @@ const AudioOnlyTile = memo(function AudioOnlyTile({
   return (
     <div className="flex items-center gap-3 px-3 py-2 text-xs font-mono select-none">
       <button
-        className="shrink-0 hover:opacity-70 transition-opacity"
-        style={{
-          color: muted ? 'var(--wavis-danger)' : 'transparent',
-          WebkitTextStroke: muted ? undefined : '1px var(--wavis-danger)',
-          animation: muted ? 'watchPulse 2s ease-in-out infinite' : undefined,
-        }}
+        className="shrink-0 flex items-center justify-center hover:opacity-70 transition-opacity"
         onClick={() => onToggleMute(participantId)}
         aria-label={muted ? `Unmute ${displayName} audio` : `Mute ${displayName} audio`}
         title={muted ? 'click to unmute' : 'click to mute'}
       >
-        {'♪'}
+        <Music
+          size={14}
+          strokeWidth={1.8}
+          color="var(--wavis-danger)"
+          fill={muted ? 'var(--wavis-danger)' : 'none'}
+          style={{ animation: muted ? 'watchPulse 2s ease-in-out infinite' : undefined }}
+          aria-hidden="true"
+        />
       </button>
       <span className="truncate min-w-0" style={{ color }}>
         {displayName}

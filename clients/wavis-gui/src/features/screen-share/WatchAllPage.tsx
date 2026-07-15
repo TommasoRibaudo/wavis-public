@@ -81,27 +81,40 @@ export default function WatchAllPage() {
   const diagnosticsTestSessionId = p?.testSessionId ?? null;
   const isDiagnosticsTestMode = diagnosticsTestSessionId !== null;
 
+  // Consecutive Room-level connect failures (token request or LiveKit connect
+  // itself) — shared across every tile since they all ride the same Room.
+  // ScreenSharePage's per-pop-out connection surfaces the same threshold to
+  // its own tile; Watch All previously only logged this and left tiles
+  // stuck showing "connecting..." forever with no escalation path.
+  const [connectionErrorCount, setConnectionErrorCount] = useState(0);
+
   // One direct LiveKit viewer connection for the whole window — every live
   // tile subscribes over this single Room. Constructor is side-effect free;
   // the Room only connects once the first tile calls watch().
-  const viewerConn = useMemo(
-    () =>
-      isDiagnosticsTestMode
-        ? null
-        : new ViewerRoomConnection({
-            windowLabel: 'watch-all',
-            // Unconditional: this is an error path, not diagnostic chatter, and it's
-            // the only signal a bug report has when the Watch All connection fails.
-            onConnectionError: (err) => {
-              console.warn('[wavis:viewer-connection] watch-all connect failed', err);
-            },
-          }),
-    [isDiagnosticsTestMode],
-  );
+  //
+  // MUST be created inside the effect (like ScreenSharePage's), not useMemo:
+  // dispose() is permanent, and StrictMode's simulated unmount runs the
+  // cleanup while a memoized instance survives the remount — leaving every
+  // tile watch()ing a dead connection that never requests a token, stuck on
+  // "connecting..." forever.
+  const [viewerConn, setViewerConn] = useState<ViewerRoomConnection | null>(null);
   useEffect(() => {
-    if (!viewerConn) return;
-    return () => viewerConn.dispose();
-  }, [viewerConn]);
+    if (isDiagnosticsTestMode) return;
+    const conn = new ViewerRoomConnection({
+      windowLabel: 'watch-all',
+      // Unconditional: this is an error path, not diagnostic chatter, and it's
+      // the only signal a bug report has when the Watch All connection fails.
+      onConnectionError: (err) => {
+        console.warn('[wavis:viewer-connection] watch-all connect failed', err);
+        setConnectionErrorCount((c) => c + 1);
+      },
+    });
+    setConnectionErrorCount(0);
+    setViewerConn(conn);
+    return () => {
+      conn.dispose();
+    };
+  }, [isDiagnosticsTestMode]);
 
   const { tiles, setTiles, audioTiles, setAudioTiles } = useWatchAllTiles({
     diagnosticsTestSessionId,
@@ -482,6 +495,7 @@ export default function WatchAllPage() {
                     nativeHeight={tile.nativeHeight}
                     aspectRatio={tile.aspectRatio}
                     viewerConn={viewerConn}
+                    connectionErrorCount={connectionErrorCount}
                     onToggleMute={handleToggleMute}
                     onVolumeChange={handleVolumeChange}
                     onPopOut={handlePopOut}
@@ -536,20 +550,20 @@ export default function WatchAllPage() {
             pointerEvents: bottomBarActive ? 'auto' : 'none',
           }}
         >
-          <QuickActionButtons
-            isMuted={userState.isMuted}
-            isDeafened={userState.isDeafened}
-            onToggleMute={() => {
-              emitShareToggleMute();
-            }}
-            onToggleDeafen={() => {
-              emitShareToggleDeafen();
-            }}
-          />
-          <span className="text-wavis-text-secondary opacity-30 select-none leading-none px-0.5">
-            │
-          </span>
-          <FocusMainButton onClick={handleFocusMain} />
+          <div className="flex items-center leading-none shrink-0">
+            <QuickActionButtons
+              isMuted={userState.isMuted}
+              isDeafened={userState.isDeafened}
+              onToggleMute={() => {
+                emitShareToggleMute();
+              }}
+              onToggleDeafen={() => {
+                emitShareToggleDeafen();
+              }}
+            />
+            <span className="text-wavis-text-secondary opacity-30 select-none leading-none">│</span>
+            <FocusMainButton onClick={handleFocusMain} />
+          </div>
           <div className="flex-1" />
           <div className="relative flex items-center gap-1 shrink-0">
             <button
