@@ -198,35 +198,69 @@ function hasLiveScreenShareStream(participantId: string): boolean {
   return stream.getVideoTracks().some((t) => t.readyState === 'live');
 }
 
+/** Cadence for retries beyond the initial escalating burst — see scheduleRefreshRetries. */
+const SUSTAINED_REFRESH_RETRY_MS = 30000;
+
+/**
+ * One retry attempt: drop a stale (ended-track) stream entry and ask for a
+ * fresh subscription. Returns true if the participant is still sharing
+ * without a live stream — i.e. another attempt is warranted — and false if
+ * this generation was superseded, the stream is now healthy, or sharing has
+ * stopped, any of which means the retry loop should not continue.
+ */
+function attemptScreenShareRefresh(participantId: string, generation: number): boolean {
+  if (refreshRetryGenerations.get(participantId) !== generation) return false;
+  if (state.screenShareStreams.has(participantId)) {
+    // Only a healthy entry skips the refresh. When the SFU treats a
+    // republish as a track resume it never re-fires TrackSubscribed, so
+    // the map can hold the previous share's stream with an ended video
+    // track — the share icon lights up but the viewer window waits for
+    // frames forever. Drop such a dead entry and fall through to the
+    // refresh so a fresh subscription replaces it. (Native-path entries
+    // are null and always count as healthy — see hasLiveScreenShareStream.)
+    if (hasLiveScreenShareStream(participantId)) return false;
+    console.warn(
+      LOG,
+      `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`,
+    );
+    state.screenShareStreams = new Map(state.screenShareStreams);
+    state.screenShareStreams.delete(participantId);
+    notify();
+  }
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.isSharing) return false;
+  refreshRemoteScreenShare(participantId);
+  return true;
+}
+
+/**
+ * Schedule retry attempts (at 1s, 3s, 6s, 12s, 24s, then every 30s) to call
+ * refreshRemoteScreenShare for a participant whose share just started.
+ * Handles the race where TrackSubscribed fires after share_started arrives,
+ * or where the SFU treats a republish as a track resume and never fires
+ * TrackPublished/TrackSubscribed at all. The 12s/24s long tail covers slower
+ * recoveries (e.g. a delayed signaling/media identity realignment) beyond the
+ * original 6s cap; the sustained 30s cadence after that covers rarer, slower
+ * recoveries (e.g. a LiveKit identity that only resolves once a delayed
+ * participant-list update arrives) so the icon isn't stuck grey forever once
+ * the fixed burst runs out — it keeps trying until the stream goes live or
+ * sharing stops.
+ */
 function scheduleRefreshRetries(participantId: string): void {
   const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
   refreshRetryGenerations.set(participantId, generation);
   const delays = [1000, 3000, 6000, 12000, 24000];
   for (const delay of delays) {
     setTimeout(() => {
-      if (refreshRetryGenerations.get(participantId) !== generation) return;
-      if (state.screenShareStreams.has(participantId)) {
-        // Only a healthy entry skips the refresh. When the SFU treats a
-        // republish as a track resume it never re-fires TrackSubscribed, so
-        // the map can hold the previous share's stream with an ended video
-        // track — the share icon lights up but the viewer window waits for
-        // frames forever. Drop such a dead entry and fall through to the
-        // refresh so a fresh subscription replaces it. (Native-path entries
-        // are null and always count as healthy — see hasLiveScreenShareStream.)
-        if (hasLiveScreenShareStream(participantId)) return;
-        console.warn(
-          LOG,
-          `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`,
-        );
-        state.screenShareStreams = new Map(state.screenShareStreams);
-        state.screenShareStreams.delete(participantId);
-        notify();
-      }
-      const p = state.participants.find((pp) => pp.id === participantId);
-      if (!p?.isSharing) return;
-      refreshRemoteScreenShare(participantId);
+      attemptScreenShareRefresh(participantId, generation);
     }, delay);
   }
+  const sustain = () => {
+    setTimeout(() => {
+      if (attemptScreenShareRefresh(participantId, generation)) sustain();
+    }, SUSTAINED_REFRESH_RETRY_MS);
+  };
+  sustain();
 }
 
 function clearRemoteShareType(participantId: string): void {
