@@ -49,9 +49,7 @@ export function visibleTitle(page, title) {
  */
 export function participantRow(page, displayName) {
   const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return page
-    .getByRole('button', { name: new RegExp(escaped) })
-    .and(page.locator(':visible'));
+  return page.getByRole('button', { name: new RegExp(escaped) }).and(page.locator(':visible'));
 }
 
 /* ─── REST setup (backend-side identities/channels — no GUI involved) ──── */
@@ -245,7 +243,11 @@ export async function loginViaUi(page, { recoveryId, password, serverUrl = SERVE
 /** Composes REST registerDevice() (D2 workaround) with loginViaUi for a real GUI-authenticated session. */
 export async function registerAndLoginViaUi(page, { serverUrl = SERVER_URL } = {}) {
   const identity = await registerDevice();
-  await loginViaUi(page, { recoveryId: identity.recovery_id, password: identity.phrase, serverUrl });
+  await loginViaUi(page, {
+    recoveryId: identity.recovery_id,
+    password: identity.phrase,
+    serverUrl,
+  });
   return identity;
 }
 
