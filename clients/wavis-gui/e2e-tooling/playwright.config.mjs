@@ -11,7 +11,10 @@ export default defineConfig({
   globalSetup: './global-setup.mjs',
   // The app launch is stateful and pinned to a single fixed CDP port
   // (driver.mjs defaults to 9222) — parallel workers would collide launching
-  // separate app instances against the same port.
+  // separate app instances against the same port. Two-instance specs (e.g.
+  // two-instances.spec.mjs) don't change this: they add a SECOND launch on
+  // a different fixed port (9223, via the `appB` fixture) within the same
+  // worker, rather than running two workers.
   workers: 1,
   fullyParallel: false,
   retries: 0,

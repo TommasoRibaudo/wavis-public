@@ -61,7 +61,11 @@ async function connectWithRetry(port, maxAttempts, delayMs) {
  *
  * Each launch gets a fresh, unique WEBVIEW2_USER_DATA_FOLDER (temp dir) so
  * it never conflicts with a normally-running Wavis instance's profile, and
- * multiple harness launches can coexist.
+ * multiple harness launches can coexist — including TWO REAL launches of
+ * the same debug exe at once (e.g. a two-instance live-backend spec): give
+ * each its own `port` and, since they'd otherwise share one Tauri store file
+ * and one OS keychain service, its own `authStoreName` / `keyringService`
+ * too. See README.md's "Two simultaneous GUI instances" section.
  *
  * `settleMs` (default 4000) is how long to wait after connecting before
  * windows/content are expected to be meaningfully rendered — the app talks
@@ -72,6 +76,8 @@ export async function launchApp({
   applicationPath = debugBinaryPath(),
   port = 9222,
   settleMs = 4000,
+  keyringService = 'com.wavis.gui.e2e',
+  authStoreName,
 } = {}) {
   const userDataDir = mkdtempSync(path.join(tmpdir(), 'wavis-cdp-'));
   const child = spawn(applicationPath, [], {
@@ -98,10 +104,18 @@ export async function launchApp({
       WEBVIEW2_USER_DATA_FOLDER: userDataDir,
       // Keeps the OS keychain refresh-token entry (src-tauri/src/main.rs's
       // keyring_service()) separate from a developer's real persisted login
-      // on this machine. The Tauri store JSON file itself (wavis-auth.json)
-      // is isolated separately via the VITE_AUTH_STORE_NAME build-time env
-      // var baked into the live-backend debug exe — see e2e-tooling/README.md.
-      WAVIS_KEYRING_SERVICE: 'com.wavis.gui.e2e',
+      // on this machine. Defaults to one shared e2e service; pass a distinct
+      // `keyringService` per launch when running two real instances at once
+      // so neither's token rotation can clobber the other's keychain entry.
+      WAVIS_KEYRING_SERVICE: keyringService,
+      // Runtime override for the Tauri store filename (auth.ts's
+      // resolveStoreName, read via src-tauri/src/main.rs's
+      // get_auth_store_name). Undefined `authStoreName` means "use the
+      // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
+      // (not simply omitting the key) so a value inherited from the
+      // caller's own shell environment can't leak through the ...process.env
+      // spread above; the Rust side treats an empty string as unset too.
+      WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
     },
     stdio: 'ignore',
   });

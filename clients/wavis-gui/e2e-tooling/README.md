@@ -149,9 +149,11 @@ flaking on the other.
 
 Live-backend coverage: `login.spec.mjs`, `room-join.spec.mjs`,
 `chat.spec.mjs`, `participants.spec.mjs`, `audio-received.spec.mjs`,
-`screen-share.spec.mjs`, `camera.spec.mjs` — see "Live-backend specs" below
-for the extra build step and backend they require. These also
-`test.skip()` when the main window is mid-call, for the same reason.
+`screen-share.spec.mjs`, `camera.spec.mjs`, `two-instances.spec.mjs` — see
+"Live-backend specs" below for the extra build step and backend they
+require. These also `test.skip()` when the main window is mid-call, for the
+same reason. `two-instances.spec.mjs` additionally uses the `appB` fixture
+(a second real `launchApp()`) — see "Two simultaneous GUI instances" below.
 
 `clients/wavis-gui/vite.config.ts`'s vitest `test.exclude` explicitly
 excludes `e2e-tooling/**` — without it, vitest's default `*.spec.*` glob
@@ -190,8 +192,11 @@ top of the usual `npx tauri build --debug`:
   at a file distinct from `wavis-auth.json`, so registering/logging in
   during these specs never overwrites a real persisted session on this
   machine. (The other half of that isolation — the OS keychain refresh-token
-  entry — is handled automatically: `driver.mjs` sets
-  `WAVIS_KEYRING_SERVICE=com.wavis.gui.e2e` for every launch, unconditionally.)
+  entry — is handled automatically: `launchApp()` defaults
+  `keyringService` to `com.wavis.gui.e2e` for every launch. This build-time
+  var is the baseline for a single instance; two-instance specs additionally
+  override it per-launch at runtime — see "Two simultaneous GUI instances"
+  below.)
 
 ```powershell
 $env:VITE_ALLOW_INSECURE_TLS="true"; $env:VITE_AUTH_STORE_NAME="wavis-auth-e2e.json"; npx tauri build --debug
@@ -214,17 +219,94 @@ needs to touch the GUI at all. Closed-alpha registration requires
 `ALPHA_INVITE_CODE` to point at a pre-seeded multi-use invite.
 
 **Second participant (chat/participants specs).** These need a second
-connected participant to assert anything meaningful. Two real
-Playwright-driven GUI instances was considered and is unbuilt/unproven — no
-prior art for two concurrent `launchApp()` calls (port/profile conflicts
-unexplored). Instead, `spawnPeer()` drives `ws-sfu-test`
-(`scripts/ws-sfu-test`) in its interactive JSON-line mode as a scriptable
-second signaling participant. This was chosen over `wavis-client`'s REPL
+connected participant to assert anything meaningful. `spawnPeer()` drives
+`ws-sfu-test` (`scripts/ws-sfu-test`) in its interactive JSON-line mode as a
+scriptable second signaling participant — chosen over `wavis-client`'s REPL
 because `wavis-client` has no chat send/receive support at all (checked its
 command parser — `create`/`join`/`invite`/`revoke`/`leave`/`status`/`name`/
 `volume`/`help`/`quit` only). These specs verify the GUI's own rendering
 reacts correctly to a second real participant — they do not verify a second
-real GUI instance's own rendering.
+real GUI instance's own rendering. For that, see "Two simultaneous GUI
+instances" below (`two-instances.spec.mjs`); `spawnPeer()` stays the
+lighter-weight choice here since these specs don't need a second real
+window, just a second real signaling participant.
+
+### Two simultaneous GUI instances
+
+`two-instances.spec.mjs` drives **two real, independently-controlled**
+`launchApp()` instances at once against the same local backend — proving two
+different accounts can occupy the same voice room simultaneously with no
+"Session taken over by another device" error, and (a separate test)
+documenting that the SAME account joining the same room a second time
+genuinely IS displaced (server design, not a harness bug — see
+`voice_orchestrator.rs`'s `evict_stale_session`, which evicts by account
+`user_id`, not device or window).
+
+**What isolates the two instances**, both already true of any single
+`launchApp()` call plus two new per-launch options:
+
+- `WEBVIEW2_USER_DATA_FOLDER` — always a fresh temp dir per launch, so two
+  processes never share a WebView2 profile.
+- `port` — give the second instance its own CDP port (`9223`; `9222` stays
+  the default for `port`-less calls).
+- `authStoreName` — **new.** Without this, both instances share one Tauri
+  store file (`wavis-auth.json`/`wavis-auth-e2e.json`, whichever the exe was
+  built with) and race last-writer-wins on login state. Passing a distinct
+  name makes `launchApp()` set `WAVIS_AUTH_STORE_NAME` per-process, which
+  `auth.ts`'s `resolveStoreName()` reads at runtime via a Tauri command
+  (`get_auth_store_name` in `src-tauri/src/main.rs`) — it wins over the
+  build-time `VITE_AUTH_STORE_NAME` baked into the exe.
+- `keyringService` — **new.** Same problem, one level down: without this,
+  both instances share one OS keychain refresh-token entry and a token
+  rotation in one can invalidate the other mid-test. `keyring_service()` in
+  `main.rs` already read `WAVIS_KEYRING_SERVICE` at runtime; `launchApp()`
+  now exposes it as a per-call option instead of hardcoding one value for
+  every launch.
+
+`wavis-settings.json` (audio/video prefs) stays **shared on purpose** — it's
+prefs-only, not identity, and isolating it wasn't needed for anything this
+spec asserts.
+
+**The account rule.** Two different accounts in the same voice channel never
+displace each other. The SAME account joining the same voice channel twice
+(regardless of device/window) always does — that's the server's intended
+"ghost duplicate" prevention, not something to route around. A two-instance
+spec that wants no displacement needs two REAL DIFFERENT accounts, one per
+instance.
+
+Ad-hoc snippet (outside the formal suite, e.g. a scratchpad script):
+
+```js
+import { launchApp } from './driver.mjs';
+
+const a = await launchApp();
+const b = await launchApp({
+  port: 9223,
+  authStoreName: 'wavis-auth-e2e-b.json',
+  keyringService: 'com.wavis.gui.e2e-b',
+});
+try {
+  // drive a.page() and b.page() independently — two real windows, two real accounts
+} finally {
+  await a.close();
+  await b.close();
+}
+```
+
+**Known gap this spec routes around (not fixed here):** the real
+`DeviceSetup` registration UI (`registerViaUi`) has no invite-code field, but
+`POST /auth/register` now requires one (`routes.rs`'s `register` handler
+401s without `invite_code`/`inviteCode`) — so `registerViaUi` (and by
+extension `login.spec.mjs`, `room-join.spec.mjs`, `chat.spec.mjs`,
+`participants.spec.mjs`'s setup) is currently broken against a backend that
+enforces closed-alpha invites. `registerAndLoginViaUi` in
+`live-backend-helpers.mjs` works around this for `two-instances.spec.mjs`:
+`registerDevice()` (REST, already sends `inviteCode`) creates the account,
+then `loginViaUi` authenticates it through the real `Login` UI instead
+(`/login` is a top-level route reachable via direct navigation even on a
+device that's never registered locally — see `routes.ts` — so this doesn't
+need the broken registration form at all). Giving `DeviceSetup` an
+invite-code field is the real fix, out of scope here.
 
 Run once the backend is up and the live-backend exe is built:
 
@@ -444,7 +526,6 @@ without confirming both first.
 
 ## Other possible follow-ups (not built here)
 
-- A `WEBVIEW2_USER_DATA_FOLDER`/port-conflict story for running multiple
-  harness instances truly in parallel (currently: unique temp profile dir
-  per launch already avoids profile locking; port is fixed at 9222 by
-  default but overridable via `launchApp({ port })`).
+- Give `DeviceSetup` an invite-code field so `registerViaUi` (and the specs
+  that use it for setup) works against a backend that requires one — see
+  "Two simultaneous GUI instances" above for the current workaround.

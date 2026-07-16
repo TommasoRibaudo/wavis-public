@@ -38,6 +38,22 @@ export function visibleTitle(page, title) {
   return page.getByTitle(title).and(page.locator(':visible'));
 }
 
+/**
+ * A participant's row in ParticipantsPanel (ParticipantRow.tsx — a
+ * `role="button"` div wrapping a `[+]`/`[-]` expand indicator and the
+ * display name). Prefer this over `visibleText(page, displayName)` for
+ * "is this participant showing in the room" assertions: a plain text match
+ * also matches the transient "{name} joined" toast notification, which can
+ * still be on screen right after a join and makes the locator resolve to 2
+ * elements (Playwright strict-mode violation) instead of the persistent row.
+ */
+export function participantRow(page, displayName) {
+  const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return page
+    .getByRole('button', { name: new RegExp(escaped) })
+    .and(page.locator(':visible'));
+}
+
 /* ─── REST setup (backend-side identities/channels — no GUI involved) ──── */
 
 async function postJson(pathname, body, accessToken) {
@@ -79,22 +95,28 @@ export async function waitForBackendHealth(timeoutMs = 30_000) {
  * Use this for identities that never need to touch the GUI (e.g. a channel
  * owner in room-join.spec.mjs), not as a substitute for exercising the real
  * auth UI (that's what registerViaUi / login.spec.mjs are for).
+ *
+ * Also used as the D2 workaround (see README.md's "Known gaps" section):
+ * DeviceSetup's registration UI has no invite-code field, so registerViaUi
+ * 401s against a backend that requires one (routes.rs's `register` handler).
+ * registerAndLoginViaUi below composes this REST call with loginViaUi to get
+ * a real GUI-authenticated session anyway. Returns `phrase`/`username` too
+ * (additive) so callers can log the same identity in a second time.
  */
 export async function registerDevice() {
   const inviteCode = process.env.ALPHA_INVITE_CODE;
   if (!inviteCode) throw new Error('ALPHA_INVITE_CODE must be set for REST auth seeding');
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const phrase = `e2e-password-${suffix}`;
+  const username = `E2E-${suffix}`;
   const res = await fetch(`${SERVER_URL}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      phrase: `e2e-password-${suffix}`,
-      username: `E2E-${suffix}`,
-      inviteCode,
-    }),
+    body: JSON.stringify({ phrase, username, inviteCode }),
   });
   if (!res.ok) throw new Error(`register failed: ${res.status}`);
-  return res.json(); // { user_id, device_id, recovery_id, access_token, refresh_token }
+  const body = await res.json(); // { user_id, device_id, recovery_id, access_token, refresh_token }
+  return { ...body, phrase, username };
 }
 
 export async function createChannel(accessToken, name) {
@@ -171,6 +193,63 @@ export async function registerViaUi(page, { username, password, serverUrl = SERV
 }
 
 /**
+ * Drives the real Login UI's "new device" path (Wavis ID + Password + Server
+ * URL) to authenticate an identity that was created out-of-band (REST
+ * registerDevice() — the D2 workaround, see registerDevice's doc comment).
+ * Unlike registerViaUi, /login is a top-level route with no auth-gate
+ * redirect (see routes.ts), so it's reachable via a direct navigation even
+ * on a device that has never registered locally — no "Not you" detour
+ * needed, since a fresh authStoreName store has no locally-saved recovery ID
+ * and Login.tsx already defaults to new-device mode (deriveLoginMode).
+ */
+export async function loginViaUi(page, { recoveryId, password, serverUrl = SERVER_URL } = {}) {
+  if (new URL(page.url()).pathname !== '/login') {
+    await page.goto(new URL('/login', page.url()).href);
+  }
+
+  // Trusted-device mode (a locally-saved recovery ID from a prior run in
+  // this same store) shows only a password field — same "Not you" detour
+  // registerViaUi/getToSetup use to reach the full new-device form.
+  if ((await page.getByLabel('Wavis ID', { exact: true }).count()) === 0) {
+    try {
+      await page
+        .getByText('Not you / log in on a new device', { exact: true })
+        .click({ timeout: 10_000 });
+    } catch {
+      // Already in new-device mode.
+    }
+  }
+
+  await page.getByLabel('Wavis ID', { exact: true }).fill(recoveryId);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel('Server URL', { exact: true }).fill(serverUrl);
+  if (serverUrl.startsWith('http://')) {
+    // Unlike DeviceSetup's insecure-TLS checkbox (always starts unchecked —
+    // useState(false), no store read), Login.tsx's version is initialized
+    // from the persisted `insecure_tls` store value on mount
+    // (getInsecureTls() in its load effect). Since this is a real checkbox
+    // toggle, clicking unconditionally can turn an already-ON value OFF if a
+    // prior run in this same auth store left it set — check state first.
+    const insecureTlsCheckbox = page.locator(
+      'label:has-text("--danger-insecure-tls") input[type="checkbox"]',
+    );
+    if (!(await insecureTlsCheckbox.isChecked())) {
+      await page.getByText('--danger-insecure-tls', { exact: true }).click();
+    }
+  }
+  await page.getByText('/login', { exact: true }).click();
+
+  await page.waitForURL((url) => url.pathname !== '/login', { timeout: 15_000 });
+}
+
+/** Composes REST registerDevice() (D2 workaround) with loginViaUi for a real GUI-authenticated session. */
+export async function registerAndLoginViaUi(page, { serverUrl = SERVER_URL } = {}) {
+  const identity = await registerDevice();
+  await loginViaUi(page, { recoveryId: identity.recovery_id, password: identity.phrase, serverUrl });
+  return identity;
+}
+
+/**
  * Drives ChannelsList's "/join" form with a pre-generated invite code.
  * Assumes an already-authenticated page; gets to the channels list first via
  * the app's own "← /channels" back link if landed elsewhere.
@@ -220,15 +299,23 @@ export async function enterChannelRoom(page, channelName) {
  * the real single row. Clicking during that window trips Playwright's
  * strict-mode "resolved to 2 elements" check, so this waits for exactly one
  * stable match first.
+ *
+ * `expectedCount` is the participant count the sub-room header should settle
+ * on afterward — 1 for the first (only) participant, 2+ when joining a room
+ * that already has other real participants in it (e.g. a second live GUI
+ * instance in the two-instances spec).
  */
-export async function joinDefaultSubRoomViaUi(page) {
+export async function joinDefaultSubRoomViaUi(page, { expectedCount = 1 } = {}) {
   const joinButton = visibleText(page, '/join');
   const deadline = Date.now() + 10_000;
   while ((await joinButton.count()) !== 1 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await joinButton.click();
-  await visibleText(page, /ROOM \d+\s*\(1\)/).waitFor({ state: 'visible', timeout: 15_000 });
+  await visibleText(page, new RegExp(`ROOM \\d+\\s*\\(${expectedCount}\\)`)).waitFor({
+    state: 'visible',
+    timeout: 15_000,
+  });
 }
 
 /**
