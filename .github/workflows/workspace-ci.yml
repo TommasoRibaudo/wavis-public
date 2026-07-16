@@ -75,10 +75,18 @@ jobs:
       screen: ${{ steps.filter.outputs.screen }}
       core: ${{ steps.filter.outputs.core }}
     steps:
+      # Keep change detection independent of GitHub's PR-files API. Integration
+      # PRs have repeatedly received GitHub's HTML "Unicorn" error page from
+      # that endpoint, which otherwise fails this job before any tests can run.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # An empty token makes paths-filter use the checked-out git history
+          # for pull requests instead of calling the PR-files REST endpoint.
+          token: ''
           filters: |
             backend:
               - 'wavis-backend/**'
