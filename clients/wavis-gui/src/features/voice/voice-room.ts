@@ -752,10 +752,20 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
     }
     setLocalMicPublishing(false);
     detachAllScreenShareAudioPlayback();
-    // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
-    // caller has finished applying effective participant volumes on the
-    // still-live connection — disconnecting here would null it out first.
-    pendingMediaDisconnectForNoRoom = true;
+    // While reconnecting, the server's rejoin handshake always reports the
+    // participant as sub-room-less for a moment before the client's
+    // automatic rejoin (reconcileDesiredSubRoomMembership) lands. Don't tear
+    // down the still-live LiveKit session for that transient window — doing
+    // so causes an unnecessary media disconnect/reconnect (and a stuck
+    // 'reconnecting' state if the promotion race loses) on every WS
+    // reconnect, exactly what machineState='reconnecting' keeps media alive
+    // through elsewhere (see the WS disconnect handler in initSession).
+    if (state.machineState !== 'reconnecting') {
+      // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
+      // caller has finished applying effective participant volumes on the
+      // still-live connection — disconnecting here would null it out first.
+      pendingMediaDisconnectForNoRoom = true;
+    }
     return;
   }
 
