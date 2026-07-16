@@ -58,6 +58,7 @@ interface MockLiveKitModule {
   stopWasapiAudioBridgeCalls: number;
   startScreenShareCalls: number;
   stopScreenShareCalls: number;
+  refreshRemoteScreenShareCalls: string[];
   activeScreenShares: Array<{ identity: string; stream: MediaStream; startedAtMs: number }>;
   localCameraTrack: MediaStreamTrack | null;
   connect: (sfuUrl: string, token: string) => Promise<void>;
@@ -83,6 +84,7 @@ interface MockLiveKitModule {
   stopWasapiAudioBridge: () => Promise<void>;
   startScreenShare: () => Promise<boolean>;
   stopScreenShare: () => Promise<void>;
+  refreshRemoteScreenShare: (identity: string) => void;
   getActiveScreenShares: () => Array<{
     identity: string;
     stream: MediaStream;
@@ -111,6 +113,7 @@ function createMockLkModule(
     stopWasapiAudioBridgeCalls: 0,
     startScreenShareCalls: 0,
     stopScreenShareCalls: 0,
+    refreshRemoteScreenShareCalls: [],
     activeScreenShares: [],
     localCameraTrack: null,
     connect: vi.fn(async (sfuUrl: string, token: string) => {
@@ -176,6 +179,9 @@ function createMockLkModule(
     }),
     stopScreenShare: vi.fn(async () => {
       mod.stopScreenShareCalls++;
+    }),
+    refreshRemoteScreenShare: vi.fn((identity: string) => {
+      mod.refreshRemoteScreenShareCalls.push(identity);
     }),
     getActiveScreenShares: vi.fn(() => mod.activeScreenShares),
   };
@@ -3034,6 +3040,107 @@ describe('Edge case unit tests', () => {
 
       leaveRoom();
     });
+
+    it('keeps retrying past the fixed 24s retry burst while the share never resolves', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      // No onScreenShareSubscribed ever fires for peer-2 — simulates a
+      // permanently unresolved track (e.g. an identity that never matches),
+      // the "sometimes stays grey forever" case from issue #175.
+      vi.useFakeTimers();
+      try {
+        messageHandler!({
+          type: 'share_started',
+          participantId: 'peer-2',
+          shareType: 'screen_audio',
+        });
+        await vi.advanceTimersByTimeAsync(24_000);
+
+        const callsAtBurstEnd = lastLkModule!.refreshRemoteScreenShareCalls.length;
+        expect(callsAtBurstEnd).toBeGreaterThan(0);
+        expect(latestState!.screenShareStreams.has('peer-2')).toBe(false);
+
+        // Well past the old fixed burst (1s/3s/6s/12s/24s) — a healthy retry
+        // loop must still be trying, not have given up.
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(lastLkModule!.refreshRemoteScreenShareCalls.length).toBeGreaterThan(callsAtBurstEnd);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      leaveRoom();
+    });
+
+    it('sustained retry stops once the share resolves to a live stream', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      vi.useFakeTimers();
+      try {
+        messageHandler!({
+          type: 'share_started',
+          participantId: 'peer-2',
+          shareType: 'screen_audio',
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        const liveStream = {
+          getVideoTracks: () => [{ readyState: 'live' }],
+        } as unknown as MediaStream;
+        lastLkModule!.callbacks.onScreenShareSubscribed('u2', liveStream);
+        await vi.advanceTimersByTimeAsync(0);
+
+        const callsAfterResolved = lastLkModule!.refreshRemoteScreenShareCalls.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+
+        expect(lastLkModule!.refreshRemoteScreenShareCalls.length).toBe(callsAfterResolved);
+        expect(latestState!.screenShareStreams.get('peer-2')).toBe(liveStream);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      leaveRoom();
+    });
+
+    it('sustained retry stops once the participant stops sharing', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+
+      vi.useFakeTimers();
+      try {
+        messageHandler!({
+          type: 'share_started',
+          participantId: 'peer-2',
+          shareType: 'screen_audio',
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        messageHandler!({
+          type: 'share_stopped',
+          participantId: 'peer-2',
+        });
+        await vi.advanceTimersByTimeAsync(0);
+
+        const callsAfterStop = lastLkModule!.refreshRemoteScreenShareCalls.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+
+        expect(lastLkModule!.refreshRemoteScreenShareCalls.length).toBe(callsAfterStop);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      leaveRoom();
+    });
   });
 
   // ─── 11.3: Audio and device edge cases ──────────────────────────
@@ -3208,6 +3315,62 @@ describe('Edge case unit tests', () => {
 
       expect(latestState!.machineState).toBe('active');
       expect(latestState!.mediaState).toBe('connected');
+      expect(
+        isShareEnabled(
+          latestState!.sharePermission,
+          latestState!.selfIsHost,
+          latestState!.machineState,
+          latestState!.mediaState,
+          latestState!.joinedSubRoomId,
+        ),
+      ).toBe(true);
+
+      leaveRoom();
+    });
+
+    it('WS-only reconnect (media never drops) restores active state via sub-room rejoin — issue #157', async () => {
+      resetAll();
+      await driveToActive();
+      joinSubRoom('room-1'); // records explicit user intent, as real ParticipantsPanel clicks do
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+      expect(latestState!.machineState).toBe('active');
+
+      // Signaling drops — LiveKit media is intentionally NOT torn down here
+      // (it connects directly to the SFU, independent of the WS).
+      statusChangeHandler!('disconnected');
+      await tick();
+      expect(latestState!.machineState).toBe('reconnecting');
+      expect(latestState!.mediaState).toBe('connected');
+
+      sentMessages.length = 0;
+
+      // Server's reconnect handshake unconditionally strips sub-room
+      // membership for modern clients and does not resend sub_room_joined —
+      // the client must notice and proactively rejoin.
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] }],
+      });
+      await tick();
+
+      expect(latestState!.joinedSubRoomId).toBeNull();
+      expect(latestState!.machineState).toBe('reconnecting');
+      expect(sentMessages).toContainEqual({ type: 'join_sub_room', subRoomId: 'room-1' });
+
+      messageHandler!({
+        type: 'sub_room_joined',
+        participantId: 'self-peer',
+        subRoomId: 'room-1',
+      });
+      await tick();
+
+      expect(latestState!.machineState).toBe('active');
+      expect(latestState!.mediaState).toBe('connected');
+      expect(latestState!.joinedSubRoomId).toBe('room-1');
       expect(
         isShareEnabled(
           latestState!.sharePermission,

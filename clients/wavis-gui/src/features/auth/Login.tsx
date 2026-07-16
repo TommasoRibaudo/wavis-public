@@ -42,12 +42,18 @@ export default function Login() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       const [url, insecure, storedId] = await Promise.all([
         getServerUrl(),
         getInsecureTls(),
         getStoredRecoveryId(),
       ]);
+      // `cancelled` is flipped by this effect's cleanup closure below, which React
+      // runs independently while the Promise.all above is still in flight (on every
+      // dev mount, since StrictMode double-invokes effects). TS's control-flow
+      // analysis is local to this IIFE, so it wrongly sees `cancelled` as always
+      // false; the guard really does stop five setState calls after unmount.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (cancelled) return;
       if (url) setServerUrl(url);
       if (storedId) setRecoveryId(storedId);
@@ -117,7 +123,7 @@ export default function Login() {
       } catch {
         // Best-effort — proceed even if the sync fails; /settings can update later.
       }
-      navigate('/', { replace: true });
+      void navigate('/', { replace: true });
       return;
     }
 
@@ -327,7 +333,9 @@ export default function Login() {
           </button>
         ) : (
           <button
-            onClick={() => navigate('/setup')}
+            onClick={() => {
+              void navigate('/setup');
+            }}
             className="hover:text-wavis-text transition-colors"
           >
             /setup

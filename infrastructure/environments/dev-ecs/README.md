@@ -56,6 +56,21 @@ Current automated dev deploy verification lives in:
 The smoke test runs against the current public dev entrypoint and fails the
 workflow if signaling or room join regresses after deployment.
 
+Closed-alpha registration adds one smoke prerequisite: the backend runtime must
+have `ALPHA_INVITE_CODE_PEPPER` set in SSM, the dev database must contain a
+matching alpha invite row, and GitHub Actions must expose the raw invite through
+the `ALPHA_INVITE_CODE` secret. Seed the DB with:
+
+```bash
+ALPHA_INVITE_CODE='shared-dev-ci-code' \
+ALPHA_INVITE_CODE_PEPPER='real-32-byte-minimum-pepper-value' \
+DATABASE_URL='postgres://...' \
+python3 scripts/seed-alpha-invite.py --execute
+```
+
+The seed helper defaults to `1000000` max redemptions so dev/CI smoke invites do
+not silently exhaust.
+
 The CloudWatch dashboard name is also exported from Terraform as:
 
 - `ops_dashboard_name`
@@ -90,6 +105,8 @@ terraform apply
 
 - Secret parameters are created with placeholders and `ignore_changes = [value]`.
   This matches the existing dev pattern: Terraform creates them once, operators rotate them out-of-band without Terraform trying to overwrite them later.
+- `ALPHA_INVITE_CODE_PEPPER` is security-critical. A release backend exits at
+  startup if it is missing or shorter than 32 bytes.
 - Local `terraform.tfvars` is intentionally ignored and should not be committed.
 - The ECS task builds `DATABASE_URL` at runtime from the RDS endpoint plus the
   `RDS_MASTER_PASSWORD` secret so the database password is not duplicated into a

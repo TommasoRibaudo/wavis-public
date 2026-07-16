@@ -100,6 +100,10 @@ jobs:
       # The full suite registers more users than the default 5/hour per-IP
       # limit allows; the harness only resets limiters between scenarios.
       AUTH_REGISTER_RATE_LIMIT: '200'
+      # Required by config_validation.rs since the admin bug-report feature
+      # landed; the backend won't start without these.
+      GITHUB_BUG_REPORT_TOKEN: ci-dummy-token
+      GITHUB_BUG_REPORT_REPO: ci-dummy/ci-dummy
 
     steps:
       - uses: actions/checkout@v5
@@ -127,7 +131,8 @@ jobs:
           cargo build -p gui-surface-test
 
       # Debug builds default every secret and fall back to the dev stub SFU,
-      # so only DATABASE_URL / TEST_METRICS_TOKEN need to be provided.
+      # so only DATABASE_URL / TEST_METRICS_TOKEN / GITHUB_BUG_REPORT_TOKEN /
+      # GITHUB_BUG_REPORT_REPO need to be provided.
       - name: Start backend
         run: |
           cargo run -p wavis-backend --features test-metrics > backend.log 2>&1 &

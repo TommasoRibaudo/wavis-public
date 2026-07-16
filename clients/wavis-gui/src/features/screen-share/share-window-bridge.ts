@@ -15,6 +15,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { EnumerationResult, ShareSelection } from './share-types';
 import type { ShareQuality } from '@features/voice/voice-room';
 import type { VideoTileSnapshot } from '@features/voice/camera-types';
@@ -185,6 +186,34 @@ export function openNativeScreenShareViewer(identity: string, title: string): Pr
 /** Close the Rust-native share viewer; swallows errors (viewer may be gone). */
 export function closeNativeScreenShareViewer(identity: string): void {
   invoke('media_close_native_screen_share_viewer', { identity }).catch(() => {});
+}
+
+/* ─── Current (child) window lifecycle ──────────────────────────── */
+
+/** Close the window this code is currently running in. */
+export function closeCurrentChildWindow(): Promise<void> {
+  return getCurrentWindow().close();
+}
+
+/** Subscribe to the current window's own close-requested event (e.g. OS close button). */
+export function onCurrentChildWindowCloseRequested(
+  handler: () => Promise<void> | void,
+): () => void {
+  const unlisten = getCurrentWindow().onCloseRequested(async () => {
+    await handler();
+  });
+  let disposed = false;
+  let fn: (() => void) | null = null;
+  unlisten
+    .then((f) => {
+      if (disposed) f();
+      else fn = f;
+    })
+    .catch((err) => console.error(LOG, 'failed to listen for close-requested:', err));
+  return () => {
+    disposed = true;
+    fn?.();
+  };
 }
 
 /* ─── Event plumbing helpers ────────────────────────────────────── */
@@ -379,6 +408,11 @@ export function onShareVoiceVolumeChange(
   );
 }
 
+/** Child windows (ScreenSharePage, WatchAllPage): report a voice-participant volume change. */
+export function emitShareVoiceVolumeChange(participantId: string, volume: number): void {
+  fireAndForget('share:voice-volume-change', { participantId, volume });
+}
+
 export function onShareToggleMute(handler: () => void): () => void {
   return subscribe('share:toggle-mute', () => handler());
 }
@@ -464,4 +498,136 @@ export function listenWatchAllReady(handler: () => void): Promise<() => void> {
 /** Same contract as listenWatchAllReady, for the camera pop-out window. */
 export function listenCameraPopoutReady(handler: () => void): Promise<() => void> {
   return listen('camera-popout:ready', () => handler());
+}
+
+/* ─── Child window: Watch All page ──────────────────────────────── *
+ * Mirror image of the "Emits: main → child" / "Listens: child → main"
+ * sections above, from the Watch All child window's own point of view. */
+
+export interface WatchAllShareUpdatedPayload {
+  participantId: string;
+  displayName: string;
+  color: string;
+}
+
+/**
+ * The next 6 listeners back the "register everything before signaling
+ * readiness" contract WatchAllPage relies on (see emitWatchAllReady) — each
+ * returns the awaited Promise<UnlistenFn> directly, same contract as
+ * listenWatchAllReady, so a caller can Promise.all them all before emitting
+ * ready and be certain none of them can miss an early event.
+ */
+
+export function onWatchAllShareAdded(
+  handler: (payload: WatchAllShareAddedPayload) => void,
+): Promise<() => void> {
+  return listen<WatchAllShareAddedPayload>('watch-all:share-added', (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onWatchAllShareRemoved(
+  handler: (participantId: string) => void,
+): Promise<() => void> {
+  return listen<{ participantId: string }>('watch-all:share-removed', (event) =>
+    handler(event.payload.participantId),
+  );
+}
+
+export function onWatchAllShareUpdated(
+  handler: (payload: WatchAllShareUpdatedPayload) => void,
+): Promise<() => void> {
+  return listen<WatchAllShareUpdatedPayload>('watch-all:share-updated', (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onWatchAllRestoreVolume(
+  handler: (payload: ShareRestoreVolumePayload) => void,
+): Promise<() => void> {
+  return listen<ShareRestoreVolumePayload>('watch-all:restore-volume', (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onWatchAllAudioShareAdded(
+  handler: (payload: WatchAllAudioShareAddedPayload) => void,
+): Promise<() => void> {
+  return listen<WatchAllAudioShareAddedPayload>('watch-all:audio-share-added', (event) =>
+    handler(event.payload),
+  );
+}
+
+export function onWatchAllAudioShareRemoved(
+  handler: (participantId: string) => void,
+): Promise<() => void> {
+  return listen<{ participantId: string }>('watch-all:audio-share-removed', (event) =>
+    handler(event.payload.participantId),
+  );
+}
+
+export function onShareUserState(handler: (state: ShareUserState) => void): () => void {
+  return subscribe<ShareUserState>('share:user-state', handler);
+}
+
+export function onWatchAllVoiceParticipantsUpdate(
+  handler: (payload: { participants: ShareVoiceParticipant[] }) => void,
+): () => void {
+  return subscribe<{ participants: ShareVoiceParticipant[] }>(
+    'watch-all:voice-participants',
+    handler,
+  );
+}
+
+/** Main window telling this Watch All window to close itself. */
+export function onWatchAllCloseCommand(handler: () => void): () => void {
+  return subscribe('watch-all:close', () => handler());
+}
+
+export function onVoiceSessionEnded(handler: () => void): () => void {
+  return subscribe('voice-session:ended', () => handler());
+}
+
+/** Tell the main window this Watch All window finished closing. Awaitable so
+ *  callers can hold an onCloseRequested handler open until the emit lands. */
+export function emitWatchAllClosed(): Promise<void> {
+  return emit('watch-all:closed', {});
+}
+
+/** Tell the main window the child listeners are registered and ready for share-added events. */
+export function emitWatchAllReady(): void {
+  fireAndForget('watch-all:ready', {});
+}
+
+export function emitScreenShareViewerReady(participantId: string, windowLabel: string): void {
+  emitTo('main', 'screen-share-viewer:ready', { participantId, windowLabel }).catch((err) => {
+    console.error(LOG, 'failed to emit screen-share-viewer:ready:', err);
+  });
+}
+
+/** Tell the main window a viewer subscribed to a specific sharer's stream. */
+export function emitViewerSubscribed(targetId: string): void {
+  emitTo('main', 'viewer-subscribed', { targetId }).catch((err) => {
+    console.error(LOG, 'failed to emit viewer-subscribed:', err);
+  });
+}
+
+export function emitWatchAllMuteChange(participantId: string, muted: boolean): void {
+  fireAndForget('watch-all:mute-change', { participantId, muted });
+}
+
+export function emitWatchAllVolumeChange(participantId: string, volume: number): void {
+  fireAndForget('watch-all:volume-change', { participantId, volume });
+}
+
+export function emitWatchAllPopOut(payload: WatchAllPopOutPayload): void {
+  fireAndForget('watch-all:pop-out', payload);
+}
+
+export function emitShareToggleMute(): void {
+  fireAndForget('share:toggle-mute');
+}
+
+export function emitShareToggleDeafen(): void {
+  fireAndForget('share:toggle-deafen');
 }

@@ -9,8 +9,24 @@ import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import AppUpdatePrompt from '@shared/AppUpdatePrompt';
 import type { AppDimensions } from '@features/diagnostics/diagnostics';
+import type { NetworkStats } from '@features/voice/voice-room';
+import type { VideoReceiveStats } from '@features/voice/livekit-media';
 
 type VoiceRoomGetState = typeof import('@features/voice/voice-room').getState;
+
+/** Exposed only in VITE_DIAGNOSTICS builds — lets e2e tooling read decoded-audio proof (rmsLevel) without a Tauri bridge. */
+interface WavisVoiceStatsSnapshot {
+  participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
+  selfParticipantId: string | null;
+  networkStats: NetworkStats;
+  videoReceiveStats: VideoReceiveStats | null;
+}
+
+declare global {
+  interface Window {
+    __wavisVoiceStats?: WavisVoiceStatsSnapshot;
+  }
+}
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -120,6 +136,19 @@ export default function App() {
       const self = participants.find((p) => p.id === selfParticipantId);
       const fallbackShareActive = self?.isSharing === true && self.shareType !== 'audio_only';
       const isSharing = activeVideoShare !== null || fallbackShareActive;
+
+      // e2e tooling reads this directly from page context (no Tauri event bridge available there).
+      window.__wavisVoiceStats = {
+        participants: participants.map((p) => ({
+          id: p.id,
+          rmsLevel: p.rmsLevel,
+          isSpeaking: p.isSpeaking,
+        })),
+        selfParticipantId,
+        networkStats,
+        videoReceiveStats,
+      };
+
       void emit('diagnostics:voice-stats', {
         networkStats,
         shareStats,

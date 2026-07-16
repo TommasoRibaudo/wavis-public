@@ -622,6 +622,7 @@ import {
   buildRtcConfiguration,
   isForceRelayEnabled,
   mapPassthroughFilterParams,
+  fitPresetToSourceAspect,
   type MediaCallbacks,
 } from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
@@ -7127,5 +7128,49 @@ describe('Feature: turn-relay-symmetric-nat-fix — buildRtcConfiguration and is
     vi.unstubAllEnvs();
     vi.stubEnv('VITE_WAVIS_FORCE_RELAY', 'true');
     expect(isForceRelayEnabled()).toBe(true);
+  });
+});
+
+describe('fitPresetToSourceAspect', () => {
+  it('preserves an ultrawide source aspect ratio instead of stamping the 16:9 preset box', () => {
+    // Santi's WGC capture: 2560x1072 (~2.39:1), fed through the DETAIL_PROFILE
+    // box (2560x1440). The 16:9 box is taller than the source, so it should
+    // fit exactly (scale=1) rather than being stretched to fill the box.
+    const detailFit = fitPresetToSourceAspect(
+      { width: 2560, height: 1440 },
+      { width: 2560, height: 1072 },
+    );
+    expect(detailFit).not.toBeNull();
+    expect(detailFit!.width).toBe(2560);
+    expect(detailFit!.height).toBe(1072);
+    expect(detailFit!.width / detailFit!.height).toBeCloseTo(2.388, 2);
+
+    // MOTION_PROFILE box (1920x1080) is narrower than the source — the fit
+    // must scale down while preserving aspect ratio, not stamp 1920x1080.
+    const motionFit = fitPresetToSourceAspect(
+      { width: 1920, height: 1080 },
+      { width: 2560, height: 1072 },
+    );
+    expect(motionFit).not.toBeNull();
+    expect(motionFit!.width).toBeLessThanOrEqual(1920);
+    expect(motionFit!.height).toBeLessThanOrEqual(1080);
+    expect(motionFit!.width / motionFit!.height).toBeCloseTo(2.388, 2);
+  });
+
+  it('returns null when source dimensions are unknown, so callers skip width/height constraints', () => {
+    expect(fitPresetToSourceAspect({ width: 1920, height: 1080 }, {})).toBeNull();
+    expect(
+      fitPresetToSourceAspect({ width: 1920, height: 1080 }, { width: 0, height: 720 }),
+    ).toBeNull();
+  });
+
+  it('never upscales beyond the source resolution', () => {
+    const fit = fitPresetToSourceAspect(
+      { width: 2560, height: 1440 },
+      { width: 1280, height: 720 },
+    );
+    expect(fit).not.toBeNull();
+    expect(fit!.width).toBe(1280);
+    expect(fit!.height).toBe(720);
   });
 });

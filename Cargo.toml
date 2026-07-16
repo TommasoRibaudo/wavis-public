@@ -11,3 +11,21 @@ members = [
     "tools/stress",
     "tools/gui-surface-test",
 ]
+
+# Portability layer for the CI Clippy gate (`cargo clippy -- -D warnings` in
+# workspace-ci.yml): only lints verified at zero violations across the whole
+# workspace go here, so `cargo clippy`/`cargo check` with no flags (editor,
+# local terminal) enforces the same floor as CI. Everything still being
+# audited stays as a `-W` flag in the non-blocking "Clippy metrics" CI step
+# and graduates here only once its count reaches zero — adding a lint here
+# while it still has violations turns the `-D warnings` gate red instantly.
+# See code_standards.md "Workspace lint inheritance" for the full policy,
+# including lints deliberately excluded (clippy::exit, unsafe_op_in_unsafe_fn).
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+mem_forget = "deny"

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
@@ -61,6 +62,9 @@ export default defineConfig(({ command, mode }) => {
       env: {
         VITE_ALLOW_INSECURE_TLS: 'true',
       },
+      // e2e-tooling has its own Playwright Test runner and *.spec.mjs files —
+      // exclude it or vitest's default glob tries to collect them too.
+      exclude: [...configDefaults.exclude, 'e2e-tooling/**'],
     },
   };
 });

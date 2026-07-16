@@ -59,21 +59,23 @@ export default function StreamHoverBar({
         pointerEvents: visible ? 'auto' : 'none',
       }}
     >
-      <QuickActionButtons
-        isMuted={isMuted}
-        isDeafened={isDeafened}
-        onToggleMute={onToggleMute}
-        onToggleDeafen={onToggleDeafen}
-      />
+      <div className="flex items-center leading-none shrink-0">
+        <QuickActionButtons
+          isMuted={isMuted}
+          isDeafened={isDeafened}
+          onToggleMute={onToggleMute}
+          onToggleDeafen={onToggleDeafen}
+        />
 
-      {onFocusMain && (
-        <>
-          <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
-            {SEPARATOR}
-          </span>
-          <FocusMainButton onClick={onFocusMain} />
-        </>
-      )}
+        {onFocusMain && (
+          <>
+            <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
+              {SEPARATOR}
+            </span>
+            <FocusMainButton onClick={onFocusMain} />
+          </>
+        )}
+      </div>
 
       <span className="text-wavis-text-secondary opacity-30 select-none leading-none">
         {SEPARATOR}

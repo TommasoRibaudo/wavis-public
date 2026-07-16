@@ -11,10 +11,11 @@ Environment variables:
   WS_URL              WebSocket URL   (e.g. wss://example.cloudfront.net/ws)
   LIVEKIT_HEALTH_URL  LiveKit health  (e.g. http://<ip>:7880/) - optional, skipped if unset
   SMOKE_TIMEOUT_SECS  Per-operation timeout in seconds (default: 10)
+  ALPHA_INVITE_CODE   Pre-seeded closed-alpha invite code for smoke users
 
 Test sequence (each depends on prior steps):
   1  HTTPS /health                          blocking
-  2  POST /auth/register_device             blocking
+  2  POST /auth/register                    blocking
   3  WebSocket connect                      blocking
   4  Ping (no error response)               blocking
   5  Auth -> auth_success                   blocking
@@ -25,7 +26,7 @@ Test sequence (each depends on prior steps):
   10 leave + disconnect                     blocking
   11 POST /channels                         blocking
   12 POST /channels/{id}/invites            blocking
-  13 POST /auth/register_device (user 2)    blocking
+  13 POST /auth/register (user 2)           blocking
   14 POST /channels/join                    blocking
   15 User 1 WSS auth + join_voice           blocking
   16 User 2 WSS auth + join_voice           blocking
@@ -57,6 +58,7 @@ BACKEND_URL = os.environ["BACKEND_URL"].rstrip("/")
 WS_URL = os.environ["WS_URL"]
 LIVEKIT_URL = os.environ.get("LIVEKIT_HEALTH_URL", "").strip()
 TIMEOUT = int(os.environ.get("SMOKE_TIMEOUT_SECS", "10"))
+ALPHA_INVITE_CODE = os.environ.get("ALPHA_INVITE_CODE", "").strip()
 
 PASSED = []
 FAILED = []
@@ -80,6 +82,21 @@ def warn(name: str, reason: str):
 
 def auth_headers(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def register_smoke_user(label: str) -> dict:
+    assert ALPHA_INVITE_CODE, "ALPHA_INVITE_CODE must be set to a pre-seeded alpha invite"
+    response = httpx.post(
+        f"{BACKEND_URL}/auth/register",
+        json={
+            "phrase": f"smoke-password-{label}-{uuid.uuid4()}",
+            "username": f"Smoke{label}-{uuid.uuid4().hex[:8]}",
+            "inviteCode": ALPHA_INVITE_CODE,
+        },
+        timeout=TIMEOUT,
+    )
+    assert response.status_code == 201, f"HTTP {response.status_code} (expected 201 CREATED)"
+    return response.json()
 
 
 def normalize_livekit_url(url: str) -> str:
@@ -226,14 +243,12 @@ async def run_smoke():
 
     access_token = None
     try:
-        r = httpx.post(f"{BACKEND_URL}/auth/register_device", timeout=TIMEOUT)
-        assert r.status_code == 201, f"HTTP {r.status_code} (expected 201 CREATED)"
-        body = r.json()
+        body = register_smoke_user("One")
         assert "access_token" in body, f"missing access_token in response: {list(body.keys())}"
         access_token = body["access_token"]
-        ok("2_device_register")
+        ok("2_register")
     except Exception as e:
-        fail("2_device_register", str(e))
+        fail("2_register", str(e))
 
     try:
         async with websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws:
@@ -381,16 +396,14 @@ async def run_smoke():
         fail("12_create_invite", "skipped - no authenticated channel owner from steps 2/11")
 
     try:
-        r = httpx.post(f"{BACKEND_URL}/auth/register_device", timeout=TIMEOUT)
-        assert r.status_code == 201, f"HTTP {r.status_code} (expected 201 CREATED)"
-        body = r.json()
+        body = register_smoke_user("Two")
         second_access_token = body.get("access_token")
         second_user_id = body.get("user_id")
         assert second_access_token, f"missing access_token in response: {body}"
         assert second_user_id, f"missing user_id in response: {body}"
-        ok("13_second_device_register")
+        ok("13_second_register")
     except Exception as e:
-        fail("13_second_device_register", str(e))
+        fail("13_second_register", str(e))
 
     if invite_code and second_access_token and channel_id:
         try:

@@ -10,7 +10,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 
@@ -66,4 +66,11 @@ export function onFocusMainWindow(handler: () => void): () => void {
   return () => {
     unlisten?.();
   };
+}
+
+/** Ask the main window to focus itself (called from child windows). */
+export function emitFocusMainWindow(): Promise<void> {
+  return emitTo('main', 'focus-main-window', {}).catch((err) => {
+    console.error(LOG, 'failed to emit focus-main-window:', err);
+  });
 }

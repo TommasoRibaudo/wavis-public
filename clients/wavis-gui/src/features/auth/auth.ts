@@ -11,7 +11,16 @@ import { load } from '@tauri-apps/plugin-store';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 // --- Constants ---
-const STORE_NAME = 'wavis-auth.json';
+/**
+ * Overridable so live-backend e2e runs (clients/wavis-gui/e2e-tooling) can
+ * point at a store file distinct from a developer's real persisted session
+ * on the same machine — see VITE_AUTH_STORE_NAME in .env.example. This is
+ * the build-time fallback; getStore() below also checks a per-launch
+ * runtime override (WAVIS_AUTH_STORE_NAME via the get_auth_store_name Tauri
+ * command) so two e2e instances launched from the SAME debug exe can each
+ * use a distinct store file — see driver.mjs's `authStoreName` option.
+ */
+const STORE_NAME = import.meta.env.VITE_AUTH_STORE_NAME || 'wavis-auth.json';
 /** Fallback TTL if JWT exp parsing fails */
 const ACCESS_TOKEN_TTL_SECS = 900;
 const LOG_PREFIX = '[wavis:auth]';
@@ -49,14 +58,27 @@ export interface DeviceInfo {
 
 // --- Session State ---
 let storeInstance: Awaited<ReturnType<typeof load>> | null = null;
+let storeNamePromise: Promise<string> | null = null;
 let inflightRefresh: Promise<RefreshResult> | null = null;
 let tokenRefreshedCallbacks: Array<() => void> = [];
 
 // --- Helpers (private) ---
 
+/** Runtime override (per-launch, e2e two-instance case) -> build-time env -> default. */
+async function resolveStoreName(): Promise<string> {
+  try {
+    const runtime = await invoke<string | null>('get_auth_store_name');
+    if (runtime) return runtime;
+  } catch {
+    // Command unavailable (older build) — fall back to the build-time name.
+  }
+  return STORE_NAME;
+}
+
 async function getStore() {
   if (!storeInstance) {
-    storeInstance = await load(STORE_NAME, { defaults: {}, autoSave: true });
+    storeNamePromise ??= resolveStoreName();
+    storeInstance = await load(await storeNamePromise, { defaults: {}, autoSave: true });
   }
   return storeInstance;
 }

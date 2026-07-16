@@ -1,6 +1,6 @@
 /// AuthBruteForceScenario — Auth REST rate limiter validation
 ///
-/// Hammers `POST /auth/register_device` and `POST /auth/refresh` from a single IP
+/// Hammers `POST /auth/register` and `POST /auth/refresh` from a single IP
 /// to validate that `AuthRateLimiter` fires correctly.
 ///
 /// Phase 1 — Register flood: Send N register requests (N > default threshold of 5).
@@ -131,21 +131,36 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
     let base_url = ws_url_to_http(&ctx.ws_url);
 
     // --- Phase 1: Register flood ---
-    let register_url = format!("{base_url}/auth/register_device");
+    let register_url = format!("{base_url}/auth/register");
+    let invite_code =
+        std::env::var("ALPHA_INVITE_CODE").unwrap_or_else(|_| "stress-invalid-alpha".to_string());
     let mut got_429_register = false;
     // Send more than the default threshold (5). Send 10 to be safe.
     let register_attempts = 10;
 
     for i in 0..register_attempts {
-        let resp = ctx.http_client.post(&register_url).send().await;
+        let resp = ctx
+            .http_client
+            .post(&register_url)
+            .json(&serde_json::json!({
+                "phrase": format!("stress-register-{i}"),
+                "username": format!("StressRegister{i}"),
+                "inviteCode": invite_code,
+            }))
+            .send()
+            .await;
 
         match resp {
             Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
                 got_429_register = true;
                 break;
             }
-            Ok(r) if r.status() == reqwest::StatusCode::CREATED => {
-                // Allowed — expected for first N requests.
+            Ok(r)
+                if r.status() == reqwest::StatusCode::CREATED
+                    || r.status() == reqwest::StatusCode::UNAUTHORIZED =>
+            {
+                // Allowed through the rate limiter. The invite may be valid
+                // or invalid; this scenario only asserts limiter behavior.
             }
             Ok(r) => {
                 // 500 is acceptable (dummy DB in some configs), but not a rate limit.

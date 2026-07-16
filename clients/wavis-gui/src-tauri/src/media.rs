@@ -1649,8 +1649,16 @@ pub fn media_connect(
         *dn_guard = Some(denoise);
     }
 
-    // Wire audio frame callback → emit audio levels to frontend
+    // Wire audio frame callback → emit audio levels to frontend. The frontend
+    // only renders the isSpeaking transition (see voiceIcon in
+    // ActiveRoom.tsx), so only emit when a participant's speaking state
+    // actually flips — this callback otherwise fires on every decoded audio
+    // frame (~50Hz per remote participant) and was flooding the webview with
+    // IPC events that each triggered a full room re-render for no visible
+    // change.
     let app_levels = app.clone();
+    let last_speaking: Arc<Mutex<std::collections::HashMap<String, bool>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
     conn.on_audio_frame(Box::new(move |identity, samples| {
         // Compute RMS from samples
         let rms = if samples.is_empty() {
@@ -1660,6 +1668,14 @@ pub fn media_connect(
             (sum_sq / samples.len() as f32).sqrt()
         };
         let is_speaking = rms > 0.02;
+
+        {
+            let mut last = last_speaking.lock().unwrap();
+            if last.get(identity) == Some(&is_speaking) {
+                return;
+            }
+            last.insert(identity.to_string(), is_speaking);
+        }
 
         let entry = AudioLevelEntry {
             identity: identity.to_string(),

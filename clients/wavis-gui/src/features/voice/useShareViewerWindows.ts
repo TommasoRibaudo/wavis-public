@@ -147,6 +147,11 @@ export function useShareViewerWindows({
   onErrorRef.current = onError;
   const closeVideoPopoutRef = useRef(closeVideoPopoutWindow);
   closeVideoPopoutRef.current = closeVideoPopoutWindow;
+  // getRoomSnapshot is passed as a fresh inline arrow every render (see
+  // ActiveRoom.tsx) — mirror it so window-lifecycle callbacks can read fresh
+  // state without needing an unstable function in their dependency arrays.
+  const getRoomSnapshotRef = useRef(getRoomSnapshot);
+  getRoomSnapshotRef.current = getRoomSnapshot;
 
   const getWatchAllScope = useCallback((currentState: VoiceRoomState | null): WatchAllScope => {
     if (!currentState || !currentState.joinedSubRoomId) {
@@ -316,7 +321,7 @@ export function useShareViewerWindows({
 
   const handleViewerReady = useCallback(
     (participantId: string, windowLabel: string) => {
-      const rs = getRoomSnapshot();
+      const rs = getRoomSnapshotRef.current();
       if (!rs || !rs.screenShareStreams.has(participantId)) return;
 
       if (windowLabel === 'watch-all') {
@@ -355,176 +360,65 @@ export function useShareViewerWindows({
       emitShareUserState(shareUserStateRef.current);
       emitShareVoiceParticipants(voiceParticipantsRef.current);
     },
-    [applySavedScreenShareAudio, getRoomSnapshot],
+    [applySavedScreenShareAudio],
   );
 
   /** Re-add a participant's stream to the Watch All grid after their pop-out closes. */
-  const reAddStreamToWatchAll = (participantId: string) => {
-    if (!watchAllWindowRef.current || !watchAllReadyRef.current) return;
-    const rs = getRoomSnapshot();
-    const scope = getWatchAllScope(rs);
-    if (!scope.streams.has(participantId)) return;
-    const stream = scope.streams.get(participantId) ?? null;
-    const participant = scope.participants.find((p) => p.id === participantId);
-    if (!participant) return;
-    emitWatchAllShareAdded({
-      participantId,
-      liveKitIdentity: liveKitIdentityForParticipant(participantId),
-      displayName: participant.displayName,
-      color: participant.color,
-      canvasFallback: stream === null,
-    });
-    restoreWatchAllVolumeForParticipant(participantId);
-    prevWatchAllStreamsRef.current.set(participantId, stream);
-    // Attach audio directly. If the tile already exists in Watch All,
-    // share-added is a no-op and viewer-ready never fires, so audio would be
-    // left unattached. This covers both the new-tile path (idempotent with
-    // the viewer-ready attach) and the existing-tile path.
-    if (!shareWindowsRef.current.has(participantId)) {
-      attachScreenShareAudio(participantId);
-      applySavedScreenShareAudio(participantId);
-      watchAllAttachedAudioRef.current.add(participantId);
-    }
-  };
-
-  const handleShareWindowClosed = (participantId: string) => {
-    // The map entry marks which pop-out currently owns this participant.
-    // If another close path already removed it, skip duplicate cleanup.
-    if (!shareWindowsRef.current.delete(participantId)) return;
-    // Skip detach when Watch All will take the stream back: detaching triggers
-    // setSubscribed(false/true) which can race TrackUnsubscribed/TrackSubscribed
-    // unpredictably. Keeping the gain node alive lets reAddStreamToWatchAll
-    // update volume immediately without any subscription churn.
-    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
-      detachScreenShareAudio(participantId);
-    }
-    setWatchingShareIds((prev) => {
-      const next = new Set(prev);
-      next.delete(participantId);
-      return next;
-    });
-    reAddStreamToWatchAll(participantId);
-  };
-
-  /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
-  const openShareWindow = async (
-    participantId: string,
-    participant: RoomParticipant,
-    stream: MediaStream | null,
-    scope: ShareViewerScope = 'direct',
-  ) => {
-    if (nativeShareViewersRef.current.has(participantId)) {
-      closeShareWindow(participantId);
-    }
-
-    // If already watching this participant, close it first and wait for Tauri to
-    // destroy the webview before creating a new one with the same label.
-    if (shareWindowsRef.current.has(participantId)) {
-      const oldWin = shareWindowsRef.current.get(participantId)!;
-      closeShareWindow(participantId);
-      await oldWin.window.waitForDestroyed(1000);
-    }
-
-    const rs = getRoomSnapshot();
-    const isSelf = participantId === rs?.selfParticipantId;
-    const params = {
-      participantId,
-      liveKitIdentity: liveKitIdentityForParticipant(participantId),
-      username: participant.displayName,
-      userColor: participant.color,
-      isOwner: isSelf,
-      canvasFallback: stream === null,
-      initialVolume: getSavedShareVolume(participantId),
-      initialMuted: getSavedShareMuted(participantId),
-    };
-
-    try {
-      if (stream === null) {
-        // The Rust side keys share frames by LiveKit identity (the durable
-        // userId on new backends), not by the signaling participantId.
-        const nativeIdentity = liveKitIdentityForParticipant(participantId);
-        await openNativeScreenShareViewer(
-          nativeIdentity,
-          `${participant.displayName} — screen share`,
-        );
-
-        nativeShareViewersRef.current.set(participantId, nativeIdentity);
+  const reAddStreamToWatchAll = useCallback(
+    (participantId: string) => {
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) return;
+      const rs = getRoomSnapshotRef.current();
+      const scope = getWatchAllScope(rs);
+      if (!scope.streams.has(participantId)) return;
+      const stream = scope.streams.get(participantId) ?? null;
+      const participant = scope.participants.find((p) => p.id === participantId);
+      if (!participant) return;
+      emitWatchAllShareAdded({
+        participantId,
+        liveKitIdentity: liveKitIdentityForParticipant(participantId),
+        displayName: participant.displayName,
+        color: participant.color,
+        canvasFallback: stream === null,
+      });
+      restoreWatchAllVolumeForParticipant(participantId);
+      prevWatchAllStreamsRef.current.set(participantId, stream);
+      // Attach audio directly. If the tile already exists in Watch All,
+      // share-added is a no-op and viewer-ready never fires, so audio would be
+      // left unattached. This covers both the new-tile path (idempotent with
+      // the viewer-ready attach) and the existing-tile path.
+      if (!shareWindowsRef.current.has(participantId)) {
         attachScreenShareAudio(participantId);
         applySavedScreenShareAudio(participantId);
-        setWatchingShareIds((prev) => new Set(prev).add(participantId));
-
-        if (watchAllWindowRef.current && watchAllReadyRef.current) {
-          watchAllAttachedAudioRef.current.delete(participantId);
-          prevWatchAllStreamsRef.current.delete(participantId);
-          emitWatchAllShareRemoved(participantId);
-        }
-        return;
+        watchAllAttachedAudioRef.current.add(participantId);
       }
+    },
+    [getWatchAllScope, restoreWatchAllVolumeForParticipant, applySavedScreenShareAudio],
+  );
 
-      const win = openScreenShareViewerWindow(params, `${participant.displayName} — screen share`);
-
-      // The pop-out subscribes to the share directly via its own LiveKit
-      // viewer connection (see viewer-connection.ts) — no loopback bridge.
-      win.onceError((e) => {
-        console.error('[wavis:active-room] screen share window error:', e);
-        setWatchingShareIds((prev) => {
-          const next = new Set(prev);
-          next.delete(participantId);
-          return next;
-        });
-      });
-
-      // Defense-in-depth: restore the tile even if the page-level close event
-      // is missed and only the native window destruction fires.
-      win.onceDestroyed(() => {
-        handleShareWindowClosed(participantId);
-      });
-
-      shareWindowsRef.current.set(participantId, { window: win, scope });
-      setWatchingShareIds((prev) => new Set(prev).add(participantId));
-
-      // If Watch All is open, remove this tile from the grid — the pop-out owns it now.
-      // Do NOT detach audio here: the gain node and subscription remain alive so the
-      // pop-out's handleViewerReady finds them intact and only needs to set the volume.
-      // closeShareWindow handles detach when the pop-out is actually closed.
-      if (watchAllWindowRef.current && watchAllReadyRef.current) {
-        watchAllAttachedAudioRef.current.delete(participantId);
-        prevWatchAllStreamsRef.current.delete(participantId);
-        emitWatchAllShareRemoved(participantId);
+  const handleShareWindowClosed = useCallback(
+    (participantId: string) => {
+      // The map entry marks which pop-out currently owns this participant.
+      // If another close path already removed it, skip duplicate cleanup.
+      if (!shareWindowsRef.current.delete(participantId)) return;
+      // Skip detach when Watch All will take the stream back: detaching triggers
+      // setSubscribed(false/true) which can race TrackUnsubscribed/TrackSubscribed
+      // unpredictably. Keeping the gain node alive lets reAddStreamToWatchAll
+      // update volume immediately without any subscription churn.
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        detachScreenShareAudio(participantId);
       }
-    } catch (err) {
-      console.error('[wavis:active-room] failed to open screen share window:', err);
-      onErrorRef.current(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  /** Close a specific screen share OS window and clean up audio routing. */
-  const closeShareWindow = (participantId: string) => {
-    if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
-      detachScreenShareAudio(participantId);
-    }
-    const openedNativeIdentity = nativeShareViewersRef.current.get(participantId);
-    if (openedNativeIdentity !== undefined) {
-      nativeShareViewersRef.current.delete(participantId);
-      closeNativeScreenShareViewer(openedNativeIdentity);
-    }
-    const shareWindow = shareWindowsRef.current.get(participantId);
-    if (shareWindow) {
-      // Delete BEFORE win.close() so the screen-share:closed handler
-      // sees delete() return false and skips its re-add (no double-fire).
-      shareWindowsRef.current.delete(participantId);
-      shareWindow.window.close().catch(() => {});
-    }
-    setWatchingShareIds((prev) => {
-      const next = new Set(prev);
-      next.delete(participantId);
-      return next;
-    });
-    reAddStreamToWatchAll(participantId);
-  };
+      setWatchingShareIds((prev) => {
+        const next = new Set(prev);
+        next.delete(participantId);
+        return next;
+      });
+      reAddStreamToWatchAll(participantId);
+    },
+    [reAddStreamToWatchAll],
+  );
 
   /** Close the Watch All window and clean up audio routing. */
-  const closeWatchAllWindow = () => {
+  const closeWatchAllWindow = useCallback(() => {
     if (!watchAllWindowRef.current) return; // idempotent
     // Clean up the ready listener to avoid leaks
     if (watchAllReadyUnlistenRef.current) {
@@ -539,10 +433,38 @@ export function useShareViewerWindows({
     watchAllWindowRef.current.close().catch(() => {});
     watchAllWindowRef.current = null;
     setWatchAllOpen(false);
-  };
+  }, []);
+
+  /** Close a specific screen share OS window and clean up audio routing. */
+  const closeShareWindow = useCallback(
+    (participantId: string) => {
+      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
+        detachScreenShareAudio(participantId);
+      }
+      const openedNativeIdentity = nativeShareViewersRef.current.get(participantId);
+      if (openedNativeIdentity !== undefined) {
+        nativeShareViewersRef.current.delete(participantId);
+        closeNativeScreenShareViewer(openedNativeIdentity);
+      }
+      const shareWindow = shareWindowsRef.current.get(participantId);
+      if (shareWindow) {
+        // Delete BEFORE win.close() so the screen-share:closed handler
+        // sees delete() return false and skips its re-add (no double-fire).
+        shareWindowsRef.current.delete(participantId);
+        shareWindow.window.close().catch(() => {});
+      }
+      setWatchingShareIds((prev) => {
+        const next = new Set(prev);
+        next.delete(participantId);
+        return next;
+      });
+      reAddStreamToWatchAll(participantId);
+    },
+    [reAddStreamToWatchAll],
+  );
 
   /** Close all share windows. */
-  const closeAllShareWindows = () => {
+  const closeAllShareWindows = useCallback(() => {
     closeVideoPopoutRef.current(); // tears down the camera-popout bridge senders
     closeWatchAllWindow(); // close Watch All window first
     for (const [pid, nativeIdentity] of nativeShareViewersRef.current) {
@@ -556,17 +478,122 @@ export function useShareViewerWindows({
     }
     shareWindowsRef.current.clear();
     setWatchingShareIds(new Set());
-  };
+  }, [closeWatchAllWindow]);
+
+  /** Open a real OS window for a screen share viewer. Supports multiple simultaneous windows. */
+  const openShareWindow = useCallback(
+    async (
+      participantId: string,
+      participant: RoomParticipant,
+      stream: MediaStream | null,
+      scope: ShareViewerScope = 'direct',
+    ) => {
+      if (nativeShareViewersRef.current.has(participantId)) {
+        closeShareWindow(participantId);
+      }
+
+      // If already watching this participant, close it first and wait for Tauri to
+      // destroy the webview before creating a new one with the same label.
+      if (shareWindowsRef.current.has(participantId)) {
+        const oldWin = shareWindowsRef.current.get(participantId)!;
+        closeShareWindow(participantId);
+        await oldWin.window.waitForDestroyed(1000);
+      }
+
+      const rs = getRoomSnapshotRef.current();
+      const isSelf = participantId === rs?.selfParticipantId;
+      const params = {
+        participantId,
+        liveKitIdentity: liveKitIdentityForParticipant(participantId),
+        username: participant.displayName,
+        userColor: participant.color,
+        isOwner: isSelf,
+        canvasFallback: stream === null,
+        initialVolume: getSavedShareVolume(participantId),
+        initialMuted: getSavedShareMuted(participantId),
+      };
+
+      try {
+        if (stream === null) {
+          // The Rust side keys share frames by LiveKit identity (the durable
+          // userId on new backends), not by the signaling participantId.
+          const nativeIdentity = liveKitIdentityForParticipant(participantId);
+          await openNativeScreenShareViewer(
+            nativeIdentity,
+            `${participant.displayName} — screen share`,
+          );
+
+          nativeShareViewersRef.current.set(participantId, nativeIdentity);
+          attachScreenShareAudio(participantId);
+          applySavedScreenShareAudio(participantId);
+          setWatchingShareIds((prev) => new Set(prev).add(participantId));
+
+          if (watchAllWindowRef.current && watchAllReadyRef.current) {
+            watchAllAttachedAudioRef.current.delete(participantId);
+            prevWatchAllStreamsRef.current.delete(participantId);
+            emitWatchAllShareRemoved(participantId);
+          }
+          return;
+        }
+
+        const win = openScreenShareViewerWindow(
+          params,
+          `${participant.displayName} — screen share`,
+        );
+
+        // The pop-out subscribes to the share directly via its own LiveKit
+        // viewer connection (see viewer-connection.ts) — no loopback bridge.
+        win.onceError((e) => {
+          console.error('[wavis:active-room] screen share window error:', e);
+          setWatchingShareIds((prev) => {
+            const next = new Set(prev);
+            next.delete(participantId);
+            return next;
+          });
+        });
+
+        // Defense-in-depth: restore the tile even if the page-level close event
+        // is missed and only the native window destruction fires.
+        win.onceDestroyed(() => {
+          handleShareWindowClosed(participantId);
+        });
+
+        shareWindowsRef.current.set(participantId, { window: win, scope });
+        setWatchingShareIds((prev) => new Set(prev).add(participantId));
+
+        // If Watch All is open, remove this tile from the grid — the pop-out owns it now.
+        // Do NOT detach audio here: the gain node and subscription remain alive so the
+        // pop-out's handleViewerReady finds them intact and only needs to set the volume.
+        // closeShareWindow handles detach when the pop-out is actually closed.
+        if (watchAllWindowRef.current && watchAllReadyRef.current) {
+          watchAllAttachedAudioRef.current.delete(participantId);
+          prevWatchAllStreamsRef.current.delete(participantId);
+          emitWatchAllShareRemoved(participantId);
+        }
+      } catch (err) {
+        console.error('[wavis:active-room] failed to open screen share window:', err);
+        onErrorRef.current(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [
+      closeShareWindow,
+      handleShareWindowClosed,
+      getSavedShareVolume,
+      getSavedShareMuted,
+      applySavedScreenShareAudio,
+    ],
+  );
 
   /** Open the Watch All window showing all active screen shares in a grid. */
-  const openWatchAllWindow = async () => {
+  const openWatchAllWindow = useCallback(async () => {
     // If already open, bring to foreground
     if (watchAllWindowRef.current) {
       void watchAllWindowRef.current.setFocus();
       return;
     }
 
-    if (!roomState) return;
+    const initialSnapshot = getRoomSnapshotRef.current();
+    if (!initialSnapshot) return;
 
     // Close any existing individual pop-out windows — WatchAll subsumes them.
     // We close the windows but don't detach audio (WatchAll doesn't handle
@@ -595,7 +622,7 @@ export function useShareViewerWindows({
         void watchAllWindowRef.current?.setFocus();
         // Read fresh roomState via ref — the closure captured at
         // openWatchAllWindow time may be stale by now.
-        const rs = getRoomSnapshot();
+        const rs = getRoomSnapshotRef.current();
         if (!rs) {
           console.warn('[wavis:active-room] watch-all:ready fired but roomStateRef is null');
           return;
@@ -646,7 +673,7 @@ export function useShareViewerWindows({
       });
       watchAllReadyUnlistenRef.current = unlistenReady;
 
-      const win = openWatchAllGridWindow(roomState.channelName);
+      const win = openWatchAllGridWindow(initialSnapshot.channelName);
 
       win.onceError((e) => {
         console.error('[wavis:active-room] watch-all window error:', e);
@@ -662,16 +689,22 @@ export function useShareViewerWindows({
     } catch (err) {
       console.error('[wavis:active-room] failed to open watch-all window:', err);
     }
-  };
+  }, [
+    closeWatchAllWindow,
+    getWatchAllScope,
+    restoreWatchAllVolumeForParticipant,
+    getSavedShareVolume,
+  ]);
 
   /** Toggle the Watch All window:
    *  - closed          → open + focus
    *  - open + visible  → close
    *  - open + minimized → restore + focus (don't close)
    */
-  const toggleWatchAllWindow = async () => {
+  const toggleWatchAllWindow = useCallback(async () => {
     if (!watchAllWindowRef.current) {
-      const hasShares = roomState ? getWatchAllScope(roomState).remoteSharers.length > 0 : false;
+      const rs = getRoomSnapshotRef.current();
+      const hasShares = rs ? getWatchAllScope(rs).remoteSharers.length > 0 : false;
       if (hasShares) {
         void openWatchAllWindow();
       }
@@ -684,20 +717,21 @@ export function useShareViewerWindows({
     } else {
       closeWatchAllWindow();
     }
-  };
+  }, [getWatchAllScope, openWatchAllWindow, closeWatchAllWindow]);
 
   /* ─── Effects ───────────────────────────────────────────────────── */
 
   // Close share windows when watched participants stop sharing
   useEffect(() => {
-    if (!roomState) return;
+    const participants = roomState?.participants;
+    if (!participants) return;
     for (const id of watchingShareIds) {
-      const stillSharing = roomState.participants.some((p) => p.id === id && p.isSharing);
+      const stillSharing = participants.some((p) => p.id === id && p.isSharing);
       if (!stillSharing) {
         closeShareWindow(id);
       }
     }
-  }, [watchingShareIds, roomState?.participants]);
+  }, [watchingShareIds, roomState?.participants, closeShareWindow]);
 
   useEffect(() => {
     shareVolumesRef.current = shareVolumes;
@@ -714,9 +748,10 @@ export function useShareViewerWindows({
   // own direct LiveKit subscription and recover on their own.
   const prevStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   useEffect(() => {
-    if (!roomState) return;
+    const screenShareStreams = roomState?.screenShareStreams;
+    if (!screenShareStreams) return;
     for (const id of watchingShareIds) {
-      const current = roomState.screenShareStreams.get(id) ?? null;
+      const current = screenShareStreams.get(id) ?? null;
       const prev = prevStreamsRef.current.get(id) ?? null;
       if (current && current !== prev) {
         attachScreenShareAudio(id);
@@ -729,7 +764,7 @@ export function useShareViewerWindows({
         setScreenShareAudioVolume(id, muted ? 0 : volume);
       }
     }
-    prevStreamsRef.current = new Map(roomState.screenShareStreams);
+    prevStreamsRef.current = new Map(screenShareStreams);
   }, [watchingShareIds, roomState?.screenShareStreams]);
 
   // Listen for child windows closing themselves
@@ -748,7 +783,7 @@ export function useShareViewerWindows({
       });
       reAddStreamToWatchAll(pid);
     });
-  }, []);
+  }, [reAddStreamToWatchAll]);
 
   // Viewer-window owner actions: volume/mute sync, voice volume, and the
   // mute/deafen/share toggles proxied from child windows.
@@ -808,7 +843,7 @@ export function useShareViewerWindows({
   // Watch All: listen for close event from WatchAllPage
   useEffect(() => {
     return onWatchAllClosed(() => closeWatchAllWindow());
-  }, []);
+  }, [closeWatchAllWindow]);
 
   // Screen share: listen for pop-back-in request from ScreenSharePage
   // Only acts when Watch All is open — otherwise double-click is a no-op.
@@ -820,7 +855,7 @@ export function useShareViewerWindows({
       // screen-share:closed will fire but is a no-op since the map entry was already deleted above.
       requestScreenShareWindowClose(pid);
     });
-  }, []);
+  }, [handleShareWindowClosed]);
 
   // Watch All: listen for pop-out request from WatchAllPage
   useEffect(() => {
@@ -832,7 +867,7 @@ export function useShareViewerWindows({
       if (typeof payload.muted === 'boolean') {
         syncScreenShareMuted(pid, payload.muted);
       }
-      const rs = getRoomSnapshot();
+      const rs = getRoomSnapshotRef.current();
       const participant = rs?.participants.find((p) => p.id === pid);
       if (!participant) return;
       // If already open, bring to foreground
@@ -844,7 +879,7 @@ export function useShareViewerWindows({
       // openShareWindow handles removing the tile from Watch All grid
       void openShareWindow(pid, participant, rs?.screenShareStreams.get(pid) ?? null, 'watch-all');
     });
-  }, [syncScreenShareMuted, syncScreenShareVolume]);
+  }, [syncScreenShareMuted, syncScreenShareVolume, openShareWindow]);
 
   // Dynamic share tracking for Watch All window
   useEffect(() => {
@@ -910,6 +945,12 @@ export function useShareViewerWindows({
     }
 
     prevWatchAllStreamsRef.current = new Map(currentStreams);
+    // roomState itself must stay out of this dep array — it's a large object
+    // that gets a new reference on nearly every unrelated state change,
+    // whereas the narrow fields below are the ones this effect actually reacts
+    // to. The bare reference in the guard above is unavoidable:
+    // getWatchAllScope(roomState) needs the whole object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     getWatchAllScope,
     watchAllOpen,
@@ -918,16 +959,20 @@ export function useShareViewerWindows({
     roomState?.joinedSubRoomId,
     roomState?.subRooms,
     roomState?.passthrough,
+    applySavedScreenShareAudio,
+    restoreWatchAllVolumeForParticipant,
   ]);
 
   // Watch All: sync audio-only sharer additions/removals
   useEffect(() => {
-    if (!roomState) return;
-    const curr = roomState.audioOnlySharers;
+    const audioOnlySharers = roomState?.audioOnlySharers;
+    const participants = roomState?.participants;
+    if (!audioOnlySharers || !participants) return;
+    const curr = audioOnlySharers;
     const prev = prevAudioOnlySharersRef.current;
     for (const identity of curr) {
       if (prev.has(identity)) continue;
-      const participant = roomState.participants.find((p) => p.id === identity);
+      const participant = participants.find((p) => p.id === identity);
       if (!participant) continue;
       const vol = getSavedShareVolume(identity);
       // Always start audio shares muted; preserve the last-set volume for restore.
@@ -983,6 +1028,10 @@ export function useShareViewerWindows({
       newMap.set(p.id, { displayName: p.displayName, color: p.color });
     }
     prevParticipantsRef.current = newMap;
+    // Same unavoidable-whole-object reasoning as the dynamic share-tracking
+    // effect above: getWatchAllScope(roomState) needs the whole object, so
+    // roomState itself stays out of the dep array below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     getWatchAllScope,
     watchAllOpen,
@@ -997,7 +1046,7 @@ export function useShareViewerWindows({
     return () => {
       closeAllShareWindows();
     };
-  }, []);
+  }, [closeAllShareWindows]);
 
   // Close Watch All and any share pop-outs when the joined sub-room changes.
   const previousJoinedSubRoomIdRef = useRef<string | null>(null);
@@ -1016,7 +1065,13 @@ export function useShareViewerWindows({
       if (scopeParticipantIds.has(participantId)) continue;
       closeShareWindow(participantId);
     }
-  }, [getWatchAllScope, roomState, roomState?.joinedSubRoomId]);
+  }, [
+    getWatchAllScope,
+    roomState,
+    roomState?.joinedSubRoomId,
+    closeWatchAllWindow,
+    closeShareWindow,
+  ]);
 
   // Close Watch All and any share pop-outs when the room session fully ends.
   // This covers disconnect/error paths that transition to idle without going
@@ -1024,7 +1079,7 @@ export function useShareViewerWindows({
   useEffect(() => {
     if (roomState?.machineState !== 'idle') return;
     closeAllShareWindows();
-  }, [roomState?.machineState]);
+  }, [roomState?.machineState, closeAllShareWindows]);
 
   // Mirror self-state / participant lists into the open child windows.
   useEffect(() => {

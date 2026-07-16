@@ -98,7 +98,7 @@ jobs:
           exit "$missing"
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.1
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -333,12 +333,13 @@ jobs:
         env:
           BACKEND_URL: ${{ vars.BACKEND_URL }}
           WS_URL: ${{ vars.WS_URL }}
+          ALPHA_INVITE_CODE: ${{ secrets.ALPHA_INVITE_CODE }}
         run: |
           set -euo pipefail
           missing=0
-          for name in BACKEND_URL WS_URL; do
+          for name in BACKEND_URL WS_URL ALPHA_INVITE_CODE; do
             if [ -z "${!name-}" ]; then
-              echo "::error::$name repository variable is required for deploy-dev-ec2.yml smoke tests"
+              echo "::error::$name repository variable/secret is required for deploy-dev-ec2.yml smoke tests"
               missing=1
             fi
           done
@@ -352,6 +353,7 @@ jobs:
           BACKEND_URL: ${{ vars.BACKEND_URL }}
           WS_URL: ${{ vars.WS_URL }}
           LIVEKIT_HEALTH_URL: ${{ vars.LIVEKIT_HEALTH_URL }}
+          ALPHA_INVITE_CODE: ${{ secrets.ALPHA_INVITE_CODE }}
           SMOKE_TIMEOUT_SECS: "10"
         run: python tools/smoke/smoke.py
 

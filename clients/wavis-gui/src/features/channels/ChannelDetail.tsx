@@ -310,7 +310,9 @@ function InvitePanel({
         </label>
       </div>
       <button
-        onClick={handleGenerate}
+        onClick={() => {
+          void handleGenerate();
+        }}
         disabled={busy || submitting}
         className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
       >
@@ -342,7 +344,7 @@ function RevokePanel({
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const list = await fetchInvites(channelId);
         if (!cancelled) setInvites(list);
@@ -390,12 +392,12 @@ function RevokePanel({
             {inv.uses}/{inv.maxUses ?? '∞'} uses
           </span>
           <button
-            onClick={() =>
-              onMutation(async () => {
+            onClick={() => {
+              void onMutation(async () => {
                 await revokeInvite(channelId, inv.code);
                 setInvites((prev) => prev?.filter((i) => i.code !== inv.code) ?? null);
-              }, 'invite revoked')
-            }
+              }, 'invite revoked');
+            }}
             disabled={submitting}
             className="text-xs text-wavis-danger disabled:opacity-40 disabled:cursor-not-allowed border border-wavis-danger py-0.5 px-1 text-center transition-colors hover:bg-wavis-danger hover:text-wavis-bg"
           >
@@ -480,7 +482,7 @@ function UnbanPanel({
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const list = await fetchBannedMembers(channelId);
         if (!cancelled) {
@@ -535,12 +537,12 @@ function UnbanPanel({
             {MEMBER_JOINED_DATE_FORMATTER.format(new Date(b.bannedAt))}
           </span>
           <button
-            onClick={() =>
-              onMutation(async () => {
+            onClick={() => {
+              void onMutation(async () => {
                 await unbanMember(channelId, b.userId);
                 setBanned((prev) => prev?.filter((x) => x.userId !== b.userId) ?? null);
-              }, 'member unbanned')
-            }
+              }, 'member unbanned');
+            }}
             disabled={submitting}
             className="text-xs text-wavis-accent disabled:opacity-40 disabled:cursor-not-allowed shrink-0 border border-wavis-accent py-0.5 px-1 text-center transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
           >
@@ -598,7 +600,7 @@ export default function ChannelDetail({
   const navigateAway = useCallback(
     (path: string) => {
       if (onNavigateAwayRef.current) onNavigateAwayRef.current(path);
-      else navigate(path, { replace: true });
+      else void navigate(path, { replace: true });
     },
     [navigate],
   );
@@ -635,7 +637,7 @@ export default function ChannelDetail({
 
   /* ── Resolve device ID once ── */
   useEffect(() => {
-    getDeviceId().then((id) => setMyUserId(id));
+    void getDeviceId().then((id) => setMyUserId(id));
   }, []);
 
   /* ── loadDetail ── */
@@ -699,14 +701,18 @@ export default function ChannelDetail({
 
   /* ── Initial load ── */
   useEffect(() => {
-    loadDetail();
+    void loadDetail();
   }, [loadDetail]);
 
   /* ── Detail auto-refresh (15s) ── */
-  usePolling(() => loadDetail(true), DETAIL_POLL_MS);
+  usePolling(() => {
+    void loadDetail(true);
+  }, DETAIL_POLL_MS);
 
   /* ── Voice status poll (5s) ── */
-  usePolling(loadVoice, VOICE_POLL_MS);
+  usePolling(() => {
+    void loadVoice();
+  }, VOICE_POLL_MS);
 
   /* ── Success message auto-clear ── */
   useEffect(() => {
@@ -774,7 +780,9 @@ export default function ChannelDetail({
   /* ── Command handlers ── */
   const handleJoinVoice = useCallback(() => {
     if (!channelId || !detail) return;
-    navigate('/room', { state: { channelId, channelName: detail.name, channelRole: detail.role } });
+    void navigate('/room', {
+      state: { channelId, channelName: detail.name, channelRole: detail.role },
+    });
   }, [channelId, detail, navigate]);
 
   const handleDelete = useCallback(async () => {
@@ -815,14 +823,14 @@ export default function ChannelDetail({
 
   const handleBan = useCallback(
     (userId: string) => {
-      handleMutation(() => banMember(channelId!, userId), 'member banned');
+      void handleMutation(() => banMember(channelId!, userId), 'member banned');
     },
     [channelId, handleMutation],
   );
 
   const handleRoleChange = useCallback(
     (userId: string, role: 'admin' | 'member') => {
-      handleMutation(() => changeMemberRole(channelId!, userId, role), 'role updated');
+      void handleMutation(() => changeMemberRole(channelId!, userId, role), 'role updated');
     },
     [channelId, handleMutation],
   );
@@ -861,7 +869,7 @@ export default function ChannelDetail({
           setSuccessMsg(null);
           break;
         case '/back':
-          navigate('/');
+          void navigate('/');
           break;
       }
     },
@@ -894,7 +902,9 @@ export default function ChannelDetail({
       {/* Back button */}
       {!hideBackButton && (
         <button
-          onClick={() => navigate('/')}
+          onClick={() => {
+            void navigate('/');
+          }}
           className="mb-4 text-xs text-wavis-text-secondary border border-wavis-text-secondary py-0.5 px-1 text-center transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast"
         >
           ← /channels
@@ -905,7 +915,14 @@ export default function ChannelDetail({
       {loading && <LoadingBlock />}
 
       {/* Error */}
-      {!loading && error && <ErrorPanel error={error} onRetry={() => loadDetail()} />}
+      {!loading && error && (
+        <ErrorPanel
+          error={error}
+          onRetry={() => {
+            void loadDetail();
+          }}
+        />
+      )}
 
       {/* Detail loaded */}
       {!loading && !error && detail && (
@@ -1026,7 +1043,9 @@ export default function ChannelDetail({
                   requiredText="YES"
                   message="Delete this channel permanently?"
                   busy={submitting}
-                  onConfirm={handleDelete}
+                  onConfirm={() => {
+                    void handleDelete();
+                  }}
                   onCancel={() => setConfirmAction('none')}
                 />
               )}
@@ -1039,7 +1058,9 @@ export default function ChannelDetail({
               requiredText="YES"
               message="Leave this channel?"
               busy={submitting}
-              onConfirm={handleLeave}
+              onConfirm={() => {
+                void handleLeave();
+              }}
               onCancel={() => setConfirmAction('none')}
             />
           )}
@@ -1052,7 +1073,15 @@ export default function ChannelDetail({
     // Settings-styled layout: each concern lives in a labeled section with a
     // bordered panel, matching the ACCOUNT / PROFILE / PASSTHROUGH sections.
     if (loading) return <LoadingBlock />;
-    if (error) return <ErrorPanel error={error} onRetry={() => loadDetail()} />;
+    if (error)
+      return (
+        <ErrorPanel
+          error={error}
+          onRetry={() => {
+            void loadDetail();
+          }}
+        />
+      );
     if (!detail) return null;
 
     const feedback = (
@@ -1191,7 +1220,9 @@ export default function ChannelDetail({
                   requiredText="YES"
                   message="Delete this channel permanently?"
                   busy={submitting}
-                  onConfirm={handleDelete}
+                  onConfirm={() => {
+                    void handleDelete();
+                  }}
                   onCancel={() => setConfirmAction('none')}
                 />
               )}
@@ -1200,7 +1231,9 @@ export default function ChannelDetail({
                   requiredText="YES"
                   message="Leave this channel?"
                   busy={submitting}
-                  onConfirm={handleLeave}
+                  onConfirm={() => {
+                    void handleLeave();
+                  }}
                   onCancel={() => setConfirmAction('none')}
                 />
               )}

@@ -143,7 +143,10 @@ pub struct RoomInfo {
     /// Participant IDs currently sharing their screen. SFU rooms only.
     pub active_shares: HashSet<String>,
     /// Authoritative share types for active shares that supplied metadata.
-    pub active_share_types: HashMap<String, shared::signaling::WireShareType>,
+    /// A participant may have at most one video-type share (`ScreenAudio`,
+    /// `Window`, `Browser`) and one `AudioOnly` share active concurrently —
+    /// those are independent slots, so the value is a set, not a single type.
+    pub active_share_types: HashMap<String, HashSet<shared::signaling::WireShareType>>,
     /// Screen share permission policy (default: AllParticipants).
     pub share_permission: SharePermission,
     /// Optional synchronized sub-room state for channel-based voice sessions.

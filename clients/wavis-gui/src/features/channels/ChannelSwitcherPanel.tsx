@@ -70,12 +70,12 @@ export function ChannelSwitcherPanel({
   }, []);
 
   useEffect(() => {
-    loadChannels(true);
+    void loadChannels(true);
   }, [loadChannels]);
 
   usePolling(() => {
     if (requestInFlightRef.current) return;
-    loadChannels(false);
+    void loadChannels(false);
   }, POLL_MS);
 
   useEffect(() => {

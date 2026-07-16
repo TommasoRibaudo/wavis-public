@@ -26,10 +26,13 @@ services:
   livekit:
     container_name: wavis-livekit
     image: livekit/livekit-server:latest
+    cap_add:
+      - NET_ADMIN
     entrypoint: /bin/sh
     command:
       - -c
       - |
+        apk add --no-cache iproute2 >/dev/null
         sed -e "s|LIVEKIT_API_KEY_PLACEHOLDER|$$LIVEKIT_API_KEY|" \
             -e "s|LIVEKIT_API_SECRET_PLACEHOLDER|$$LIVEKIT_API_SECRET|" \
             /etc/livekit.yaml.tpl > /etc/livekit.yaml
@@ -84,10 +87,13 @@ services:
       SFU_JWT_ISSUER: ${SFU_JWT_ISSUER:-wavis-backend}
       SFU_TOKEN_TTL_SECS: ${SFU_TOKEN_TTL_SECS:-600}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      AUTH_REGISTER_RATE_LIMIT: ${AUTH_REGISTER_RATE_LIMIT:-5}
+      AUTH_RECOVER_RATE_LIMIT: ${AUTH_RECOVER_RATE_LIMIT:-30}
       AUTH_REFRESH_PEPPER: ${AUTH_REFRESH_PEPPER:-dev-pepper-32-bytes-minimum!!XXX}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-180}
       PHRASE_ENCRYPTION_KEY: ${PHRASE_ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
       PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER:-dev-pairing-pepper-32-bytes!!XXX}
+      ALPHA_INVITE_CODE_PEPPER: ${ALPHA_INVITE_CODE_PEPPER:-dev-alpha-invite-pepper-32b!!XXX}
       CF_ORIGIN_SECRET: ${CF_ORIGIN_SECRET:-}
       GITHUB_BUG_REPORT_TOKEN: ${GITHUB_BUG_REPORT_TOKEN:-ghp_dev_placeholder}
       GITHUB_BUG_REPORT_REPO: ${GITHUB_BUG_REPORT_REPO:-owner/repo}

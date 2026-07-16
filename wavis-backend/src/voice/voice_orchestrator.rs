@@ -710,6 +710,7 @@ pub fn leave_sub_room(
                         &members.info.participants,
                         participant_id,
                     ),
+                    share_type: None,
                 }));
             }
             Ok::<(), String>(())

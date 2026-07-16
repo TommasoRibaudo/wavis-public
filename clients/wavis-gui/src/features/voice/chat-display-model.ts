@@ -175,6 +175,16 @@ export function buildRoomEventDisplayItems(events: RoomEvent[]): RoomEventDispla
   return items;
 }
 
+/** Format an ISO timestamp for chat/event-log display: `HH:MM:SS` (24h, local time). */
+export function formatTime(isoString: string): string {
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleTimeString('en-US', { hour12: false });
+  } catch {
+    return '??:??:??';
+  }
+}
+
 export function shouldPlayChatNotification(
   participantId: string,
   selfParticipantId: string | null,

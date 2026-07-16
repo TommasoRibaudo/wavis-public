@@ -88,7 +88,7 @@ export default function ChannelsList() {
 
   /* Initial fetch on mount */
   useEffect(() => {
-    loadChannels(true);
+    void loadChannels(true);
   }, [loadChannels]);
 
   /* Auto-refresh: 15s interval */
@@ -98,7 +98,7 @@ export default function ChannelsList() {
       return;
     }
     if (requestInFlightRef.current) return;
-    loadChannels(false);
+    void loadChannels(false);
   }, POLL_MS);
 
   /* Auto-focus when form opens */
@@ -223,7 +223,14 @@ export default function ChannelsList() {
           {loading && <LoadingBlock />}
 
           {/* Error state */}
-          {!loading && error && <ErrorPanel error={error} onRetry={() => loadChannels(true)} />}
+          {!loading && error && (
+            <ErrorPanel
+              error={error}
+              onRetry={() => {
+                void loadChannels(true);
+              }}
+            />
+          )}
 
           {/* Empty state */}
           {!loading && !error && channels.length === 0 && (
@@ -241,7 +248,7 @@ export default function ChannelsList() {
                   key={ch.id}
                   onClick={() => {
                     void setLastChannel(ch.id, ch.name, ch.role);
-                    navigate('/room', {
+                    void navigate('/room', {
                       state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
                     });
                   }}
@@ -260,7 +267,7 @@ export default function ChannelsList() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate(`/channel/${ch.id}`);
+                        void navigate(`/channel/${ch.id}`);
                       }}
                       className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
                     >
@@ -293,7 +300,7 @@ export default function ChannelsList() {
                     setCreateError(null);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreate();
+                    if (e.key === 'Enter') void handleCreate();
                   }}
                   disabled={createBusy}
                   maxLength={100}
@@ -301,7 +308,9 @@ export default function ChannelsList() {
                   aria-label="Channel name"
                 />
                 <button
-                  onClick={handleCreate}
+                  onClick={() => {
+                    void handleCreate();
+                  }}
                   disabled={createBusy || !createValid}
                   className="shrink-0 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -334,7 +343,7 @@ export default function ChannelsList() {
                     setJoinSuccess(false);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleJoin();
+                    if (e.key === 'Enter') void handleJoin();
                   }}
                   disabled={joinBusy}
                   className="flex-1 min-w-0 bg-transparent border-b border-wavis-text-secondary outline-none px-2 py-1 font-mono text-wavis-text disabled:opacity-40 disabled:cursor-not-allowed"
@@ -342,7 +351,9 @@ export default function ChannelsList() {
                   aria-label="Invite code"
                 />
                 <button
-                  onClick={handleJoin}
+                  onClick={() => {
+                    void handleJoin();
+                  }}
                   disabled={joinBusy || !joinCode.trim()}
                   className="shrink-0 border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-1 py-0.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -368,9 +379,24 @@ export default function ChannelsList() {
           onClick={() => toggleForm('join')}
           active={activeForm === 'join'}
         />
-        <CmdButton label="/refresh" onClick={() => loadChannels(true)} />
-        <CmdButton label="/direct" onClick={() => navigate('/legacy')} />
-        <CmdButton label="/profile" onClick={() => navigate('/settings')} />
+        <CmdButton
+          label="/refresh"
+          onClick={() => {
+            void loadChannels(true);
+          }}
+        />
+        <CmdButton
+          label="/direct"
+          onClick={() => {
+            void navigate('/legacy');
+          }}
+        />
+        <CmdButton
+          label="/profile"
+          onClick={() => {
+            void navigate('/settings');
+          }}
+        />
       </div>
     </div>
   );

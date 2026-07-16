@@ -42,7 +42,7 @@ jobs:
       # No apt build deps needed: cargo-deny/cargo-cyclonedx are prebuilt
       # binaries and only read Cargo.lock / cargo metadata — nothing compiles.
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.1
 
       # Key is scoped with '-audit-' so this job stops sharing (and thrashing)
       # a cache key with nightly-stress, which stores different content under

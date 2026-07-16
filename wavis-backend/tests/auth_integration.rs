@@ -11,6 +11,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 // Re-export domain types for use in subsequent test tasks (11.2–11.5).
+use wavis_backend::auth::alpha_invite::hash_invite_code;
 #[allow(unused_imports)]
 use wavis_backend::auth::auth::{
     self, AuthError, DeviceRegistration, TokenPair, generate_refresh_token, hash_refresh_token,
@@ -39,10 +40,12 @@ async fn test_pool() -> PgPool {
 
 /// Truncate all auth-related tables. Call between tests for isolation.
 async fn truncate_auth_tables(pool: &PgPool) {
-    sqlx::query("TRUNCATE refresh_tokens, devices, users CASCADE")
-        .execute(pool)
-        .await
-        .expect("Failed to truncate auth tables");
+    sqlx::query(
+        "TRUNCATE alpha_invite_redemptions, alpha_invites, refresh_tokens, devices, users CASCADE",
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to truncate auth tables");
 }
 
 /// A deterministic test secret (≥32 bytes) for signing access tokens.
@@ -53,6 +56,32 @@ fn test_auth_secret() -> Vec<u8> {
 /// A deterministic test pepper (≥32 bytes) for HMAC hashing refresh tokens.
 fn test_pepper() -> Vec<u8> {
     b"test-pepper-at-least-32-bytes!!!!!!".to_vec()
+}
+
+fn test_alpha_invite_pepper() -> Vec<u8> {
+    b"test-alpha-invite-pepper-32b!!!!".to_vec()
+}
+
+async fn seed_alpha_invite(
+    pool: &PgPool,
+    code: &str,
+    max_redemptions: i32,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    disabled: bool,
+) -> Uuid {
+    let hash = hash_invite_code(code, &test_alpha_invite_pepper()).unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO alpha_invites (code_hash, max_redemptions, expires_at, disabled_at) \
+         VALUES ($1, $2, $3, CASE WHEN $4 THEN now() ELSE NULL END) \
+         RETURNING invite_id",
+    )
+    .bind(&hash)
+    .bind(max_redemptions)
+    .bind(expires_at)
+    .bind(disabled)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,4 +1273,181 @@ async fn authenticate_access_token_rejects_stale_epoch() {
         "token issued before epoch bump must be rejected, got: {:?}",
         result
     );
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn alpha_invite_registration_succeeds_and_records_redemption() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let invite_id = seed_alpha_invite(&pool, "alpha-valid-1", 2, None, false).await;
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let reg = auth::register_user_with_invite(
+        &pool,
+        "test-phrase-alpha-valid",
+        "alpha-user",
+        " ALPHA VALID 1 ",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &test_alpha_invite_pepper(),
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    assert!(!reg.access_token.is_empty());
+    assert!(!reg.refresh_token.is_empty());
+    assert!(!reg.recovery_id.is_empty());
+
+    let redemption_count: i32 =
+        sqlx::query_scalar("SELECT redemption_count FROM alpha_invites WHERE invite_id = $1")
+            .bind(invite_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(redemption_count, 1);
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM alpha_invite_redemptions \
+         WHERE invite_id = $1 AND user_id = $2 AND device_id = $3",
+    )
+    .bind(invite_id)
+    .bind(reg.user_id)
+    .bind(reg.device_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1);
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn alpha_invite_registration_rejects_bad_invites_without_partial_rows() {
+    let pool = test_pool().await;
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let cases = [
+        ("missing", "no-such-code"),
+        ("expired", "expired-code"),
+        ("disabled", "disabled-code"),
+        ("exhausted", "exhausted-code"),
+    ];
+
+    for (case, code) in cases {
+        truncate_auth_tables(&pool).await;
+        match case {
+            "expired" => {
+                seed_alpha_invite(
+                    &pool,
+                    code,
+                    1,
+                    Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                    false,
+                )
+                .await;
+            }
+            "disabled" => {
+                seed_alpha_invite(&pool, code, 1, None, true).await;
+            }
+            "exhausted" => {
+                let invite_id = seed_alpha_invite(&pool, code, 1, None, false).await;
+                sqlx::query(
+                    "UPDATE alpha_invites SET redemption_count = max_redemptions WHERE invite_id = $1",
+                )
+                .bind(invite_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            _ => {}
+        }
+
+        let result = auth::register_user_with_invite(
+            &pool,
+            "test-phrase-alpha-invalid",
+            "alpha-user",
+            code,
+            &secret,
+            900,
+            30,
+            &pepper,
+            &test_alpha_invite_pepper(),
+            &phrase_config,
+            TEST_ENCRYPTION_KEY,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(AuthError::InviteInvalid)),
+            "{case} invite should fail opaquely, got: {result:?}"
+        );
+
+        for table in [
+            "users",
+            "devices",
+            "refresh_tokens",
+            "alpha_invite_redemptions",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            let count: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
+            assert_eq!(count, 0, "{case} left partial rows in {table}");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn alpha_invite_registration_exhausts_limited_invite() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    seed_alpha_invite(&pool, "single-use-alpha", 1, None, false).await;
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    auth::register_user_with_invite(
+        &pool,
+        "test-phrase-alpha-once",
+        "alpha-one",
+        "single-use-alpha",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &test_alpha_invite_pepper(),
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    let result = auth::register_user_with_invite(
+        &pool,
+        "test-phrase-alpha-twice",
+        "alpha-two",
+        "single-use-alpha",
+        &secret,
+        900,
+        30,
+        &pepper,
+        &test_alpha_invite_pepper(),
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await;
+
+    assert!(matches!(result, Err(AuthError::InviteInvalid)));
 }

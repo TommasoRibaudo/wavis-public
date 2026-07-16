@@ -95,6 +95,7 @@ import {
   normalizeLinuxCompositor,
   normalizeLinuxDesktopEnv,
 } from './linux-capability-normalize';
+import { parseSignalingMessage } from './signaling/parse';
 import { registerMuteHotkey, unregisterMuteHotkey } from '@shared/hotkey-bridge';
 import {
   playNotificationSound,
@@ -197,35 +198,69 @@ function hasLiveScreenShareStream(participantId: string): boolean {
   return stream.getVideoTracks().some((t) => t.readyState === 'live');
 }
 
+/** Cadence for retries beyond the initial escalating burst — see scheduleRefreshRetries. */
+const SUSTAINED_REFRESH_RETRY_MS = 30000;
+
+/**
+ * One retry attempt: drop a stale (ended-track) stream entry and ask for a
+ * fresh subscription. Returns true if the participant is still sharing
+ * without a live stream — i.e. another attempt is warranted — and false if
+ * this generation was superseded, the stream is now healthy, or sharing has
+ * stopped, any of which means the retry loop should not continue.
+ */
+function attemptScreenShareRefresh(participantId: string, generation: number): boolean {
+  if (refreshRetryGenerations.get(participantId) !== generation) return false;
+  if (state.screenShareStreams.has(participantId)) {
+    // Only a healthy entry skips the refresh. When the SFU treats a
+    // republish as a track resume it never re-fires TrackSubscribed, so
+    // the map can hold the previous share's stream with an ended video
+    // track — the share icon lights up but the viewer window waits for
+    // frames forever. Drop such a dead entry and fall through to the
+    // refresh so a fresh subscription replaces it. (Native-path entries
+    // are null and always count as healthy — see hasLiveScreenShareStream.)
+    if (hasLiveScreenShareStream(participantId)) return false;
+    console.warn(
+      LOG,
+      `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`,
+    );
+    state.screenShareStreams = new Map(state.screenShareStreams);
+    state.screenShareStreams.delete(participantId);
+    notify();
+  }
+  const p = state.participants.find((pp) => pp.id === participantId);
+  if (!p?.isSharing) return false;
+  refreshRemoteScreenShare(participantId);
+  return true;
+}
+
+/**
+ * Schedule retry attempts (at 1s, 3s, 6s, 12s, 24s, then every 30s) to call
+ * refreshRemoteScreenShare for a participant whose share just started.
+ * Handles the race where TrackSubscribed fires after share_started arrives,
+ * or where the SFU treats a republish as a track resume and never fires
+ * TrackPublished/TrackSubscribed at all. The 12s/24s long tail covers slower
+ * recoveries (e.g. a delayed signaling/media identity realignment) beyond the
+ * original 6s cap; the sustained 30s cadence after that covers rarer, slower
+ * recoveries (e.g. a LiveKit identity that only resolves once a delayed
+ * participant-list update arrives) so the icon isn't stuck grey forever once
+ * the fixed burst runs out — it keeps trying until the stream goes live or
+ * sharing stops.
+ */
 function scheduleRefreshRetries(participantId: string): void {
   const generation = (refreshRetryGenerations.get(participantId) ?? 0) + 1;
   refreshRetryGenerations.set(participantId, generation);
   const delays = [1000, 3000, 6000, 12000, 24000];
   for (const delay of delays) {
     setTimeout(() => {
-      if (refreshRetryGenerations.get(participantId) !== generation) return;
-      if (state.screenShareStreams.has(participantId)) {
-        // Only a healthy entry skips the refresh. When the SFU treats a
-        // republish as a track resume it never re-fires TrackSubscribed, so
-        // the map can hold the previous share's stream with an ended video
-        // track — the share icon lights up but the viewer window waits for
-        // frames forever. Drop such a dead entry and fall through to the
-        // refresh so a fresh subscription replaces it. (Native-path entries
-        // are null and always count as healthy — see hasLiveScreenShareStream.)
-        if (hasLiveScreenShareStream(participantId)) return;
-        console.warn(
-          LOG,
-          `share stream for ${participantId} has no live video track — dropping stale entry and refreshing`,
-        );
-        state.screenShareStreams = new Map(state.screenShareStreams);
-        state.screenShareStreams.delete(participantId);
-        notify();
-      }
-      const p = state.participants.find((pp) => pp.id === participantId);
-      if (!p?.isSharing) return;
-      refreshRemoteScreenShare(participantId);
+      attemptScreenShareRefresh(participantId, generation);
     }, delay);
   }
+  const sustain = () => {
+    setTimeout(() => {
+      if (attemptScreenShareRefresh(participantId, generation)) sustain();
+    }, SUSTAINED_REFRESH_RETRY_MS);
+  };
+  sustain();
 }
 
 function clearRemoteShareType(participantId: string): void {
@@ -327,6 +362,16 @@ export interface VoiceRoomState {
   roomPanelTab: 'logs' | 'video';
   /** Identities of remote participants currently in audio-only share mode. */
   audioOnlySharers: Set<string>;
+  /**
+   * Subset of audioOnlySharers whose membership came from an explicit
+   * audio_only share_started/share_state entry (a real, independent
+   * standalone-audio slot), as opposed to LiveKit's TrackSubscribed-based
+   * guess (onAudioOnlySharerAdded) made before any signaling confirms it.
+   * A later video-type share_started must not clear a confirmed entry (the
+   * two slots are independent), but should still correct an unconfirmed
+   * LiveKit guess once real signaling arrives.
+   */
+  confirmedAudioOnlySharers: Set<string>;
 }
 
 /* ─── Constants ─────────────────────────────────────────────────── */
@@ -437,6 +482,10 @@ function makeShareSessionId(): string {
   return `share-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+interface MediaTokenPayload {
+  sub?: unknown;
+}
+
 /** Decode the `sub` (LiveKit participant identity) claim from a media JWT without verifying it. */
 function decodeMediaTokenIdentity(token: string): string | null {
   try {
@@ -444,7 +493,7 @@ function decodeMediaTokenIdentity(token: string): string | null {
     if (parts.length !== 3) return null;
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded));
+    const payload = JSON.parse(atob(padded)) as MediaTokenPayload;
     return typeof payload.sub === 'string' ? payload.sub : null;
   } catch {
     return null;
@@ -688,7 +737,7 @@ function clearSelfAudioActivity(self: RoomParticipant): void {
 }
 
 function setLocalMicPublishing(enabled: boolean): void {
-  lkModule?.setMicEnabled(enabled);
+  void lkModule?.setMicEnabled(enabled);
 }
 
 function detachAllScreenShareAudioPlayback(): void {
@@ -737,10 +786,20 @@ function reconcileLocalMicWithRoomMembership(previousJoinedSubRoomId: string | n
     }
     setLocalMicPublishing(false);
     detachAllScreenShareAudioPlayback();
-    // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
-    // caller has finished applying effective participant volumes on the
-    // still-live connection — disconnecting here would null it out first.
-    pendingMediaDisconnectForNoRoom = true;
+    // While reconnecting, the server's rejoin handshake always reports the
+    // participant as sub-room-less for a moment before the client's
+    // automatic rejoin (reconcileDesiredSubRoomMembership) lands. Don't tear
+    // down the still-live LiveKit session for that transient window — doing
+    // so causes an unnecessary media disconnect/reconnect (and a stuck
+    // 'reconnecting' state if the promotion race loses) on every WS
+    // reconnect, exactly what machineState='reconnecting' keeps media alive
+    // through elsewhere (see the WS disconnect handler in initSession).
+    if (state.machineState !== 'reconnecting') {
+      // Deferred to flushPendingMediaDisconnectForNoRoom(), called once the
+      // caller has finished applying effective participant volumes on the
+      // still-live connection — disconnecting here would null it out first.
+      pendingMediaDisconnectForNoRoom = true;
+    }
     return;
   }
 
@@ -885,6 +944,7 @@ const DEFAULT_STATE: VoiceRoomState = {
   roomPanelManualOverride: null,
   roomPanelTab: 'logs',
   audioOnlySharers: new Set(),
+  confirmedAudioOnlySharers: new Set(),
 };
 
 let state: VoiceRoomState = {
@@ -961,6 +1021,11 @@ let _currentShareProfile: ShareProfileId = 'detail';
 let _stopAutoSwitchPoll: (() => void) | null = null;
 let selectedShareQuality: ShareQuality = 'high';
 
+/** Minimum time between applied auto-switches, independent of detector dwell,
+ *  to bound worst-case encoder churn regardless of content. */
+const MIN_PROFILE_SWITCH_INTERVAL_MS = 5_000;
+let _lastProfileSwitchAppliedAtMs = 0;
+
 /** Maps a ShareProfileId to the legacy ShareQuality for the existing setScreenShareQuality path. */
 function profileToQuality(profile: ShareProfileId): ShareQuality {
   return profile === 'motion' ? 'low' : 'high';
@@ -996,12 +1061,17 @@ async function applyProfileSwitch(
  */
 function startAutoSwitchPoll(): () => void {
   let stopped = false;
-  const id = setInterval(async () => {
-    if (stopped || !_motionDetector) return;
-    const recommendation = _motionDetector.currentRecommendation();
-    if (recommendation === _currentShareProfile) return;
-    const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
-    await applyProfileSwitch(recommendation, reason).catch(() => {});
+  const id = setInterval(() => {
+    void (async () => {
+      if (stopped || !_motionDetector) return;
+      const recommendation = _motionDetector.currentRecommendation();
+      if (recommendation === _currentShareProfile) return;
+      const now = Date.now();
+      if (now - _lastProfileSwitchAppliedAtMs < MIN_PROFILE_SWITCH_INTERVAL_MS) return;
+      _lastProfileSwitchAppliedAtMs = now;
+      const reason: 'auto_in' | 'auto_out' = recommendation === 'motion' ? 'auto_in' : 'auto_out';
+      await applyProfileSwitch(recommendation, reason).catch(() => {});
+    })();
   }, 1_000);
   return () => {
     stopped = true;
@@ -1010,6 +1080,7 @@ function startAutoSwitchPoll(): () => void {
 }
 
 async function initializeProfileSwitchAfterShareStart(): Promise<void> {
+  _lastProfileSwitchAppliedAtMs = 0;
   if (selectedShareQuality === 'max') {
     const from = _currentShareProfile;
     _currentShareProfile = 'detail';
@@ -1061,6 +1132,9 @@ function shouldUseNativeMedia(): boolean {
   const hasRtc = 'RTCPeerConnection' in window;
   const hasGetUserMedia =
     'mediaDevices' in navigator &&
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices !== undefined &&
     typeof navigator.mediaDevices.getUserMedia === 'function';
 
@@ -1080,7 +1154,7 @@ function isLinuxPlatform(): boolean {
 }
 
 function getWindowsSharePathOverride(): WindowsSharePath | null {
-  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH;
+  const value = import.meta.env.VITE_WAVIS_WINDOWS_SHARE_PATH as string | undefined;
   return value === 'browser' || value === 'native' ? value : null;
 }
 
@@ -1393,9 +1467,9 @@ export function getPendingSharePickerData(): PendingSharePickerData | null {
 
 function setupSharePickerListener(): void {
   if (unlistenSharePickerRequest) return; // already listening
-  listen('share-picker:request-sources', () => {
+  void listen('share-picker:request-sources', () => {
     if (pendingSharePickerData) {
-      emit('share-picker:sources', pendingSharePickerData);
+      void emit('share-picker:sources', pendingSharePickerData);
     }
   }).then((unlisten) => {
     unlistenSharePickerRequest = unlisten;
@@ -1412,7 +1486,7 @@ function teardownSharePickerListener(): void {
 
 function setupLinuxCaptureFallbackListener(): void {
   if (unlistenLinuxCaptureFallback) return;
-  listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
+  void listen<LinuxCaptureFallbackPayload>('linux-capture-fallback-activated', ({ payload }) => {
     emitTelemetryEvent({
       name: 'capture.fallback.activated',
       os: 'linux',
@@ -1437,7 +1511,7 @@ function setupExternalShareHelperListeners(): void {
   if (unlistenExternalShareStarted || unlistenExternalShareStopped || unlistenExternalShareError)
     return;
 
-  listen<{ sessionId: string }>('external-share-started', () => {
+  void listen<{ sessionId: string }>('external-share-started', () => {
     if (state.joinedSubRoomId === null) {
       invoke('external_share_stop').catch(() => {});
       return;
@@ -1456,7 +1530,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStarted = unlisten;
   });
 
-  listen<{ sessionId: string }>('external-share-stopped', () => {
+  void listen<{ sessionId: string }>('external-share-stopped', () => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1473,7 +1547,7 @@ function setupExternalShareHelperListeners(): void {
     unlistenExternalShareStopped = unlisten;
   });
 
-  listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
+  void listen<{ sessionId: string; message: string }>('external-share-error', (event) => {
     externalShareHelperActive = false;
     state.shareQualityInfo = null;
     state.shareStats = null;
@@ -1581,7 +1655,6 @@ function cleanupPublishedMediaForSessionEnd(): void {
     externalShareHelperActive = false;
     if (!sentStopShare && client && client.status === 'connected') {
       client.send({ type: 'stop-share' });
-      sentStopShare = true;
     }
   }
 
@@ -1782,6 +1855,9 @@ async function enumerateVideoInputs(): Promise<MediaDeviceInfo[]> {
   if (
     typeof navigator === 'undefined' ||
     !('mediaDevices' in navigator) ||
+    // lib.dom.d.ts declares navigator.mediaDevices as always defined, but it is
+    // genuinely undefined at runtime in non-secure contexts and older browsers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     navigator.mediaDevices === undefined ||
     typeof navigator.mediaDevices.enumerateDevices !== 'function'
   ) {
@@ -2508,25 +2584,34 @@ function connectMedia(
       }
     },
     onAudioLevels: (levels) => {
+      // Audio levels arrive at ~20Hz per participant, but only the isSpeaking
+      // transition is rendered (see voiceIcon in ActiveRoom.tsx) — notifying
+      // on every tick forces a full re-render of the room UI for no visible
+      // change. Only broadcast when a participant's speaking state flips.
+      let changed = false;
       for (const [identity, data] of levels) {
         const participantId = participantIdForLiveKitIdentity(identity);
         const p = state.participants.find((pp) => pp.id === participantId);
         if (p) {
           p.rmsLevel = data.rmsLevel;
+          const wasSpeaking = p.isSpeaking;
           p.isSpeaking = updateSpeakingTracker(p.id, data.rmsLevel, p.isSpeaking, p.isMuted);
+          if (p.isSpeaking !== wasSpeaking) changed = true;
         } else {
           warnUnknownIdentity(identity);
         }
       }
-      notify();
+      if (changed) notify();
     },
     onLocalAudioLevel: (level) => {
       updateSelfRms(level);
     },
     onActiveSpeakers: (speakerIdentities) => {
       const speakerParticipantIds = speakerIdentities.map(participantIdForLiveKitIdentity);
+      let changed = false;
       for (const p of state.participants) {
         const isSpeaker = speakerParticipantIds.includes(p.id);
+        const wasSpeaking = p.isSpeaking;
         if (isSpeaker && !p.isMuted) {
           // Boost the smoothed RMS in the tracker so the debounce logic
           // converges to speaking within 1–2 frames instead of fighting
@@ -2542,13 +2627,24 @@ function connectMedia(
             p.isMuted,
           );
           p.rmsLevel = Math.max(p.rmsLevel, RMS_START_THRESHOLD + 0.05);
-        } else if (!isSpeaker && p.isSpeaking) {
-          // Let the tracker decay naturally — feed a zero-level sample
-          // so the EMA + debounce handles the off-transition smoothly.
-          p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+        } else if (!isSpeaker) {
+          if (p.isSpeaking) {
+            // Let the tracker decay naturally — feed a zero-level sample
+            // so the EMA + debounce handles the off-transition smoothly.
+            p.isSpeaking = updateSpeakingTracker(p.id, 0, p.isSpeaking, p.isMuted);
+          }
+          // Always clear rmsLevel here, even when isSpeaking was already
+          // false — the boost branch above can set rmsLevel via Math.max
+          // without necessarily flipping isSpeaking through the debounce
+          // (a hangover flap), which would otherwise freeze rmsLevel at
+          // 0.11 forever (above the 0.03 threshold other code checks
+          // against). Harmless: the analyser rewrites a real value within
+          // 50ms whenever audio actually decodes.
+          p.rmsLevel = 0;
         }
+        if (p.isSpeaking !== wasSpeaking) changed = true;
       }
-      notify();
+      if (changed) notify();
     },
     onConnectionQuality: (stats) => {
       state.networkStats = stats;
@@ -2627,7 +2723,7 @@ function connectMedia(
         if (state.joinedSubRoomId === null) {
           clearSelfAudioActivity(p);
           if (!isMuted) {
-            lkModule?.setMicEnabled(false);
+            void lkModule?.setMicEnabled(false);
           }
           notify();
           return;
@@ -2679,6 +2775,9 @@ function connectMedia(
     onRemoteCameraMutedChanged: (identity, muted) => {
       const participantId = participantIdForLiveKitIdentity(identity);
       const current = remoteCameraTilesById[participantId];
+      // Without noUncheckedIndexedAccess, TS types Record index access as always
+      // defined even though a missing key makes it genuinely undefined at runtime.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!current) {
         return;
       }
@@ -2741,8 +2840,11 @@ function connectMedia(
       notify();
     },
     onAudioOnlySharerRemoved: (identity) => {
+      const participantId = participantIdForLiveKitIdentity(identity);
       state.audioOnlySharers = new Set(state.audioOnlySharers);
-      state.audioOnlySharers.delete(participantIdForLiveKitIdentity(identity));
+      state.audioOnlySharers.delete(participantId);
+      state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+      state.confirmedAudioOnlySharers.delete(participantId);
       notify();
     },
   };
@@ -2782,8 +2884,17 @@ function connectMedia(
 /* ─── Signaling Dispatcher ──────────────────────────────────────── */
 
 function dispatchMessage(raw: unknown): void {
-  const msg = raw as Record<string, unknown>;
-  const type = msg.type as string;
+  const parsed = parseSignalingMessage(raw);
+  if (parsed.kind === 'invalid') {
+    console.warn(LOG, 'invalid message received:', raw);
+    return;
+  }
+  if (parsed.kind === 'unknown') {
+    console.warn(LOG, 'unknown message type:', parsed.type);
+    return;
+  }
+  const msg = parsed.msg;
+  const type = msg.type;
 
   // Diagnostic: log media_token arrival
   if (type === 'media_token' || type === 'joined') {
@@ -2830,17 +2941,17 @@ function dispatchMessage(raw: unknown): void {
           LOG,
           `auth_failed — refreshing token (attempt ${authRefreshRetries}/${MAX_AUTH_REFRESH_RETRIES})`,
         );
-        refreshTokens().then((result) => {
+        void refreshTokens().then((result) => {
           if (result.status !== 'success' || !client) {
             console.warn(LOG, 'token refresh failed after auth_failed:', result.status);
-            state.error = (msg.reason as string) || 'Authentication failed';
+            state.error = msg.reason || 'Authentication failed';
             playLocalDisconnectSoundOnce();
             cleanupPublishedMediaForSessionEnd();
             state.machineState = 'idle';
             notify();
             return;
           }
-          getServerUrl().then((serverUrl) => {
+          void getServerUrl().then((serverUrl) => {
             if (!serverUrl || !client) return;
             client.reconnectWithNewToken(toWsUrl(serverUrl)).catch((err) => {
               console.error(LOG, 'reconnect after refresh failed:', err);
@@ -2855,7 +2966,7 @@ function dispatchMessage(raw: unknown): void {
         break;
       }
 
-      state.error = (msg.reason as string) || 'Authentication failed';
+      state.error = msg.reason || 'Authentication failed';
       if (client) {
         client.disconnect();
       }
@@ -2871,49 +2982,39 @@ function dispatchMessage(raw: unknown): void {
       stopColdStartRetry();
       state.serverStartingEstimatedWaitSecs = null;
       state.lastRateLimitError = null;
-      state.selfParticipantId = msg.peerId as string;
-      state.roomId = msg.roomId as string;
-      bufferedIceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ?? null;
+      state.selfParticipantId = msg.peerId;
+      state.roomId = msg.roomId;
+      bufferedIceConfig = msg.iceConfig ?? null;
       if (joinedActiveSession) {
         localSessionJoined = true;
         localDisconnectSoundPlayed = false;
       }
       syncDerivedSubRoomState();
       syncDesiredSubRoomPreference();
-      state.sharePermission =
-        (msg.sharePermission as string) === 'host_only' ? 'host_only' : 'anyone';
-      const participants = (msg.participants as Array<Record<string, unknown>>) || [];
+      state.sharePermission = msg.sharePermission === 'host_only' ? 'host_only' : 'anyone';
+      const participants = msg.participants || [];
       const incomingParticipants = participants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const pUserId = p.userId as string | undefined;
+        const pUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: pUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: pUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: pUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(pUserId, state.defaultVolume),
         };
@@ -2974,7 +3075,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'join_rejected': {
-      const rawReason = (msg.reason as string) || 'unknown';
+      const rawReason = msg.reason || 'unknown';
       console.warn(LOG, `join_rejected reason=${rawReason} channelId=${state.channelId}`);
       if (state.machineState === 'server_starting') {
         stopColdStartRetry();
@@ -2982,7 +3083,7 @@ function dispatchMessage(raw: unknown): void {
         cleanupPublishedMediaForSessionEnd();
         state.machineState = 'idle';
         state.serverStartingEstimatedWaitSecs = null;
-        state.rejectionReason = (msg.reason as string) || 'Server failed to start';
+        state.rejectionReason = msg.reason || 'Server failed to start';
         notify();
         break;
       }
@@ -3010,15 +3111,15 @@ function dispatchMessage(raw: unknown): void {
 
     case 'participant_joined': {
       if (state.participants.length >= MAX_PARTICIPANTS) return;
-      const pjId = msg.participantId as string;
-      const pjName = msg.displayName as string;
-      const pjUserId = msg.userId as string | undefined;
+      const pjId = msg.participantId;
+      const pjName = msg.displayName;
+      const pjUserId = msg.userId;
       displayNameCache.set(pjId, pjName);
       const newParticipant: RoomParticipant = {
         id: pjId,
         userId: pjUserId,
         displayName: pjName,
-        color: (msg.profileColor as string | undefined) ?? colorFor({ userId: pjUserId, id: pjId }),
+        color: msg.profileColor ?? colorFor({ userId: pjUserId, id: pjId }),
         role: 'guest',
         isSpeaking: false,
         isMuted: false,
@@ -3045,7 +3146,7 @@ function dispatchMessage(raw: unknown): void {
     case 'participant_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const leftId = msg.participantId as string;
+      const leftId = msg.participantId;
       const leftP = state.participants.find((p) => p.id === leftId);
       mediaConnectedParticipantIds.delete(leftId);
       suppressReconnectJoinForParticipantIds.delete(leftId);
@@ -3093,10 +3194,10 @@ function dispatchMessage(raw: unknown): void {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
       const previousPassthrough = state.passthrough;
-      const rooms = ((msg.rooms as Array<Record<string, unknown>>) || [])
+      const rooms = (msg.rooms || [])
         .map((room) => ({
-          id: room.subRoomId as string,
-          roomNumber: room.roomNumber as number,
+          id: room.subRoomId,
+          roomNumber: room.roomNumber,
           isDefault: Boolean(room.isDefault),
           participantIds: Array.isArray(room.participantIds)
             ? (room.participantIds as string[]).slice()
@@ -3105,7 +3206,7 @@ function dispatchMessage(raw: unknown): void {
         }))
         .sort((a, b) => a.roomNumber - b.roomNumber);
       state.subRooms = rooms;
-      const passthrough = msg.passthrough as Record<string, unknown> | null | undefined;
+      const passthrough = msg.passthrough;
       state.passthrough =
         passthrough &&
         typeof passthrough.sourceSubRoomId === 'string' &&
@@ -3186,11 +3287,11 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'sub_room_created': {
-      const room = msg.room as Record<string, unknown> | undefined;
+      const room = msg.room;
       if (!room) break;
       const createdRoom: VoiceSubRoom = {
-        id: room.subRoomId as string,
-        roomNumber: room.roomNumber as number,
+        id: room.subRoomId,
+        roomNumber: room.roomNumber,
         isDefault: Boolean(room.isDefault),
         participantIds: Array.isArray(room.participantIds)
           ? (room.participantIds as string[]).slice()
@@ -3212,9 +3313,9 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_joined': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
-      const source = (msg.source as string) === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
+      const source = msg.source === 'legacy_room_one' ? 'legacy_room_one' : 'explicit';
       state.subRooms = state.subRooms.map((room) => {
         if (room.id === subRoomId) {
           return room.participantIds.includes(participantId)
@@ -3275,8 +3376,8 @@ function dispatchMessage(raw: unknown): void {
     case 'sub_room_left': {
       const previousParticipantSubRoomById = { ...state.participantSubRoomById };
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const participantId = msg.participantId as string;
-      const subRoomId = msg.subRoomId as string;
+      const participantId = msg.participantId;
+      const subRoomId = msg.subRoomId;
       const srlRoom = state.subRooms.find((r) => r.id === subRoomId);
       const srlRoomLabel = srlRoom ? `Room ${srlRoom.roomNumber}` : 'a room';
       state.subRooms = state.subRooms.map((room) =>
@@ -3319,7 +3420,7 @@ function dispatchMessage(raw: unknown): void {
 
     case 'sub_room_deleted': {
       const previousJoinedSubRoomId = state.joinedSubRoomId;
-      const subRoomId = msg.subRoomId as string;
+      const subRoomId = msg.subRoomId;
       state.subRooms = state.subRooms.filter((room) => room.id !== subRoomId);
       syncDerivedSubRoomState();
       stopLocalShareAfterLeavingSubRoom(previousJoinedSubRoomId);
@@ -3340,30 +3441,29 @@ function dispatchMessage(raw: unknown): void {
       // room_state contains only pre-join participants (excludes the joiner).
       // Merge with existing list to preserve self and any participants already
       // added via participant_joined that arrived before this snapshot.
-      const rsParticipants = (msg.participants as Array<Record<string, unknown>>) || [];
+      const rsParticipants = msg.participants || [];
       const incoming = rsParticipants.slice(0, MAX_PARTICIPANTS).map((p) => {
-        displayNameCache.set(p.participantId as string, p.displayName as string);
+        displayNameCache.set(p.participantId, p.displayName);
         const isSelf = p.participantId === state.selfParticipantId;
-        const rsUserId = p.userId as string | undefined;
+        const rsUserId = p.userId;
         // Annotated so the literal union doesn't widen to string in the
         // non-contextually-typed object literal below.
         const role: ParticipantRole = isSelf && state.selfIsHost ? 'host' : 'guest';
         return {
-          id: p.participantId as string,
+          id: p.participantId,
           userId: rsUserId,
-          displayName: p.displayName as string,
+          displayName: p.displayName,
           color:
             isSelf && sessionProfileColor
               ? sessionProfileColor
-              : ((p.profileColor as string | undefined) ??
-                colorFor({ userId: rsUserId, id: p.participantId as string })),
+              : (p.profileColor ?? colorFor({ userId: rsUserId, id: p.participantId })),
           role,
           isSpeaking: false,
           isMuted: Boolean(p.isMuted),
           isHostMuted: Boolean(p.isHostMuted),
           isDeafened: Boolean(p.isDeafened),
           isSharing: false,
-          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId as string),
+          mediaConnected: !isSelf && mediaConnectedParticipantIds.has(p.participantId),
           rmsLevel: 0,
           volume: resolvePersistedVolume(rsUserId, state.defaultVolume),
         };
@@ -3400,7 +3500,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_kicked': {
-      const kickedId = msg.participantId as string;
+      const kickedId = msg.participantId;
       const kickedP = state.participants.find((p) => p.id === kickedId);
       mediaConnectedParticipantIds.delete(kickedId);
       suppressReconnectJoinForParticipantIds.delete(kickedId);
@@ -3463,7 +3563,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_muted': {
-      const mutedId = msg.participantId as string;
+      const mutedId = msg.participantId;
       const p = state.participants.find((pp) => pp.id === mutedId);
       if (p) {
         p.isMuted = true;
@@ -3474,7 +3574,7 @@ function dispatchMessage(raw: unknown): void {
           p.isSpeaking = false;
           p.rmsLevel = 0;
         }
-        lkModule?.setMicEnabled(false);
+        void lkModule?.setMicEnabled(false);
         appendEvent({
           id: makeEventId(),
           timestamp: timestamp(),
@@ -3496,7 +3596,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_unmuted': {
-      const unmutedId = msg.participantId as string;
+      const unmutedId = msg.participantId;
       const up = state.participants.find((pp) => pp.id === unmutedId);
       if (up) {
         up.isHostMuted = false;
@@ -3524,7 +3624,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_muted': {
-      const selfMutedId = msg.participantId as string;
+      const selfMutedId = msg.participantId;
       console.log(LOG, `received participant_self_muted for ${selfMutedId}`);
       const smp = state.participants.find((pp) => pp.id === selfMutedId);
       if (smp) {
@@ -3548,7 +3648,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_self_unmuted': {
-      const selfUnmutedId = msg.participantId as string;
+      const selfUnmutedId = msg.participantId;
       console.log(LOG, `received participant_self_unmuted for ${selfUnmutedId}`);
       const sup = state.participants.find((pp) => pp.id === selfUnmutedId);
       if (sup) {
@@ -3570,7 +3670,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_deafened': {
-      const deafId = msg.participantId as string;
+      const deafId = msg.participantId;
       const dp = state.participants.find((pp) => pp.id === deafId);
       if (dp) {
         dp.isDeafened = true;
@@ -3591,7 +3691,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_undeafened': {
-      const undeafId = msg.participantId as string;
+      const undeafId = msg.participantId;
       const udp = state.participants.find((pp) => pp.id === undeafId);
       if (udp) {
         udp.isDeafened = false;
@@ -3612,10 +3712,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_color_updated': {
-      const coloredId = msg.participantId as string;
+      const coloredId = msg.participantId;
       const cp = state.participants.find((pp) => pp.id === coloredId);
       if (cp) {
-        cp.color = msg.profileColor as string;
+        cp.color = msg.profileColor;
       }
       rebuildVideoTiles();
       notify();
@@ -3623,8 +3723,8 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'participant_username_updated': {
-      const participantId = msg.participantId as string;
-      const username = msg.username as string;
+      const participantId = msg.participantId;
+      const username = msg.username;
       const participant = state.participants.find((pp) => pp.id === participantId);
       if (participant) {
         participant.displayName = username;
@@ -3636,23 +3736,42 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_started': {
-      const shareStartId = msg.participantId as string;
-      const shareStartName = msg.displayName as string | undefined;
+      const shareStartId = msg.participantId;
+      const shareStartName = msg.displayName;
       const remoteShareType = parseRemoteShareType(msg.shareType);
       const sp = state.participants.find((pp) => pp.id === shareStartId);
       if (sp) {
         sp.isSharing = true;
-        sp.shareType = remoteShareType;
+        // Video-type share and audio-only share are independent slots — a
+        // participant may run both concurrently. Only overwrite the video
+        // slot when this event is itself for a video-type share (or a
+        // legacy untyped restart); an audio_only start must never clobber
+        // an already-recorded video type.
+        if (remoteShareType !== 'audio_only') {
+          sp.shareType = remoteShareType;
+        }
       }
       // Keep audioOnlySharers in sync directly — updateRemoteShareType is a no-op
       // when lkModule is not yet initialized, which would leave the UI stuck on ◉.
-      if (remoteShareType === 'audio_only' && !state.audioOnlySharers.has(shareStartId)) {
-        state.audioOnlySharers = new Set(state.audioOnlySharers);
-        state.audioOnlySharers.add(shareStartId);
+      // A video share starting must never clear a CONFIRMED audio-only flag
+      // (and vice versa) — the two slots are independent, only an explicit
+      // share_stopped for that slot does. An UNCONFIRMED flag (LiveKit's
+      // TrackSubscribed-based onAudioOnlySharerAdded guess, made before any
+      // signaling arrives) is a different case: the first real video-type
+      // share_started is authoritative and must correct that guess.
+      if (remoteShareType === 'audio_only') {
+        if (!state.audioOnlySharers.has(shareStartId)) {
+          state.audioOnlySharers = new Set(state.audioOnlySharers);
+          state.audioOnlySharers.add(shareStartId);
+        }
+        if (!state.confirmedAudioOnlySharers.has(shareStartId)) {
+          state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+          state.confirmedAudioOnlySharers.add(shareStartId);
+        }
       } else if (
         remoteShareType !== undefined &&
-        remoteShareType !== 'audio_only' &&
-        state.audioOnlySharers.has(shareStartId)
+        state.audioOnlySharers.has(shareStartId) &&
+        !state.confirmedAudioOnlySharers.has(shareStartId)
       ) {
         state.audioOnlySharers = new Set(state.audioOnlySharers);
         state.audioOnlySharers.delete(shareStartId);
@@ -3696,26 +3815,40 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_stopped': {
-      const shareStopId = msg.participantId as string;
-      const shareStopName = msg.displayName as string | undefined;
+      const shareStopId = msg.participantId;
+      const shareStopName = msg.displayName;
+      // share_type is set when only one slot stopped (the other, if any,
+      // keeps running); undefined means every slot for this participant
+      // stopped (legacy behavior / host-directed stop-all).
+      const stoppedType = parseRemoteShareType(msg.shareType);
+      const stopsVideoSlot = stoppedType !== 'audio_only';
+      const stopsAudioSlot = stoppedType === undefined || stoppedType === 'audio_only';
       const ssp = state.participants.find((pp) => pp.id === shareStopId);
-      if (ssp) {
-        ssp.isSharing = false;
+      if (ssp && stopsVideoSlot) {
         ssp.shareType = undefined;
       }
-      if (state.audioOnlySharers.has(shareStopId)) {
+      if (stopsAudioSlot && state.audioOnlySharers.has(shareStopId)) {
         state.audioOnlySharers = new Set(state.audioOnlySharers);
         state.audioOnlySharers.delete(shareStopId);
+        if (state.confirmedAudioOnlySharers.has(shareStopId)) {
+          state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+          state.confirmedAudioOnlySharers.delete(shareStopId);
+        }
       }
-      clearRemoteShareType(shareStopId);
-      refreshRetryGenerations.delete(shareStopId);
-      // Clear the stream reference immediately on signaling. The LiveKit
-      // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
-      // the sharer closes the app abruptly; without this the viewer's UI shows
-      // a stale frozen frame until the SFU eventually fires the event.
-      if (state.screenShareStreams.has(shareStopId)) {
-        state.screenShareStreams = new Map(state.screenShareStreams);
-        state.screenShareStreams.delete(shareStopId);
+      if (ssp) {
+        ssp.isSharing = ssp.shareType !== undefined || state.audioOnlySharers.has(shareStopId);
+      }
+      if (stopsVideoSlot) {
+        clearRemoteShareType(shareStopId);
+        refreshRetryGenerations.delete(shareStopId);
+        // Clear the stream reference immediately on signaling. The LiveKit
+        // TrackUnsubscribed event may lag by the SFU's disconnect timeout when
+        // the sharer closes the app abruptly; without this the viewer's UI shows
+        // a stale frozen frame until the SFU eventually fires the event.
+        if (state.screenShareStreams.has(shareStopId)) {
+          state.screenShareStreams = new Map(state.screenShareStreams);
+          state.screenShareStreams.delete(shareStopId);
+        }
       }
       // Cache the display name from the server payload
       if (shareStopName) {
@@ -3741,17 +3874,23 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_state': {
-      // share_state is an authoritative snapshot — reconcile all participants
-      const shareIds = new Set((msg.participantIds as string[]) || []);
-      const typedShares = new Map<string, RemoteShareType | undefined>(
-        ((msg.activeShares as Array<{ participantId: string; shareType?: unknown }>) || []).map(
-          (share) =>
-            [share.participantId, parseRemoteShareType(share.shareType)] as [
-              string,
-              RemoteShareType | undefined,
-            ],
-        ),
-      );
+      // share_state is an authoritative snapshot — reconcile all participants.
+      // A participant may have up to two entries in activeShares (one video-type
+      // slot, one audio-only slot) — collect them per participant rather than
+      // collapsing to a single type, or a late joiner only ever learns about
+      // whichever slot happened to be listed last.
+      const shareIds = new Set(msg.participantIds || []);
+      const typedShares = new Map<string, Set<RemoteShareType>>();
+      for (const share of msg.activeShares || []) {
+        const t = parseRemoteShareType(share.shareType);
+        if (t === undefined) continue;
+        const existing = typedShares.get(share.participantId);
+        if (existing) {
+          existing.add(t);
+        } else {
+          typedShares.set(share.participantId, new Set([t]));
+        }
+      }
       for (const p of state.participants) {
         const shouldBeSharing = shareIds.has(p.id);
         if (p.isSharing && !shouldBeSharing) {
@@ -3762,6 +3901,10 @@ function dispatchMessage(raw: unknown): void {
             state.audioOnlySharers = new Set(state.audioOnlySharers);
             state.audioOnlySharers.delete(p.id);
           }
+          if (state.confirmedAudioOnlySharers.has(p.id)) {
+            state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+            state.confirmedAudioOnlySharers.delete(p.id);
+          }
           clearRemoteShareType(p.id);
           if (state.screenShareStreams.has(p.id)) {
             state.screenShareStreams = new Map(state.screenShareStreams);
@@ -3771,26 +3914,39 @@ function dispatchMessage(raw: unknown): void {
           p.isSharing = true;
         }
         if (shouldBeSharing) {
-          p.shareType = typedShares.get(p.id);
-          const resolvedType = p.shareType as RemoteShareType | undefined;
-          if (resolvedType === 'audio_only' && !state.audioOnlySharers.has(p.id)) {
-            state.audioOnlySharers = new Set(state.audioOnlySharers);
-            state.audioOnlySharers.add(p.id);
-          } else if (
-            resolvedType !== undefined &&
-            resolvedType !== 'audio_only' &&
-            state.audioOnlySharers.has(p.id)
-          ) {
+          const types = typedShares.get(p.id);
+          const videoType = types ? [...types].find((t) => t !== 'audio_only') : undefined;
+          const hasAudioOnly = types ? types.has('audio_only') : false;
+          p.shareType = videoType;
+          if (hasAudioOnly) {
+            if (!state.audioOnlySharers.has(p.id)) {
+              state.audioOnlySharers = new Set(state.audioOnlySharers);
+              state.audioOnlySharers.add(p.id);
+            }
+            if (!state.confirmedAudioOnlySharers.has(p.id)) {
+              state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+              state.confirmedAudioOnlySharers.add(p.id);
+            }
+          } else if (types !== undefined && state.audioOnlySharers.has(p.id)) {
+            // Typed snapshot explicitly has no audio-only entry for this
+            // participant (it was stopped while we were away) — clear it.
             state.audioOnlySharers = new Set(state.audioOnlySharers);
             state.audioOnlySharers.delete(p.id);
+            if (state.confirmedAudioOnlySharers.has(p.id)) {
+              state.confirmedAudioOnlySharers = new Set(state.confirmedAudioOnlySharers);
+              state.confirmedAudioOnlySharers.delete(p.id);
+            }
           }
-          if (resolvedType !== undefined || !state.audioOnlySharers.has(p.id)) {
-            updateRemoteShareType(p.id, resolvedType);
+          // else: no typed entry at all (legacy/untyped sender) — keep
+          // whatever audioOnlySharers already holds for this participant.
+          if (videoType !== undefined || !state.audioOnlySharers.has(p.id)) {
+            updateRemoteShareType(p.id, videoType);
           }
-          const isAudioOnlyShare =
-            resolvedType === 'audio_only' ||
-            (resolvedType === undefined && state.audioOnlySharers.has(p.id));
-          if (!isAudioOnlyShare) {
+          const isPureAudioOnlyShare =
+            types !== undefined
+              ? videoType === undefined && hasAudioOnly
+              : state.audioOnlySharers.has(p.id);
+          if (!isPureAudioOnlyShare) {
             refreshRemoteScreenShare(p.id);
             // Schedule retries for late joiners or post-reconnect cases where
             // the stream isn't available yet. share_state doesn't schedule
@@ -3808,7 +3964,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'share_permission_changed': {
-      const newPerm = (msg.permission as string) === 'host_only' ? 'host_only' : 'anyone';
+      const newPerm = msg.permission === 'host_only' ? 'host_only' : 'anyone';
       const oldPerm = state.sharePermission;
       state.sharePermission = newPerm;
       if (newPerm !== oldPerm) {
@@ -3825,7 +3981,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'error': {
-      const errorMessage = (msg.message as string) || 'Unknown error';
+      const errorMessage = msg.message || 'Unknown error';
       appendEvent({
         id: makeEventId(),
         timestamp: timestamp(),
@@ -3841,7 +3997,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'peer_left': {
-      const peerId = (msg.participantId as string) || (msg.peerId as string);
+      const peerId = msg.participantId || msg.peerId;
       if (peerId) {
         const peerP = state.participants.find((p) => p.id === peerId);
         state.participants = state.participants.filter((p) => p.id !== peerId);
@@ -3866,20 +4022,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'media_token': {
-      const token = msg.token as string;
-      const sfuUrl = msg.sfuUrl as string;
+      const token = msg.token;
+      const sfuUrl = msg.sfuUrl;
       // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
-      const iceConfig =
-        (msg.iceConfig as
-          | {
-              stunUrls: string[];
-              turnUrls: string[];
-              turnUsername?: string;
-              turnCredential?: string;
-            }
-          | undefined) ??
-        bufferedIceConfig ??
-        undefined;
+      const iceConfig = msg.iceConfig ?? bufferedIceConfig ?? undefined;
 
       console.log(LOG, 'media_token received:', {
         hasToken: !!token,
@@ -3950,7 +4096,7 @@ function dispatchMessage(raw: unknown): void {
 
       // When media is in failed state, check if auto-reconnect retries remain
       if (state.mediaState === 'failed') {
-        getReconnectConfig().then((config) => {
+        void getReconnectConfig().then((config) => {
           if (state.mediaReconnectFailures < config.maxRetries) {
             connectMedia(sfuUrl, token, iceConfig);
           } else {
@@ -3972,7 +4118,7 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'viewer_token': {
-      const windowId = msg.windowId as string;
+      const windowId = msg.windowId;
       const windowLabel = pendingViewerTokenRequests.get(windowId);
       if (!windowLabel) {
         if (DEBUG_VIEWER_CONNECTION) {
@@ -3986,24 +4132,24 @@ function dispatchMessage(raw: unknown): void {
       }
       void emitTo(windowLabel, 'viewer-token:response', {
         windowId,
-        token: msg.token as string,
-        sfuUrl: msg.sfuUrl as string,
-        identity: msg.identity as string,
+        token: msg.token,
+        sfuUrl: msg.sfuUrl,
+        identity: msg.identity,
       });
       break;
     }
 
     case 'chat_message': {
-      const participant = state.participants.find((p) => p.id === (msg.participantId as string));
+      const participant = state.participants.find((p) => p.id === msg.participantId);
       const chatMsg: ChatMessage = {
         id: makeEventId(),
-        messageId: (msg.messageId as string) || undefined,
-        timestamp: msg.timestamp as string,
-        participantId: msg.participantId as string,
-        userId: (msg.userId as string) || undefined,
-        displayName: msg.displayName as string,
+        messageId: msg.messageId || undefined,
+        timestamp: msg.timestamp,
+        participantId: msg.participantId,
+        userId: msg.userId || undefined,
+        displayName: msg.displayName,
         color: participant?.color ?? '',
-        text: msg.text as string,
+        text: msg.text,
       };
       state.chatMessages = [...state.chatMessages, chatMsg];
       if (state.chatMessages.length > MAX_CHAT_MESSAGES) {
@@ -4017,14 +4163,14 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'chat_history_response': {
-      const messages = (msg.messages as Array<Record<string, unknown>>) || [];
+      const messages = msg.messages || [];
       const historyPayload = messages.map((m) => ({
-        messageId: m.messageId as string,
-        participantId: m.participantId as string,
-        userId: (m.userId as string) || undefined,
-        displayName: m.displayName as string,
-        text: m.text as string,
-        timestamp: m.timestamp as string,
+        messageId: m.messageId,
+        participantId: m.participantId,
+        userId: m.userId || undefined,
+        displayName: m.displayName,
+        text: m.text,
+        timestamp: m.timestamp,
       }));
       state.chatMessages = mergeHistoryMessages(historyPayload, state.chatMessages);
       state.historyLoaded = true;
@@ -4099,7 +4245,7 @@ export function initSession(
 
   // Forward viewer-subscribed events from WatchAllPage/ScreenSharePage to the signaling server
   if (!unlistenViewerJoined) {
-    listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
+    void listen<{ targetId: string }>('viewer-subscribed', ({ payload }) => {
       if (client) {
         client.send({ type: 'viewer_subscribed', targetId: payload.targetId });
       }
@@ -4112,19 +4258,22 @@ export function initSession(
   // signaling server over this window's WS and relay the response back to the
   // requesting window (children have no WS of their own).
   if (!unlistenViewerTokenRequest) {
-    listen<{ windowId: string; windowLabel: string }>('viewer-token:request', ({ payload }) => {
-      if (!payload?.windowId || !payload?.windowLabel) return;
-      pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
-      if (DEBUG_VIEWER_CONNECTION) {
-        console.log(
-          LOG,
-          `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
-        );
-      }
-      if (client) {
-        client.send({ type: 'request_viewer_token', windowId: payload.windowId });
-      }
-    }).then((unlisten) => {
+    void listen<{ windowId: string; windowLabel: string }>(
+      'viewer-token:request',
+      ({ payload }) => {
+        if (!payload.windowId || !payload.windowLabel) return;
+        pendingViewerTokenRequests.set(payload.windowId, payload.windowLabel);
+        if (DEBUG_VIEWER_CONNECTION) {
+          console.log(
+            LOG,
+            `viewer-token:request from ${payload.windowLabel} (windowId ${payload.windowId})`,
+          );
+        }
+        if (client) {
+          client.send({ type: 'request_viewer_token', windowId: payload.windowId });
+        }
+      },
+    ).then((unlisten) => {
       unlistenViewerTokenRequest = unlisten;
     });
   }
@@ -4196,14 +4345,14 @@ export function initSession(
   });
 
   // Connect with auth
-  getServerUrl().then((serverUrl) => {
+  void getServerUrl().then((serverUrl) => {
     if (!serverUrl || client !== thisClient) return;
     const wsUrl = toWsUrl(serverUrl);
     // Load display name, default volume, profile color, persisted channel volumes,
     // notification volumes, and the Windows share-path preference before connecting.
     // Notification volumes are pre-cached here so playNotificationSound() on the
     // first join does not make IPC calls that break the user-activation chain.
-    Promise.all([
+    void Promise.all([
       getUsername(),
       getDefaultVolume(),
       getProfileColor(),
@@ -4310,6 +4459,10 @@ export function leaveRoom(): void {
     clearTimeout(volumeSaveTimer);
     volumeSaveTimer = null;
     const flushParticipantVols: Record<string, number> = {
+      // channelVolumePrefs is deserialized from a Tauri-persisted JSON store
+      // with no runtime validation — older/malformed persisted data can
+      // genuinely lack `participants` despite the type declaring it required.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       ...(channelVolumePrefs.participants ?? {}),
     };
     for (const p of state.participants) {
@@ -4417,7 +4570,7 @@ function startPeriodicMediaRetry(): void {
     console.log(LOG, 'periodic media retry attempt');
     state.mediaReconnectFailures = 0;
     lastReconnectMediaTime = 0;
-    reconnectMedia();
+    void reconnectMedia();
   }, PERIODIC_MEDIA_RETRY_MS);
 }
 
@@ -4513,11 +4666,11 @@ export function toggleSelfMute(): void {
   }
   if (state.joinedSubRoomId === null) {
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     notify();
     return;
   }
-  lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+  void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
   console.log(LOG, `toggleSelfMute → sending ${self.isMuted ? 'self_mute' : 'self_unmute'}`);
   client?.send({ type: self.isMuted ? 'self_mute' : 'self_unmute' });
   appendEvent({
@@ -4550,11 +4703,11 @@ export function toggleSelfDeafen(): void {
     }
     clearSelfAudioActivity(self);
     if (state.joinedSubRoomId === null) {
-      lkModule?.setMicEnabled(false);
+      void lkModule?.setMicEnabled(false);
       notify();
       return;
     }
-    lkModule?.setMicEnabled(shouldPublishLocalMic(self));
+    void lkModule?.setMicEnabled(shouldPublishLocalMic(self));
     client?.send({ type: 'self_undeafen' });
     appendEvent({
       id: makeEventId(),
@@ -4576,7 +4729,7 @@ export function toggleSelfDeafen(): void {
       self.isMuted = true;
     }
     clearSelfAudioActivity(self);
-    lkModule?.setMicEnabled(false);
+    void lkModule?.setMicEnabled(false);
     if (state.joinedSubRoomId === null) {
       notify();
       return;
@@ -4965,7 +5118,7 @@ export async function startCustomShare(
           console.log(
             LOG,
             '[wasapi] lkModule:',
-            lkModule?.constructor?.name,
+            lkModule?.constructor.name,
             'is LiveKitModule:',
             lkModule instanceof LiveKitModule,
           );
@@ -5194,18 +5347,16 @@ export async function stopCustomShare(
     }
   }
 
-  // 4. Send stop_share signaling — only when the entire share session ends.
-  // If the other slot is still active the participant remains "sharing" on the backend.
-  const willStillBeSharing =
-    (target === 'video' && state.activeAudioShare !== null) ||
-    (target === 'audio' && state.activeVideoShare !== null);
+  // 4. Send stop-share signaling for the slot(s) that stopped. A slot-scoped
+  // shareType tells the backend to clear only that slot and leave the other
+  // slot (if still active) running — the participant stays "sharing" there.
   if (client && !options.suppressSignaling) {
-    if (!willStillBeSharing) {
+    if (target === 'all') {
       client.send({ type: 'stop-share' });
-    } else if (target === 'video' && state.activeAudioShare !== null) {
-      client.send({ type: 'start_share', shareType: 'audio_only' });
-    } else if (target === 'audio' && state.activeVideoShare !== null) {
-      client.send({ type: 'start_share', shareType: state.activeVideoShare.mode });
+    } else if (target === 'video' && state.activeVideoShare) {
+      client.send({ type: 'stop-share', shareType: state.activeVideoShare.mode });
+    } else if (target === 'audio') {
+      client.send({ type: 'stop-share', shareType: 'audio_only' });
     }
   }
 
@@ -5278,7 +5429,7 @@ export async function toggleShareAudio(withAudio: boolean): Promise<boolean> {
     console.log(LOG, '[share-audio] toggleShareAudio called', {
       withAudio,
       hasLkModule: !!lkModule,
-      lkModuleType: lkModule?.constructor?.name,
+      lkModuleType: lkModule?.constructor.name,
       userActivationIsActive: (navigator as { userActivation?: { isActive: boolean } })
         .userActivation?.isActive,
     });
@@ -5578,8 +5729,13 @@ export function updateSelfRms(level: number): void {
   const p = state.participants.find((pp) => pp.id === state.selfParticipantId);
   if (!p) return;
   p.rmsLevel = level;
+  // The local mic monitor polls every 50ms for the lifetime of the call, but
+  // rmsLevel itself isn't rendered — only the isSpeaking transition is. Skip
+  // the broadcast (and the full ActiveRoom re-render it triggers) on ticks
+  // that don't actually flip speaking state.
+  const wasSpeaking = p.isSpeaking;
   p.isSpeaking = updateSpeakingTracker(p.id, level, p.isSpeaking, p.isMuted);
-  notify();
+  if (p.isSpeaking !== wasSpeaking) notify();
 }
 
 /* ─── Screen Share Audio ─────────────────────────────────────────── */
