@@ -599,6 +599,7 @@ fn main() {
             store_token,
             get_token,
             delete_token,
+            get_auth_store_name,
             set_peer_volume,
             set_master_volume,
             set_audio_device,
@@ -910,6 +911,20 @@ const KEYRING_SERVICE: &str = "com.wavis.gui";
 /// same machine — driver.mjs sets WAVIS_KEYRING_SERVICE per-launch.
 fn keyring_service() -> String {
     std::env::var("WAVIS_KEYRING_SERVICE").unwrap_or_else(|_| KEYRING_SERVICE.to_string())
+}
+
+/// Runtime override for the Tauri store filename, read by auth.ts on top of
+/// its build-time VITE_AUTH_STORE_NAME fallback. Exists so two Playwright-
+/// driven live-backend e2e instances launched from the SAME debug exe
+/// (clients/wavis-gui/e2e-tooling's driver.mjs launchApp) can each point at a
+/// distinct auth store file instead of racing last-writer-wins on one — see
+/// driver.mjs's `authStoreName` option. `None` (unset or empty) means "no
+/// override", so a normal launch is unaffected.
+#[tauri::command]
+fn get_auth_store_name() -> Option<String> {
+    std::env::var("WAVIS_AUTH_STORE_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// In-memory cache for keyring values.
