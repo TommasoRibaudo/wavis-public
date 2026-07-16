@@ -29,17 +29,24 @@ const TWO_PI = 2 * Math.PI;
  * Connects to LiveKit as a real publishing participant and immediately
  * starts pumping a 440Hz sine tone as 10ms Int16 PCM frames. Returns
  * `{ stopTone(), close() }`. `close()` does full teardown.
+ *
+ * `source` selects the LiveKit track source the tone publishes under
+ * (default `SOURCE_MICROPHONE`, what audio-received.spec.mjs relies on).
+ * screen-share-audio-not-heard-until-opened.spec.mjs passes
+ * `SOURCE_SCREENSHARE_AUDIO` so the GUI routes the track through its
+ * deferred screen-share-audio path instead of the plain-voice path.
  */
-export async function connectTonePeer({ sfuUrl, token }) {
+export async function connectTonePeer({
+  sfuUrl,
+  token,
+  source = TrackSource.SOURCE_MICROPHONE,
+}) {
   const room = new Room();
   await room.connect(sfuUrl, token, { autoSubscribe: false, dynacast: false });
 
-  const source = new AudioSource(SAMPLE_RATE, CHANNELS);
-  const track = LocalAudioTrack.createAudioTrack('tone', source);
-  await room.localParticipant.publishTrack(
-    track,
-    new TrackPublishOptions({ source: TrackSource.SOURCE_MICROPHONE }),
-  );
+  const audioSource = new AudioSource(SAMPLE_RATE, CHANNELS);
+  const track = LocalAudioTrack.createAudioTrack('tone', audioSource);
+  await room.localParticipant.publishTrack(track, new TrackPublishOptions({ source }));
 
   let phase = 0;
   let running = true;
@@ -62,7 +69,7 @@ export async function connectTonePeer({ sfuUrl, token }) {
         }
       }
       // else: data stays zero-filled — genuine silent PCM, not "no frames".
-      await source.captureFrame(new AudioFrame(data, SAMPLE_RATE, CHANNELS, SAMPLES_PER_FRAME));
+      await audioSource.captureFrame(new AudioFrame(data, SAMPLE_RATE, CHANNELS, SAMPLES_PER_FRAME));
     }
   })();
 
@@ -82,7 +89,7 @@ export async function connectTonePeer({ sfuUrl, token }) {
     async close() {
       running = false;
       await pump;
-      await source.close();
+      await audioSource.close();
       await room.disconnect();
     },
   };
