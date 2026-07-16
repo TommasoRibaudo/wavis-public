@@ -1,8 +1,13 @@
+#![cfg(feature = "test-support")]
 //! Integration tests for account recovery domain layer.
 //!
 //! Tests Properties 5, 6, 17 from the user-identity-recovery spec.
 //! All tests require a running Postgres instance.
-//! Run with: `cargo test --test recovery_integration -- --ignored`
+//! Run with: `cargo test --features test-support --test recovery_integration -- --ignored`
+//!
+//! Gated on `test-support` (added for P1-6's handler-level anti-oracle test,
+//! which needs `MockSfuBridge` to build a full `AppState`) — matches the
+//! pattern in `bug_report_admin_integration.rs` / `channel_rest_integration.rs`.
 
 use axum::Router;
 use axum::body::Body;
