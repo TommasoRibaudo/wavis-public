@@ -9843,6 +9843,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "clap 4.5.60",
  "dotenvy",
  "futures-util",
  "hex",
