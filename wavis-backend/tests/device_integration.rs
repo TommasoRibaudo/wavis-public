@@ -9,7 +9,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use wavis_backend::auth::auth::{generate_refresh_token, hash_refresh_token, register_user};
-use wavis_backend::auth::device::{create_device, list_devices, logout_all, revoke_device};
+use wavis_backend::auth::device::{
+    DeviceError, create_device, is_device_active, list_devices, logout_all, revoke_device,
+};
 use wavis_backend::auth::phrase::PhraseConfig;
 
 const TEST_SECRET: &[u8] = b"test-secret-at-least-32-bytes!!!";
@@ -338,4 +340,144 @@ async fn prop16_device_listing_completeness() {
             "created_at should be roughly now, not far in the future"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// P1-2: revoke_device authorization — a user revoking a device that belongs
+// to someone else must be rejected with no side effects, not silently
+// succeed or leak whether the device exists.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn revoke_foreign_device_returns_not_owned_without_side_effects() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let user_a = register_user(
+        &pool,
+        "user-a-phrase",
+        "device-a",
+        TEST_SECRET,
+        TEST_ACCESS_TTL,
+        TEST_REFRESH_TTL_DAYS,
+        TEST_PEPPER,
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+    let user_b = register_user(
+        &pool,
+        "user-b-phrase",
+        "device-b",
+        TEST_SECRET,
+        TEST_ACCESS_TTL,
+        TEST_REFRESH_TTL_DAYS,
+        TEST_PEPPER,
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    // A tries to revoke B's device.
+    let result = revoke_device(&pool, user_a.user_id, user_b.device_id).await;
+    assert!(
+        matches!(result, Err(DeviceError::NotOwned)),
+        "revoking another user's device must return NotOwned, got {result:?}"
+    );
+
+    // Negative: B's device must be untouched.
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT revoked_at FROM devices WHERE device_id = $1")
+            .bind(user_b.device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        revoked_at.is_none(),
+        "a rejected NotOwned revocation must not revoke the target device"
+    );
+
+    // Negative: B's refresh token must still be active.
+    let token_revoked: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT revoked_at FROM refresh_tokens WHERE device_id = $1")
+            .bind(user_b.device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        token_revoked.is_none(),
+        "a rejected NotOwned revocation must not revoke the target device's tokens"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn revoke_missing_device_returns_not_found() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let user = register_user(
+        &pool,
+        "missing-device-phrase",
+        "device-x",
+        TEST_SECRET,
+        TEST_ACCESS_TTL,
+        TEST_REFRESH_TTL_DAYS,
+        TEST_PEPPER,
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    let result = revoke_device(&pool, user.user_id, Uuid::new_v4()).await;
+    assert!(
+        matches!(result, Err(DeviceError::NotFound)),
+        "revoking a nonexistent device_id must return NotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn is_device_active_false_for_revoked_and_missing() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let user = register_user(
+        &pool,
+        "active-check-phrase",
+        "device-active",
+        TEST_SECRET,
+        TEST_ACCESS_TTL,
+        TEST_REFRESH_TTL_DAYS,
+        TEST_PEPPER,
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        is_device_active(&pool, user.device_id).await.unwrap(),
+        "a freshly registered device must be active"
+    );
+
+    revoke_device(&pool, user.user_id, user.device_id)
+        .await
+        .unwrap();
+    assert!(
+        !is_device_active(&pool, user.device_id).await.unwrap(),
+        "a revoked device must report inactive"
+    );
+
+    assert!(
+        !is_device_active(&pool, Uuid::new_v4()).await.unwrap(),
+        "a nonexistent device must report inactive, indistinguishable from revoked"
+    );
 }

@@ -1451,3 +1451,156 @@ async fn alpha_invite_registration_exhausts_limited_invite() {
 
     assert!(matches!(result, Err(AuthError::InviteInvalid)));
 }
+
+// ---------------------------------------------------------------------------
+// P1-1: Concurrent redemption of the last alpha-invite slot — the invite's
+// `SELECT ... FOR UPDATE` row lock must serialize concurrent registrations
+// so exactly one wins, never zero and never more than one.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn concurrent_redemption_of_last_slot_admits_exactly_one() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    seed_alpha_invite(&pool, "race-single-slot", 1, None, false).await;
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let phrase_config = phrase_config.clone();
+        handles.push(tokio::spawn(async move {
+            auth::register_user_with_invite(
+                &pool,
+                &format!("race-phrase-{i}"),
+                &format!("race-user-{i}"),
+                "race-single-slot",
+                &secret,
+                900,
+                30,
+                &pepper,
+                &test_alpha_invite_pepper(),
+                &phrase_config,
+                TEST_ENCRYPTION_KEY,
+            )
+            .await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        results.push(handle.await.expect("registration task panicked"));
+    }
+
+    let ok_count = results.iter().filter(|r| r.is_ok()).count();
+    let invalid_count = results
+        .iter()
+        .filter(|r| matches!(r, Err(AuthError::InviteInvalid)))
+        .count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one concurrent redemption of the last slot must win: {results:?}"
+    );
+    assert_eq!(
+        invalid_count, 7,
+        "the other 7 concurrent attempts must see InviteInvalid: {results:?}"
+    );
+
+    let redemption_count: i32 =
+        sqlx::query_scalar("SELECT redemption_count FROM alpha_invites WHERE code_hash = $1")
+            .bind(hash_invite_code("race-single-slot", &test_alpha_invite_pepper()).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        redemption_count, 1,
+        "redemption_count must stop at 1, not overshoot"
+    );
+
+    let redemption_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alpha_invite_redemptions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        redemption_rows, 1,
+        "exactly one redemption row, not one per loser"
+    );
+
+    // Negative: losers must not leave orphaned users/devices behind — the
+    // containing transaction (register_user_with_invite) rolls back whole.
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        user_count, 1,
+        "losing registrations must not leave orphaned user rows"
+    );
+    let device_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        device_count, 1,
+        "losing registrations must not leave orphaned device rows"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P1-1: Expiry boundary — an invite must be rejected at and after its exact
+// expiry instant (`now >= expires_at`), not just "well past" it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn redeem_rejects_at_exact_expiry_instant() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    // expires_at set to a fixed instant already in the past by the time the
+    // query runs — exercises the `now >= expires_at` boundary from the
+    // production check.
+    let already_expired = chrono::Utc::now() - chrono::Duration::milliseconds(1);
+    seed_alpha_invite(&pool, "expiry-boundary", 5, Some(already_expired), false).await;
+
+    let result = auth::register_user_with_invite(
+        &pool,
+        "expiry-boundary-phrase",
+        "expiry-boundary-user",
+        "expiry-boundary",
+        &test_auth_secret(),
+        900,
+        30,
+        &test_pepper(),
+        &test_alpha_invite_pepper(),
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(AuthError::InviteInvalid)),
+        "an invite at/after its exact expiry instant must be rejected, got {result:?}"
+    );
+
+    // Negative: a rejected redemption at the expiry boundary must not
+    // increment redemption_count (the check runs before the UPDATE).
+    let redemption_count: i32 =
+        sqlx::query_scalar("SELECT redemption_count FROM alpha_invites WHERE code_hash = $1")
+            .bind(hash_invite_code("expiry-boundary", &test_alpha_invite_pepper()).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        redemption_count, 0,
+        "a rejected expired redemption must not consume a slot"
+    );
+}

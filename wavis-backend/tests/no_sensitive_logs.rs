@@ -45,7 +45,10 @@ fn is_log_line(line: &str) -> bool {
 /// Each entry is (disallowed_pattern, &[safe_prefixes_that_override_it]).
 const SENSITIVE_PATTERNS: &[(&str, &[&str])] = &[
     // Token fields
-    ("token =", &["token_issued_at =", "token_ttl ="]),
+    (
+        "token =",
+        &["token_issued_at =", "token_ttl =", "token = %redact_token("],
+    ),
     ("jwt =", &[]),
     ("media_token =", &[]),
     // Invite code fields
@@ -56,26 +59,102 @@ const SENSITIVE_PATTERNS: &[(&str, &[&str])] = &[
     ("session_description =", &[]),
     // ICE candidate fields
     ("candidate =", &["candidate_count =", "candidate_type ="]),
+    // Recovery ID — a quasi-secret account-recovery credential (format
+    // wvs-XXXX-XXXX). Must be redacted, never logged raw.
+    ("recovery_id =", &["recovery_id = %redact_token("]),
 ];
 
-/// Check a single line for disallowed sensitive patterns.
-/// Returns a list of (pattern, line_content) violations found.
-fn check_line(line: &str) -> Vec<String> {
-    if !is_log_line(line) {
-        return vec![];
+/// Rust-source-aware paren depth tracking: parens inside string literals
+/// (e.g. a log message like `"recover rate-limited (recovery_id)"`) must not
+/// count towards the invocation's depth.
+struct ParenTracker {
+    depth: i32,
+    in_string: bool,
+    escaped: bool,
+}
+
+impl ParenTracker {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            in_string: false,
+            escaped: false,
+        }
     }
 
+    /// Feed one line's characters, updating paren depth. Returns true once
+    /// depth has gone positive and returned back to zero (invocation closed).
+    fn consume(&mut self, line: &str) -> bool {
+        let mut started = self.depth > 0;
+        for ch in line.chars() {
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if ch == '\\' {
+                    self.escaped = true;
+                } else if ch == '"' {
+                    self.in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => self.in_string = true,
+                '(' => {
+                    self.depth += 1;
+                    started = true;
+                }
+                ')' => self.depth -= 1,
+                _ => {}
+            }
+        }
+        started && self.depth <= 0
+    }
+}
+
+/// Group a file's lines into log-macro invocation blocks. A block starts at
+/// a line matching `is_log_line` and accumulates subsequent lines until the
+/// invocation's parentheses close — this is what lets the scanner catch
+/// sensitive fields on their own line inside a multi-line, rustfmt-wrapped
+/// `warn!(...)` / `info!(...)` call, not just single-line invocations.
+fn collect_log_macro_blocks(content: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut blocks = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if is_log_line(lines[i]) {
+            let start_line = i;
+            let mut block = String::new();
+            let mut tracker = ParenTracker::new();
+            loop {
+                let line = lines[i];
+                block.push_str(line);
+                block.push('\n');
+                let closed = tracker.consume(line);
+                i += 1;
+                if closed || i >= lines.len() {
+                    break;
+                }
+            }
+            blocks.push((start_line, block));
+        } else {
+            i += 1;
+        }
+    }
+    blocks
+}
+
+/// Check a log macro invocation block for disallowed sensitive patterns.
+fn check_block(block: &str) -> Vec<String> {
     let mut violations = Vec::new();
 
     for (pattern, safe_overrides) in SENSITIVE_PATTERNS {
-        if line.contains(pattern) {
-            // Check if any safe override prefix is present — if so, it's allowed
-            let is_safe = safe_overrides.iter().any(|safe| line.contains(safe));
+        if block.contains(pattern) {
+            let is_safe = safe_overrides.iter().any(|safe| block.contains(safe));
             if !is_safe {
                 violations.push(format!(
-                    "  disallowed pattern {:?} found in log macro: {}",
+                    "  disallowed pattern {:?} found in log macro:\n{}",
                     pattern,
-                    line.trim()
+                    block.trim()
                 ));
             }
         }
@@ -124,8 +203,8 @@ fn no_sensitive_fields_in_log_macros() {
         let content = fs::read_to_string(file_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", file_path.display()));
 
-        for (line_no, line) in content.lines().enumerate() {
-            let violations = check_line(line);
+        for (start_line, block) in collect_log_macro_blocks(&content) {
+            let violations = check_block(&block);
             for v in violations {
                 all_violations.push(format!(
                     "{}:{}: {}",
@@ -133,7 +212,7 @@ fn no_sensitive_fields_in_log_macros() {
                         .strip_prefix(&src_dir)
                         .unwrap_or(file_path)
                         .display(),
-                    line_no + 1,
+                    start_line + 1,
                     v
                 ));
             }
