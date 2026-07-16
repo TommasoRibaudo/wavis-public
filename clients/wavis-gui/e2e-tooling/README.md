@@ -207,13 +207,17 @@ specs still run fine against it, but going back to plain manual
 verification (a build that reuses your real persisted login) needs a
 rebuild without these two env vars.
 
-Each live-backend spec that needs a GUI-side authenticated identity gets one
-by registering a fresh, timestamp-suffixed throwaway account via the real
-`DeviceSetup` UI (`registerViaUi` in `tests/live-backend-helpers.mjs`) —
-registration has no email/CAPTCHA step, so this is cheap. `login.spec.mjs`
-is the one spec that exercises that UI as the thing under test; the other
-three treat it as setup. Channel/invite seeding for `room-join`/`chat`/
-`participants` uses REST (`POST /auth/register`, `POST /channels`,
+Each live-backend spec that needs a GUI-side authenticated identity reuses
+the persisted e2e session when one exists, and otherwise gets one via
+`registerAndLoginViaUi` in `tests/live-backend-helpers.mjs`: a fresh,
+timestamp-suffixed throwaway account created over REST (`registerDevice()`,
+which sends the required invite code), then authenticated through the real
+`Login` UI. Registration through the real `DeviceSetup` UI is not possible
+against a closed-alpha backend — see "Known gap" below. `login.spec.mjs`
+exercises the Login UI itself as the thing under test (both the new-device
+and trusted-device paths); the other specs treat authentication purely as
+setup. Channel/invite seeding for `room-join`/`chat`/`participants` uses
+REST (`POST /auth/register`, `POST /channels`,
 `POST /channels/:id/invites`) for the channel _owner_, so that identity never
 needs to touch the GUI at all. Closed-alpha registration requires
 `ALPHA_INVITE_CODE` to point at a pre-seeded multi-use invite.
@@ -293,20 +297,23 @@ try {
 }
 ```
 
-**Known gap this spec routes around (not fixed here):** the real
-`DeviceSetup` registration UI (`registerViaUi`) has no invite-code field, but
-`POST /auth/register` now requires one (`routes.rs`'s `register` handler
-401s without `invite_code`/`inviteCode`) — so `registerViaUi` (and by
-extension `login.spec.mjs`, `room-join.spec.mjs`, `chat.spec.mjs`,
-`participants.spec.mjs`'s setup) is currently broken against a backend that
-enforces closed-alpha invites. `registerAndLoginViaUi` in
-`live-backend-helpers.mjs` works around this for `two-instances.spec.mjs`:
+**Known gap (routed around, not fixed):** the real `DeviceSetup`
+registration UI has no invite-code field, but `POST /auth/register` requires
+one (`routes.rs`'s `register` handler 401s without
+`invite_code`/`inviteCode`) — so UI-driven registration (`registerViaUi`,
+kept in `live-backend-helpers.mjs` but unused) cannot succeed against a
+backend that enforces closed-alpha invites. Every live-backend spec
+therefore authenticates via `registerAndLoginViaUi` instead:
 `registerDevice()` (REST, already sends `inviteCode`) creates the account,
-then `loginViaUi` authenticates it through the real `Login` UI instead
+then `loginViaUi` authenticates it through the real `Login` UI
 (`/login` is a top-level route reachable via direct navigation even on a
 device that's never registered locally — see `routes.ts` — so this doesn't
-need the broken registration form at all). Giving `DeviceSetup` an
-invite-code field is the real fix, out of scope here.
+need the broken registration form at all). Before this was suite-wide, full
+sequential runs cascade-failed: `login.spec.mjs` logged out the persisted
+session, its UI registration 401'd, and every later spec that fell back to
+`registerViaUi` died in setup — while the same specs passed in isolation by
+silently riding the persisted session. Giving `DeviceSetup` an invite-code
+field is the real fix, out of scope here.
 
 Run once the backend is up and the live-backend exe is built:
 
@@ -373,14 +380,13 @@ active-speaker events can set those independent of real decoded audio.
 - Reverse audio direction (GUI mic → peer hears) — GUI mic capture is
   nondeterministic real hardware. `livekit-tone-peer.mjs`'s `Room` could
   gain a subscribe-and-measure mode as a follow-up.
-- Real watched pixels for screen share (a peer that actually publishes
-  video, and the GUI's Watch All viewer path) and a remote camera tile —
-  both need a video-publishing peer via `@livekit/rtc-node`'s
-  `VideoSource`. This was scoped as a timeboxed stretch and not attempted
-  in the session that added `audio-received.spec.mjs`; the concrete blocker
-  to resolve first is matching the track source/name conventions the GUI's
-  `onScreenShareSubscribed` (`voice-room.ts`) keys on against what
-  `clients/shared/src/livekit_connection.rs`'s Rust publisher actually sends.
+- ~~Real watched pixels for screen share~~ — **done**: `livekit-tone-peer.mjs`'s
+  `startVideoPattern()`/`stopVideoPattern()` publish a real moving RGBA video
+  track under `TrackSource.SOURCE_SCREENSHARE` via `@livekit/rtc-node`'s
+  `VideoSource`/`VideoFrame`, exercised by `zz-network-quality.spec.mjs` (see
+  "Media quality + network simulation" below). A remote camera tile is still
+  not covered — `LocalVideoTrack` would need to publish under
+  `TrackSource.SOURCE_CAMERA` instead, as a separate follow-up.
 - `screen-share.spec.mjs`'s Direction B (peer signals `start_share` with no
   media) intentionally only asserts the "waiting for stream..." indicator —
   there is no track to watch, by construction.
@@ -464,22 +470,31 @@ tests/audio-received.spec.mjs` — must connect and read a real decoded
 
 All three specs, plus the full pre-existing suite, pass now.
 
-**Rate limiting.** The backend's registration rate limiter is
-in-process, per-IP, and allows only **5 registrations per hour** by default
-(`AuthRateLimiterConfig` in `wavis-backend/src/auth/auth_rate_limiter.rs`) —
-and `/auth/register` calls from both `registerViaUi` and
-`seedChannelWithInvite` draw from the **same** window. At ~2 registrations per
-spec, one full 7-spec run needs ~14, so specs past the first two or three fail
-setup with `429` even on a freshly restarted backend. For e2e use, raise the
-limit when starting the stack — the backend reads `AUTH_REGISTER_RATE_LIMIT`
-and docker-compose.yml passes it through (default stays 5):
+**Rate limiting.** Two in-process, per-IP backend limiters bite during
+suite runs, both on 1-hour sliding windows:
+
+- **Registration** — 5/hour by default (`AuthRateLimiterConfig` in
+  `wavis-backend/src/auth/auth_rate_limiter.rs`); `/auth/register` calls
+  from both `registerAndLoginViaUi` and `seedChannelWithInvite` draw from
+  the same window, at ~2 registrations per spec. Override:
+  `AUTH_REGISTER_RATE_LIMIT`.
+- **Recovery** — 30/hour by default (`RecoveryRateLimiterConfig` in
+  `wavis-backend/src/auth/recovery_rate_limiter.rs`). Every Login-UI
+  authentication (`loginViaUi`, both new-device and trusted paths) is a
+  `/auth/recover` call, so repeated suite runs within an hour exhaust this
+  one too — observed as `loginViaUi` timing out on `/login` while the
+  backend logs `recover rate-limited (IP)` with a ~25-minute retry_after.
+  Override: `AUTH_RECOVER_RATE_LIMIT`.
+
+docker-compose.yml passes both through (defaults stay 5/30). For e2e use,
+raise them when starting the stack:
 
 ```powershell
-$env:AUTH_REGISTER_RATE_LIMIT="200"; docker compose up -d --build
+$env:AUTH_REGISTER_RATE_LIMIT="200"; $env:AUTH_RECOVER_RATE_LIMIT="200"; docker compose up -d --build
 ```
 
 (`docker compose restart wavis-backend` alone only clears the in-memory
-window — enough when iterating on a single spec, not for a full-suite run.)
+windows — enough when iterating on a single spec, not for a full-suite run.)
 
 **Multi-tier DOM duplication.** `ActiveRoom` mounts `ChatPanel`/
 `LogsPanel`/`ParticipantsPanel` once per responsive layout tier (mobile /
@@ -491,6 +506,73 @@ order does not reliably match which tier is rendered. `visibleText()` and
 the `:visible`-filtered locators in `live-backend-helpers.mjs` exist
 specifically to dodge this; reuse them for anything inside `/room` rather
 than reaching for a raw `getByText`.
+
+## Media quality + network simulation
+
+`zz-network-quality.spec.mjs` (named `zz-` so it runs last in the suite's
+alphabetical single-worker order — a netem teardown failure then can't
+contaminate any other spec) proves media stays smooth under a good network,
+degrades observably but keeps flowing under a simulated bad one, and
+recovers once the bad network clears. `audio-received.spec.mjs` and
+`screen-share-audio-not-heard-until-opened.spec.mjs` already prove media
+_arrives_; this is the smoothness/resilience proof neither one covers.
+
+**Why netem on the LiveKit container, not CDP/Playwright throttling.**
+Playwright's own network-condition APIs (and CDP's `Network.emulateNetworkConditions`
+generally) only intercept the page's HTTP(S)/fetch/XHR traffic — they do not
+touch WebRTC's UDP media path at all, confirmed against the driver's CDP
+session. The only leg that's actually shapeable is the LiveKit container's
+own egress: `docker-compose.yml`'s `livekit` service gets `cap_add:
+[NET_ADMIN]` and installs `iproute2` (`tc`) once at container start (before
+the existing config-templating `sed` + `exec /livekit-server`). Since
+LiveKit → GUI downstream is exactly the "incoming media" leg these specs
+want to degrade, shaping the container's `eth0` with `tc qdisc ... netem` is
+sufficient — no client-side or host-level shaping needed.
+
+**Helpers** (`live-backend-helpers.mjs`):
+
+- `hasNetemSupport()` — `docker exec wavis-livekit sh -c "command -v tc"`;
+  specs skip-with-reason (not fail) if this is false, e.g. the container
+  started offline and `apk add` never ran.
+- `setNetworkConditions({ delayMs, jitterMs, lossPct, rateKbit })` — `docker
+exec wavis-livekit tc qdisc replace dev eth0 root netem ...`.
+- `clearNetworkConditions()` — `tc qdisc del dev eth0 root`, tolerating a
+  "no qdisc" error so it's safe to call unconditionally (e.g. in a `finally`,
+  even if a prior run crashed mid-shape).
+
+**Video peer.** `livekit-tone-peer.mjs`'s `connectTonePeer()` gained
+`startVideoPattern()`/`stopVideoPattern()`, publishing a real 640×360 @15fps
+moving RGBA pattern under `TrackSource.SOURCE_SCREENSHARE` (real frames that
+actually change, so the encoder can't collapse them to near-zero bitrate).
+No Watch All / share-tile step is needed first — unlike screen-share
+audio-only (deliberately gated behind explicit viewer intent, see issue
+#174's spec), `ScreenShare` video publications are subscribed unconditionally
+in `TrackPublished` (`livekit-media.ts` ~2740-2765), and the stats-interval's
+video receiver polling only needs `publication.track` to be present — which
+subscription alone provides.
+
+**Stats plumbing.** `App.tsx`'s `VITE_DIAGNOSTICS`-gated diagnostics tick
+already read both `networkStats` (voice-room.ts) and `videoReceiveStats`
+(livekit-media.ts) every second, but only forwarded them to the Tauri
+`diagnostics:voice-stats` event — `window.__wavisVoiceStats` (the hook e2e
+specs actually read, since `window.__TAURI__` isn't exposed) carried only
+`participants`/`selfParticipantId`. Both fields were widened onto
+`window.__wavisVoiceStats` too — additive, production-absent (same
+`VITE_DIAGNOSTICS` gate as before), and **requires rebuilding the debug exe**
+(`npx tauri build --debug` with the usual e2e env vars — see "Building the
+debug exe" above) before the suite sees them; a stale debug exe will read
+`undefined` for both new fields.
+
+**Thresholds.** The "good" vs "degraded" line reuses
+`DiagnosticsPage.tsx`'s own bad-network thresholds (concealment >10
+events/interval, packet loss >5%), and the degraded-phase assertion compares
+against the spec's own recorded baseline (`>`, not a fixed magic number) to
+avoid flake from any single noisy 10s stats interval.
+
+**Verify manually if this ever needs re-diagnosing:** with a real call up,
+`docker exec wavis-livekit tc qdisc replace dev eth0 root netem loss 30%`
+should visibly degrade audio within a few seconds, and `docker exec
+wavis-livekit tc qdisc del dev eth0 root` should restore it.
 
 ## Deferred: CI
 
@@ -526,6 +608,7 @@ without confirming both first.
 
 ## Other possible follow-ups (not built here)
 
-- Give `DeviceSetup` an invite-code field so `registerViaUi` (and the specs
-  that use it for setup) works against a backend that requires one — see
-  "Two simultaneous GUI instances" above for the current workaround.
+- Give `DeviceSetup` an invite-code field so UI-driven registration
+  (`registerViaUi`) works against a backend that requires one, and
+  `login.spec.mjs` can cover the registration flow again — see the "Known
+  gap" note above for the current REST-based workaround.

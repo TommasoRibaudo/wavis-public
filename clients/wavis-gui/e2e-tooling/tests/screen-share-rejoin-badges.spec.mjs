@@ -16,7 +16,7 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   enterChannelRoom,
   leaveRoomIfActive,
@@ -55,11 +55,7 @@ test('rejoining participant sees both video-share and audio-share badges for a c
   const pathname = new URL(main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-share-rejoin-gui-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);

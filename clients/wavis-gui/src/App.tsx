@@ -9,6 +9,8 @@ import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import AppUpdatePrompt from '@shared/AppUpdatePrompt';
 import type { AppDimensions } from '@features/diagnostics/diagnostics';
+import type { NetworkStats } from '@features/voice/voice-room';
+import type { VideoReceiveStats } from '@features/voice/livekit-media';
 
 type VoiceRoomGetState = typeof import('@features/voice/voice-room').getState;
 
@@ -16,6 +18,8 @@ type VoiceRoomGetState = typeof import('@features/voice/voice-room').getState;
 interface WavisVoiceStatsSnapshot {
   participants: Array<{ id: string; rmsLevel: number; isSpeaking: boolean }>;
   selfParticipantId: string | null;
+  networkStats: NetworkStats;
+  videoReceiveStats: VideoReceiveStats | null;
 }
 
 declare global {
@@ -141,6 +145,8 @@ export default function App() {
           isSpeaking: p.isSpeaking,
         })),
         selfParticipantId,
+        networkStats,
+        videoReceiveStats,
       };
 
       void emit('diagnostics:voice-stats', {
