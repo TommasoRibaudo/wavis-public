@@ -392,6 +392,7 @@ use wavis_backend::channel::invite::{InviteStore, InviteStoreConfig};
 use wavis_backend::channel::routes as channel_routes;
 use wavis_backend::ip::IpConfig;
 use wavis_backend::voice::sfu_bridge::SfuRoomManager;
+use wavis_backend::ws::ws_session::SignalingSession;
 
 const TEST_AUTH_SECRET: &[u8] = b"test-auth-secret-at-least-32-bytes!!";
 
@@ -2135,4 +2136,215 @@ async fn example_voice_query_non_member_forbidden() {
 
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status().as_u16(), 403, "non-member must get 403");
+}
+
+// ===========================================================================
+// P1-10: teardown idempotency + active_room_map guard
+// ===========================================================================
+
+#[tokio::test]
+#[ignore] // requires Postgres
+async fn stale_session_cleanup_does_not_remove_recreated_room_mapping() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let member = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "p1-10-mapping-guard").await;
+    add_member(&pool, channel_id, owner, member).await;
+
+    let app_state = build_test_app_state(pool.clone());
+    let token_mode = TokenMode::Custom {
+        jwt_secret: b"dev-secret-32-bytes-minimum!!!XX",
+        issuer: "wavis-backend",
+        ttl_secs: 3600,
+    };
+
+    // Session A (owner) joins — creates room R1, active_room_map[channel] = R1.
+    let join_a = voice_orchestrator::join_voice(
+        &app_state.db_pool,
+        &app_state.room_state,
+        &app_state.active_room_map,
+        app_state.sfu_room_manager.as_ref(),
+        &token_mode,
+        &app_state.sfu_url,
+        &channel_id.to_string(),
+        &owner,
+        "peer-A",
+        "SessionA",
+        None,
+        false,
+        6,
+    )
+    .await
+    .expect("A join_voice should succeed");
+    let room_id_1 = join_a.room_id.clone();
+
+    assert_eq!(
+        app_state.active_room_map.read().await.get(&channel_id),
+        Some(&room_id_1)
+    );
+
+    // Simulate A's last-leave having already run the low-level peer removal
+    // (what cleanup_connection does before its deferred artifacts step) —
+    // this destroys R1 in room_state (A was the sole peer) while
+    // active_room_map[channel] still points at it.
+    app_state.room_state.remove_peer("peer-A");
+    assert!(
+        app_state.room_state.get_room_info(&room_id_1).is_none(),
+        "precondition: R1 must be gone from room_state after its last peer leaves"
+    );
+    assert_eq!(
+        app_state.active_room_map.read().await.get(&channel_id),
+        Some(&room_id_1),
+        "precondition: the map entry must still be stale-pointing at R1"
+    );
+
+    // Session B (a different user) joins the same channel before A's
+    // cleanup runs. ensure_active_room finds the stale mapping, evicts it,
+    // and creates a fresh room R2.
+    let join_b = voice_orchestrator::join_voice(
+        &app_state.db_pool,
+        &app_state.room_state,
+        &app_state.active_room_map,
+        app_state.sfu_room_manager.as_ref(),
+        &token_mode,
+        &app_state.sfu_url,
+        &channel_id.to_string(),
+        &member,
+        "peer-B",
+        "SessionB",
+        None,
+        false,
+        6,
+    )
+    .await
+    .expect("B join_voice should succeed");
+    let room_id_2 = join_b.room_id.clone();
+    assert_ne!(
+        room_id_1, room_id_2,
+        "B must land in a freshly created room"
+    );
+    assert_eq!(
+        app_state.active_room_map.read().await.get(&channel_id),
+        Some(&room_id_2),
+        "map must now point at B's room"
+    );
+
+    // Give B's (new) room an invite, to prove A's deferred cleanup — which
+    // targets A's own stale room_id — cannot sweep it away.
+    app_state
+        .invite_store
+        .generate(
+            &room_id_2,
+            &member.to_string(),
+            None,
+            std::time::Instant::now(),
+        )
+        .expect("invite generation should succeed");
+    assert_eq!(app_state.invite_store.room_invite_count(&room_id_2), 1);
+
+    // Now run A's deferred cleanup.
+    let mut session_a = SignalingSession::new(
+        "peer-A".to_string(),
+        room_id_1.clone(),
+        join_a.participant_role,
+        Some(owner.to_string()),
+        Some(channel_id.to_string()),
+    );
+    session_a.cleanup_connection(&app_state, "peer-A").await;
+
+    // The guard (cleanup_room_artifacts' map check) must have refused to
+    // clear a mapping that no longer points at A's room.
+    assert_eq!(
+        app_state.active_room_map.read().await.get(&channel_id),
+        Some(&room_id_2),
+        "A's stale cleanup must not remove the mapping to B's live room"
+    );
+
+    // B's room and invite are untouched.
+    let room_2_info = app_state
+        .room_state
+        .get_room_info(&room_id_2)
+        .expect("B's room must still exist");
+    assert_eq!(room_2_info.participants.len(), 1);
+    assert_eq!(room_2_info.participants[0].participant_id, "peer-B");
+    assert_eq!(app_state.invite_store.room_invite_count(&room_id_2), 1);
+}
+
+#[tokio::test]
+#[ignore] // requires Postgres
+async fn double_cleanup_is_noop() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "p1-10-double-cleanup").await;
+
+    let app_state = build_test_app_state(pool.clone());
+    let token_mode = TokenMode::Custom {
+        jwt_secret: b"dev-secret-32-bytes-minimum!!!XX",
+        issuer: "wavis-backend",
+        ttl_secs: 3600,
+    };
+
+    let join_a = voice_orchestrator::join_voice(
+        &app_state.db_pool,
+        &app_state.room_state,
+        &app_state.active_room_map,
+        app_state.sfu_room_manager.as_ref(),
+        &token_mode,
+        &app_state.sfu_url,
+        &channel_id.to_string(),
+        &owner,
+        "peer-A",
+        "SessionA",
+        None,
+        false,
+        6,
+    )
+    .await
+    .expect("A join_voice should succeed");
+    let room_id = join_a.room_id.clone();
+
+    let mut session_a = SignalingSession::new(
+        "peer-A".to_string(),
+        room_id.clone(),
+        join_a.participant_role,
+        Some(owner.to_string()),
+        Some(channel_id.to_string()),
+    );
+
+    session_a.cleanup_connection(&app_state, "peer-A").await;
+
+    // First cleanup: last peer left, room destroyed, map entry cleared.
+    assert!(app_state.room_state.get_room_info(&room_id).is_none());
+    assert!(
+        app_state
+            .active_room_map
+            .read()
+            .await
+            .get(&channel_id)
+            .is_none()
+    );
+    let invites_after_first = app_state.invite_store.room_invite_count(&room_id);
+
+    // Second cleanup on the same session must be a complete no-op — the
+    // `cleanup_complete` guard short-circuits before touching anything.
+    session_a.cleanup_connection(&app_state, "peer-A").await;
+
+    assert!(app_state.room_state.get_room_info(&room_id).is_none());
+    assert!(
+        app_state
+            .active_room_map
+            .read()
+            .await
+            .get(&channel_id)
+            .is_none()
+    );
+    assert_eq!(
+        app_state.invite_store.room_invite_count(&room_id),
+        invites_after_first,
+        "second cleanup must not touch invite state"
+    );
 }

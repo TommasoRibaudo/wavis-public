@@ -336,6 +336,55 @@ async fn test_27_1_create_channel_no_auth() {
 }
 
 // ===========================================================================
+// P2-5: malformed Authorization header variants (auth/extractor.rs)
+// Rejection must stay opaque — every malformed-header shape must produce the
+// exact same 401 the extractor gives for a missing header, never a distinct
+// error that could leak which check failed.
+// ===========================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_malformed_authorization_header_variants_all_401() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+    let app = build_channel_router(build_test_app_state(pool));
+
+    fn post_channels_with_header(header_value: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/channels")
+            .header("content-type", "application/json");
+        if let Some(v) = header_value {
+            builder = builder.header("authorization", v);
+        }
+        builder.body(Body::from(r#"{"name":"x"}"#)).unwrap()
+    }
+
+    let (status_missing, body_missing) = send_json(&app, post_channels_with_header(None)).await;
+    assert_eq!(status_missing, StatusCode::UNAUTHORIZED);
+    assert_eq!(body_missing["error"], "authentication failed");
+
+    let variants = [
+        ("non-Bearer scheme", "Basic dXNlcjpwYXNz"),
+        ("lowercase bearer", "bearer some.jwt.token"),
+        ("Bearer with no trailing space", "Bearer"),
+        ("Bearer with empty token", "Bearer "),
+    ];
+
+    for (label, header_value) in variants {
+        let (status, body) = send_json(&app, post_channels_with_header(Some(header_value))).await;
+        assert_eq!(
+            status, status_missing,
+            "{label}: status must match the missing-header case"
+        );
+        assert_eq!(
+            body, body_missing,
+            "{label}: body must be identical to the missing-header case"
+        );
+    }
+}
+
+// ===========================================================================
 // 27.2 List channels
 // ===========================================================================
 

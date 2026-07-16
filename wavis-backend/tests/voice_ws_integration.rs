@@ -1010,6 +1010,125 @@ async fn test_28_13_room_cleanup_on_last_leave() {
     );
 }
 
+// ===========================================================================
+// P1-7: session displacement (second JoinVoice for the same user)
+// ===========================================================================
+
+#[tokio::test]
+#[ignore]
+async fn second_join_voice_same_user_displaces_first_and_frees_slot() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "voice-displacement").await;
+
+    let (addr, state) = start_server(pool).await;
+    let token = sign_test_token(&state.db_pool, &owner).await;
+
+    // Connection A: first session for the user.
+    let (mut sink_a, mut stream_a) = ws_connect(addr).await;
+    ws_auth(&mut sink_a, &mut stream_a, &token).await;
+    let joined_a = ws_join_voice(
+        &mut sink_a,
+        &mut stream_a,
+        &channel_id.to_string(),
+        "SessionA",
+    )
+    .await;
+    let room_id = joined_a["roomId"].as_str().unwrap().to_string();
+    let peer_a_id = joined_a["peerId"].as_str().unwrap().to_string();
+
+    // Give A a hidden viewer identity (as a screen-share viewer window would
+    // register via RequestViewerToken — exercised directly against state
+    // here since the wire path requires real LiveKit credentials this test
+    // server doesn't configure), so displacement's cleanup of it is
+    // observable rather than vacuously true.
+    state.room_state.update_room_info(&room_id, |info| {
+        info.record_viewer_identity(&peer_a_id, &format!("{peer_a_id}-vw-w1"));
+    });
+    assert!(
+        state
+            .room_state
+            .get_room_info(&room_id)
+            .unwrap()
+            .viewer_identities
+            .get(&peer_a_id)
+            .is_some_and(|ids| !ids.is_empty()),
+        "precondition: A must hold a registered viewer identity before displacement"
+    );
+
+    // Connection B: same user, same channel, second WebSocket session.
+    let (mut sink_b, mut stream_b) = ws_connect(addr).await;
+    ws_auth(&mut sink_b, &mut stream_b, &token).await;
+    ws_send(
+        &mut sink_b,
+        json!({
+            "type": "join_voice",
+            "channelId": channel_id.to_string(),
+            "displayName": "SessionB"
+        }),
+    )
+    .await;
+
+    // A must be told it was displaced.
+    let displaced = recv_type(&mut stream_a, "session_displaced").await;
+    assert_eq!(
+        displaced["reason"].as_str().unwrap(),
+        "another session connected"
+    );
+
+    // B completes its join normally.
+    let joined_b = recv_type(&mut stream_b, "joined").await;
+    let _media_token_b = recv_type(&mut stream_b, "media_token").await;
+    let peer_b_id = joined_b["peerId"].as_str().unwrap().to_string();
+    assert_eq!(joined_b["roomId"].as_str().unwrap(), room_id);
+
+    // The room did not grow to 2 — A's slot was freed, not left occupied
+    // alongside B's.
+    assert_eq!(
+        joined_b["peerCount"].as_u64().unwrap(),
+        1,
+        "displacement must free A's slot, not add a second occupant"
+    );
+
+    // A's viewer identities were reclaimed by the eviction.
+    let room_after = state.room_state.get_room_info(&room_id).unwrap();
+    assert!(
+        room_after
+            .viewer_identities
+            .get(&peer_a_id)
+            .is_none_or(|ids| ids.is_empty()),
+        "A's viewer identities must be cleared on displacement"
+    );
+
+    // The room itself was NOT destroyed by the eviction (it uses
+    // remove_peer_preserve_room, not remove_peer) — it still exists with B
+    // as the sole occupant.
+    let (status, body) = rest_get(addr, &format!("/channels/{channel_id}/voice"), &token).await;
+    assert_eq!(status, 200);
+    assert!(
+        body["active"].as_bool().unwrap(),
+        "room must survive the displacement"
+    );
+    assert_eq!(body["participant_count"].as_u64().unwrap(), 1);
+
+    // If B observes A's departure (legitimate — A really did leave the
+    // room), it must never be a spurious report about B's own new peer id.
+    if let Some(left) = try_recv_type(&mut stream_b, "participant_left", 500).await {
+        assert_ne!(
+            left["participantId"].as_str().unwrap(),
+            peer_b_id,
+            "must never report B's own peer id as having left"
+        );
+        assert_eq!(
+            left["participantId"].as_str().unwrap(),
+            peer_a_id,
+            "any participant_left B observes here must be about the evicted A"
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn passthrough_permission_allows_member_link_but_not_member_toggle() {

@@ -150,6 +150,39 @@ mod tests {
         assert!(limiter.seconds_until_refresh(ip, now).is_none());
     }
 
+    // --- P2-4: prune_stale removes expired entries (memory-bound invariant) ---
+
+    #[test]
+    fn prune_removes_expired_entries_and_returns_count() {
+        let config = AuthRateLimiterConfig {
+            register_max_per_ip: 5,
+            register_window_secs: 10,
+            refresh_max_per_ip: 5,
+            refresh_window_secs: 10,
+        };
+        let limiter = AuthRateLimiter::new(config);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let now = Instant::now();
+
+        limiter.record_register(ip, now);
+        limiter.record_refresh(ip, now);
+
+        // Immediately after recording, both windows still hold a live timestamp.
+        assert_eq!(limiter.prune_stale(now), 0);
+
+        // Advance past both windows: count(now) becomes 0 for each, so both
+        // per-IP entries qualify for removal.
+        let later = now + Duration::from_secs(11);
+        assert_eq!(
+            limiter.prune_stale(later),
+            2,
+            "both the register and refresh entries for this IP must be pruned"
+        );
+
+        // Second sweep finds nothing left to prune.
+        assert_eq!(limiter.prune_stale(later), 0);
+    }
+
     // Feature: device-auth, Property 10: Auth rate limiter ceiling
     // **Validates: Requirements 1.5, 2.6**
     proptest! {

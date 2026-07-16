@@ -575,4 +575,35 @@ mod tests {
         let t1 = t0 + window + Duration::from_millis(20);
         assert!(rl.check_join(ip(1), None, "room", "conn", t1).is_ok());
     }
+
+    // --- P2-4: prune_stale removes expired entries (memory-bound invariant) ---
+
+    #[test]
+    fn prune_removes_expired_entries_and_returns_count() {
+        let window = Duration::from_secs(10);
+        let cfg = isolated_config(9999, window, Duration::from_secs(60));
+        let rl = JoinRateLimiter::new(cfg);
+        let now = Instant::now();
+
+        // Touches ip_total, room_attempts, and connection_attempts (code is None,
+        // ip_failed only touched on a failed attempt).
+        rl.record_attempt(ip(1), None, "room-1", "conn-1", false, now);
+
+        // record_attempt already pruned internally at `now`, and every window is
+        // fresh (count == 1, no cooldown), so nothing is stale yet.
+        assert_eq!(rl.prune_all(now), 0);
+
+        // Advance well past the window: all touched windows are now empty and
+        // none entered cooldown (threshold 9999 was never hit), so they qualify
+        // as stale and must be pruned.
+        let later = now + window + Duration::from_secs(1);
+        assert_eq!(
+            rl.prune_all(later),
+            3,
+            "ip_total, room_attempts, and connection_attempts entries must be pruned"
+        );
+
+        // A second sweep finds nothing left to prune.
+        assert_eq!(rl.prune_all(later), 0);
+    }
 }
