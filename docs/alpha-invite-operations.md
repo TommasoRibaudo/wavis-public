@@ -17,6 +17,11 @@ have network access to Postgres and these variables:
 Keep both values in environment variables. Do not pass them as command-line
 arguments, commit them, or paste them into tickets and logs.
 
+The tool also loads a `.env` file from the working directory if present, the
+same way the backend does. If `DATABASE_URL` is not exported, a repo-root
+`.env` can silently point the command at a development database — confirm
+which database you are targeting before creating or disabling invites.
+
 ## Create an invite
 
 Labels are operator metadata, can be reused, and are never presented to the
@@ -41,10 +46,7 @@ cargo run -p wavis-backend --bin alpha-invite-admin -- create \
 $env:DATABASE_URL = 'postgres://...'
 $env:ALPHA_INVITE_CODE_PEPPER = 'the-same-32-byte-minimum-backend-pepper'
 
-cargo run -p wavis-backend --bin alpha-invite-admin -- create `
-  --label 'person@example.com' `
-  --expires-at '2030-08-01T23:59:59Z' `
-  --max-redemptions 1
+cargo run -p wavis-backend --bin alpha-invite-admin -- create --label 'person@example.com' --expires-at '2030-08-01T23:59:59Z' --max-redemptions 1
 ```
 
 The response contains an `invite_id` and one `invite_code` line. Record the
@@ -82,8 +84,7 @@ cargo run -p wavis-backend --bin alpha-invite-admin -- disable \
 ```
 
 ```powershell
-cargo run -p wavis-backend --bin alpha-invite-admin -- disable `
-  --id '00000000-0000-0000-0000-000000000000'
+cargo run -p wavis-backend --bin alpha-invite-admin -- disable --id '00000000-0000-0000-0000-000000000000'
 ```
 
 If a raw code is lost or may have been exposed, disable its UUID and create a

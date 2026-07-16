@@ -25,6 +25,9 @@ const HASH_DOMAIN: &[u8] = b"alpha-invite:v1:";
 const GENERATED_CODE_BYTES: usize = 16;
 const MAX_LABEL_CHARS: usize = 100;
 
+// The admin items below (`#[allow(dead_code)]`) are used only by the
+// `alpha-invite-admin` bin through the library target. `main.rs` compiles this
+// module directly via `mod`, so the server binary sees them as dead code.
 #[allow(dead_code)]
 type AlphaInviteAdminRow = (
     Uuid,
