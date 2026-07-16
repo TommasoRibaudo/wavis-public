@@ -46,7 +46,7 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   enterChannelRoom,
   leaveRoomIfActive,
@@ -90,11 +90,7 @@ test('a peer\'s screen-share audio stays silent until the user unmutes it', asyn
   await leaveRoomIfActive(main);
   const pathname = new URL(main.url()).pathname;
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-ssaudio-gui-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);

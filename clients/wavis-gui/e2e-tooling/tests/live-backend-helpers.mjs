@@ -4,9 +4,12 @@
 //
 // Not used by the backend-independent specs (launch/title-bar/multi-window/
 // settings) — those stay dependency-free on purpose.
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // e2e-tooling/tests -> e2e-tooling -> wavis-gui -> clients -> workspace root
@@ -36,6 +39,21 @@ export function visibleText(page, textOrPattern) {
 /** Same tier-duplication problem as visibleText, but for elements matched by their `title` attribute. */
 export function visibleTitle(page, title) {
   return page.getByTitle(title).and(page.locator(':visible'));
+}
+
+/**
+ * For SVG icon indicators (ParticipantRow's lucide camera/screen-share
+ * icons): their accessible name comes from an aria-label or a nested SVG
+ * <title> CHILD ELEMENT, not a `title` attribute, so getByTitle/visibleTitle
+ * can never match them (commit 23719f1's glyph→lucide swap converted the
+ * old title attributes). Playwright's role engine computes the name from
+ * both sources, so match by role=img instead. Extra trap getByTitle also
+ * had: it substring-matches, so 'you are sharing' would false-positive on
+ * the adjacent title="you are sharing audio" badge — role-name matching is
+ * whole-string and avoids that.
+ */
+export function visibleIcon(page, name) {
+  return page.getByRole('img', { name }).and(page.locator(':visible'));
 }
 
 /**
@@ -148,6 +166,13 @@ export async function seedChannelWithInvite(name) {
  * continue) and returns the scraped recovery ID. Requires the debug exe to
  * have been built with VITE_ALLOW_INSECURE_TLS=true (see README) so the
  * insecure-TLS toggle is present for a plain-http serverUrl.
+ *
+ * CURRENTLY CANNOT SUCCEED against a closed-alpha backend: POST
+ * /auth/register 401s without an invite code, and DeviceSetup has no
+ * invite-code field yet (README's "Known gap"). No spec uses this anymore —
+ * use registerAndLoginViaUi (REST registration + real Login UI) for spec
+ * setup. Kept so it can be reinstated (with an invite-code fill step) once
+ * DeviceSetup gains the field.
  */
 export async function registerViaUi(page, { username, password, serverUrl = SERVER_URL } = {}) {
   // A stale wavis-auth-e2e.json (stored recovery ID from a previous run, but
@@ -511,4 +536,69 @@ export async function waitForMediaToken(peer) {
   const line = await peer.waitForOutput(/"type":"media_token"/);
   const parsed = JSON.parse(line.replace(/^<<\s*/, ''));
   return { token: parsed.token, sfuUrl: parsed.sfuUrl };
+}
+
+/* ─── Network-condition simulation (LiveKit container netem) ───────────
+ * CDP/Playwright network throttling does not touch WebRTC UDP, so media
+ * degradation has to be injected at the LiveKit container's egress (its
+ * eth0 — LiveKit -> GUI downstream is exactly the "incoming media" leg
+ * these specs want to degrade). docker-compose.yml gives the livekit
+ * service NET_ADMIN + installs iproute2 (tc) at container start.
+ */
+const LIVEKIT_CONTAINER = 'wavis-livekit';
+const NETEM_INTERFACE = 'eth0';
+
+/** True if `tc` is available in the livekit container — false means skip-with-reason, not fail. */
+export async function hasNetemSupport() {
+  try {
+    await execFileAsync('docker', ['exec', LIVEKIT_CONTAINER, 'sh', '-c', 'command -v tc']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Shapes the livekit container's egress via netem. Any of delayMs/jitterMs/lossPct/rateKbit may be omitted. */
+export async function setNetworkConditions({
+  delayMs = 0,
+  jitterMs = 0,
+  lossPct = 0,
+  rateKbit,
+} = {}) {
+  const args = [
+    'exec',
+    LIVEKIT_CONTAINER,
+    'tc',
+    'qdisc',
+    'replace',
+    'dev',
+    NETEM_INTERFACE,
+    'root',
+    'netem',
+  ];
+  if (delayMs > 0) {
+    args.push('delay', `${delayMs}ms`);
+    if (jitterMs > 0) args.push(`${jitterMs}ms`);
+  }
+  if (lossPct > 0) args.push('loss', `${lossPct}%`);
+  if (rateKbit) args.push('rate', `${rateKbit}kbit`);
+  await execFileAsync('docker', args);
+}
+
+/** Removes netem shaping. Tolerates "no qdisc to delete" so it's safe to call unconditionally (e.g. in a finally). */
+export async function clearNetworkConditions() {
+  try {
+    await execFileAsync('docker', [
+      'exec',
+      LIVEKIT_CONTAINER,
+      'tc',
+      'qdisc',
+      'del',
+      'dev',
+      NETEM_INTERFACE,
+      'root',
+    ]);
+  } catch {
+    // No qdisc present — already clear.
+  }
 }

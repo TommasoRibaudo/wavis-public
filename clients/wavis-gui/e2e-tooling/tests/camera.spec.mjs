@@ -22,13 +22,13 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   enterChannelRoom,
   leaveRoomIfActive,
   joinDefaultSubRoomViaUi,
   visibleText,
-  visibleTitle,
+  visibleIcon,
 } from './live-backend-helpers.mjs';
 
 /**
@@ -57,11 +57,7 @@ test('toggling the camera publishes and un-publishes a real local video tile', a
   const pathname = new URL(main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-camera-gui-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);
@@ -73,7 +69,7 @@ test('toggling the camera publishes and un-publishes a real local video tile', a
     // "camera device is already in use" instead of publishing, and the
     // assertion below times out visibly rather than hanging silently.
     await cameraButton(main, '/camera-on').click();
-    await expect(visibleTitle(main, 'your camera is on')).toBeVisible({ timeout: 10_000 });
+    await expect(visibleIcon(main, 'your camera is on')).toBeVisible({ timeout: 10_000 });
 
     await main
       .locator('button:visible', { hasText: /^VIDEOS?\b/ })
@@ -82,7 +78,7 @@ test('toggling the camera publishes and un-publishes a real local video tile', a
     await expect(visibleText(main, 'No video active')).toHaveCount(0);
 
     await cameraButton(main, '/camera-off').click();
-    await expect(main.getByTitle('your camera is on')).toHaveCount(0);
+    await expect(main.getByRole('img', { name: 'your camera is on' })).toHaveCount(0);
 
     // By design (ActiveRoom.tsx's groupedPanelVideoActivityKey effect), the
     // grouped panel auto-switches itself away from VIDEO the instant
