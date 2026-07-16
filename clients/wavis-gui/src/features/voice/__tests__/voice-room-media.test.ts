@@ -3328,6 +3328,62 @@ describe('Edge case unit tests', () => {
       leaveRoom();
     });
 
+    it('WS-only reconnect (media never drops) restores active state via sub-room rejoin — issue #157', async () => {
+      resetAll();
+      await driveToActive();
+      joinSubRoom('room-1'); // records explicit user intent, as real ParticipantsPanel clicks do
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+      expect(latestState!.machineState).toBe('active');
+
+      // Signaling drops — LiveKit media is intentionally NOT torn down here
+      // (it connects directly to the SFU, independent of the WS).
+      statusChangeHandler!('disconnected');
+      await tick();
+      expect(latestState!.machineState).toBe('reconnecting');
+      expect(latestState!.mediaState).toBe('connected');
+
+      sentMessages.length = 0;
+
+      // Server's reconnect handshake unconditionally strips sub-room
+      // membership for modern clients and does not resend sub_room_joined —
+      // the client must notice and proactively rejoin.
+      messageHandler!({
+        type: 'sub_room_state',
+        rooms: [{ subRoomId: 'room-1', roomNumber: 1, isDefault: true, participantIds: [] }],
+      });
+      await tick();
+
+      expect(latestState!.joinedSubRoomId).toBeNull();
+      expect(latestState!.machineState).toBe('reconnecting');
+      expect(sentMessages).toContainEqual({ type: 'join_sub_room', subRoomId: 'room-1' });
+
+      messageHandler!({
+        type: 'sub_room_joined',
+        participantId: 'self-peer',
+        subRoomId: 'room-1',
+      });
+      await tick();
+
+      expect(latestState!.machineState).toBe('active');
+      expect(latestState!.mediaState).toBe('connected');
+      expect(latestState!.joinedSubRoomId).toBe('room-1');
+      expect(
+        isShareEnabled(
+          latestState!.sharePermission,
+          latestState!.selfIsHost,
+          latestState!.machineState,
+          latestState!.mediaState,
+          latestState!.joinedSubRoomId,
+        ),
+      ).toBe(true);
+
+      leaveRoom();
+    });
+
     it('media failure preserves signaling — participants and chat still work', async () => {
       resetAll();
       await driveToActive();
