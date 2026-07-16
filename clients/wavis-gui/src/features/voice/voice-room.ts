@@ -4107,6 +4107,7 @@ function dispatchMessage(raw: unknown): void {
               type: 'system',
               message: 'media_token ignored — retries exhausted, periodic retry active',
             });
+            playLocalDisconnectSoundOnce();
             notify();
           }
         });
@@ -4326,6 +4327,8 @@ export function initSession(
           state.lastRateLimitError = null;
           playLocalDisconnectSoundOnce();
           cleanupPublishedMediaForSessionEnd();
+          client.disconnect();
+          client = null;
           state.machineState = 'idle';
           notify();
         }
@@ -4599,6 +4602,7 @@ export async function reconnectMedia(): Promise<void> {
       message: `media reconnect retries exhausted (${config.maxRetries}) — periodic retry active`,
     });
     startPeriodicMediaRetry();
+    playLocalDisconnectSoundOnce();
     notify();
     return;
   }

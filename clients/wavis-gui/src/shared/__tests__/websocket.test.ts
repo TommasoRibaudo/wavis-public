@@ -335,6 +335,57 @@ describe('reconnect backoff', () => {
     await vi.advanceTimersByTimeAsync(1100);
     expect(wsConstructorCalls.length).toBeGreaterThan(prevCount);
   });
+
+  it('clears reconnectTimer once the scheduled reconnect attempt actually fires', async () => {
+    const client = new SignalingClient();
+    client.connect('ws://localhost/ws');
+    lastWsInstance!.simulate('open');
+
+    lastWsInstance!.readyState = WebSocket.CLOSED;
+    lastWsInstance!.onclose?.();
+    expect(client['reconnectTimer']).not.toBeNull();
+
+    // Once the scheduled callback fires, the stale handle must be cleared —
+    // otherwise it stays truthy forever and callers checking "is a reconnect
+    // still pending" can never see it go falsy.
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(client['reconnectTimer']).toBeNull();
+  });
+
+  it('reconnectTimer and periodicRetryTimer are both falsy in the onStatusChange callback exactly when fast-retry exhausts', async () => {
+    // This is the exact condition voice-room.ts's reconnect-give-up branch
+    // checks (`!client['reconnectTimer'] && !client['periodicRetryTimer']`)
+    // to decide the session is truly lost and play the disconnect sound.
+    const client = new SignalingClient();
+    const snapshotsAtDisconnect: Array<{ reconnectTimer: unknown; periodicRetryTimer: unknown }> =
+      [];
+    client.onStatusChange((status) => {
+      if (status === 'disconnected') {
+        snapshotsAtDisconnect.push({
+          reconnectTimer: client['reconnectTimer'],
+          periodicRetryTimer: client['periodicRetryTimer'],
+        });
+      }
+    });
+    client.connect('ws://localhost/ws');
+    lastWsInstance!.simulate('open');
+
+    // Drive through all 10 fast-retry attempts (maxReconnectAttempt).
+    for (let i = 0; i < 10; i++) {
+      lastWsInstance!.readyState = WebSocket.CLOSED;
+      lastWsInstance!.onclose?.();
+      await vi.advanceTimersByTimeAsync(31_000);
+    }
+
+    // The 11th close exhausts the fast-retry budget and hands off to periodic
+    // retry — this is the "give up" transition.
+    lastWsInstance!.readyState = WebSocket.CLOSED;
+    lastWsInstance!.onclose?.();
+
+    const giveUpSnapshot = snapshotsAtDisconnect.at(-1)!;
+    expect(giveUpSnapshot.reconnectTimer).toBeFalsy();
+    expect(giveUpSnapshot.periodicRetryTimer).toBeFalsy();
+  });
 });
 
 // ─── connectWithAuth() ────────────────────────────────────────────
@@ -370,11 +421,29 @@ describe('connectWithAuth()', () => {
     expect(refreshTokens).toHaveBeenCalled();
   });
 
-  it('sets status to disconnected when token refresh fails', async () => {
+  it('sets status to disconnected and throws when refresh returns a 500 server_error', async () => {
+    // refreshTokens() always resolves to a truthy RefreshResult discriminated union —
+    // it never returns a bare falsy value in production (see auth.ts refreshTokens()).
+    // A 500 from POST /auth/refresh surfaces as { status: 'server_error', httpStatus: 500 }.
     const { isTokenExpired, refreshTokens } = await import('@features/auth/auth');
     vi.mocked(isTokenExpired).mockResolvedValueOnce(true);
-    // refreshTokens returns false (falsy) to signal failure
-    vi.mocked(refreshTokens).mockResolvedValueOnce(false as unknown as { status: 'success' });
+    vi.mocked(refreshTokens).mockResolvedValueOnce({ status: 'server_error', httpStatus: 500 });
+
+    const client = new SignalingClient();
+    let threw = false;
+    try {
+      await client.connectWithAuth('ws://localhost/ws');
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(client.status).toBe('disconnected');
+  });
+
+  it('sets status to disconnected and throws when refresh returns a 400 bad_request', async () => {
+    const { isTokenExpired, refreshTokens } = await import('@features/auth/auth');
+    vi.mocked(isTokenExpired).mockResolvedValueOnce(true);
+    vi.mocked(refreshTokens).mockResolvedValueOnce({ status: 'bad_request' });
 
     const client = new SignalingClient();
     let threw = false;

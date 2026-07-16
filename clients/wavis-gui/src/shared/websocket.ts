@@ -84,10 +84,10 @@ export class SignalingClient {
    */
   async connectWithAuth(wsUrl: string): Promise<void> {
     if (await isTokenExpired()) {
-      const ok = await refreshTokens();
-      if (!ok) {
+      const result = await refreshTokens();
+      if (result.status !== 'success') {
         this.setStatus('disconnected');
-        throw new Error('Token refresh failed — cannot connect');
+        throw new Error(`Token refresh failed — cannot connect (${result.status})`);
       }
     }
 
@@ -221,6 +221,7 @@ export class SignalingClient {
     const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 30_000);
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connectWithAuth(url).catch((err) => {
         console.error(LOG_PREFIX, 'Reconnect auth failed:', err);
       });

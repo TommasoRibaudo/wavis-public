@@ -2738,6 +2738,56 @@ describe('Edge case unit tests', () => {
 
       leaveRoom();
     });
+
+    it('plays one leave sound when media_token arrives while retries are already exhausted, even though signaling stays active', async () => {
+      resetAll();
+      mockMaxRetries = 1; // exhaust after 1 failure
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaFailed('test failure');
+      await tick();
+
+      expect(latestState!.mediaReconnectFailures).toBe(1);
+      expect(latestState!.mediaState).toBe('failed');
+      // Not yet — onMediaFailed alone only marks the media state as failed.
+      expect(playNotificationSoundCalls).toEqual([]);
+
+      // Backend pushes a fresh media_token, but the retry budget is spent —
+      // this is a pure LiveKit/media-layer give-up: the WS signaling session
+      // (machineState) is never touched, so nothing else would ever play
+      // the disconnect sound for this scenario.
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu2', token: 'tok2' });
+      await tick();
+      await tick(); // extra tick for async getReconnectConfig
+
+      expect(getState().machineState).toBe('active');
+      expect(playNotificationSoundCalls).toEqual(['leave']);
+
+      leaveRoom();
+    });
+
+    it('plays one leave sound when reconnectMedia() itself exhausts the retry budget', async () => {
+      resetAll();
+      mockMaxRetries = 1; // exhaust after 1 failure
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaFailed('test failure');
+      await tick();
+
+      expect(latestState!.mediaReconnectFailures).toBe(1);
+      expect(playNotificationSoundCalls).toEqual([]);
+
+      await reconnectMedia();
+
+      expect(getState().machineState).toBe('active');
+      expect(playNotificationSoundCalls).toEqual(['leave']);
+
+      leaveRoom();
+    });
   });
 
   // ─── 11.2: Screen share edge cases ──────────────────────────────
