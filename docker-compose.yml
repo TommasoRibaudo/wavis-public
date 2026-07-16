@@ -25,7 +25,16 @@ services:
 
   livekit:
     container_name: wavis-livekit
-    image: livekit/livekit-server:latest
+    # Pinned to match deploy/docker-compose.livekit.yml's production version —
+    # keep these two in sync, don't let this float independently. A floating
+    # :latest here previously drifted to v1.9.11 while prod stayed on v1.9.3,
+    # producing a "publisher data channel 'DATA_TRACK_LOSSY' closed
+    # unexpectedly" error on every single join (RTP audio/video unaffected,
+    # but noisy — verified 2026-07-16: reproduces 2/2 joins against v1.9.11,
+    # 0/2 against v1.9.3, real decoded audio confirmed working on both
+    # versions either way). Bump this deliberately alongside prod's pin when
+    # that's next upgraded and retested — not sooner, and not to :latest.
+    image: livekit/livekit-server:v1.9.3
     cap_add:
       - NET_ADMIN
     entrypoint: /bin/sh

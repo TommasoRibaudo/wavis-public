@@ -22,7 +22,7 @@ COPY wavis-backend/migrations/ wavis-backend/migrations/
 # fails to parse ("workspace.lints was not defined"). Keep in sync with the root manifest.
 RUN printf '[workspace]\nresolver = "3"\nmembers = ["shared", "wavis-backend"]\n\n[workspace.lints.rust]\nunused_must_use = "deny"\n\n[workspace.lints.clippy]\ndbg_macro = "deny"\ntodo = "deny"\nunimplemented = "deny"\nmem_forget = "deny"\n' > Cargo.toml
 
-RUN cargo build --release -p wavis-backend
+RUN cargo build --release -p wavis-backend --bin wavis-backend
 
 FROM debian:bookworm-slim AS runtime
 
