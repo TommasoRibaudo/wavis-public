@@ -515,7 +515,7 @@ contaminate any other spec) proves media stays smooth under a good network,
 degrades observably but keeps flowing under a simulated bad one, and
 recovers once the bad network clears. `audio-received.spec.mjs` and
 `screen-share-audio-not-heard-until-opened.spec.mjs` already prove media
-*arrives*; this is the smoothness/resilience proof neither one covers.
+_arrives_; this is the smoothness/resilience proof neither one covers.
 
 **Why netem on the LiveKit container, not CDP/Playwright throttling.**
 Playwright's own network-condition APIs (and CDP's `Network.emulateNetworkConditions`
@@ -535,7 +535,7 @@ sufficient — no client-side or host-level shaping needed.
   specs skip-with-reason (not fail) if this is false, e.g. the container
   started offline and `apk add` never ran.
 - `setNetworkConditions({ delayMs, jitterMs, lossPct, rateKbit })` — `docker
-  exec wavis-livekit tc qdisc replace dev eth0 root netem ...`.
+exec wavis-livekit tc qdisc replace dev eth0 root netem ...`.
 - `clearNetworkConditions()` — `tc qdisc del dev eth0 root`, tolerating a
   "no qdisc" error so it's safe to call unconditionally (e.g. in a `finally`,
   even if a prior run crashed mid-shape).

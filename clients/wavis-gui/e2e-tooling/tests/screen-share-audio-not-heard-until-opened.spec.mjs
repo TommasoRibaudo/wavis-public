@@ -71,7 +71,7 @@ const ATTACH_LOG = /\[mac-share-audio\] attached screen share audio/;
 // suppressed pre-intent and is NOT a reliable "arrived" signal.
 const TRACK_ARRIVED_LOG = /\[diag\] TrackPublished[^\n]*source: screen_share_audio/;
 
-test('a peer\'s screen-share audio stays silent until the user unmutes it', async ({ app }) => {
+test("a peer's screen-share audio stays silent until the user unmutes it", async ({ app }) => {
   // Peer spawn (cargo run -p ws-sfu-test) + LiveKit connect + the settle
   // window for the negative assertion push this past the 30s default.
   test.setTimeout(90_000);
