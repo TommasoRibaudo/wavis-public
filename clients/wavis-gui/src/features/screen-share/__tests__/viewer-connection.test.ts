@@ -29,7 +29,9 @@ vi.mock('livekit-client', () => {
       this.state = 'disconnected';
       return Promise.resolve();
     });
-    constructor() {
+    options: Record<string, unknown> | undefined;
+    constructor(options?: Record<string, unknown>) {
+      this.options = options;
       roomState.current = this;
     }
     on(event: string, handler: (...args: unknown[]) => void) {
@@ -204,17 +206,41 @@ describe('pickScreenSharePublication', () => {
   });
 });
 
-/* ─── ViewerRoomConnection.refreshIdentity (Watch All dead-track recovery) ──
- * Regression coverage for #283: a single dead track used to call
- * forceReconnect(), tearing down the whole Room and blacking out every
- * Watch All tile. refreshIdentity resubscribes one identity in place. */
+/* ─── ViewerRoomConnection Room construction options — issue #117 ──
+ * Our self-hosted LiveKit server (pinned to v1.9.3) doesn't serve the SDK's
+ * default /rtc/v1 join path, so every viewer-window connect (Watch All,
+ * screen-share pop-outs) would otherwise pay a guaranteed-fail round trip
+ * before falling back to the legacy path it ends up using anyway. */
 
 interface TestRoom {
   state: string;
   remoteParticipants: Map<string, unknown>;
   disconnect: ReturnType<typeof vi.fn>;
   emit: (event: string, ...args: unknown[]) => void;
+  options?: Record<string, unknown>;
 }
+
+describe('ViewerRoomConnection Room construction', () => {
+  beforeEach(() => {
+    roomState.current = null;
+  });
+
+  it('constructs Room with singlePeerConnection:false', async () => {
+    const conn = new ViewerRoomConnection({ windowLabel: 'watch-all' });
+    conn.watch('alice', () => {});
+    await tick();
+    await tick();
+
+    const room = roomState.current as TestRoom;
+    expect(room).not.toBeNull();
+    expect(room.options?.singlePeerConnection).toBe(false);
+  });
+});
+
+/* ─── ViewerRoomConnection.refreshIdentity (Watch All dead-track recovery) ──
+ * Regression coverage for #283: a single dead track used to call
+ * forceReconnect(), tearing down the whole Room and blacking out every
+ * Watch All tile. refreshIdentity resubscribes one identity in place. */
 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));

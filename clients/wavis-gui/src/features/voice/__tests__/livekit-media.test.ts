@@ -623,9 +623,11 @@ import {
   isForceRelayEnabled,
   mapPassthroughFilterParams,
   fitPresetToSourceAspect,
+  LIVEKIT_ROOM_OPTIONS,
   type MediaCallbacks,
 } from '../livekit-media';
 import { CAMERA_QUALITY_HIGH } from '../camera-types';
+import { Room } from 'livekit-client';
 
 describe('passthrough filter parameter mapping', () => {
   it('clamps strength and interpolates cutoff and high shelf', () => {
@@ -951,6 +953,21 @@ async function driveToConnected(mod: LiveKitModule, url = 'wss://sfu.test', toke
   await tick();
   emitRoomEvent('localTrackPublished', AUDIO_PUB, mockRoom.localParticipant);
 }
+
+describe('LiveKit Room connect options — issue #117 (v1 RTC path fallback)', () => {
+  it('constructs Room with singlePeerConnection:false so it never attempts the /rtc/v1 join path our self-hosted server (pinned to v1.9.3) 404s on every connect', async () => {
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    expect(LIVEKIT_ROOM_OPTIONS.singlePeerConnection).toBe(false);
+    const RoomMock = vi.mocked(Room);
+    expect(RoomMock).toHaveBeenCalled();
+    const roomCtorOptions = RoomMock.mock.calls.at(-1)?.[0];
+    expect(roomCtorOptions?.singlePeerConnection).toBe(false);
+
+    mod.disconnect();
+  });
+});
 
 describe('camera publish/unpublish', () => {
   it('publishCamera publishes the selected camera with non-simulcast VP8 options', async () => {
