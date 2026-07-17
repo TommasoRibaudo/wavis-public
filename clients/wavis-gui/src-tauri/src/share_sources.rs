@@ -165,36 +165,41 @@ pub struct ShareSelection {
     pub with_audio: bool,
 }
 
+/// Emit a share-picker event to the main window. Generic over the Tauri
+/// runtime so it can be exercised against `tauri::test::MockRuntime` without
+/// a real webview.
+fn emit_share_picker_event<R, E, S>(app: &E, event: &str, payload: S) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    E: tauri::Emitter<R>,
+    S: serde::Serialize + Clone,
+{
+    app.emit_to("main", event, payload)
+        .map_err(|e| format!("failed to emit {event}: {e}"))
+}
+
 /// Relay the share picker selection to the main window.
 #[tauri::command]
 pub fn share_picker_select(app: tauri::AppHandle, selection: ShareSelection) -> Result<(), String> {
-    use tauri::Emitter;
-
-    app.emit_to("main", "share-picker:selected", &selection)
-        .map_err(|e| format!("failed to emit share-picker:selected: {e}"))
+    emit_share_picker_event(&app, "share-picker:selected", selection)
 }
 
 /// Relay the share picker cancellation to the main window.
 #[tauri::command]
 pub fn share_picker_cancel(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-
-    app.emit_to("main", "share-picker:cancelled", ())
-        .map_err(|e| format!("failed to emit share-picker:cancelled: {e}"))
+    emit_share_picker_event(&app, "share-picker:cancelled", ())
 }
 
 /// Relay a request to use the native portal/system picker to the main window.
 #[tauri::command]
 pub fn share_picker_use_portal(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-
-    app.emit_to("main", "share-picker:use-portal", ())
-        .map_err(|e| format!("failed to emit share-picker:use-portal: {e}"))
+    emit_share_picker_event(&app, "share-picker:use-portal", ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use proptest::prelude::*;
 
     /// Strategy to generate a random `ShareSourceType`.
@@ -358,6 +363,162 @@ mod tests {
                 process_id,
             },
         )
+    }
+
+    // --- encode_thumbnail_jpeg ---
+
+    #[test]
+    fn encode_thumbnail_jpeg_rejects_mismatched_buffer_length() {
+        // 10x10 RGBA needs 400 bytes; give it far too few.
+        let rgba = vec![0u8; 10];
+        let result = encode_thumbnail_jpeg(&rgba, 10, 10);
+        assert!(
+            result.is_err(),
+            "a buffer too short for the declared dimensions must be rejected"
+        );
+    }
+
+    #[test]
+    fn encode_thumbnail_jpeg_downscales_large_frame_to_max_dim() {
+        let (width, height) = (640u32, 480u32);
+        let rgba = vec![200u8; (width * height * 4) as usize];
+
+        let b64 = encode_thumbnail_jpeg(&rgba, width, height)
+            .expect("encoding should succeed")
+            .expect("a large frame must produce a thumbnail");
+
+        let jpeg_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .expect("output must be valid base64");
+        let decoded = image::load_from_memory(&jpeg_bytes).expect("output must be a valid JPEG");
+
+        assert!(
+            decoded.width() <= THUMBNAIL_MAX_DIM && decoded.height() <= THUMBNAIL_MAX_DIM,
+            "downscaled thumbnail must fit within {THUMBNAIL_MAX_DIM}px, got {}x{}",
+            decoded.width(),
+            decoded.height()
+        );
+    }
+
+    #[test]
+    fn encode_thumbnail_jpeg_does_not_upscale_small_frame() {
+        let (width, height) = (100u32, 50u32);
+        let rgba = vec![64u8; (width * height * 4) as usize];
+
+        let b64 = encode_thumbnail_jpeg(&rgba, width, height)
+            .expect("encoding should succeed")
+            .expect("a small frame must still produce a thumbnail");
+
+        let jpeg_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .expect("output must be valid base64");
+        let decoded = image::load_from_memory(&jpeg_bytes).expect("output must be a valid JPEG");
+
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (width, height),
+            "a frame already under THUMBNAIL_MAX_DIM must not be resized"
+        );
+    }
+
+    // --- share-picker:* events (P2-10 wave3, using tauri::test::MockRuntime) ---
+
+    #[test]
+    fn share_picker_select_emits_selected_event_with_payload() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+        app.listen_any("share-picker:selected", move |event| {
+            *captured_clone.lock().unwrap() = Some(event.payload().to_string());
+        });
+
+        let selection = ShareSelection {
+            mode: "window".to_string(),
+            source_id: "src-1".to_string(),
+            source_name: "Some Window".to_string(),
+            with_audio: true,
+        };
+
+        emit_share_picker_event(app.handle(), "share-picker:selected", selection.clone())
+            .expect("emit should succeed");
+
+        let payload_json = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("share-picker:selected listener must have fired");
+        let deserialized: ShareSelection = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(deserialized.mode, selection.mode);
+        assert_eq!(deserialized.source_id, selection.source_id);
+        assert_eq!(deserialized.source_name, selection.source_name);
+        assert_eq!(deserialized.with_audio, selection.with_audio);
+    }
+
+    #[test]
+    fn share_picker_cancel_emits_cancelled_event() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let fired = Arc::new(Mutex::new(false));
+        let fired_clone = fired.clone();
+        app.listen_any("share-picker:cancelled", move |_event| {
+            *fired_clone.lock().unwrap() = true;
+        });
+
+        emit_share_picker_event(app.handle(), "share-picker:cancelled", ())
+            .expect("emit should succeed");
+
+        assert!(
+            *fired.lock().unwrap(),
+            "share-picker:cancelled listener must have fired"
+        );
+    }
+
+    #[test]
+    fn share_picker_use_portal_emits_use_portal_event() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let fired = Arc::new(Mutex::new(false));
+        let fired_clone = fired.clone();
+        app.listen_any("share-picker:use-portal", move |_event| {
+            *fired_clone.lock().unwrap() = true;
+        });
+
+        emit_share_picker_event(app.handle(), "share-picker:use-portal", ())
+            .expect("emit should succeed");
+
+        assert!(
+            *fired.lock().unwrap(),
+            "share-picker:use-portal listener must have fired"
+        );
+    }
+
+    #[test]
+    fn share_picker_events_do_not_cross_fire() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let cancelled_fired = Arc::new(Mutex::new(false));
+        let cancelled_clone = cancelled_fired.clone();
+        app.listen_any("share-picker:cancelled", move |_event| {
+            *cancelled_clone.lock().unwrap() = true;
+        });
+
+        // Emitting a *different* event name must not trigger the cancelled listener.
+        emit_share_picker_event(app.handle(), "share-picker:use-portal", ())
+            .expect("emit should succeed");
+
+        assert!(
+            !*cancelled_fired.lock().unwrap(),
+            "an unrelated event must not fire the cancelled listener"
+        );
     }
 
     proptest! {

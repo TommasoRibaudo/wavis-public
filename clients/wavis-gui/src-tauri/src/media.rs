@@ -2288,21 +2288,34 @@ pub fn media_set_screen_share_audio_volume(
     Ok(())
 }
 
+/// Enable or disable a participant's remote screen share audio in the native
+/// mix. Shared by attach/detach — narrow deps so it's testable without a real
+/// `MediaState` (no LiveKit connection needed for the always-exercised
+/// None-path; a `Some` connection would require a real LiveKit session).
+fn set_screen_share_audio_enabled_impl(
+    runtime: &Runtime,
+    lk: &Mutex<Option<Arc<RealLiveKitConnection>>>,
+    id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    // LiveKit SDK setters internally `tokio::task::spawn`, which panics when
+    // called from a thread without a Tokio runtime in TLS. This was the
+    // root cause of "watch another stream → app freezes → crash" on Linux.
+    let _enter = runtime.enter();
+    let lk_guard = lk.lock().map_err(|e| format!("lock: {e}"))?;
+    if let Some(conn) = lk_guard.as_ref() {
+        conn.set_screen_share_audio_enabled(id, enabled);
+    }
+    Ok(())
+}
+
 /// Allow a participant's remote screen share audio to enter the native mix.
 #[tauri::command]
 pub fn media_attach_screen_share_audio(
     id: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
-    // LiveKit SDK setters internally `tokio::task::spawn`, which panics when
-    // called from a thread without a Tokio runtime in TLS. This was the
-    // root cause of "watch another stream → app freezes → crash" on Linux.
-    let _enter = state.runtime.enter();
-    let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
-    if let Some(conn) = lk_guard.as_ref() {
-        conn.set_screen_share_audio_enabled(&id, true);
-    }
-    Ok(())
+    set_screen_share_audio_enabled_impl(&state.runtime, &state.lk, &id, true)
 }
 
 /// Block a participant's remote screen share audio from the native mix.
@@ -2311,31 +2324,96 @@ pub fn media_detach_screen_share_audio(
     id: String,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
-    let _enter = state.runtime.enter();
-    let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
-    if let Some(conn) = lk_guard.as_ref() {
-        conn.set_screen_share_audio_enabled(&id, false);
+    set_screen_share_audio_enabled_impl(&state.runtime, &state.lk, &id, false)
+}
+
+/// Clamp `level` to 0–100 and apply it to the playback buffer if one is
+/// active. Returns the clamped value actually applied (or that would have
+/// been applied, in the no-buffer case) for testability.
+fn set_master_volume_impl(playback_buffer: &Mutex<Option<AudioBuffer>>, level: u32) -> u8 {
+    let clamped = level.min(100) as u8;
+    if let Ok(pb) = playback_buffer.lock() {
+        if let Some(buf) = pb.as_ref() {
+            buf.set_volume(clamped);
+        }
     }
-    Ok(())
+    clamped
 }
 
 /// Set master volume (0–100).
 #[tauri::command]
 pub fn media_set_master_volume(level: u32, state: State<'_, MediaState>) -> Result<(), String> {
-    let clamped = level.min(100) as u8;
-    if let Ok(pb) = state.playback_buffer.lock() {
-        if let Some(buf) = pb.as_ref() {
-            buf.set_volume(clamped);
-        }
-    }
+    set_master_volume_impl(&state.playback_buffer, level);
     Ok(())
+}
+
+/// True if a live, available LiveKit connection is present.
+fn is_connected_impl(lk: &Mutex<Option<Arc<RealLiveKitConnection>>>) -> Result<bool, String> {
+    let lk_guard = lk.lock().map_err(|e| format!("lock: {e}"))?;
+    Ok(lk_guard.as_ref().is_some_and(|c| c.is_available()))
 }
 
 /// Check if native media is currently connected.
 #[tauri::command]
 pub fn media_is_connected(state: State<'_, MediaState>) -> Result<bool, String> {
-    let lk_guard = state.lk.lock().map_err(|e| format!("lock: {e}"))?;
-    Ok(lk_guard.as_ref().is_some_and(|c| c.is_available()))
+    is_connected_impl(&state.lk)
+}
+
+#[cfg(test)]
+mod media_state_command_tests {
+    use super::{
+        is_connected_impl, set_master_volume_impl, set_screen_share_audio_enabled_impl, Arc,
+        AudioBuffer, Mutex, RealLiveKitConnection,
+    };
+
+    // --- media_set_master_volume: pure clamp behavior ---
+
+    #[test]
+    fn set_master_volume_clamps_above_range() {
+        let playback: Mutex<Option<AudioBuffer>> = Mutex::new(None);
+        assert_eq!(set_master_volume_impl(&playback, 250), 100);
+    }
+
+    #[test]
+    fn set_master_volume_preserves_in_range_value() {
+        let playback: Mutex<Option<AudioBuffer>> = Mutex::new(None);
+        assert_eq!(set_master_volume_impl(&playback, 73), 73);
+    }
+
+    #[test]
+    fn set_master_volume_none_buffer_is_noop_without_panic() {
+        let playback: Mutex<Option<AudioBuffer>> = Mutex::new(None);
+        // Must not panic when there's no active playback buffer to apply to.
+        set_master_volume_impl(&playback, 50);
+    }
+
+    // --- media_attach/detach_screen_share_audio: None-path no-op ---
+    // The Some-path (a real LiveKit connection) is out of scope here — it
+    // would require a live LiveKit session, not just a constructed struct.
+
+    #[test]
+    fn attach_screen_share_audio_none_connection_is_noop_without_panic() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let lk: Mutex<Option<Arc<RealLiveKitConnection>>> = Mutex::new(None);
+        let result = set_screen_share_audio_enabled_impl(&runtime, &lk, "peer-1", true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn detach_screen_share_audio_none_connection_is_noop_without_panic() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let lk: Mutex<Option<Arc<RealLiveKitConnection>>> = Mutex::new(None);
+        let result = set_screen_share_audio_enabled_impl(&runtime, &lk, "peer-1", false);
+        assert!(result.is_ok());
+    }
+
+    // --- media_is_connected: None-path ---
+
+    #[test]
+    fn is_connected_returns_false_when_no_connection() {
+        let lk: Mutex<Option<Arc<RealLiveKitConnection>>> = Mutex::new(None);
+        assert_eq!(is_connected_impl(&lk).unwrap(), false);
+    }
 }
 
 // ─── Screen Share IPC Commands (Linux only) ────────────────────────
