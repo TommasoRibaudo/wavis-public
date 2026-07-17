@@ -198,6 +198,17 @@ export const LIVEKIT_ROOM_OPTIONS = {
   // recover quickly. If screen-share quality regressions reappear after
   // this change, this is the first knob to flip back to false.
   dynacast: false,
+  // The livekit-client SDK defaults to singlePeerConnection:true, which
+  // makes every connect (and every reconnect) attempt the /rtc/v1 join path
+  // first. Our self-hosted LiveKit server (pinned to v1.9.3) doesn't serve
+  // that route, so it 404s, the SDK logs "v1 RTC path not found — Retrying",
+  // and it falls back to the legacy dual-peer-connection path it ends up
+  // using anyway — paying a guaranteed extra round trip (~seconds under
+  // real-world network conditions) on top of every reconnect (issue #117).
+  // Disabling it up front skips the doomed-to-fail attempt entirely with no
+  // behavior change, since the fallback path is the only one our server
+  // has ever actually served.
+  singlePeerConnection: false,
 } as const;
 
 export function buildCameraPublishOptions(quality: CameraQuality): TrackPublishOptions {
