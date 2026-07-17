@@ -70,3 +70,61 @@ impl ConnectionManager for LiveConnections {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_replaces_stale_sender() {
+        let conns = LiveConnections::new();
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        conns.register("peer1".to_string(), tx1);
+        conns.register("peer1".to_string(), tx2);
+
+        conns.send_to("peer1", &SignalingMessage::PeerLeft);
+
+        assert!(
+            rx1.try_recv().is_err(),
+            "the replaced sender must not receive further messages"
+        );
+        assert!(
+            rx2.try_recv().is_ok(),
+            "the new sender must receive messages sent after registration"
+        );
+    }
+
+    #[test]
+    fn send_to_closed_channel_is_noop() {
+        let conns = LiveConnections::new();
+        let (tx, rx) = mpsc::unbounded_channel();
+        conns.register("peer1".to_string(), tx);
+        drop(rx);
+
+        // Must not panic even though the receiver end is gone.
+        conns.send_to("peer1", &SignalingMessage::PeerLeft);
+    }
+
+    #[test]
+    fn send_to_unknown_peer_is_noop() {
+        let conns = LiveConnections::new();
+        // Must not panic for a peer that was never registered.
+        conns.send_to("ghost-peer", &SignalingMessage::PeerLeft);
+    }
+
+    #[test]
+    fn unregister_is_idempotent() {
+        let conns = LiveConnections::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        conns.register("peer1".to_string(), tx);
+        conns.unregister("peer1");
+        conns.unregister("peer1"); // second call must not panic
+
+        conns.send_to("peer1", &SignalingMessage::PeerLeft);
+        assert!(
+            rx.try_recv().is_err(),
+            "unregistered peer must not receive messages"
+        );
+    }
+}

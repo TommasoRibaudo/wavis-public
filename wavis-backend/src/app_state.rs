@@ -40,7 +40,9 @@ use crate::diagnostics::bug_report_rate_limiter::{
     BugReportRateLimiter, BugReportRateLimiterConfig,
 };
 use crate::diagnostics::llm_client::LlmClient;
+#[cfg(not(windows))]
 use crate::ec2_control::Ec2InstanceController;
+use crate::ec2_control::InstanceController;
 use crate::ip::IpConfig;
 use crate::state::InMemoryRoomState;
 use crate::voice::sfu_bridge::{SfuHealth, SfuRoomManager, SfuSignalingProxy};
@@ -77,7 +79,7 @@ pub struct AppState {
     /// SFU server URL sent to clients in MediaToken payloads.
     pub sfu_url: String,
     /// Optional EC2 controller for the LiveKit instance. Absent in local dev.
-    pub ec2_controller: Option<Arc<Ec2InstanceController>>,
+    pub ec2_controller: Option<Arc<dyn InstanceController>>,
     /// Set when idle shutdown is deferred until the last active room closes.
     pub pending_shutdown: Arc<AtomicBool>,
     /// Invite code store — tracks active invite codes and enforces limits.
@@ -248,7 +250,7 @@ impl AppState {
         #[cfg(not(windows))]
         let ec2_controller = std::env::var("LIVEKIT_EC2_INSTANCE_ID")
             .ok()
-            .map(|id| Arc::new(Ec2InstanceController::new(id)));
+            .map(|id| Arc::new(Ec2InstanceController::new(id)) as Arc<dyn InstanceController>);
 
         #[cfg(windows)]
         let ec2_controller = None;

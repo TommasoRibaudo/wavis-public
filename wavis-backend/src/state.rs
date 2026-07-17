@@ -1184,4 +1184,189 @@ mod tests {
             }
         }
     }
+
+    // --- P1-8: viewer identity accounting (record_viewer_identity / take_viewer_identities) ---
+
+    #[test]
+    fn viewer_identity_same_window_replaces_not_duplicates() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        assert!(info.record_viewer_identity("peer1", "peer1-vw-w1"));
+        // A re-issued identity for the same window (same `-vw-{windowId}` suffix,
+        // even with a different prefix) replaces the old entry instead of adding one.
+        assert!(info.record_viewer_identity("peer1", "peer2-vw-w1"));
+        let entries = info.viewer_identities.get("peer1").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains("peer2-vw-w1"));
+        assert!(!entries.contains("peer1-vw-w1"));
+    }
+
+    #[test]
+    fn viewer_identity_cap_rejects_at_limit() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        for i in 0..MAX_VIEWER_IDENTITIES_PER_PEER {
+            assert!(info.record_viewer_identity("peer1", &format!("peer1-vw-w{i}")));
+        }
+        assert_eq!(
+            info.viewer_identities.get("peer1").unwrap().len(),
+            MAX_VIEWER_IDENTITIES_PER_PEER
+        );
+
+        assert!(!info.record_viewer_identity("peer1", "peer1-vw-overflow"));
+        assert_eq!(
+            info.viewer_identities.get("peer1").unwrap().len(),
+            MAX_VIEWER_IDENTITIES_PER_PEER,
+            "a rejected insert at the cap must not grow the set"
+        );
+    }
+
+    #[test]
+    fn take_viewer_identities_drains_all() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.record_viewer_identity("peer1", "peer1-vw-w1");
+        info.record_viewer_identity("peer1", "peer1-vw-w2");
+
+        let mut taken = info.take_viewer_identities("peer1");
+        taken.sort();
+        assert_eq!(
+            taken,
+            vec!["peer1-vw-w1".to_string(), "peer1-vw-w2".to_string()]
+        );
+
+        assert!(
+            info.take_viewer_identities("peer1").is_empty(),
+            "second take must return nothing left to drain"
+        );
+    }
+
+    #[test]
+    fn viewer_identity_without_window_suffix_does_not_clobber_others() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.record_viewer_identity("peer1", "peer1-vw-w1");
+        // No "-vw-" substring at all: must be added alongside, not treated as a
+        // same-window re-issue of the existing entry.
+        assert!(info.record_viewer_identity("peer1", "peer1-plain"));
+
+        let entries = info.viewer_identities.get("peer1").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains("peer1-vw-w1"));
+        assert!(entries.contains("peer1-plain"));
+    }
+
+    // --- P1-9: preemptive media-token refresh sweep ---
+
+    #[test]
+    fn refresh_lists_only_stale_unconnected_peers() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.record_token_issued("peer1");
+        info.record_token_issued("peer2");
+        info.mark_media_connected("peer2");
+
+        // Threshold 0: elapsed-since-issue is always >= 0, so only connectedness
+        // discriminates the result.
+        assert_eq!(
+            info.peers_needing_token_refresh(0),
+            vec!["peer1".to_string()]
+        );
+    }
+
+    #[test]
+    fn connected_peer_never_needs_refresh() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.record_token_issued("peer1");
+        info.mark_media_connected("peer1");
+        assert!(info.peers_needing_token_refresh(0).is_empty());
+
+        info.mark_media_disconnected("peer1");
+        assert_eq!(
+            info.peers_needing_token_refresh(0),
+            vec!["peer1".to_string()],
+            "losing media connection must re-arm the refresh sweep"
+        );
+    }
+
+    #[test]
+    fn reissue_resets_refresh_clock() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.record_token_issued("peer1");
+        let first = *info.token_issued_at.get("peer1").unwrap();
+
+        info.record_token_issued("peer1");
+        let second = *info.token_issued_at.get("peer1").unwrap();
+
+        assert!(
+            second >= first,
+            "reissuing must refresh the stored issued_at timestamp"
+        );
+        // Immediately after reissue, a threshold well above the test's wall-clock
+        // cost must not flag the peer as stale.
+        assert!(info.peers_needing_token_refresh(60).is_empty());
+    }
+
+    #[test]
+    fn rooms_needing_token_refresh_groups_by_room_and_skips_rooms_without_candidates() {
+        let state = InMemoryRoomState::new();
+
+        let stale_handle = SfuRoomHandle("stale-handle".to_string());
+        state.create_room(
+            "room-stale".to_string(),
+            RoomInfo::new_sfu(6, stale_handle.clone()),
+        );
+        state.update_room_info("room-stale", |info| {
+            info.record_token_issued("peer1");
+        });
+
+        // Only peer is media-connected: no candidates, so the room is omitted.
+        let connected_handle = SfuRoomHandle("connected-handle".to_string());
+        state.create_room(
+            "room-connected".to_string(),
+            RoomInfo::new_sfu(6, connected_handle),
+        );
+        state.update_room_info("room-connected", |info| {
+            info.record_token_issued("peer2");
+            info.mark_media_connected("peer2");
+        });
+
+        // P2P room has no sfu_handle: always excluded regardless of staleness.
+        state.create_room("room-p2p".to_string(), RoomInfo::new_p2p());
+        state.update_room_info("room-p2p", |info| {
+            info.record_token_issued("peer3");
+        });
+
+        let result = state.rooms_needing_token_refresh(0);
+        assert_eq!(
+            result.len(),
+            1,
+            "only the room with a stale unconnected peer should be listed"
+        );
+        let (room_id, handle, peers) = &result[0];
+        assert_eq!(room_id, "room-stale");
+        assert_eq!(handle, &stale_handle);
+        assert_eq!(peers, &vec!["peer1".to_string()]);
+    }
+
+    // --- P2-2: revocation TTL boundary (is_participant_revoked lazy cleanup) ---
+
+    #[test]
+    fn revocation_expires_after_ttl_window() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.add_revoked_participant("peer1", Instant::now());
+
+        // A zero-width TTL window means any elapsed time (even a few nanoseconds)
+        // is already past the window, so the entry must read as not-revoked...
+        assert!(!info.is_participant_revoked("peer1", Duration::ZERO));
+        // ...and must be purged by the same call, not merely skipped.
+        assert!(
+            !info.revoked_participants.contains_key("peer1"),
+            "expired entry must be purged by the lazy cleanup, not just skipped"
+        );
+    }
+
+    #[test]
+    fn revocation_within_ttl_window_returns_true_and_is_not_purged() {
+        let mut info = RoomInfo::new_sfu(6, SfuRoomHandle("h".to_string()));
+        info.add_revoked_participant("peer1", Instant::now());
+
+        assert!(info.is_participant_revoked("peer1", Duration::from_secs(60)));
+        assert!(info.revoked_participants.contains_key("peer1"));
+    }
 }

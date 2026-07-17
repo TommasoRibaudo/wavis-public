@@ -82,3 +82,124 @@ pub async fn handle_sfu_ice(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voice::mock_sfu_bridge::MockSfuBridge;
+    use crate::voice::sfu_bridge::SfuError;
+    use async_trait::async_trait;
+
+    /// Signaling proxy that always fails, to exercise the error-wrapping path.
+    /// `MockSfuBridge` always succeeds on forward_offer/forward_ice_candidate,
+    /// so it can't express this case.
+    struct FailingSfuProxy;
+
+    #[async_trait]
+    impl SfuSignalingProxy for FailingSfuProxy {
+        async fn forward_offer(
+            &self,
+            _handle: &SfuRoomHandle,
+            _participant_id: &str,
+            _sdp: &str,
+        ) -> Result<String, SfuError> {
+            Err(SfuError::Unavailable("sfu offline".to_string()))
+        }
+
+        async fn forward_ice_candidate(
+            &self,
+            _handle: &SfuRoomHandle,
+            _participant_id: &str,
+            _candidate: &IceCandidate,
+        ) -> Result<(), SfuError> {
+            Err(SfuError::Unavailable("sfu offline".to_string()))
+        }
+
+        async fn poll_sfu_ice_candidates(
+            &self,
+            _handle: &SfuRoomHandle,
+            _participant_id: &str,
+        ) -> Result<Vec<IceCandidate>, SfuError> {
+            Ok(vec![])
+        }
+    }
+
+    fn test_ice_candidate() -> IceCandidate {
+        IceCandidate {
+            candidate: "candidate:1 1 UDP 1 127.0.0.1 1 typ host".to_string(),
+            sdp_mid: "0".to_string(),
+            sdp_mline_index: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_success_returns_sdp_answer() {
+        let bridge = MockSfuBridge::new();
+        let handle = SfuRoomHandle("room-1".to_string());
+
+        let result = handle_sfu_offer(&bridge, &handle, "peer1", "offer-sdp").await;
+
+        match result {
+            SfuRelayResult::SdpAnswer {
+                peer_id,
+                answer_sdp,
+            } => {
+                assert_eq!(peer_id, "peer1");
+                assert_eq!(answer_sdp, "mock-answer-sdp");
+            }
+            other => panic!("expected SdpAnswer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn offer_error_wraps_into_error_signal() {
+        let bridge = FailingSfuProxy;
+        let handle = SfuRoomHandle("room-1".to_string());
+
+        let result = handle_sfu_offer(&bridge, &handle, "peer1", "offer-sdp").await;
+
+        match result {
+            SfuRelayResult::Error { peer_id, error } => {
+                assert_eq!(peer_id, "peer1");
+                match error {
+                    SignalingMessage::Error(payload) => {
+                        assert!(payload.message.contains("SFU offer failed"));
+                    }
+                    other => panic!("expected SignalingMessage::Error, got {other:?}"),
+                }
+            }
+            other => panic!("expected SfuRelayResult::Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ice_success_returns_forwarded() {
+        let bridge = MockSfuBridge::new();
+        let handle = SfuRoomHandle("room-1".to_string());
+
+        let result = handle_sfu_ice(&bridge, &handle, "peer1", &test_ice_candidate()).await;
+
+        assert!(matches!(result, SfuRelayResult::IceForwarded));
+    }
+
+    #[tokio::test]
+    async fn ice_error_wraps_into_error_signal() {
+        let bridge = FailingSfuProxy;
+        let handle = SfuRoomHandle("room-1".to_string());
+
+        let result = handle_sfu_ice(&bridge, &handle, "peer1", &test_ice_candidate()).await;
+
+        match result {
+            SfuRelayResult::Error { peer_id, error } => {
+                assert_eq!(peer_id, "peer1");
+                match error {
+                    SignalingMessage::Error(payload) => {
+                        assert!(payload.message.contains("SFU ICE forward failed"));
+                    }
+                    other => panic!("expected SignalingMessage::Error, got {other:?}"),
+                }
+            }
+            other => panic!("expected SfuRelayResult::Error, got {other:?}"),
+        }
+    }
+}
