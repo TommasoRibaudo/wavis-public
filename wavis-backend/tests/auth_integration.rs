@@ -11,7 +11,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 // Re-export domain types for use in subsequent test tasks (11.2–11.5).
-use wavis_backend::auth::alpha_invite::hash_invite_code;
+use wavis_backend::auth::alpha_invite::{
+    AlphaInviteStatus, create_alpha_invite, disable_alpha_invite, hash_invite_code,
+    list_alpha_invites,
+};
 #[allow(unused_imports)]
 use wavis_backend::auth::auth::{
     self, AuthError, DeviceRegistration, TokenPair, generate_refresh_token, hash_refresh_token,
@@ -19,6 +22,7 @@ use wavis_backend::auth::auth::{
     validate_refresh_ttl,
 };
 use wavis_backend::auth::jwt::{sign_access_token, validate_access_token};
+use wavis_backend::redaction::Sensitive;
 
 /// Get a test database pool. Reads DATABASE_URL from env,
 /// falling back to a local default for convenience.
@@ -1603,4 +1607,153 @@ async fn redeem_rejects_at_exact_expiry_instant() {
         redemption_count, 0,
         "a rejected expired redemption must not consume a slot"
     );
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn generated_alpha_invite_is_hash_only_and_redeemable() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let expires_at = chrono::DateTime::parse_from_rfc3339("2099-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let admin_pepper = Sensitive(test_alpha_invite_pepper());
+    let created = create_alpha_invite(
+        &pool,
+        "person@example.com",
+        Some(expires_at),
+        2,
+        &admin_pepper,
+    )
+    .await
+    .unwrap();
+    let raw_code = created.raw_code.inner().clone();
+    let expected_hash = hash_invite_code(&raw_code, &test_alpha_invite_pepper()).unwrap();
+
+    let stored: (
+        Vec<u8>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        i32,
+        i32,
+    ) = sqlx::query_as(
+        "SELECT code_hash, label, expires_at, max_redemptions, redemption_count \
+             FROM alpha_invites WHERE invite_id = $1",
+    )
+    .bind(created.invite.invite_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored.0, expected_hash);
+    assert_eq!(stored.1.as_deref(), Some("person@example.com"));
+    assert_eq!(stored.2, Some(expires_at));
+    assert_eq!(stored.3, 2);
+    assert_eq!(stored.4, 0);
+
+    let persisted_json: String = sqlx::query_scalar(
+        "SELECT to_jsonb(invite_row)::text FROM alpha_invites invite_row WHERE invite_id = $1",
+    )
+    .bind(created.invite.invite_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!persisted_json.contains(&raw_code));
+
+    let secret = test_auth_secret();
+    let refresh_pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+    let registration = auth::register_user_with_invite(
+        &pool,
+        "generated-invite-test-phrase",
+        "generated-invite-user",
+        &raw_code,
+        &secret,
+        900,
+        30,
+        &refresh_pepper,
+        &test_alpha_invite_pepper(),
+        &phrase_config,
+        TEST_ENCRYPTION_KEY,
+    )
+    .await
+    .unwrap();
+
+    let invites = list_alpha_invites(&pool, Some("person@example.com"))
+        .await
+        .unwrap();
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].redemption_count, 1);
+    assert_eq!(invites[0].remaining_redemptions(), 1);
+    assert_eq!(
+        invites[0].status_at(chrono::Utc::now()),
+        AlphaInviteStatus::Active
+    );
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM alpha_invite_redemptions \
+         WHERE invite_id = $1 AND user_id = $2 AND device_id = $3",
+    )
+    .bind(created.invite.invite_id)
+    .bind(registration.user_id)
+    .bind(registration.device_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1);
+}
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn admin_disabled_invite_is_idempotent_and_leaves_no_auth_rows() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let admin_pepper = Sensitive(test_alpha_invite_pepper());
+    let created = create_alpha_invite(&pool, "disabled-person", None, 1, &admin_pepper)
+        .await
+        .unwrap();
+    let raw_code = created.raw_code.inner().clone();
+    let first_disable = disable_alpha_invite(&pool, created.invite.invite_id)
+        .await
+        .unwrap();
+    let second_disable = disable_alpha_invite(&pool, created.invite.invite_id)
+        .await
+        .unwrap();
+
+    assert_eq!(first_disable.disabled_at, second_disable.disabled_at);
+    assert_eq!(
+        second_disable.status_at(chrono::Utc::now()),
+        AlphaInviteStatus::Disabled
+    );
+
+    let result = auth::register_user_with_invite(
+        &pool,
+        "disabled-invite-test-phrase",
+        "disabled-invite-user",
+        &raw_code,
+        &test_auth_secret(),
+        900,
+        30,
+        &test_pepper(),
+        &test_alpha_invite_pepper(),
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await;
+
+    assert!(matches!(result, Err(AuthError::InviteInvalid)));
+
+    for table in [
+        "users",
+        "devices",
+        "refresh_tokens",
+        "alpha_invite_redemptions",
+    ] {
+        let query = format!("SELECT COUNT(*) FROM {table}");
+        let count: i64 = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 0, "disabled invite left partial rows in {table}");
+    }
 }

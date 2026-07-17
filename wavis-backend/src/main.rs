@@ -450,9 +450,16 @@ async fn main() -> io::Result<()> {
     let pairing_code_pepper = Arc::new(pairing_code_pepper.into_bytes());
 
     // --- Recovery rate limiter ---
-    let recovery_rate_limiter = Arc::new(RecoveryRateLimiter::new(
-        RecoveryRateLimiterConfig::default(),
-    ));
+    // Per-IP ceiling is env-overridable for local e2e runs (every Login-UI
+    // authentication is a /auth/recover call), same pattern as
+    // AUTH_REGISTER_RATE_LIMIT above. Default and all other knobs unchanged.
+    let recovery_rate_limiter = Arc::new(RecoveryRateLimiter::new(RecoveryRateLimiterConfig {
+        per_ip_max: env::var("AUTH_RECOVER_RATE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(RecoveryRateLimiterConfig::default().per_ip_max),
+        ..RecoveryRateLimiterConfig::default()
+    }));
 
     // --- Background cleanup retention config ---
     let pairing_retention_hours: u64 = env::var("PAIRING_RETENTION_HOURS")

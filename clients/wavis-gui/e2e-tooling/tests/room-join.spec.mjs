@@ -7,7 +7,7 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   leaveRoomIfActive,
 } from './live-backend-helpers.mjs';
@@ -24,11 +24,7 @@ test('joining a channel by invite code shows it in the channel list', async ({ a
   const pathname = new URL(main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-joiner-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);

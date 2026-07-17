@@ -29,7 +29,7 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   enterChannelRoom,
   leaveRoomIfActive,
@@ -37,6 +37,7 @@ import {
   joinDefaultSubRoomAsPeer,
   visibleText,
   visibleTitle,
+  visibleIcon,
   spawnPeer,
   joinVoiceAsPeer,
   sendCliCommand,
@@ -56,11 +57,7 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
   const pathname = new URL(main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-share-gui-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);
@@ -88,11 +85,11 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
     await main.getByRole('button', { name: 'Share', exact: true }).click();
 
     await peer.waitForOutput(/"type":"share_started"/, 15_000);
-    await expect(visibleTitle(main, 'you are sharing')).toBeVisible({ timeout: 10_000 });
+    await expect(visibleIcon(main, 'you are sharing')).toBeVisible({ timeout: 10_000 });
 
     await sendCliCommand(main, '/stopshare');
     await peer.waitForOutput(/"type":"share_stopped"/, 15_000);
-    await expect(main.getByTitle('you are sharing')).toHaveCount(0);
+    await expect(main.getByRole('img', { name: 'you are sharing' })).toHaveCount(0);
 
     /* ── Direction B: peer signals a share, GUI shows waiting indicator ── */
     peer.send({ type: 'start_share' });

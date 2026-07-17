@@ -43,7 +43,7 @@ import {
   SERVER_URL,
   waitForBackendHealth,
   seedChannelWithInvite,
-  registerViaUi,
+  registerAndLoginViaUi,
   joinChannelViaUi,
   enterChannelRoom,
   leaveRoomIfActive,
@@ -92,11 +92,7 @@ test('audio published by a peer is decoded and reflected in the GUI as real rmsL
   const pathname = new URL(main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerViaUi(main, {
-      username: `e2e-audio-gui-${suffix}`,
-      password: `e2e-password-${suffix}`,
-      serverUrl: SERVER_URL,
-    });
+    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
   }
 
   await joinChannelViaUi(main, invite.code);
