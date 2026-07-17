@@ -7,6 +7,7 @@ on:
       - 'wavis-backend/**'
       - 'shared/**'
       - 'clients/**'
+      - 'tools/**'
       - '.github/workflows/workspace-ci.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -15,6 +16,7 @@ on:
       - 'wavis-backend/**'
       - 'shared/**'
       - 'clients/**'
+      - 'tools/**'
       - '.github/workflows/workspace-ci.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -61,6 +63,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       shared: ${{ steps.filter.outputs.shared }}
       clients: ${{ steps.filter.outputs.clients }}
+      tools: ${{ steps.filter.outputs.tools }}
       gui: ${{ steps.filter.outputs.gui }}
       tauri: ${{ steps.filter.outputs.tauri }}
       cargo-root: ${{ steps.filter.outputs.cargo-root }}
@@ -95,6 +98,13 @@ jobs:
             clients:
               - 'clients/**'
               - '!clients/wavis-gui/**'
+            # tools/stress (stress-harness) and tools/gui-surface-test are
+            # workspace members compiled/tested via $CI_PACKAGES but had no
+            # path filter of their own, so PRs touching only tools/** never
+            # triggered this workflow at all — silent phantom coverage at
+            # the trigger level, not just the feature-gate level (see P0-1).
+            tools:
+              - 'tools/**'
             gui:
               - 'clients/wavis-gui/**'
             tauri:
@@ -203,6 +213,7 @@ jobs:
       needs.changes.outputs.backend == 'true' ||
       needs.changes.outputs.shared == 'true' ||
       needs.changes.outputs.clients == 'true' ||
+      needs.changes.outputs.tools == 'true' ||
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
@@ -265,7 +276,11 @@ jobs:
 
       # cargo test builds implicitly — no separate cargo build step needed.
       - name: Full workspace tests
-        if: github.ref == 'refs/heads/main' || needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true'
+        if: >-
+          github.ref == 'refs/heads/main' ||
+          needs.changes.outputs.core == 'true' ||
+          needs.changes.outputs.shared == 'true' ||
+          needs.changes.outputs.tools == 'true'
         run: cargo test $CI_PACKAGES
 
       # Backend changed in a path no granular bucket covers (chat, diagnostics,
