@@ -15,7 +15,7 @@
 // commit history: an earlier, faster-looking version of this logic was
 // itself a bug). This spec waits out the real budget rather than risk
 // re-introducing that bug via a shortcut.
-import { test, expect } from '../fixtures.mjs';
+import { test, expect } from './fixtures.mjs';
 import {
   SERVER_URL,
   waitForBackendHealth,
