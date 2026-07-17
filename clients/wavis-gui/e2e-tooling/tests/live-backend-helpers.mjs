@@ -605,25 +605,25 @@ export async function clearNetworkConditions() {
 
 /* ─── Backend outage simulation (wavis-backend container) ──────────────
  * Unlike the netem helpers above (which degrade the LiveKit media leg),
- * this fully stops the signaling/REST backend to simulate a real "server
- * down" outage — used by zz-disconnect-sound.spec.mjs. `docker stop` (not
- * `pause`) is deliberate: `pause` freezes the process via the cgroup
- * freezer but leaves existing sockets open and silent, so the GUI's
- * WebSocket would never see a close event and could hang far longer than
- * intended; `stop` tears the process down, so the OS immediately refuses/
- * resets connections the way a genuinely dead backend would.
+ * these fully stop the signaling/REST backend to simulate a real "server
+ * down" outage. `docker stop` (not `pause`) is deliberate: `pause` freezes
+ * the process via the cgroup freezer but leaves existing sockets open and
+ * silent, so the GUI's WebSocket would never see a close event and could
+ * hang far longer than intended; `stop` tears the process down, so the OS
+ * immediately refuses/resets connections the way a genuinely dead backend
+ * would.
  */
 const BACKEND_CONTAINER = 'wavis-backend';
 
-/** Stops the backend container. */
+/** Stops the backend container. Used by zz-disconnect-sound.spec.mjs. */
 export async function stopBackendContainer() {
   await execFileAsync('docker', ['stop', BACKEND_CONTAINER]);
 }
 
 /**
- * Restarts the backend container and waits for /health to respond again.
+ * Starts the backend container and waits for /health to respond again.
  * Safe to call unconditionally (e.g. in a finally) — `docker start` on an
- * already-running container is a no-op.
+ * already-running container is a no-op. Used by zz-disconnect-sound.spec.mjs.
  */
 export async function startBackendContainer(healthTimeoutMs = 30_000) {
   try {
@@ -632,4 +632,24 @@ export async function startBackendContainer(healthTimeoutMs = 30_000) {
     // Already running.
   }
   await waitForBackendHealth(healthTimeoutMs);
+}
+
+/**
+ * Restarts the backend container (stop + start) and waits for /health to
+ * report ok again — used by reconnect.spec.mjs. Composed from the two
+ * primitives above rather than `docker restart`, so both specs share one
+ * "server down" mechanism (a hard stop, not a pause) instead of two subtly
+ * different ones. Dropping the connection this way takes down every WS
+ * connection to the backend (both the GUI's signaling socket and any
+ * spawnPeer()/ws-sfu-test connection — ws-sfu-test is a one-shot
+ * connect_async with no reconnect loop of its own, confirmed via its
+ * source, so a peer connection does not survive this and must be
+ * re-established by the caller if the scenario needs a peer present both
+ * before and after). wavis-livekit is untouched, so an already-negotiated
+ * LiveKit media session (e.g. a connectTonePeer() publish) is not expected
+ * to drop on its own.
+ */
+export async function restartBackend({ healthTimeoutMs = 60_000 } = {}) {
+  await stopBackendContainer();
+  await startBackendContainer(healthTimeoutMs);
 }
