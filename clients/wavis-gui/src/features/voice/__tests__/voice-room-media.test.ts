@@ -1681,14 +1681,34 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
 
     if (lastSignalingClient) {
       lastSignalingClient.status = 'disconnected';
-      lastSignalingClient.reconnectTimer = null;
-      lastSignalingClient.periodicRetryTimer = null;
+      lastSignalingClient.reconnectExhausted = true;
     }
     statusChangeHandler!('disconnected');
     await tick();
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(getState().machineState).toBe('idle');
+  });
+
+  it('does not give up while a reconnect is merely pending between attempts (reconnectExhausted still false)', async () => {
+    await driveToActive('ch-sounds', 'room-sounds', false);
+
+    statusChangeHandler!('disconnected');
+    await tick();
+    expect(getState().machineState).toBe('reconnecting');
+
+    // A real SignalingClient's reconnectTimer is transiently null between one
+    // failed attempt and the next being scheduled — that alone must NOT be
+    // read as "exhausted" (see websocket.ts's reconnectExhausted flag).
+    if (lastSignalingClient) {
+      lastSignalingClient.status = 'disconnected';
+      lastSignalingClient.reconnectExhausted = false;
+    }
+    statusChangeHandler!('disconnected');
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+    expect(getState().machineState).toBe('reconnecting');
   });
 
   it('does not play leave sound for initial connection failure before room membership', async () => {
@@ -2737,6 +2757,150 @@ describe('Edge case unit tests', () => {
       expect(ignoreEvents.length).toBeGreaterThanOrEqual(1);
 
       leaveRoom();
+    });
+
+    it('plays one leave sound when media_token arrives while retries are already exhausted, even though signaling stays active', async () => {
+      resetAll();
+      mockMaxRetries = 1; // exhaust after 1 failure
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaFailed('test failure');
+      await tick();
+
+      expect(latestState!.mediaReconnectFailures).toBe(1);
+      expect(latestState!.mediaState).toBe('failed');
+      // Not yet — onMediaFailed alone only marks the media state as failed.
+      expect(playNotificationSoundCalls).toEqual([]);
+
+      // Backend pushes a fresh media_token, but the retry budget is spent —
+      // this is a pure LiveKit/media-layer give-up: the WS signaling session
+      // (machineState) is never touched, so nothing else would ever play
+      // the disconnect sound for this scenario.
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu2', token: 'tok2' });
+      await tick();
+      await tick(); // extra tick for async getReconnectConfig
+
+      expect(getState().machineState).toBe('active');
+      expect(playNotificationSoundCalls).toEqual(['leave']);
+
+      leaveRoom();
+    });
+
+    it('plays one leave sound when reconnectMedia() itself exhausts the retry budget', async () => {
+      resetAll();
+      mockMaxRetries = 1; // exhaust after 1 failure
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaFailed('test failure');
+      await tick();
+
+      expect(latestState!.mediaReconnectFailures).toBe(1);
+      expect(playNotificationSoundCalls).toEqual([]);
+
+      await reconnectMedia();
+
+      expect(getState().machineState).toBe('active');
+      expect(playNotificationSoundCalls).toEqual(['leave']);
+
+      leaveRoom();
+    });
+  });
+
+  describe('11.1b: media_token request timeout (no response from backend)', () => {
+    it('retries reconnectMedia when no media_token ever arrives for a pending request', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      sentMessages = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0); // flush reconnectMedia()'s awaited getReconnectConfig()
+
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+        expect(latestState!.mediaReconnectFailures).toBe(0);
+
+        // No media_token ever arrives — advance past the request timeout.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(latestState!.mediaReconnectFailures).toBe(1);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
+    });
+
+    it('eventually plays the disconnect sound if media_token requests keep timing out', async () => {
+      resetAll();
+      mockMaxRetries = 1;
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      playNotificationSoundCalls = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(playNotificationSoundCalls).toEqual([]);
+
+        // The one retry attempt the exhausted budget (mockMaxRetries=1)
+        // allows also never gets a response — the timeout handler's own
+        // reconnectMedia() call hits the exhausted branch directly.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(getState().mediaState).toBe('failed');
+        expect(playNotificationSoundCalls).toEqual(['leave']);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
+    });
+
+    it('a media_token that arrives in time clears the pending timeout (no spurious retry)', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      sentMessages = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+
+        // Backend responds well within the timeout window.
+        messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu2', token: 'tok2' });
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Advancing past where the (now-cleared) timeout would have fired
+        // must NOT trigger a spurious extra retry or failure count.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(latestState!.mediaReconnectFailures).toBe(0);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
     });
   });
 

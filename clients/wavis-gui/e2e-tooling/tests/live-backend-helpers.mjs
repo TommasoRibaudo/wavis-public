@@ -602,3 +602,34 @@ export async function clearNetworkConditions() {
     // No qdisc present — already clear.
   }
 }
+
+/* ─── Backend outage simulation (wavis-backend container) ──────────────
+ * Unlike the netem helpers above (which degrade the LiveKit media leg),
+ * this fully stops the signaling/REST backend to simulate a real "server
+ * down" outage — used by zz-disconnect-sound.spec.mjs. `docker stop` (not
+ * `pause`) is deliberate: `pause` freezes the process via the cgroup
+ * freezer but leaves existing sockets open and silent, so the GUI's
+ * WebSocket would never see a close event and could hang far longer than
+ * intended; `stop` tears the process down, so the OS immediately refuses/
+ * resets connections the way a genuinely dead backend would.
+ */
+const BACKEND_CONTAINER = 'wavis-backend';
+
+/** Stops the backend container. */
+export async function stopBackendContainer() {
+  await execFileAsync('docker', ['stop', BACKEND_CONTAINER]);
+}
+
+/**
+ * Restarts the backend container and waits for /health to respond again.
+ * Safe to call unconditionally (e.g. in a finally) — `docker start` on an
+ * already-running container is a no-op.
+ */
+export async function startBackendContainer(healthTimeoutMs = 30_000) {
+  try {
+    await execFileAsync('docker', ['start', BACKEND_CONTAINER]);
+  } catch {
+    // Already running.
+  }
+  await waitForBackendHealth(healthTimeoutMs);
+}

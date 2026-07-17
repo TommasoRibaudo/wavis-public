@@ -104,6 +104,12 @@ jobs:
       # landed; the backend won't start without these.
       GITHUB_BUG_REPORT_TOKEN: ci-dummy-token
       GITHUB_BUG_REPORT_REPO: ci-dummy/ci-dummy
+      # Required by gui-surface-test's register() since 024985e made invite
+      # codes mandatory; seeded into alpha_invites by the step below. No
+      # hyphens/lowercase: normalize_invite_code() strips '-' and uppercases
+      # before hashing, so the seeded hash must be computed on that same
+      # normalized form, not this literal string.
+      ALPHA_INVITE_CODE: NIGHTLYALPHA
 
     steps:
       - uses: actions/checkout@v5
@@ -114,7 +120,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libasound2-dev libva-dev postgresql-client
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@1.93.1
@@ -146,6 +152,16 @@ jobs:
           echo "backend failed to become ready within 60s"
           cat backend.log
           exit 1
+
+      # /auth/register requires a redeemable invite since 024985e ("adding
+      # one time invite codes"). ALPHA_INVITE_CODE_PEPPER isn't set above, so
+      # the backend falls back to its debug-build default (app_state.rs);
+      # hash the code with that same value. printf (not echo/heredoc) avoids
+      # a trailing newline that would change the HMAC input.
+      - name: Seed alpha invite code
+        run: |
+          HASH=$(printf '%s' "alpha-invite:v1:${ALPHA_INVITE_CODE}" | openssl dgst -sha256 -hmac 'dev-alpha-invite-pepper-32b!!XXX' -r | awk '{print $1}')
+          PGPASSWORD=wavis psql -h localhost -U wavis -d wavis -c "INSERT INTO alpha_invites (code_hash, max_redemptions) VALUES (decode('${HASH}','hex'), 1000);"
 
       - name: Run GUI surface tests
         run: cargo run -p gui-surface-test -- --url http://127.0.0.1:3000
