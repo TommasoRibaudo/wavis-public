@@ -962,8 +962,7 @@ describe('LiveKit Room connect options — issue #117 (v1 RTC path fallback)', (
     expect(LIVEKIT_ROOM_OPTIONS.singlePeerConnection).toBe(false);
     const RoomMock = vi.mocked(Room);
     expect(RoomMock).toHaveBeenCalled();
-    const roomCtorOptions = RoomMock.mock.calls.at(-1)?.[0] as
-      { singlePeerConnection?: boolean } | undefined;
+    const roomCtorOptions = RoomMock.mock.calls.at(-1)?.[0];
     expect(roomCtorOptions?.singlePeerConnection).toBe(false);
 
     mod.disconnect();
