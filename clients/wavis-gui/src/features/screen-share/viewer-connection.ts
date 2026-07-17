@@ -219,7 +219,11 @@ export class ViewerRoomConnection {
       // (issue #117): our self-hosted LiveKit server doesn't serve the SDK's
       // default /rtc/v1 join path, so every viewer window connect would
       // otherwise pay a guaranteed-fail round trip before falling back.
-      const room = new Room({ adaptiveStream: false, dynacast: false, singlePeerConnection: false });
+      const room = new Room({
+        adaptiveStream: false,
+        dynacast: false,
+        singlePeerConnection: false,
+      });
       this.wireRoomEvents(room);
       this.room = room;
 
