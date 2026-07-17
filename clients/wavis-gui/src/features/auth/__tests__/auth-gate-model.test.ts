@@ -17,6 +17,7 @@ import fc from 'fast-check';
 import type { RefreshResult } from '../auth';
 import {
   runAuthGateInit,
+  runAuthGateResume,
   decideScheduledRefreshAction,
   jitteredDelay,
   isTransientFailure,
@@ -374,6 +375,125 @@ describe('runAuthGateInit — properties', () => {
       }),
       { numRuns: 50 },
     );
+  });
+});
+
+/* ═══ runAuthGateResume — visibilitychange (app resume) path ═══════
+ *
+ * Issue #197 follow-up: the merged fix (runAuthGateInit) only recovers a
+ * missing username once, at cold-launch mount. AuthGate.tsx's
+ * visibilitychange handler — which fires when the app resumes from OS
+ * sleep, exactly the scenario in the original bug report's diagnostics
+ * ("App resumed — re-scheduling refresh timer") — never re-ran that sync.
+ * A device paired/recovered while the app kept running across sleep/wake
+ * cycles (never fully restarted) would see the username gap persist
+ * indefinitely. These tests pin the fix: resume now recovers it too.
+ */
+describe('runAuthGateResume — username sync on app resume (issue #197 follow-up)', () => {
+  it('token still valid, no local username, server has one: synced and returned, outcome "ready"', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => false),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => 'diego'),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('ready');
+    expect(deps.setUsername).toHaveBeenCalledWith('diego');
+    expect(result.syncedUsername).toBe('diego');
+  });
+
+  it('expired token, refresh succeeds, no local username: synced and returned, outcome "refreshed"', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => true),
+      refreshTokens: vi.fn(async (): Promise<RefreshResult> => ({ status: 'success' })),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => 'diego'),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('refreshed');
+    expect(deps.setUsername).toHaveBeenCalledWith('diego');
+    expect(result.syncedUsername).toBe('diego');
+  });
+
+  it('local username already present: /me is never called, regardless of token state', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => false),
+      getUsername: vi.fn(async () => 'existing-user'),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('ready');
+    expect(deps.fetchMyUsername).not.toHaveBeenCalled();
+    expect(result.syncedUsername).toBeNull();
+  });
+
+  it('expired token, non-recoverable refresh failure: outcome "login", username sync never reached', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => true),
+      refreshTokens: vi.fn(async (): Promise<RefreshResult> => ({ status: 'unauthorized' })),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => 'diego'),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('login');
+    expect(deps.clearAccessTokens).toHaveBeenCalledTimes(1);
+    expect(deps.fetchMyUsername).not.toHaveBeenCalled();
+    expect(result.syncedUsername).toBeNull();
+  });
+
+  it('expired token, transient refresh failure: outcome "skipped", no clearing, username sync never reached', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => true),
+      refreshTokens: vi.fn(async (): Promise<RefreshResult> => ({
+        status: 'network_error',
+        message: 'down',
+      })),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => 'diego'),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('skipped');
+    expect(deps.clearAccessTokens).not.toHaveBeenCalled();
+    expect(deps.fetchMyUsername).not.toHaveBeenCalled();
+    expect(result.syncedUsername).toBeNull();
+  });
+
+  it('fetchMyUsername throws: best-effort, resume still completes as "ready"', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => false),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(result.outcome).toBe('ready');
+    expect(deps.setUsername).not.toHaveBeenCalled();
+    expect(result.syncedUsername).toBeNull();
+  });
+
+  it('fetchMyUsername resolves null: store left untouched', async () => {
+    const deps = makeDeps({
+      isTokenExpired: vi.fn(async () => false),
+      getUsername: vi.fn(async () => null),
+      fetchMyUsername: vi.fn(async () => null),
+    });
+
+    const result = await runAuthGateResume(deps);
+
+    expect(deps.setUsername).not.toHaveBeenCalled();
+    expect(result.syncedUsername).toBeNull();
   });
 });
 

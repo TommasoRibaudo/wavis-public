@@ -13,8 +13,8 @@ import {
 } from './auth';
 import {
   runAuthGateInit,
+  runAuthGateResume,
   decideScheduledRefreshAction,
-  isTransientFailure,
 } from './auth-gate-model';
 import { parseHostname } from '@shared/helpers';
 
@@ -106,21 +106,27 @@ export default function AuthGate() {
   useEffect(() => {
     async function handleVisibility() {
       if (document.visibilityState !== 'visible') return;
-      const expired = await isTokenExpired();
-      if (expired) {
-        console.log(LOG_PREFIX, 'App resumed with expired token — refreshing');
-        const result = await refreshTokens();
-        if (result.status === 'success') {
-          refreshRetriesRef.current = 0;
-          void scheduleRefresh();
-        } else if (!isTransientFailure(result)) {
-          await clearAccessTokens();
-          cancelScheduledRefresh();
-          void navigate('/login', { replace: true });
-        }
-      } else {
-        // Token still valid — re-schedule in case the timer was killed while backgrounded
-        console.log(LOG_PREFIX, 'App resumed — re-scheduling refresh timer');
+      console.log(LOG_PREFIX, 'App resumed — re-checking token and username');
+      const result = await runAuthGateResume({
+        isTokenExpired,
+        refreshTokens,
+        clearAccessTokens,
+        getUsername,
+        fetchMyUsername,
+        setUsername,
+      });
+
+      if (result.syncedUsername) setUsernameState(result.syncedUsername);
+
+      if (result.outcome === 'login') {
+        cancelScheduledRefresh();
+        void navigate('/login', { replace: true });
+        return;
+      }
+      if (result.outcome === 'refreshed') {
+        refreshRetriesRef.current = 0;
+      }
+      if (result.outcome === 'ready' || result.outcome === 'refreshed') {
         void scheduleRefresh();
       }
     }

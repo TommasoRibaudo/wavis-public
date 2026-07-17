@@ -144,6 +144,75 @@ export async function runAuthGateInit(
   return { outcome: 'ready', localUsername, syncedUsername };
 }
 
+/* ─── visibilitychange resume — token re-check + username sync ──── */
+
+export type AuthGateResumeOutcome = 'login' | 'ready' | 'refreshed' | 'skipped';
+
+export interface RunAuthGateResumeResult {
+  outcome: AuthGateResumeOutcome;
+  /** Username synced from the server this run (issue #197), if any. */
+  syncedUsername: string | null;
+}
+
+type AuthGateResumeDeps = Pick<
+  AuthGateDeps,
+  | 'isTokenExpired'
+  | 'refreshTokens'
+  | 'clearAccessTokens'
+  | 'getUsername'
+  | 'fetchMyUsername'
+  | 'setUsername'
+>;
+
+/**
+ * Re-evaluate token and username state when the app regains visibility
+ * (e.g. resumes from OS sleep). Covers two token cases — expired while
+ * backgrounded (refresh now) and still valid (just re-schedule) — plus the
+ * same username sync as runAuthGateInit.
+ *
+ * That sync matters here specifically: runAuthGateInit only runs once per
+ * launch, so a long-running app that's suspended and resumed rather than
+ * restarted would otherwise never get a second chance to recover a username
+ * a best-effort pairing/recovery sync failed to persist (issue #197).
+ */
+export async function runAuthGateResume(
+  deps: AuthGateResumeDeps,
+): Promise<RunAuthGateResumeResult> {
+  const expired = await deps.isTokenExpired();
+
+  let outcome: AuthGateResumeOutcome;
+  if (expired) {
+    const result = await deps.refreshTokens();
+    if (result.status === 'success') {
+      outcome = 'refreshed';
+    } else if (!isTransientFailure(result)) {
+      await deps.clearAccessTokens();
+      return { outcome: 'login', syncedUsername: null };
+    } else {
+      // Transient — leave it for the next scheduled refresh or visibility event.
+      return { outcome: 'skipped', syncedUsername: null };
+    }
+  } else {
+    outcome = 'ready';
+  }
+
+  let syncedUsername: string | null = null;
+  const localUsername = await deps.getUsername();
+  if (!localUsername) {
+    try {
+      const serverName = await deps.fetchMyUsername();
+      if (serverName) {
+        await deps.setUsername(serverName);
+        syncedUsername = serverName;
+      }
+    } catch {
+      // Best-effort — missing username is cosmetic, proceed without blocking
+    }
+  }
+
+  return { outcome, syncedUsername };
+}
+
 /* ─── scheduleRefresh() — background sweep reducer ─────────────── */
 
 export type ScheduledRefreshAction = 'success' | 'retry' | 'login';
