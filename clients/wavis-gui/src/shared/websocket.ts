@@ -38,6 +38,16 @@ export class SignalingClient {
   private statusChangeHandler: ((status: WsStatus) => void) | null = null;
   private intentionalDisconnect = false;
   status: WsStatus = 'disconnected';
+  /**
+   * True once the fast exponential-backoff reconnect budget
+   * (maxReconnectAttempt) has been spent and periodic retry has taken over.
+   * Callers (voice-room.ts) use this — not "is a reconnect timer currently
+   * pending" — to decide the session is truly lost: a timer handle is
+   * transiently null between one attempt ending and the next being
+   * scheduled, so checking timer nullness alone declares defeat after a
+   * single failed attempt instead of after the real retry budget is spent.
+   */
+  reconnectExhausted = false;
 
   /** Legacy connect — no auth message sent. Preserved for backward compatibility. */
   connect(url: string): void {
@@ -50,6 +60,7 @@ export class SignalingClient {
     this.ws.onopen = () => {
       this.setStatus('connected');
       this.reconnectAttempt = 0;
+      this.reconnectExhausted = false;
       this.stopPeriodicRetry();
     };
 
@@ -101,6 +112,7 @@ export class SignalingClient {
     this.ws.onopen = () => {
       this.setStatus('connected');
       this.reconnectAttempt = 0;
+      this.reconnectExhausted = false;
       this.stopPeriodicRetry();
       // Send Auth message as first message
       this.send({ type: 'auth', accessToken: token });
@@ -151,6 +163,7 @@ export class SignalingClient {
     this.intentionalDisconnect = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.reconnectExhausted = false;
     this.stopPeriodicRetry();
     this.ws?.close();
     this.ws = null;
@@ -215,6 +228,7 @@ export class SignalingClient {
   private scheduleReconnect(url: string): void {
     if (this.reconnectAttempt >= this.maxReconnectAttempt) {
       console.log(LOG_PREFIX, 'fast reconnect exhausted — starting periodic retry');
+      this.reconnectExhausted = true;
       this.startPeriodicRetry(url);
       return;
     }

@@ -352,21 +352,32 @@ describe('reconnect backoff', () => {
     expect(client['reconnectTimer']).toBeNull();
   });
 
-  it('reconnectTimer and periodicRetryTimer are both falsy in the onStatusChange callback exactly when fast-retry exhausts', async () => {
-    // This is the exact condition voice-room.ts's reconnect-give-up branch
-    // checks (`!client['reconnectTimer'] && !client['periodicRetryTimer']`)
-    // to decide the session is truly lost and play the disconnect sound.
+  it('reconnectExhausted stays false after a single failed reconnect attempt', async () => {
+    // Regression guard: an earlier version of this fix read
+    // `!reconnectTimer && !periodicRetryTimer` as "give up", but a timer
+    // handle is transiently null between one failed attempt ending and the
+    // next being scheduled — that condition is briefly true after the very
+    // FIRST failed attempt too, which would make voice-room.ts announce
+    // "connection lost" after ~1s instead of after the real ~181s+ budget.
     const client = new SignalingClient();
-    const snapshotsAtDisconnect: Array<{ reconnectTimer: unknown; periodicRetryTimer: unknown }> =
-      [];
-    client.onStatusChange((status) => {
-      if (status === 'disconnected') {
-        snapshotsAtDisconnect.push({
-          reconnectTimer: client['reconnectTimer'],
-          periodicRetryTimer: client['periodicRetryTimer'],
-        });
-      }
-    });
+    client.connect('ws://localhost/ws');
+    lastWsInstance!.simulate('open');
+
+    // First disconnect — schedules the first fast-retry attempt.
+    lastWsInstance!.readyState = WebSocket.CLOSED;
+    lastWsInstance!.onclose?.();
+    expect(client.reconnectExhausted).toBe(false);
+
+    // Let that attempt fire and fail (mock WS never opens on its own).
+    await vi.advanceTimersByTimeAsync(1100);
+    lastWsInstance!.readyState = WebSocket.CLOSED;
+    lastWsInstance!.onclose?.();
+
+    expect(client.reconnectExhausted).toBe(false);
+  });
+
+  it('reconnectExhausted becomes true once the fast-retry budget (maxReconnectAttempt) is spent', async () => {
+    const client = new SignalingClient();
     client.connect('ws://localhost/ws');
     lastWsInstance!.simulate('open');
 
@@ -374,17 +385,37 @@ describe('reconnect backoff', () => {
     for (let i = 0; i < 10; i++) {
       lastWsInstance!.readyState = WebSocket.CLOSED;
       lastWsInstance!.onclose?.();
+      expect(client.reconnectExhausted).toBe(false);
       await vi.advanceTimersByTimeAsync(31_000);
     }
 
     // The 11th close exhausts the fast-retry budget and hands off to periodic
-    // retry — this is the "give up" transition.
+    // retry — this is the "give up" transition voice-room.ts relies on.
     lastWsInstance!.readyState = WebSocket.CLOSED;
     lastWsInstance!.onclose?.();
 
-    const giveUpSnapshot = snapshotsAtDisconnect.at(-1)!;
-    expect(giveUpSnapshot.reconnectTimer).toBeFalsy();
-    expect(giveUpSnapshot.periodicRetryTimer).toBeFalsy();
+    expect(client.reconnectExhausted).toBe(true);
+  });
+
+  it('reconnectExhausted resets to false on a successful reconnect', async () => {
+    const client = new SignalingClient();
+    client.connect('ws://localhost/ws');
+    lastWsInstance!.simulate('open');
+
+    for (let i = 0; i < 10; i++) {
+      lastWsInstance!.readyState = WebSocket.CLOSED;
+      lastWsInstance!.onclose?.();
+      await vi.advanceTimersByTimeAsync(31_000);
+    }
+    lastWsInstance!.readyState = WebSocket.CLOSED;
+    lastWsInstance!.onclose?.();
+    expect(client.reconnectExhausted).toBe(true);
+
+    // Periodic retry succeeds.
+    await vi.advanceTimersByTimeAsync(30_000);
+    lastWsInstance!.simulate('open');
+
+    expect(client.reconnectExhausted).toBe(false);
   });
 });
 

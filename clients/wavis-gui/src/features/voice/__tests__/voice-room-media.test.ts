@@ -1681,14 +1681,34 @@ describe('VoiceRoom room-scoped join/leave sounds', () => {
 
     if (lastSignalingClient) {
       lastSignalingClient.status = 'disconnected';
-      lastSignalingClient.reconnectTimer = null;
-      lastSignalingClient.periodicRetryTimer = null;
+      lastSignalingClient.reconnectExhausted = true;
     }
     statusChangeHandler!('disconnected');
     await tick();
 
     expect(playNotificationSoundCalls).toEqual(['leave']);
     expect(getState().machineState).toBe('idle');
+  });
+
+  it('does not give up while a reconnect is merely pending between attempts (reconnectExhausted still false)', async () => {
+    await driveToActive('ch-sounds', 'room-sounds', false);
+
+    statusChangeHandler!('disconnected');
+    await tick();
+    expect(getState().machineState).toBe('reconnecting');
+
+    // A real SignalingClient's reconnectTimer is transiently null between one
+    // failed attempt and the next being scheduled — that alone must NOT be
+    // read as "exhausted" (see websocket.ts's reconnectExhausted flag).
+    if (lastSignalingClient) {
+      lastSignalingClient.status = 'disconnected';
+      lastSignalingClient.reconnectExhausted = false;
+    }
+    statusChangeHandler!('disconnected');
+    await tick();
+
+    expect(playNotificationSoundCalls).toEqual([]);
+    expect(getState().machineState).toBe('reconnecting');
   });
 
   it('does not play leave sound for initial connection failure before room membership', async () => {

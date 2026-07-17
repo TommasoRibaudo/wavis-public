@@ -4304,14 +4304,12 @@ export function initSession(
         notify();
       } else if (state.machineState === 'reconnecting') {
         // Already reconnecting and got another disconnect.
-        // Only give up if the WS has exhausted all reconnect attempts
-        // (both fast retries and periodic retry).
-        if (
-          client &&
-          client.status === 'disconnected' &&
-          !client['reconnectTimer'] &&
-          !client['periodicRetryTimer']
-        ) {
+        // Only give up once the fast-retry budget is truly spent and a
+        // periodic-retry attempt has also failed — NOT merely "no reconnect
+        // timer is pending right now" (a timer handle is transiently null
+        // between one attempt ending and the next being scheduled, which
+        // would declare defeat after a single failed attempt).
+        if (client && client.status === 'disconnected' && client.reconnectExhausted) {
           // Unregister hotkey when giving up on reconnection (R22.7)
           if (registeredHotkey) {
             unregisterMuteHotkey(registeredHotkey).catch(() => {});
