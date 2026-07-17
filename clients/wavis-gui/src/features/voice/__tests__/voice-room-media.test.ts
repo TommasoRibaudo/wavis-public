@@ -2810,6 +2810,100 @@ describe('Edge case unit tests', () => {
     });
   });
 
+  describe('11.1b: media_token request timeout (no response from backend)', () => {
+    it('retries reconnectMedia when no media_token ever arrives for a pending request', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      sentMessages = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0); // flush reconnectMedia()'s awaited getReconnectConfig()
+
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+        expect(latestState!.mediaReconnectFailures).toBe(0);
+
+        // No media_token ever arrives — advance past the request timeout.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(latestState!.mediaReconnectFailures).toBe(1);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
+    });
+
+    it('eventually plays the disconnect sound if media_token requests keep timing out', async () => {
+      resetAll();
+      mockMaxRetries = 1;
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      playNotificationSoundCalls = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(playNotificationSoundCalls).toEqual([]);
+
+        // The one retry attempt the exhausted budget (mockMaxRetries=1)
+        // allows also never gets a response — the timeout handler's own
+        // reconnectMedia() call hits the exhausted branch directly.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(getState().mediaState).toBe('failed');
+        expect(playNotificationSoundCalls).toEqual(['leave']);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
+    });
+
+    it('a media_token that arrives in time clears the pending timeout (no spurious retry)', async () => {
+      resetAll();
+      await driveToActive();
+
+      messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu', token: 'tok' });
+      await tick();
+      lastLkModule!.callbacks.onMediaConnected();
+      await tick();
+
+      sentMessages = [];
+      vi.useFakeTimers();
+      try {
+        lastLkModule!.callbacks.onMediaDisconnected();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+
+        // Backend responds well within the timeout window.
+        messageHandler!({ type: 'media_token', sfuUrl: 'wss://sfu2', token: 'tok2' });
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Advancing past where the (now-cleared) timeout would have fired
+        // must NOT trigger a spurious extra retry or failure count.
+        await vi.advanceTimersByTimeAsync(15_100);
+
+        expect(latestState!.mediaReconnectFailures).toBe(0);
+        expect(sentMessages.filter((m) => m.type === 'join_voice')).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        leaveRoom();
+      }
+    });
+  });
+
   // ─── 11.2: Screen share edge cases ──────────────────────────────
 
   describe('11.2: Screen share edge cases', () => {

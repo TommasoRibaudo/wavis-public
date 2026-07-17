@@ -1407,6 +1407,16 @@ const PERIODIC_MEDIA_RETRY_MS = 30_000;
 let periodicMediaRetryTimer: ReturnType<typeof setInterval> | null = null;
 const COLD_START_RETRY_MS = 30_000;
 let coldStartRetryTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * sendJoinVoiceRequest() is fire-and-forget — it has no built-in way to
+ * notice a response never arrives (e.g. the backend can't reach its own
+ * SFU dependency and never replies with media_token). Without this guard,
+ * mediaReconnectFailures never increments past its current value and
+ * reconnectMedia()'s retry-budget check never gets a second attempt to
+ * run, let alone exhaust — media sits in 'disconnected' silently forever.
+ */
+const MEDIA_TOKEN_REQUEST_TIMEOUT_MS = 15_000;
+let mediaTokenRequestTimer: ReturnType<typeof setTimeout> | null = null;
 let backgroundLeaveTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_AUTH_REFRESH_RETRIES = 2;
 let authRefreshRetries = 0;
@@ -1699,6 +1709,7 @@ function cleanupPublishedMediaForSessionEnd(): void {
   pendingWasapiResume = null;
   stopColdStartRetry();
   stopPeriodicMediaRetry();
+  clearMediaTokenRequestTimeout();
   setActiveLiveKitModule(null);
 }
 
@@ -2434,6 +2445,37 @@ function stopColdStartRetry(): void {
   }
 }
 
+function clearMediaTokenRequestTimeout(): void {
+  if (mediaTokenRequestTimer) {
+    clearTimeout(mediaTokenRequestTimer);
+    mediaTokenRequestTimer = null;
+  }
+}
+
+/**
+ * Starts (restarts) the "did the backend ever answer our join_voice" guard.
+ * Call this right after sendJoinVoiceRequest(). If no media_token arrives
+ * before this fires, the attempt counts as failed and reconnectMedia() runs
+ * again — same retry budget/give-up path as an explicit onMediaFailed.
+ */
+function scheduleMediaTokenRequestTimeout(): void {
+  clearMediaTokenRequestTimeout();
+  mediaTokenRequestTimer = setTimeout(() => {
+    mediaTokenRequestTimer = null;
+    if (state.machineState === 'idle') return;
+    console.warn(LOG, 'media_token request timed out — no response from backend');
+    state.mediaReconnectFailures += 1;
+    appendEvent({
+      id: makeEventId(),
+      timestamp: timestamp(),
+      type: 'system',
+      message: 'media reconnect timed out waiting for a fresh media token',
+    });
+    notify();
+    void reconnectMedia();
+  }, MEDIA_TOKEN_REQUEST_TIMEOUT_MS);
+}
+
 function clearBackgroundLeaveTimer(): void {
   if (backgroundLeaveTimer) {
     clearTimeout(backgroundLeaveTimer);
@@ -2493,6 +2535,7 @@ function connectMedia(
     state.mediaError = null;
     state.mediaReconnectFailures = 0;
     stopPeriodicMediaRetry();
+    clearMediaTokenRequestTimeout();
     const self = selfParticipant();
     if (self) {
       markParticipantMediaConnected(self.id, true, { playJoinSound: options.playJoinSound });
@@ -4022,6 +4065,10 @@ function dispatchMessage(raw: unknown): void {
     }
 
     case 'media_token': {
+      // The backend answered our join_voice request (whatever the payload
+      // turns out to contain below) — the "did it ever respond" guard no
+      // longer applies to this attempt.
+      clearMediaTokenRequestTimeout();
       const token = msg.token;
       const sfuUrl = msg.sfuUrl;
       // ice_config lives on the Joined payload, not MediaToken — fall back to what was stored from 'joined'.
@@ -4623,6 +4670,7 @@ export async function reconnectMedia(): Promise<void> {
 
   // Re-send JoinVoice to request new media_token
   sendJoinVoiceRequest();
+  scheduleMediaTokenRequestTimeout();
 }
 
 export function resetMediaReconnectFailures(): void {
