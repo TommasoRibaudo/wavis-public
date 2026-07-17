@@ -485,9 +485,6 @@ mod tests {
 
     type HmacSha256Test = Hmac<Sha256>;
 
-    /// Maximum failed attempts before lockout (matches production logic).
-    const MAX_ATTEMPTS: i32 = 5;
-
     // Feature: user-identity-recovery, Property 7: HMAC pairing code round-trip
     // **Validates: Requirements 8.2, 9.2**
     proptest! {
@@ -569,67 +566,6 @@ mod tests {
                     CODE_CHARSET.contains(&(ch as u8)),
                     "character '{}' is not in the base32 charset (A-Z, 2-7)",
                     ch
-                );
-            }
-        }
-    }
-
-    // Feature: user-identity-recovery, Property 9: Pairing lockout after max failures
-    // **Validates: Requirements 8.8, 9.8**
-    //
-    // Pure logic test: simulates the attempt_count tracking and verifies that
-    // after 5 total failures the system rejects further attempts.
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(100))]
-
-        #[test]
-        fn prop_pairing_lockout_after_max_failures(
-            attempt_count in 0i32..=10,
-        ) {
-            // The production code uses `attempt_count >= 5` as the lockout check.
-            let is_locked = attempt_count >= MAX_ATTEMPTS;
-
-            if attempt_count < MAX_ATTEMPTS {
-                prop_assert!(
-                    !is_locked,
-                    "attempt_count {} is below threshold {}, should NOT be locked out",
-                    attempt_count,
-                    MAX_ATTEMPTS
-                );
-            } else {
-                prop_assert!(
-                    is_locked,
-                    "attempt_count {} is at or above threshold {}, MUST be locked out",
-                    attempt_count,
-                    MAX_ATTEMPTS
-                );
-            }
-        }
-
-        #[test]
-        fn prop_pairing_lockout_boundary(
-            extra_failures in 0i32..=5,
-        ) {
-            // Simulate accumulating failures from 0 up to MAX_ATTEMPTS + extra
-            let total_failures = MAX_ATTEMPTS + extra_failures;
-
-            // Before reaching MAX_ATTEMPTS, each attempt should be allowed
-            for count in 0..MAX_ATTEMPTS {
-                prop_assert!(
-                    count < MAX_ATTEMPTS,
-                    "attempt {} should be allowed (below threshold {})",
-                    count,
-                    MAX_ATTEMPTS
-                );
-            }
-
-            // At and beyond MAX_ATTEMPTS, every attempt must be rejected
-            for count in MAX_ATTEMPTS..=total_failures {
-                prop_assert!(
-                    count >= MAX_ATTEMPTS,
-                    "attempt {} must be locked out (at or above threshold {})",
-                    count,
-                    MAX_ATTEMPTS
                 );
             }
         }
