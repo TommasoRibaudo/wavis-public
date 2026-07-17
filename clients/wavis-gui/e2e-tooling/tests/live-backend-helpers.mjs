@@ -602,3 +602,24 @@ export async function clearNetworkConditions() {
     // No qdisc present — already clear.
   }
 }
+
+/* ─── Backend restart (reconnect.spec.mjs) ──────────────────────────────
+ * `docker restart <container>` by name, same style as the netem helpers
+ * above, rather than `docker compose restart` — doesn't depend on the
+ * caller's cwd being the compose project root. Restarting wavis-backend
+ * drops every WS connection to it (both the GUI's signaling socket and any
+ * spawnPeer()/ws-sfu-test connection — ws-sfu-test is a one-shot
+ * connect_async with no reconnect loop of its own, confirmed via its
+ * source, so a peer connection does not survive this and must be
+ * re-established by the caller if the scenario needs a peer present both
+ * before and after). wavis-livekit is untouched, so an already-negotiated
+ * LiveKit media session (e.g. a connectTonePeer() publish) is not expected
+ * to drop on its own.
+ */
+const BACKEND_CONTAINER = 'wavis-backend';
+
+/** Restarts the backend container and waits for /health to report ok again. */
+export async function restartBackend({ healthTimeoutMs = 60_000 } = {}) {
+  await execFileAsync('docker', ['restart', BACKEND_CONTAINER]);
+  await waitForBackendHealth(healthTimeoutMs);
+}
