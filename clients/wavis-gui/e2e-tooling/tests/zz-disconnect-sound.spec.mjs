@@ -27,6 +27,7 @@ import {
   leaveRoomIfActive,
   stopBackendContainer,
   startBackendContainer,
+  visibleText,
 } from './live-backend-helpers.mjs';
 
 test('a real backend outage plays the disconnect sound once the reconnect budget is exhausted', async ({
@@ -57,7 +58,7 @@ test('a real backend outage plays the disconnect sound once the reconnect budget
   await enterChannelRoom(main, channelName);
   await joinDefaultSubRoomViaUi(main);
 
-  await expect(main.getByText('LIVE', { exact: true })).toBeVisible();
+  await expect(visibleText(main, 'LIVE')).toBeVisible();
 
   try {
     await stopBackendContainer();
@@ -76,7 +77,7 @@ test('a real backend outage plays the disconnect sound once the reconnect budget
       })
       .toBe(true);
 
-    await expect(main.getByText('Connection lost', { exact: true })).toBeVisible();
+    await expect(visibleText(main, 'Connection lost')).toBeVisible();
 
     // Exactly one disconnect sound — not one per failed reconnect attempt.
     expect(soundRequests.filter((url) => url.includes('leave'))).toHaveLength(1);
@@ -86,7 +87,7 @@ test('a real backend outage plays the disconnect sound once the reconnect budget
     // input to send /leave through), but it renders its own /leave button —
     // use that instead of leaveRoomIfActive's CLI-command path so the
     // session doesn't restore mid-room for the next spec run.
-    const leaveButton = main.getByText('/leave', { exact: true });
+    const leaveButton = visibleText(main, '/leave');
     if (await leaveButton.isVisible().catch(() => false)) {
       await leaveButton.click();
     }
