@@ -141,7 +141,7 @@ jobs:
       # GITHUB_BUG_REPORT_REPO need to be provided.
       - name: Start backend
         run: |
-          cargo run -p wavis-backend --features test-metrics > backend.log 2>&1 &
+          cargo run -p wavis-backend --bin wavis-backend --features test-metrics > backend.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:3000/health > /dev/null 2>&1; then
               echo "backend ready after ${i}s"
