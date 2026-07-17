@@ -60,8 +60,15 @@ import {
   type RoomParticipant,
   type VoiceRoomState,
 } from './voice-room';
+import {
+  planOpenShareWindow,
+  planOpenWatchAllWindow,
+  decideWatchAllOpenWhenClosed,
+  decideWatchAllToggleWhenOpen,
+  shouldCloseOnSubRoomChange,
+} from './share-viewer-windows-model';
 
-type ShareViewerScope = 'direct' | 'watch-all';
+export type ShareViewerScope = 'direct' | 'watch-all';
 
 interface ShareViewerWindow {
   scope: ShareViewerScope;
@@ -488,13 +495,18 @@ export function useShareViewerWindows({
       stream: MediaStream | null,
       scope: ShareViewerScope = 'direct',
     ) => {
-      if (nativeShareViewersRef.current.has(participantId)) {
+      const openPlan = planOpenShareWindow(
+        { natives: nativeShareViewersRef.current, popouts: shareWindowsRef.current },
+        participantId,
+      );
+
+      if (openPlan.closeExistingNative) {
         closeShareWindow(participantId);
       }
 
       // If already watching this participant, close it first and wait for Tauri to
       // destroy the webview before creating a new one with the same label.
-      if (shareWindowsRef.current.has(participantId)) {
+      if (openPlan.closeExistingPopout) {
         const oldWin = shareWindowsRef.current.get(participantId)!;
         closeShareWindow(participantId);
         await oldWin.window.waitForDestroyed(1000);
@@ -586,9 +598,9 @@ export function useShareViewerWindows({
 
   /** Open the Watch All window showing all active screen shares in a grid. */
   const openWatchAllWindow = useCallback(async () => {
-    // If already open, bring to foreground
-    if (watchAllWindowRef.current) {
-      void watchAllWindowRef.current.setFocus();
+    // If already open, bring to foreground (reuse rather than recreate)
+    if (planOpenWatchAllWindow(!!watchAllWindowRef.current) === 'focus-existing') {
+      void watchAllWindowRef.current!.setFocus();
       return;
     }
 
@@ -705,13 +717,13 @@ export function useShareViewerWindows({
     if (!watchAllWindowRef.current) {
       const rs = getRoomSnapshotRef.current();
       const hasShares = rs ? getWatchAllScope(rs).remoteSharers.length > 0 : false;
-      if (hasShares) {
+      if (decideWatchAllOpenWhenClosed(hasShares) === 'open') {
         void openWatchAllWindow();
       }
       return;
     }
     const minimized = await watchAllWindowRef.current.isMinimized();
-    if (minimized) {
+    if (decideWatchAllToggleWhenOpen(minimized) === 'unminimize') {
       await watchAllWindowRef.current.unminimize();
       await watchAllWindowRef.current.setFocus();
     } else {
@@ -769,21 +781,8 @@ export function useShareViewerWindows({
 
   // Listen for child windows closing themselves
   useEffect(() => {
-    return onScreenShareClosed((pid) => {
-      // Gate on delete — if closeShareWindow already handled this pid,
-      // delete() returns false and we skip to avoid double-add.
-      if (!shareWindowsRef.current.delete(pid)) return;
-      if (!watchAllWindowRef.current || !watchAllReadyRef.current) {
-        detachScreenShareAudio(pid);
-      }
-      setWatchingShareIds((prev) => {
-        const next = new Set(prev);
-        next.delete(pid);
-        return next;
-      });
-      reAddStreamToWatchAll(pid);
-    });
-  }, [reAddStreamToWatchAll]);
+    return onScreenShareClosed(handleShareWindowClosed);
+  }, [handleShareWindowClosed]);
 
   // Viewer-window owner actions: volume/mute sync, voice volume, and the
   // mute/deafen/share toggles proxied from child windows.
@@ -1061,9 +1060,9 @@ export function useShareViewerWindows({
     closeWatchAllWindow();
 
     for (const [participantId, shareWindow] of [...shareWindowsRef.current.entries()]) {
-      if (shareWindow.scope !== 'watch-all') continue;
-      if (scopeParticipantIds.has(participantId)) continue;
-      closeShareWindow(participantId);
+      if (shouldCloseOnSubRoomChange(shareWindow.scope, participantId, scopeParticipantIds)) {
+        closeShareWindow(participantId);
+      }
     }
   }, [
     getWatchAllScope,

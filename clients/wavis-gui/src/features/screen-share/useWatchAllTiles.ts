@@ -10,6 +10,16 @@ import {
 } from './share-window-bridge';
 import { onWatchAllTestState, emitWatchAllTestReady } from './watch-all-test-mode';
 import { DEBUG_SHARE_VIEW, LOG } from './watch-all-constants';
+import {
+  addShareTile,
+  removeShareTile,
+  updateShareTile,
+  applyRestoreVolumeToTiles,
+  applyRestoreVolumeToAudioTiles,
+  addAudioTile,
+  removeAudioTile,
+  type PendingRestoreVolumes,
+} from './watch-all-tiles-model';
 
 export interface ShareTileState {
   participantId: string;
@@ -52,9 +62,7 @@ export function useWatchAllTiles({
 }: UseWatchAllTilesOptions) {
   const [tiles, setTiles] = useState<ShareTileState[]>([]);
   const [audioTiles, setAudioTiles] = useState<AudioTileState[]>([]);
-  const pendingRestoreVolumesRef = useRef<Map<string, { volume: number; muted: boolean }>>(
-    new Map(),
-  );
+  const pendingRestoreVolumesRef = useRef<PendingRestoreVolumes>(new Map());
 
   useEffect(() => {
     if (isDiagnosticsTestMode) {
@@ -101,84 +109,36 @@ export function useWatchAllTiles({
       const unlistenAdded = await onWatchAllShareAdded((payload) => {
         if (DEBUG_SHARE_VIEW)
           console.log(LOG, 'share-added received:', payload.participantId, payload.displayName);
-        const { participantId, liveKitIdentity, displayName, color, canvasFallback } = payload;
         setTiles((prev) => {
-          if (prev.some((t) => t.participantId === participantId)) return prev;
-          const restored = pendingRestoreVolumesRef.current.get(participantId);
-          if (restored !== undefined) {
-            pendingRestoreVolumesRef.current.delete(participantId);
-          }
-          const baseTile: ShareTileState = {
-            participantId,
-            liveKitIdentity,
-            displayName,
-            color,
-            kind: 'live',
-            canvasFallback,
-            muted: false,
-            volume: 70,
-            nativeWidth: null,
-            nativeHeight: null,
-            aspectRatio: 16 / 9,
-          };
-          return [
-            ...prev,
-            restored === undefined
-              ? baseTile
-              : { ...baseTile, muted: restored.muted, volume: restored.volume },
-          ];
+          const result = addShareTile(prev, pendingRestoreVolumesRef.current, payload);
+          pendingRestoreVolumesRef.current = result.pendingRestoreVolumes;
+          return result.tiles;
         });
       });
 
       const unlistenRemoved = await onWatchAllShareRemoved((participantId) => {
-        setTiles((prev) => prev.filter((t) => t.participantId !== participantId));
+        setTiles((prev) => removeShareTile(prev, participantId));
       });
 
-      const unlistenUpdated = await onWatchAllShareUpdated(
-        ({ participantId, displayName, color }) => {
-          setTiles((prev) =>
-            prev.map((t) => (t.participantId === participantId ? { ...t, displayName, color } : t)),
-          );
-        },
-      );
+      const unlistenUpdated = await onWatchAllShareUpdated((payload) => {
+        setTiles((prev) => updateShareTile(prev, payload));
+      });
 
-      const unlistenRestoreVolume = await onWatchAllRestoreVolume(
-        ({ participantId, volume, muted }) => {
-          setTiles((prev) => {
-            let found = false;
-            const next = prev.map((tile) => {
-              if (tile.participantId !== participantId) return tile;
-              found = true;
-              return { ...tile, volume, muted };
-            });
-            // ESLint's narrowing doesn't see `found` mutated inside the prev.map()
-            // callback above — if no tile matches, found genuinely stays false and
-            // this branch is how a not-yet-created tile's volume gets queued.
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            if (!found) {
-              pendingRestoreVolumesRef.current.set(participantId, { volume, muted });
-            }
-            return next;
-          });
-          setAudioTiles((prev) =>
-            prev.map((tile) =>
-              tile.participantId === participantId ? { ...tile, volume, muted } : tile,
-            ),
-          );
-        },
-      );
+      const unlistenRestoreVolume = await onWatchAllRestoreVolume((payload) => {
+        setTiles((prev) => {
+          const result = applyRestoreVolumeToTiles(prev, pendingRestoreVolumesRef.current, payload);
+          pendingRestoreVolumesRef.current = result.pendingRestoreVolumes;
+          return result.tiles;
+        });
+        setAudioTiles((prev) => applyRestoreVolumeToAudioTiles(prev, payload));
+      });
 
-      const unlistenAudioAdded = await onWatchAllAudioShareAdded(
-        ({ participantId, displayName, color, volume, muted }) => {
-          setAudioTiles((prev) => {
-            if (prev.some((t) => t.participantId === participantId)) return prev;
-            return [...prev, { participantId, displayName, color, muted, volume }];
-          });
-        },
-      );
+      const unlistenAudioAdded = await onWatchAllAudioShareAdded((payload) => {
+        setAudioTiles((prev) => addAudioTile(prev, payload));
+      });
 
       const unlistenAudioRemoved = await onWatchAllAudioShareRemoved((participantId) => {
-        setAudioTiles((prev) => prev.filter((t) => t.participantId !== participantId));
+        setAudioTiles((prev) => removeAudioTile(prev, participantId));
       });
 
       // All listeners registered — signal readiness to ActiveRoom
