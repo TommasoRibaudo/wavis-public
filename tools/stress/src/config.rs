@@ -81,6 +81,92 @@ impl ScaleConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_all_dimensions_positive(cfg: &ScaleConfig) {
+        assert!(cfg.concurrent_clients > 0, "concurrent_clients must be > 0");
+        assert!(cfg.actions_per_client > 0, "actions_per_client must be > 0");
+        assert!(cfg.total_actions > 0, "total_actions must be > 0");
+        assert!(
+            cfg.rss_growth_threshold_pct > 0.0,
+            "rss_growth_threshold_pct must be > 0"
+        );
+        assert!(
+            cfg.cpu_spike_threshold_x > 0.0,
+            "cpu_spike_threshold_x must be > 0"
+        );
+        assert!(
+            cfg.cpu_spike_max_duration_secs > 0,
+            "cpu_spike_max_duration_secs must be > 0"
+        );
+        assert!(cfg.repetitions > 0, "repetitions must be > 0");
+        assert!(cfg.thresholds.join_p95 > Duration::ZERO);
+        assert!(cfg.thresholds.join_p99 > Duration::ZERO);
+        assert!(cfg.thresholds.message_p95 > Duration::ZERO);
+        assert!(cfg.thresholds.message_p99 > Duration::ZERO);
+        assert!(cfg.thresholds.flood_healthy_p95 > Duration::ZERO);
+    }
+
+    #[test]
+    fn ci_dimensions_are_all_positive() {
+        assert_all_dimensions_positive(&ScaleConfig::ci());
+    }
+
+    #[test]
+    fn local_dimensions_are_all_positive() {
+        assert_all_dimensions_positive(&ScaleConfig::local());
+    }
+
+    #[test]
+    fn p99_latency_is_never_tighter_than_p95() {
+        for cfg in [ScaleConfig::ci(), ScaleConfig::local()] {
+            assert!(cfg.thresholds.join_p99 >= cfg.thresholds.join_p95);
+            assert!(cfg.thresholds.message_p99 >= cfg.thresholds.message_p95);
+        }
+    }
+
+    /// local() is meant to be a strictly larger run than ci() in every scaled
+    /// dimension — a local run that's smaller than what CI does would defeat
+    /// the point of "thorough local validation".
+    #[test]
+    fn local_scales_up_from_ci_in_every_client_load_dimension() {
+        let ci = ScaleConfig::ci();
+        let local = ScaleConfig::local();
+
+        assert!(local.concurrent_clients >= ci.concurrent_clients);
+        assert!(local.actions_per_client >= ci.actions_per_client);
+        assert!(local.total_actions >= ci.total_actions);
+        assert!(local.repetitions >= ci.repetitions);
+    }
+
+    /// Non-scaling fields (RSS/CPU thresholds, latency budgets) are inherited
+    /// verbatim from ci() via `..Self::ci()` — local() doesn't independently
+    /// tune them. This pins that intent so a future edit that accidentally
+    /// diverges them gets a visible test failure instead of silent drift.
+    #[test]
+    fn local_inherits_non_scaling_thresholds_from_ci() {
+        let ci = ScaleConfig::ci();
+        let local = ScaleConfig::local();
+
+        assert_eq!(local.rss_growth_threshold_pct, ci.rss_growth_threshold_pct);
+        assert_eq!(local.cpu_spike_threshold_x, ci.cpu_spike_threshold_x);
+        assert_eq!(
+            local.cpu_spike_max_duration_secs,
+            ci.cpu_spike_max_duration_secs
+        );
+        assert_eq!(local.thresholds.join_p95, ci.thresholds.join_p95);
+        assert_eq!(local.thresholds.join_p99, ci.thresholds.join_p99);
+        assert_eq!(local.thresholds.message_p95, ci.thresholds.message_p95);
+        assert_eq!(local.thresholds.message_p99, ci.thresholds.message_p99);
+        assert_eq!(
+            local.thresholds.flood_healthy_p95,
+            ci.thresholds.flood_healthy_p95
+        );
+    }
+}
+
 /// Backend capabilities that may or may not be available depending on build configuration.
 /// Scenarios declare which capabilities they require; missing ones cause the scenario to be
 /// skipped rather than failed.
