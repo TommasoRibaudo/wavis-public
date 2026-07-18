@@ -11,6 +11,9 @@ workspace = true
 test-metrics = []
 concurrency-stress = []
 test-support = []
+# Effectively-unlimited rate limiters/temp-bans for local e2e testing only.
+# NEVER enable in a production build — see security.md.
+test-no-rate-limits = []
 
 [[bin]]
 name = "wavis-backend"

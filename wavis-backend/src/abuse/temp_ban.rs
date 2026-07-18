@@ -12,6 +12,10 @@ pub struct TempBanConfig {
 
 impl TempBanConfig {
     pub fn from_env() -> Self {
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let threshold = u32::MAX;
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let threshold = std::env::var("TEMP_BAN_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())

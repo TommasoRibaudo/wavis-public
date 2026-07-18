@@ -86,6 +86,26 @@ impl Default for JoinRateLimiterConfig {
     }
 }
 
+impl JoinRateLimiterConfig {
+    /// Effectively-unlimited thresholds — local e2e testing only, never production.
+    #[cfg(feature = "test-no-rate-limits")]
+    pub fn unlimited() -> Self {
+        Self {
+            ip_total_threshold: u32::MAX,
+            ip_total_window: Duration::from_secs(60),
+            ip_failed_threshold: u32::MAX,
+            ip_failed_window: Duration::from_secs(60),
+            code_threshold: u32::MAX,
+            code_window: Duration::from_secs(60),
+            room_threshold: u32::MAX,
+            room_window: Duration::from_secs(60),
+            connection_threshold: u32::MAX,
+            connection_window: Duration::from_secs(60),
+            cooldown: Duration::from_secs(1),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JoinRateLimiter
 // ---------------------------------------------------------------------------

@@ -38,14 +38,17 @@ impl WsRateLimitConfig {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(10);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let max_messages = env::var("WS_RATE_LIMIT_MAX_MESSAGES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(60);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let burst_max = env::var("WS_RATE_LIMIT_BURST")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(15);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let action_max = env::var("ACTION_RATE_LIMIT_MAX")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -54,6 +57,7 @@ impl WsRateLimitConfig {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let deafen_max = env::var("DEAFEN_RATE_LIMIT_MAX")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -62,6 +66,10 @@ impl WsRateLimitConfig {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let (max_messages, burst_max, action_max, deafen_max) =
+            (u32::MAX, u32::MAX, u32::MAX, u32::MAX);
         Self {
             window: Duration::from_secs(window_secs),
             max_messages,
@@ -224,6 +232,9 @@ mod tests {
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    // Doesn't apply under test-no-rate-limits: that feature makes from_env()
+    // intentionally ignore ACTION_RATE_LIMIT_MAX and return u32::MAX instead.
+    #[cfg(not(feature = "test-no-rate-limits"))]
     #[test]
     fn test_from_env_uses_updated_action_default() {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");

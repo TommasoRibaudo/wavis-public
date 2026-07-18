@@ -22,7 +22,15 @@ COPY wavis-backend/migrations/ wavis-backend/migrations/
 # fails to parse ("workspace.lints was not defined"). Keep in sync with the root manifest.
 RUN printf '[workspace]\nresolver = "3"\nmembers = ["shared", "wavis-backend"]\n\n[workspace.lints.rust]\nunused_must_use = "deny"\n\n[workspace.lints.clippy]\ndbg_macro = "deny"\ntodo = "deny"\nunimplemented = "deny"\nmem_forget = "deny"\n' > Cargo.toml
 
-RUN cargo build --release -p wavis-backend --bin wavis-backend
+# CARGO_FEATURES is empty by default (production behavior unchanged). Local/e2e
+# builds may pass --build-arg CARGO_FEATURES=test-no-rate-limits — never set
+# this for a deployed image, see security.md.
+ARG CARGO_FEATURES=
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release -p wavis-backend --bin wavis-backend --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release -p wavis-backend --bin wavis-backend; \
+    fi
 
 FROM debian:bookworm-slim AS runtime
 

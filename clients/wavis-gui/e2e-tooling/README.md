@@ -496,6 +496,26 @@ $env:AUTH_REGISTER_RATE_LIMIT="200"; $env:AUTH_RECOVER_RATE_LIMIT="200"; docker 
 (`docker compose restart wavis-backend` alone only clears the in-memory
 windows — enough when iterating on a single spec, not for a full-suite run.)
 
+**Beyond auth: the join limiter, temp-ban list, and WS/chat/global limiters
+have no env override at all or aren't wired into docker-compose.yml**
+(`JoinRateLimiter`'s per-room/per-code ceilings, `TempBanList`'s 10-minute
+IP ban after 5 violations, `WsRateLimiter`, `ChatRateLimiter`, both
+`GlobalRateLimiter`s — see security.md's "Test-Only Rate Limit Bypass"
+section). A full 20-test suite run can trip these — most notably
+`TempBanList`, which silently bans the test runner's own IP for 10 minutes
+and breaks every subsequent spec with generic timeouts, not an auth error.
+For a full-suite run, build the backend with the `test-no-rate-limits`
+cargo feature instead of trying to raise every individual limiter:
+
+```powershell
+$env:CARGO_FEATURES="test-no-rate-limits"; docker compose up -d --build wavis-backend
+```
+
+Rebuild **without** that env var afterward to restore normal enforcement —
+this feature is compile-time gated (never touches a production build), but
+the container it produces has no rate limiting at all, so don't leave it
+running as your regular dev backend.
+
 **Multi-tier DOM duplication.** `ActiveRoom` mounts `ChatPanel`/
 `LogsPanel`/`ParticipantsPanel` once per responsive layout tier (mobile /
 intermediate / desktop) and hides the inactive tiers with CSS rather than

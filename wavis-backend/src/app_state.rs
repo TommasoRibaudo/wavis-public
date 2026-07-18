@@ -212,10 +212,14 @@ impl AppState {
         let require_tls = std::env::var("REQUIRE_TLS")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or_else(|_| !cfg!(debug_assertions));
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let max_connections_per_ip = std::env::var("MAX_CONNECTIONS_PER_IP")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(10);
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let max_connections_per_ip = u32::MAX;
 
         // TURN config — Ok(None) if not configured, panic on bad config
         let turn_config = match TurnConfig::try_from_env() {
@@ -238,14 +242,19 @@ impl AppState {
             Err(e) => panic!("Invalid TURN configuration: {e}"),
         };
 
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let global_ws_per_sec = std::env::var("GLOBAL_WS_UPGRADES_PER_SEC")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(100);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let global_join_per_sec = std::env::var("GLOBAL_JOINS_PER_SEC")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(50);
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let (global_ws_per_sec, global_join_per_sec) = (u32::MAX, u32::MAX);
 
         #[cfg(not(windows))]
         let ec2_controller = std::env::var("LIVEKIT_EC2_INSTANCE_ID")
