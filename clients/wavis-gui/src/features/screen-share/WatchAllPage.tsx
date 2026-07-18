@@ -108,6 +108,13 @@ export default function WatchAllPage() {
         console.warn('[wavis:viewer-connection] watch-all connect failed', err);
         setConnectionErrorCount((c) => c + 1);
       },
+      // Reset on every successful (re)connect, not just once at mount — the
+      // counter is documented as "consecutive" failures and drives whether a
+      // freshly-mounted tile with no stream yet renders "connection failed"
+      // immediately (see ShareTile's escalation effect). Without this, a
+      // long-lived window that saw 3 early transient failures and then
+      // recovered would keep escalating every later tile on mount forever.
+      onConnected: () => setConnectionErrorCount(0),
     });
     setConnectionErrorCount(0);
     setViewerConn(conn);
