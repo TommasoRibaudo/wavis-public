@@ -483,6 +483,13 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Off by default (Windows registry Run key / macOS LaunchAgent /
+        // Linux desktop autostart file) — the frontend enables it only
+        // after the user opts in (see DeviceSetup step 4, Settings toggle).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(KeyringCache::new())
         .manage(media::MediaState::new())
         .manage(external_share_helper::ExternalShareHelperState::new())
