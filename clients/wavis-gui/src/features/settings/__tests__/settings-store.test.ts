@@ -48,6 +48,8 @@ import {
   setDenoiseEnabled,
   getVideoInputDevice,
   setVideoInputDevice,
+  getHasSeenTutorial,
+  setHasSeenTutorial,
   STORE_KEYS,
   DEFAULT_VOLUME,
   DEFAULT_MUTE_HOTKEY,
@@ -353,6 +355,25 @@ describe('inputVolumeToGain', () => {
       }),
       { numRuns: 101 },
     );
+  });
+});
+
+describe('Has seen tutorial round-trip', () => {
+  it('persists and retrieves boolean', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.boolean(), async (seen) => {
+        mockStorage.clear();
+        await setHasSeenTutorial(seen);
+        const result = await getHasSeenTutorial();
+        expect(result).toBe(seen);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it('defaults to false when unset', async () => {
+    const result = await getHasSeenTutorial();
+    expect(result).toBe(false);
   });
 });
 

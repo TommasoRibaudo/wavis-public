@@ -17,6 +17,8 @@ import { EmptyState } from '@shared/EmptyState';
 import { LoadingBlock } from '@shared/LoadingBlock';
 import { usePolling } from '@shared/hooks/usePolling';
 import { setLastChannel } from '@features/settings/settings-store';
+import { TutorialOverlay } from './TutorialOverlay';
+import { useTutorialVisibility } from './useTutorialVisibility';
 
 /* Constants */
 const POLL_MS = 15_000;
@@ -29,6 +31,7 @@ function apiErrorMessage(err: ApiError): string {
 /* Component */
 export default function ChannelsList() {
   const navigate = useNavigate();
+  const { showTutorial, openTutorial, dismissTutorial } = useTutorialVisibility();
 
   /* State */
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -397,7 +400,10 @@ export default function ChannelsList() {
             void navigate('/settings');
           }}
         />
+        <CmdButton label="/help" onClick={openTutorial} />
       </div>
+
+      {showTutorial && <TutorialOverlay onDismiss={dismissTutorial} />}
     </div>
   );
 }
