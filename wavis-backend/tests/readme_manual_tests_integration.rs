@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -217,8 +218,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -277,11 +281,11 @@ async fn test9_join_rate_limiting() {
         connection_window: Duration::from_secs(60),
         cooldown: Duration::from_secs(60),
     };
-    let (addr, _state) = start_server_with_rate_limiter(true, rl_config).await;
+    let (addr, state) = start_server_with_rate_limiter(true, rl_config).await;
 
     // Send bad invite codes â€” first 3 should be invite_invalid, then rate_limited
     for i in 0..5 {
-        let (mut sink, mut stream) = ws_connect(addr).await;
+        let (mut sink, mut stream) = ws_connect(addr, &state).await;
         ws_send(
             &mut sink,
             json!({"type":"join","roomId":"rate-test","roomType":"sfu","inviteCode":format!("bad-{i}")}),
@@ -307,8 +311,8 @@ async fn test9_join_rate_limiting() {
 // ==========================================================================
 #[tokio::test]
 async fn test10_pre_join_auth_gate() {
-    let (addr, _state) = start_server(false).await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server(false).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // 10a: Offer before join â†’ "not authenticated"
     ws_send(
@@ -355,10 +359,10 @@ async fn test10_pre_join_auth_gate() {
 // ==========================================================================
 #[tokio::test]
 async fn test11_kick_participant() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins first
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"kick-test","roomType":"sfu"}),
@@ -369,7 +373,7 @@ async fn test11_kick_participant() {
     drain(&mut r_host).await;
 
     // Guest joins second
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"kick-test","roomType":"sfu"}),
@@ -405,7 +409,7 @@ async fn test11_kick_participant() {
 
     // Verify room now has only the host
     assert_eq!(
-        _state.room_state.peer_count("kick-test"),
+        state.room_state.peer_count("kick-test"),
         1,
         "only host should remain after kick"
     );
@@ -422,9 +426,9 @@ async fn test11_kick_participant() {
 // ==========================================================================
 #[tokio::test]
 async fn test12_sdp_and_ice_size_limits() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     // Join first (pre-join gate would block us)
     ws_send(
         &mut sink,
@@ -467,7 +471,7 @@ async fn test12_sdp_and_ice_size_limits() {
     }
 
     // Reconnect after the oversized frame closed the connection
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"size-test-2","roomType":"sfu"}),
@@ -551,7 +555,7 @@ async fn test13_room_cleanup_removes_invites() {
     let (addr, state) = start_server(false).await;
 
     // Join and create an invite
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"cleanup-test","roomType":"sfu"}),

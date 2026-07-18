@@ -20,6 +20,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use axum::Router;
 use axum::routing::get;
@@ -123,8 +124,13 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let (ws, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let (ws, _) = connect_async(format!("ws://{addr}/ws?ticket={ticket}"))
+        .await
+        .unwrap();
     ws.split()
 }
 
@@ -168,10 +174,10 @@ async fn join_sfu(sink: &mut WsSink, stream: &mut WsStream, room_id: &str) -> St
 
 #[tokio::test]
 async fn self_deafen_broadcasts_participant_deafened() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
-    let (mut s1, mut r1) = ws_connect(addr).await;
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
 
     let peer1 = join_sfu(&mut s1, &mut r1, "deafen-room").await;
     let _peer2 = join_sfu(&mut s2, &mut r2, "deafen-room").await;
@@ -190,8 +196,8 @@ async fn self_deafen_broadcasts_participant_deafened() {
 
 #[tokio::test]
 async fn self_deafen_not_in_room_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Send SelfDeafen without joining a room first
     ws_send(&mut sink, json!({"type":"self_deafen"})).await;
@@ -207,10 +213,10 @@ async fn self_deafen_not_in_room_returns_error() {
 
 #[tokio::test]
 async fn self_undeafen_broadcasts_participant_undeafened() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
-    let (mut s1, mut r1) = ws_connect(addr).await;
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
 
     let peer1 = join_sfu(&mut s1, &mut r1, "undeafen-room").await;
     let _peer2 = join_sfu(&mut s2, &mut r2, "undeafen-room").await;
@@ -232,8 +238,8 @@ async fn self_undeafen_broadcasts_participant_undeafened() {
 
 #[tokio::test]
 async fn self_undeafen_not_in_room_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     ws_send(&mut sink, json!({"type":"self_undeafen"})).await;
     let err = recv_type(&mut stream, "error").await;
@@ -246,8 +252,8 @@ async fn self_undeafen_not_in_room_returns_error() {
 
 #[tokio::test]
 async fn set_passthrough_without_channel_session_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "pt-room").await;
     drain(&mut stream).await;
 
@@ -269,8 +275,8 @@ async fn set_passthrough_without_channel_session_returns_error() {
 
 #[tokio::test]
 async fn clear_passthrough_without_channel_session_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "cpt-room").await;
     drain(&mut stream).await;
 
@@ -286,8 +292,8 @@ async fn clear_passthrough_without_channel_session_returns_error() {
 
 #[tokio::test]
 async fn set_passthrough_volume_without_channel_session_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "ptv-room").await;
     drain(&mut stream).await;
 
@@ -309,8 +315,8 @@ async fn set_passthrough_volume_without_channel_session_returns_error() {
 
 #[tokio::test]
 async fn sub_room_state_from_client_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "sr-room").await;
     drain(&mut stream).await;
 
@@ -328,8 +334,8 @@ async fn sub_room_state_from_client_returns_error() {
 
 #[tokio::test]
 async fn sub_room_created_from_client_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "src-room").await;
     drain(&mut stream).await;
 
@@ -345,8 +351,8 @@ async fn sub_room_created_from_client_returns_error() {
 
 #[tokio::test]
 async fn sub_room_joined_from_client_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "srj-room").await;
     drain(&mut stream).await;
 
@@ -366,8 +372,8 @@ async fn sub_room_joined_from_client_returns_error() {
 
 #[tokio::test]
 async fn sub_room_left_from_client_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "srl-room").await;
     drain(&mut stream).await;
 
@@ -387,8 +393,8 @@ async fn sub_room_left_from_client_returns_error() {
 
 #[tokio::test]
 async fn sub_room_deleted_from_client_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "srd-room").await;
     drain(&mut stream).await;
 
@@ -410,8 +416,8 @@ async fn sub_room_deleted_from_client_returns_error() {
 
 #[tokio::test]
 async fn chat_history_request_without_session_returns_error() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Not joined — state machine should reject with "not in a room"
     ws_send(&mut sink, json!({"type":"chat_history_request"})).await;
@@ -425,8 +431,8 @@ async fn chat_history_request_without_session_returns_error() {
 
 #[tokio::test]
 async fn chat_history_request_in_room_reaches_dispatch() {
-    let (addr, _state) = start_server().await;
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (addr, state) = start_server().await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     join_sfu(&mut sink, &mut stream, "chat-hist-room").await;
     drain(&mut stream).await;
 
@@ -465,9 +471,9 @@ async fn chat_history_request_in_room_reaches_dispatch() {
 
 #[tokio::test]
 async fn deafened_state_visible_in_room_state_for_late_joiner() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     let peer1 = join_sfu(&mut s1, &mut r1, "deafen-late-room").await;
     drain(&mut r1).await;
 
@@ -476,7 +482,7 @@ async fn deafened_state_visible_in_room_state_for_late_joiner() {
     drain(&mut r1).await;
 
     // Late joiner
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"deafen-late-room","roomType":"sfu"}),

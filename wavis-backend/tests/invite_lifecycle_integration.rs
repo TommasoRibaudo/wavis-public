@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -128,8 +129,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -174,10 +178,10 @@ use std::time::Instant;
 // ==========================================================================
 #[tokio::test]
 async fn invite_generate_and_use() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Step 1: First peer joins without invite (bypass mode allows it)
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"inv-test","roomType":"sfu"}),
@@ -195,7 +199,7 @@ async fn invite_generate_and_use() {
     assert!(!code.is_empty());
 
     // Step 3: Second peer joins with invite code
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"inv-test","roomType":"sfu","inviteCode":&code}),
@@ -259,7 +263,7 @@ async fn invite_rejection_pipeline() {
     state.invite_store.consume_use(&exhausted_code); // use the 1 allowed use
 
     // --- invite_required: join without any invite code ---
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu"}),
@@ -273,7 +277,7 @@ async fn invite_rejection_pipeline() {
     drop(s1);
 
     // --- invite_invalid: join with a random code ---
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu","inviteCode":"bogus-code"}),
@@ -287,7 +291,7 @@ async fn invite_rejection_pipeline() {
     drop(s2);
 
     // --- invite_revoked: join with a revoked code ---
-    let (mut s3, mut r3) = ws_connect(addr).await;
+    let (mut s3, mut r3) = ws_connect(addr, &state).await;
     ws_send(
         &mut s3,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu","inviteCode":&revoke_code}),
@@ -301,7 +305,7 @@ async fn invite_rejection_pipeline() {
     drop(s3);
 
     // --- invite_exhausted: join with an exhausted code ---
-    let (mut s4, mut r4) = ws_connect(addr).await;
+    let (mut s4, mut r4) = ws_connect(addr, &state).await;
     ws_send(
         &mut s4,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu","inviteCode":&exhausted_code}),
@@ -315,7 +319,7 @@ async fn invite_rejection_pipeline() {
     drop(s4);
 
     // --- Valid code succeeds, then second use is exhausted ---
-    let (mut s5, mut r5) = ws_connect(addr).await;
+    let (mut s5, mut r5) = ws_connect(addr, &state).await;
     ws_send(
         &mut s5,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu","inviteCode":&valid_code}),
@@ -326,7 +330,7 @@ async fn invite_rejection_pipeline() {
     drain(&mut r5).await;
 
     // Same code again â€” now exhausted
-    let (mut s6, mut r6) = ws_connect(addr).await;
+    let (mut s6, mut r6) = ws_connect(addr, &state).await;
     ws_send(
         &mut s6,
         json!({"type":"join","roomId":"rej-test","roomType":"sfu","inviteCode":&valid_code}),

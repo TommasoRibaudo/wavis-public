@@ -9,3 +9,4 @@ pub mod pairing;
 pub mod phrase;
 pub mod recovery_rate_limiter;
 pub mod routes;
+pub mod ws_ticket;
