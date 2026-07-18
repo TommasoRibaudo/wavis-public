@@ -1474,6 +1474,50 @@ describe('camera publish/unpublish', () => {
     expect(bobCamPub.setSubscribed).toHaveBeenCalledWith(false);
     expect(carolCamPub.setSubscribed).toHaveBeenCalledWith(true);
   });
+
+  it('publishCamera succeeds when getUserMedia resolves at 15s (slow first-run permission dialog)', async () => {
+    const mediaTrack = createMockCameraMediaTrack('camera-track-slow-permission');
+    const publication = {
+      trackSid: 'camera-pub-slow',
+      source: 'camera',
+      kind: 'video',
+      track: { sid: 'camera-pub-slow', mediaStreamTrack: mediaTrack },
+      setPublishingLayers: vi.fn(),
+    };
+    const mediaDevices = createMockMediaDevices();
+    mediaDevices.getUserMedia = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          // Simulates a human taking 15s to click "Allow" on the OS camera
+          // permission dialog — longer than the old 10s hard timeout, well
+          // inside the current 30s one.
+          setTimeout(() => {
+            resolve({ getVideoTracks: () => [mediaTrack], getTracks: () => [mediaTrack] });
+          }, 15_000);
+        }),
+    );
+    vi.stubGlobal('navigator', { userAgent: '', mediaDevices });
+    mockRoom.localParticipant.publishTrack = vi.fn(async (track: unknown, opts?: unknown) => {
+      sdkCalls.push({ method: 'publishTrack', args: [track, opts] });
+      return publication;
+    });
+
+    const mod = new LiveKitModule(createMockCallbacks());
+    await driveToConnected(mod);
+
+    vi.useFakeTimers();
+    try {
+      const resultPromise = mod.publishCamera({
+        deviceId: 'camera-device-1',
+        quality: CAMERA_QUALITY_HIGH,
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await resultPromise;
+      expect(result).toEqual({ trackId: 'camera-pub-slow' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ═══ LiveKitModule lifecycle ═══════════════════════════════════════
@@ -1583,6 +1627,43 @@ describe('LiveKitModule lifecycle', () => {
         ),
         { numRuns: 100 },
       );
+    });
+  });
+
+  describe('macOS mic permission denial message', () => {
+    beforeEach(() => {
+      resetAll();
+      micShouldReject = true;
+      mockRoom = createMockRoom();
+      vi.stubGlobal('navigator', {
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+        mediaDevices: createMockMediaDevices(),
+      });
+    });
+
+    afterEach(() => {
+      vi.stubGlobal('navigator', { userAgent: '', mediaDevices: createMockMediaDevices() });
+    });
+
+    it('directs the user to System Settings on macOS', async () => {
+      const cbs = createMockCallbacks();
+      const mod = new LiveKitModule(cbs);
+      await mod.connect('wss://sfu.test', 'tok-mac-mic');
+      emitRoomEvent('connected');
+      await mod.setMicEnabled(true);
+      await tick();
+
+      const sysEvents = cbs.calls.filter((c) => c.method === 'onSystemEvent');
+      expect(
+        sysEvents.some(
+          (c) =>
+            typeof c.args[0] === 'string' &&
+            c.args[0].includes('System Settings') &&
+            c.args[0].includes('Microphone'),
+        ),
+      ).toBe(true);
+
+      mod.disconnect();
     });
   });
 

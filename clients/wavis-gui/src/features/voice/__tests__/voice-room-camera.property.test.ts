@@ -307,7 +307,9 @@ function createIntegrationMockLiveKitModule(
 
 const integrationTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-async function loadVoiceRoomIntegrationHarness() {
+async function loadVoiceRoomIntegrationHarness(
+  userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+) {
   resetIntegrationHarnessState();
   vi.resetModules();
 
@@ -424,7 +426,7 @@ async function loadVoiceRoomIntegrationHarness() {
 
   vi.stubGlobal('window', {});
   vi.stubGlobal('navigator', {
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    userAgent,
     mediaDevices: {
       enumerateDevices: vi.fn(async () =>
         integrationEnumeratedVideoDevices.map((deviceId, index) => ({
@@ -787,6 +789,43 @@ describe('Feature: video-feed, Property 3: Failure classification reset', () => 
       { numRuns: 100 },
     );
   }, 60_000);
+});
+
+describe('Feature: video-feed, macOS camera permission denial message', () => {
+  it('directs the user to System Settings on macOS', async () => {
+    const harness = await loadVoiceRoomIntegrationHarness(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+    );
+    integrationPublishCameraImpl = async () => {
+      throw { kind: 'permission_denied' };
+    };
+
+    await harness.driveToActive();
+    await harness.voiceRoom.toggleCameraIntent();
+
+    const state = harness.voiceRoom.getState();
+    expect(
+      state.events.some(
+        (event) => event.message.includes('System Settings') && event.message.includes('Camera'),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the plain message on non-macOS platforms', async () => {
+    const harness = await loadVoiceRoomIntegrationHarness();
+    integrationPublishCameraImpl = async () => {
+      throw { kind: 'permission_denied' };
+    };
+
+    await harness.driveToActive();
+    await harness.voiceRoom.toggleCameraIntent();
+
+    const state = harness.voiceRoom.getState();
+    expect(state.events.some((event) => event.message.includes('camera permission denied'))).toBe(
+      true,
+    );
+    expect(state.events.some((event) => event.message.includes('System Settings'))).toBe(false);
+  });
 });
 
 describe('Feature: video-feed, Property 8: Quality convergence', () => {
