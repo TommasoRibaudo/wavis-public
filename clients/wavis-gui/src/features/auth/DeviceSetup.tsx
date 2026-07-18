@@ -9,6 +9,7 @@ import {
   deleteStoredRecoveryId,
 } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
+import { setLaunchOnStartupEnabled } from '@shared/autostart-bridge';
 import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 import { AuthLogPanel } from './AuthLogPanel';
@@ -16,7 +17,7 @@ import { AuthLogPanel } from './AuthLogPanel';
 const MIN_PHRASE_LENGTH = 4;
 const MAX_USERNAME_LENGTH = 64;
 
-type SetupStep = 1 | 2 | 3;
+type SetupStep = 1 | 2 | 3 | 4;
 
 export function validateStep1(
   username: string,
@@ -98,6 +99,48 @@ function InsecureTlsToggle({
   );
 }
 
+function LaunchOnStartupStep({ onChoice }: { onChoice: (wantEnabled: boolean) => Promise<void> }) {
+  const [pending, setPending] = useState(false);
+
+  const choose = useCallback(
+    (wantEnabled: boolean) => {
+      if (pending) return;
+      setPending(true);
+      void onChoice(wantEnabled).finally(() => setPending(false));
+    },
+    [pending, onChoice],
+  );
+
+  return (
+    <div className="px-4 sm:px-6 py-4">
+      <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3">
+        <div className="mb-2 text-sm font-bold">LAUNCH WAVIS ON STARTUP</div>
+        <p className="text-sm text-wavis-text-secondary">
+          Start Wavis automatically when you log into this computer, so you never have to open it
+          manually. Off by default — you can change this anytime in Settings.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => choose(false)}
+          disabled={pending}
+          className="border border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          /skip
+        </button>
+        <button
+          onClick={() => choose(true)}
+          disabled={pending}
+          className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {pending ? 'saving...' : '/enable'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DeviceSetup() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -150,8 +193,16 @@ export default function DeviceSetup() {
     if (!trustedDevice) {
       await deleteStoredRecoveryId();
     }
-    navigate('/', { replace: true });
-  }, [username, trustedDevice, navigate]);
+    setStep(4);
+  }, [username, trustedDevice]);
+
+  const handleStartupChoice = useCallback(
+    async (wantEnabled: boolean) => {
+      await setLaunchOnStartupEnabled(wantEnabled);
+      navigate('/', { replace: true });
+    },
+    [navigate],
+  );
 
   const handleRegister = useCallback(async () => {
     if (registering) return;
@@ -214,9 +265,10 @@ export default function DeviceSetup() {
     <AuthShell
       subtitle={
         <div className="mt-2 text-wavis-text-secondary text-sm">
-          {step === 1 && 'Step 1 of 3 - create credentials'}
-          {step === 2 && 'Step 2 of 3 - choose server'}
-          {step === 3 && 'Step 3 of 3 - save recovery details'}
+          {step === 1 && 'Step 1 of 4 - create credentials'}
+          {step === 2 && 'Step 2 of 4 - choose server'}
+          {step === 3 && 'Step 3 of 4 - save recovery details'}
+          {step === 4 && 'Step 4 of 4 - launch on startup'}
         </div>
       }
     >
@@ -422,11 +474,13 @@ export default function DeviceSetup() {
         </div>
       )}
 
+      {step === 4 && <LaunchOnStartupStep onChoice={handleStartupChoice} />}
+
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs">
         Tokens stored in local keychain - Auto-refresh - Device ID persisted
       </div>
 
-      {step !== 3 && (
+      {step !== 3 && step !== 4 && (
         <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-sm">
           <button
             onClick={() => navigate('/recover')}
