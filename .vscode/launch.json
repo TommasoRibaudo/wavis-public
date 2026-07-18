@@ -550,9 +550,13 @@
       "type": "node-terminal",
       "request": "launch",
       "name": "Test: GUI E2E (Playwright)",
-      // Brings the docker stack up (with the raised e2e register limit) and
-      // waits for /health before running — no manual docker compose needed.
+      // Brings the docker stack up — rebuilt with test-no-rate-limits and
+      // raised auth register/recover limits (see "Ensure E2E Backend Stack"
+      // in tasks.json) — and waits for /health before running. postDebugTask
+      // rebuilds the backend back to normal afterward either way, so the
+      // shared local dev backend never stays rate-limit-free.
       "preLaunchTask": "E2E Stack Ready",
+      "postDebugTask": "Restore Normal Backend",
       "command": "npm run test",
       "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling",
       "presentation": { "group": "7_gui-tauri", "order": 1 }

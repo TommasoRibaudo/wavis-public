@@ -64,6 +64,10 @@ services:
     build:
       context: .
       dockerfile: wavis-backend/Dockerfile
+      args:
+        # Empty by default (production behavior unchanged). Set to
+        # test-no-rate-limits for local e2e runs only — see security.md.
+        CARGO_FEATURES: ${CARGO_FEATURES:-}
     depends_on:
       postgres:
         condition: service_healthy

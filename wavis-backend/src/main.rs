@@ -337,6 +337,14 @@ async fn main() -> io::Result<()> {
     };
 
     let invite_store = Arc::new(InviteStore::new(InviteStoreConfig::default()));
+    #[cfg(feature = "test-no-rate-limits")]
+    tracing::warn!(
+        "test-no-rate-limits feature is compiled in — ALL abuse rate limits are disabled. \
+         This build must never serve production traffic."
+    );
+    #[cfg(feature = "test-no-rate-limits")]
+    let join_rate_limiter = Arc::new(JoinRateLimiter::new(JoinRateLimiterConfig::unlimited()));
+    #[cfg(not(feature = "test-no-rate-limits"))]
     let join_rate_limiter = Arc::new(JoinRateLimiter::new(JoinRateLimiterConfig::default()));
     let ip_config = IpConfig::from_env();
 

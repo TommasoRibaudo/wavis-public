@@ -174,6 +174,10 @@ async fn handle_socket(mut socket: WebSocket, app_state: AppState, client_ip: Ip
     let _ = &issuer_id;
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<String>();
     let mut rate_limiter = WsRateLimiter::new(&app_state.ws_rate_limit_config);
+    // Local e2e testing only, never production — see security.md.
+    #[cfg(feature = "test-no-rate-limits")]
+    let mut chat_rate_limiter = ChatRateLimiter::new(1_000_000.0);
+    #[cfg(not(feature = "test-no-rate-limits"))]
     let mut chat_rate_limiter = ChatRateLimiter::new(5.0);
     let sfu_config = SfuConfig::from_app_state(&app_state.jwt_secret, &app_state.jwt_issuer);
     let mut session: Option<SignalingSession> = None;

@@ -146,7 +146,11 @@ pub fn create_capture_backend(
     max_fps: u32,
 ) -> Result<Box<dyn ScreenCapture>, CaptureError> {
     create_capture_backend_with(
-        || Box::new(pipewire_capture::PipeWireCapture::new(max_width, max_height, max_fps)),
+        || {
+            Box::new(pipewire_capture::PipeWireCapture::new(
+                max_width, max_height, max_fps,
+            ))
+        },
         || Box::new(x11_capture::X11Capture::new()),
     )
 }
