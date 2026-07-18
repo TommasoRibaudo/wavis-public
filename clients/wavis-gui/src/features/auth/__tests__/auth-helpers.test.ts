@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 let mockStore: Record<string, unknown> = {};
 let mockKeychain: Record<string, string> = {};
-let mockFetchMode: 'register_ok' | 'recover_ok' = 'register_ok';
+let mockFetchMode: 'register_ok' | 'recover_ok' | 'register_invite_rejected' = 'register_ok';
 let fetchBodies: unknown[] = [];
 
 vi.mock('@tauri-apps/plugin-store', () => ({
@@ -51,6 +51,14 @@ vi.mock('@tauri-apps/plugin-http', () => ({
           access_token: `h.${btoa(JSON.stringify({ exp: futureExp }))}.s`,
           refresh_token: 'refresh-register',
         }),
+      };
+    }
+    if (url.includes('/auth/register') && mockFetchMode === 'register_invite_rejected') {
+      return {
+        ok: false,
+        status: 401,
+        headers: { get: () => null },
+        json: async () => ({ error: 'authentication failed' }),
       };
     }
     if (url.includes('/auth/recover') && mockFetchMode === 'recover_ok') {
@@ -138,12 +146,54 @@ describe('recovery ID storage helpers', () => {
       'https://wavis.example.com',
       'passphrase',
       'user',
+      'ALPHA-CODE-1',
       false,
       () => {},
     );
 
     expect(result).toEqual({ success: true, recovery_id: 'wvs-REG-0001' });
     expect(mockStore['recovery_id']).toBe('wvs-REG-0001');
+    expect(mockStore['server_url']).toBe('https://wavis.example.com');
+    expect(mockKeychain['wavis_refresh_token']).toBe('refresh-register');
+    expect(mockStore['device_id']).toBe('device-1');
+  });
+
+  it('registerUser sends invite_code alongside phrase and username', async () => {
+    mockFetchMode = 'register_ok';
+    const auth = await import('../auth');
+
+    await auth.registerUser(
+      'https://wavis.example.com',
+      'passphrase',
+      'user',
+      'ALPHA-CODE-1',
+      false,
+      () => {},
+    );
+
+    expect(fetchBodies).toMatchObject([
+      { phrase: 'passphrase', username: 'user', invite_code: 'ALPHA-CODE-1' },
+    ]);
+  });
+
+  it('registerUser surfaces a rejected invite as inviteRejected without storing any tokens', async () => {
+    mockFetchMode = 'register_invite_rejected';
+    const auth = await import('../auth');
+
+    const result = await auth.registerUser(
+      'https://wavis.example.com',
+      'passphrase',
+      'user',
+      'BAD-CODE',
+      false,
+      () => {},
+    );
+
+    expect(result.success).toBe(false);
+    expect(result).toMatchObject({ inviteRejected: true });
+    expect(mockStore['device_id']).toBeUndefined();
+    expect(mockStore['recovery_id']).toBeUndefined();
+    expect(mockKeychain['wavis_refresh_token']).toBeUndefined();
   });
 
   it('resetAuth deletes the stored recovery ID', async () => {

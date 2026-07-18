@@ -254,9 +254,13 @@ export async function registerUser(
   serverUrl: string,
   phrase: string,
   username: string,
+  inviteCode: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
-): Promise<{ success: true; recovery_id: string } | { success: false; error?: string }> {
+): Promise<
+  | { success: true; recovery_id: string }
+  | { success: false; error?: string; inviteRejected?: boolean }
+> {
   onLog(makeLogEntry('Validating server URL: ' + serverUrl, 'info'));
   const validation = validateServerUrl(serverUrl, insecureTls);
   if (!validation.valid) {
@@ -274,7 +278,7 @@ export async function registerUser(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phrase, username }),
+      body: JSON.stringify({ phrase, username, invite_code: inviteCode }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -282,6 +286,12 @@ export async function registerUser(
     onLog(makeLogEntry(msg, 'error'));
     console.error(LOG_PREFIX, 'register network error:', err);
     return { success: false, error: msg };
+  }
+
+  if (res.status === 401) {
+    const msg = 'Invite code rejected -- check the code and try again';
+    onLog(makeLogEntry(msg, 'error'));
+    return { success: false, error: msg, inviteRejected: true };
   }
 
   if (res.status === 429) {

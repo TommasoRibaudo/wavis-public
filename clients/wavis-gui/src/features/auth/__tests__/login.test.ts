@@ -229,8 +229,8 @@ async function simulateReregister(serverUrl: string): Promise<{
 }> {
   const auth = await import('../auth');
   const insecure = await auth.getInsecureTls();
-  // TODO(task-22): pass phrase and deviceName from UI inputs
-  const result = await auth.registerUser(serverUrl, '', '', insecure, () => {});
+  // TODO(task-22): pass phrase, deviceName, and inviteCode from UI inputs
+  const result = await auth.registerUser(serverUrl, '', '', '', insecure, () => {});
 
   if (result.success) {
     navigateTarget = '/';
