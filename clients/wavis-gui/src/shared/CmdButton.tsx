@@ -4,10 +4,19 @@ interface CmdButtonProps {
   active?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  highlight?: boolean;
   className?: string;
 }
 
-export function CmdButton({ label, onClick, active, danger, disabled, className }: CmdButtonProps) {
+export function CmdButton({
+  label,
+  onClick,
+  active,
+  danger,
+  disabled,
+  highlight,
+  className,
+}: CmdButtonProps) {
   return (
     <button
       onClick={onClick}
@@ -18,7 +27,7 @@ export function CmdButton({ label, onClick, active, danger, disabled, className 
           : active
             ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg'
             : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
-      }`}
+      } ${highlight ? 'ring-2 ring-wavis-accent ring-offset-2 ring-offset-wavis-bg animate-pulse' : ''}`}
     >
       {label}
     </button>

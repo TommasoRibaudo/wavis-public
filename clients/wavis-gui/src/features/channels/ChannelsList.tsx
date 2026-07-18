@@ -17,7 +17,7 @@ import { EmptyState } from '@shared/EmptyState';
 import { LoadingBlock } from '@shared/LoadingBlock';
 import { usePolling } from '@shared/hooks/usePolling';
 import { setLastChannel } from '@features/settings/settings-store';
-import { TutorialOverlay } from './TutorialOverlay';
+import { TutorialOverlay, TUTORIAL_STEPS } from './TutorialOverlay';
 import { useTutorialVisibility } from './useTutorialVisibility';
 
 /* Constants */
@@ -31,7 +31,15 @@ function apiErrorMessage(err: ApiError): string {
 /* Component */
 export default function ChannelsList() {
   const navigate = useNavigate();
-  const { showTutorial, openTutorial, dismissTutorial } = useTutorialVisibility();
+  const {
+    showTutorial,
+    step: tutorialStep,
+    openTutorial,
+    dismissTutorial,
+    nextStep,
+    backStep,
+  } = useTutorialVisibility();
+  const tutorialHighlight = showTutorial ? TUTORIAL_STEPS[tutorialStep].highlight : null;
 
   /* State */
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -376,11 +384,13 @@ export default function ChannelsList() {
           label="/create"
           onClick={() => toggleForm('create')}
           active={activeForm === 'create'}
+          highlight={tutorialHighlight === 'create'}
         />
         <CmdButton
           label="/join"
           onClick={() => toggleForm('join')}
           active={activeForm === 'join'}
+          highlight={tutorialHighlight === 'join'}
         />
         <CmdButton
           label="/refresh"
@@ -403,7 +413,14 @@ export default function ChannelsList() {
         <CmdButton label="/help" onClick={openTutorial} />
       </div>
 
-      {showTutorial && <TutorialOverlay onDismiss={dismissTutorial} />}
+      {showTutorial && (
+        <TutorialOverlay
+          step={tutorialStep}
+          onNext={nextStep}
+          onBack={backStep}
+          onDismiss={dismissTutorial}
+        />
+      )}
     </div>
   );
 }
