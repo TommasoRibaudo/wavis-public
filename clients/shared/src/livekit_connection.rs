@@ -20,6 +20,8 @@ use crate::cpal_audio::AudioBuffer;
 #[cfg(feature = "real-backends")]
 use crate::cpal_audio::PeerVolumes;
 #[cfg(feature = "real-backends")]
+use crate::deesser_filter::DeesserFilter;
+#[cfg(feature = "real-backends")]
 use crate::denoise_filter::DenoiseFilter;
 #[cfg(feature = "real-backends")]
 use crate::passthrough_filter::PassthroughFilters;
@@ -744,8 +746,9 @@ impl LiveKitConnection for RealLiveKitConnection {
 
         // Spawn background task to push mic PCM into the NativeAudioSource.
         // Reads 960 mono f32 samples (20ms @ 48kHz) from the capture buffer,
-        // applies denoise (if wired), converts to i16, and calls capture_frame
-        // every 20ms using absolute deadline pacing to eliminate cumulative drift.
+        // applies denoise (if wired) then de-essing, converts to i16, and
+        // calls capture_frame every 20ms using absolute deadline pacing to
+        // eliminate cumulative drift.
         #[cfg(feature = "real-backends")]
         {
             let capture_buf = self.capture_buffer.lock().unwrap().clone();
@@ -774,6 +777,7 @@ impl LiveKitConnection for RealLiveKitConnection {
                     let mut frame_i16 = vec![0i16; FRAME_SAMPLES];
                     let mut last_sample_f32: f32 = 0.0;
                     let mut primed = false;
+                    let mut deesser = DeesserFilter::new();
 
                     // Absolute-deadline pacing state.
                     let start = Instant::now();
@@ -866,6 +870,10 @@ impl LiveKitConnection for RealLiveKitConnection {
                         if let Some(ref dn) = denoise {
                             dn.process(&mut frame_f32[..FRAME_SAMPLES]);
                         }
+
+                        // De-ess: pull down harsh sibilance / high-pitched
+                        // content (#286) before it goes out over the wire.
+                        deesser.process(&mut frame_f32[..FRAME_SAMPLES]);
 
                         // Convert f32 → i16 for the LiveKit NativeAudioSource.
                         for (i, &s) in frame_f32.iter().enumerate() {
