@@ -40,6 +40,17 @@ export default function ChannelsList() {
     backStep,
   } = useTutorialVisibility();
   const tutorialHighlight = showTutorial ? TUTORIAL_STEPS[tutorialStep].highlight : null;
+  const createBtnRef = useRef<HTMLButtonElement>(null);
+  const joinBtnRef = useRef<HTMLButtonElement>(null);
+  const channelListRef = useRef<HTMLDivElement>(null);
+  const tutorialTargetRef =
+    tutorialHighlight === 'create'
+      ? createBtnRef
+      : tutorialHighlight === 'join'
+        ? joinBtnRef
+        : tutorialHighlight === 'list'
+          ? channelListRef
+          : null;
 
   /* State */
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -230,65 +241,67 @@ export default function ChannelsList() {
         <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6">
           <h2 className="mb-6">channels</h2>
 
-          {/* Loading state */}
-          {loading && <LoadingBlock />}
+          <div ref={channelListRef}>
+            {/* Loading state */}
+            {loading && <LoadingBlock />}
 
-          {/* Error state */}
-          {!loading && error && (
-            <ErrorPanel
-              error={error}
-              onRetry={() => {
-                void loadChannels(true);
-              }}
-            />
-          )}
+            {/* Error state */}
+            {!loading && error && (
+              <ErrorPanel
+                error={error}
+                onRetry={() => {
+                  void loadChannels(true);
+                }}
+              />
+            )}
 
-          {/* Empty state */}
-          {!loading && !error && channels.length === 0 && (
-            <EmptyState
-              message="no channels yet — create one or join by invite code"
-              className="p-4 text-center"
-            />
-          )}
+            {/* Empty state */}
+            {!loading && !error && channels.length === 0 && (
+              <EmptyState
+                message="no channels yet — create one or join by invite code"
+                className="p-4 text-center"
+              />
+            )}
 
-          {/* Channel list */}
-          {!loading && !error && channels.length > 0 && (
-            <div className="flex flex-col">
-              {channels.map((ch) => (
-                <div
-                  key={ch.id}
-                  onClick={() => {
-                    void setLastChannel(ch.id, ch.name, ch.role);
-                    void navigate('/room', {
-                      state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
-                    });
-                  }}
-                  className="flex items-center justify-between gap-4 px-3 sm:px-4 py-3 bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors text-left mb-1 cursor-pointer"
-                >
-                  <span className="min-w-0 truncate">{ch.name}</span>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {voiceStatus.get(ch.id)?.active && (
-                      <span className="text-wavis-accent text-xs flex items-center gap-1">
-                        <span>●</span>
-                        <span>{voiceStatus.get(ch.id)?.participantCount}</span>
-                      </span>
-                    )}
-                    <ChannelRoleBadge role={ch.role} variant="list" />
-                    {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void navigate(`/channel/${ch.id}`);
-                      }}
-                      className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
-                    >
-                      /channel settings
-                    </button>
+            {/* Channel list */}
+            {!loading && !error && channels.length > 0 && (
+              <div className="flex flex-col">
+                {channels.map((ch) => (
+                  <div
+                    key={ch.id}
+                    onClick={() => {
+                      void setLastChannel(ch.id, ch.name, ch.role);
+                      void navigate('/room', {
+                        state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
+                      });
+                    }}
+                    className="flex items-center justify-between gap-4 px-3 sm:px-4 py-3 bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors text-left mb-1 cursor-pointer"
+                  >
+                    <span className="min-w-0 truncate">{ch.name}</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {voiceStatus.get(ch.id)?.active && (
+                        <span className="text-wavis-accent text-xs flex items-center gap-1">
+                          <span>●</span>
+                          <span>{voiceStatus.get(ch.id)?.participantCount}</span>
+                        </span>
+                      )}
+                      <ChannelRoleBadge role={ch.role} variant="list" />
+                      {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void navigate(`/channel/${ch.id}`);
+                        }}
+                        className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
+                      >
+                        /channel settings
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Divider before forms */}
           {activeForm !== 'none' && (
@@ -381,12 +394,14 @@ export default function ChannelsList() {
       {/* Bottom command bar */}
       <div className="border-t border-wavis-text-secondary px-3 sm:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
         <CmdButton
+          ref={createBtnRef}
           label="/create"
           onClick={() => toggleForm('create')}
           active={activeForm === 'create'}
           highlight={tutorialHighlight === 'create'}
         />
         <CmdButton
+          ref={joinBtnRef}
           label="/join"
           onClick={() => toggleForm('join')}
           active={activeForm === 'join'}
@@ -416,6 +431,7 @@ export default function ChannelsList() {
       {showTutorial && (
         <TutorialOverlay
           step={tutorialStep}
+          targetRef={tutorialTargetRef}
           onNext={nextStep}
           onBack={backStep}
           onDismiss={dismissTutorial}
