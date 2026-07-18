@@ -91,6 +91,7 @@ import {
 } from '@shared/hotkey-bridge';
 import { Switch } from '../../components/ui/switch';
 import { open } from '@tauri-apps/plugin-shell';
+import { isLaunchOnStartupEnabled, setLaunchOnStartupEnabled } from '@shared/autostart-bridge';
 import { ConfirmTextGate } from '@shared/ConfirmTextGate';
 import ChannelDetail from '@features/channels/ChannelDetail';
 import { useHotkeyRecorder } from './useHotkeyRecorder';
@@ -245,6 +246,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     kind: 'idle',
   });
   const [minimizeToTray, setMinimizeToTrayState] = useState(false);
+  const [launchOnStartup, setLaunchOnStartupState] = useState(false);
   const [notifyToggles, setNotifyToggles] = useState<NotificationToggles>({
     participantJoined: true,
     participantLeft: true,
@@ -296,6 +298,7 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     void getStoreValue<string>(STORE_KEYS.audioOutputDevice, '').then(setSelectedOutputDevice);
     void getAccessToken().then(setAccessTokenVal);
     void getMinimizeToTray().then(setMinimizeToTrayState);
+    void isLaunchOnStartupEnabled().then(setLaunchOnStartupState);
     void getNotificationToggles().then(setNotifyToggles);
     setPassthroughVolumeState(getVoiceRoomState().passthroughVolume);
     setPassthroughFiltersEnabledState(getVoiceRoomState().passthroughFiltersEnabled);
@@ -355,6 +358,11 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
     setMinimizeToTrayState(checked);
     void setMinimizeToTray(checked);
     emit('minimize-to-tray-changed', { enabled: checked }).catch(() => {});
+  }, []);
+
+  const handleLaunchOnStartupChange = useCallback((checked: boolean) => {
+    setLaunchOnStartupState(checked);
+    void setLaunchOnStartupEnabled(checked);
   }, []);
 
   const handleDenoiseToggle = useCallback(async (checked: boolean) => {
@@ -1174,9 +1182,9 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
 
             <div className="text-wavis-text-secondary my-4 overflow-hidden">{DIVIDER}</div>
 
-            {/* System tray */}
+            {/* System tray & startup */}
             <div className="mb-6">
-              <p className="text-sm text-wavis-text-secondary mb-2">SYSTEM TRAY</p>
+              <p className="text-sm text-wavis-text-secondary mb-2">SYSTEM TRAY & STARTUP</p>
               <div className="p-3 bg-wavis-panel border border-wavis-text-secondary space-y-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-wavis-text-secondary">Minimize to tray on close</span>
@@ -1184,6 +1192,14 @@ export default function Settings({ onClose, onNavigateAway, channelId }: Setting
                     checked={minimizeToTray}
                     onCheckedChange={handleMinimizeToTrayChange}
                     aria-label="Toggle minimize to tray"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-wavis-text-secondary">Launch Wavis on startup</span>
+                  <Switch
+                    checked={launchOnStartup}
+                    onCheckedChange={handleLaunchOnStartupChange}
+                    aria-label="Toggle launch on startup"
                   />
                 </div>
               </div>
