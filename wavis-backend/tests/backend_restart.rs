@@ -22,6 +22,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -205,8 +206,11 @@ async fn bind_with_retry(addr: SocketAddr, attempts: u32, delay_ms: u64) -> TcpL
 // WebSocket helpers
 // ============================================================
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -311,11 +315,11 @@ async fn backend_restart_contract() {
     let server_a = start_server(false).await;
     let addr_a = server_a.addr;
 
-    let (mut sink_a1, mut stream_a1) = ws_connect(addr_a).await;
+    let (mut sink_a1, mut stream_a1) = ws_connect(addr_a, &server_a.app_state).await;
     let joined_a1 = join_room_p2p(&mut sink_a1, &mut stream_a1, "restart-room").await;
     assert_eq!(joined_a1["peerCount"], 1);
 
-    let (mut sink_a2, mut stream_a2) = ws_connect(addr_a).await;
+    let (mut sink_a2, mut stream_a2) = ws_connect(addr_a, &server_a.app_state).await;
     let joined_a2 = join_room_p2p(&mut sink_a2, &mut stream_a2, "restart-room").await;
     assert_eq!(joined_a2["peerCount"], 2);
 
@@ -382,7 +386,7 @@ async fn backend_restart_contract() {
     // ========================================================
     // Phase 4: Connect new client to B, join new room, verify success
     // ========================================================
-    let (mut sink_b1, mut stream_b1) = ws_connect(server_b.addr).await;
+    let (mut sink_b1, mut stream_b1) = ws_connect(server_b.addr, &server_b.app_state).await;
 
     // B has require_invite_code=true, but the first join to a new P2P room
     // needs an invite. Generate one on B first.
@@ -398,7 +402,7 @@ async fn backend_restart_contract() {
     // ========================================================
     // Phase 5: Attempt join on B with old invite code from A â€” must be rejected
     // ========================================================
-    let (mut sink_b2, mut stream_b2) = ws_connect(server_b.addr).await;
+    let (mut sink_b2, mut stream_b2) = ws_connect(server_b.addr, &server_b.app_state).await;
     ws_send(
         &mut sink_b2,
         json!({

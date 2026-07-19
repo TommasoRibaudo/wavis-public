@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateStep1 } from '../DeviceSetup';
+import { validateStep1, validateInviteCode } from '../DeviceSetup';
 
 describe('validateStep1', () => {
   it('rejects mismatched passwords', () => {
@@ -21,5 +21,19 @@ describe('validateStep1', () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors.username).toBe('username must be 64 characters or less');
+  });
+});
+
+describe('validateInviteCode', () => {
+  it('rejects an empty invite code', () => {
+    expect(validateInviteCode('')).toBe('Invite code is required');
+  });
+
+  it('rejects a whitespace-only invite code', () => {
+    expect(validateInviteCode('   ')).toBe('Invite code is required');
+  });
+
+  it('accepts a non-empty invite code', () => {
+    expect(validateInviteCode('ALPHA-CODE-1')).toBeNull();
   });
 });

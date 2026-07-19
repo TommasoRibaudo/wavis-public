@@ -55,6 +55,10 @@ export function validateStep1(
   return { valid: Object.keys(errors).length === 0, errors };
 }
 
+export function validateInviteCode(inviteCode: string): string | null {
+  return inviteCode.trim() ? null : 'Invite code is required';
+}
+
 function InsecureTlsToggle({
   insecureTls,
   setInsecureTls,
@@ -150,6 +154,7 @@ export default function DeviceSetup() {
   const [username, setUsernameValue] = useState('');
   const [phrase, setPhrase] = useState('');
   const [confirmPhrase, setConfirmPhrase] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -157,6 +162,7 @@ export default function DeviceSetup() {
   const [nameError, setNameError] = useState<string | null>(null);
   const [phraseError, setPhraseError] = useState<string | null>(null);
   const [confirmPhraseError, setConfirmPhraseError] = useState<string | null>(null);
+  const [inviteCodeError, setInviteCodeError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
 
@@ -208,6 +214,7 @@ export default function DeviceSetup() {
     if (registering) return;
 
     setUrlError(null);
+    setInviteCodeError(null);
     setRegisterError(null);
     setShowRetry(false);
 
@@ -217,13 +224,27 @@ export default function DeviceSetup() {
       return;
     }
 
+    const trimmedInviteCode = inviteCode.trim();
+    const inviteError = validateInviteCode(inviteCode);
+    if (inviteError) {
+      setInviteCodeError(inviteError);
+      return;
+    }
+
     const trimmedName = username.trim();
     setRegistering(true);
     setLogs([]);
 
-    const result = await registerUser(serverUrl, phrase, trimmedName, insecureTls, (entry) => {
-      setLogs((prev) => [...prev, entry]);
-    });
+    const result = await registerUser(
+      serverUrl,
+      phrase,
+      trimmedName,
+      trimmedInviteCode,
+      insecureTls,
+      (entry) => {
+        setLogs((prev) => [...prev, entry]);
+      },
+    );
 
     setRegistering(false);
     setPhrase('');
@@ -235,6 +256,11 @@ export default function DeviceSetup() {
       return;
     }
 
+    if (result.inviteRejected) {
+      setInviteCodeError('Invalid or expired invite code');
+      return;
+    }
+
     const err = result.error ?? '';
     if (err.includes('too many requests')) {
       setRegisterError('too many requests - try again later');
@@ -242,7 +268,7 @@ export default function DeviceSetup() {
       setRegisterError('Registration failed - please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, username, phrase, insecureTls, registering]);
+  }, [serverUrl, username, phrase, inviteCode, insecureTls, registering]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -355,6 +381,19 @@ export default function DeviceSetup() {
               </p>
               <p className="mt-2 text-wavis-accent">It looks like: https://wavis.yourteam.com</p>
             </div>
+
+            <AuthFieldRow
+              label="Invite Code:"
+              placeholder="the code your admin sent you"
+              value={inviteCode}
+              onChange={(value) => {
+                setInviteCode(value);
+                setInviteCodeError(null);
+              }}
+              onKeyDown={handleKeyDown}
+              error={inviteCodeError}
+              disabled={registering}
+            />
 
             <InsecureTlsToggle
               insecureTls={insecureTls}

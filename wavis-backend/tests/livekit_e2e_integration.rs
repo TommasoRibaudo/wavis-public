@@ -197,8 +197,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url)
         .await
         .expect("WebSocket connection to in-process server should succeed");
@@ -396,9 +399,9 @@ async fn livekit_backend_issues_valid_media_token_accepted_by_livekit() {
     };
 
     let room_id = unique_room_id("e2e-media-token");
-    let (addr, _state) = start_server_with_livekit(&api_key, &api_secret, &host, false).await;
+    let (addr, state) = start_server_with_livekit(&api_key, &api_secret, &host, false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Create an SFU room via WebSocket
     ws_send(
@@ -479,10 +482,10 @@ async fn livekit_room_cleanup_on_last_leave() {
     };
 
     let room_id = unique_room_id("e2e-cleanup");
-    let (addr, _state) = start_server_with_livekit(&api_key, &api_secret, &host, true).await;
+    let (addr, state) = start_server_with_livekit(&api_key, &api_secret, &host, true).await;
 
     // Client 1: host creates the room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({"type": "create_room", "roomId": room_id, "roomType": "sfu"}),
@@ -498,7 +501,7 @@ async fn livekit_room_cleanup_on_last_leave() {
     drain(&mut stream1).await;
 
     // Client 2: guest joins with the invite code
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({

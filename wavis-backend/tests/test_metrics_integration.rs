@@ -32,6 +32,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::time::timeout;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
+    use uuid::Uuid;
 
     use axum::Router;
     use axum::routing::get;
@@ -284,8 +285,11 @@ mod tests {
         >,
     >;
 
-    async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-        let url = format!("ws://{addr}/ws");
+    async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+        let ticket = app_state
+            .ws_ticket_store
+            .issue(Uuid::new_v4(), Uuid::new_v4());
+        let url = format!("ws://{addr}/ws?ticket={ticket}");
         let (ws, _) = connect_async(&url).await.expect("WS connect failed");
         ws.split()
     }
@@ -401,7 +405,7 @@ mod tests {
         let server = start_server_with_metrics(false, "test-token-24e").await;
 
         // Join an SFU room via WebSocket on the main port
-        let (mut sink, mut stream) = ws_connect(server.ws_addr).await;
+        let (mut sink, mut stream) = ws_connect(server.ws_addr, &server.app_state).await;
         ws_send(
             &mut sink,
             json!({"type": "join", "roomId": "metrics-room", "roomType": "sfu"}),
@@ -442,7 +446,7 @@ mod tests {
         );
 
         // Join a second peer
-        let (mut sink2, mut stream2) = ws_connect(server.ws_addr).await;
+        let (mut sink2, mut stream2) = ws_connect(server.ws_addr, &server.app_state).await;
         ws_send(
             &mut sink2,
             json!({"type": "join", "roomId": "metrics-room", "roomType": "sfu"}),
@@ -511,7 +515,7 @@ mod tests {
         let server = start_server_with_metrics(false, "test-token-24e-abuse").await;
 
         // Send a non-join message without joining first â†’ state_machine_rejections
-        let (mut sink, mut stream) = ws_connect(server.ws_addr).await;
+        let (mut sink, mut stream) = ws_connect(server.ws_addr, &server.app_state).await;
         ws_send(&mut sink, json!({"type": "leave"})).await;
 
         // Should get "not authenticated" error

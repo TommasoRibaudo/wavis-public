@@ -25,6 +25,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::global_rate_limiter::GlobalRateLimiter;
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
@@ -322,15 +323,21 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
 
 /// Try to connect; returns None if the server rejects (e.g. HTTP 429).
-async fn try_ws_connect(addr: SocketAddr) -> Option<(WsSink, WsStream)> {
-    let url = format!("ws://{addr}/ws");
+async fn try_ws_connect(addr: SocketAddr, app_state: &AppState) -> Option<(WsSink, WsStream)> {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     match connect_async(&url).await {
         Ok((ws, _)) => Some(ws.split()),
         Err(_) => None,
@@ -396,10 +403,10 @@ async fn drain(stream: &mut WsStream) {
 /// Â§18a: Start screen share â€” success. Both peers receive share_started.
 #[tokio::test]
 async fn test18a_start_share_success() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-test","roomType":"sfu"}),
@@ -410,7 +417,7 @@ async fn test18a_start_share_success() {
     drain(&mut r_host).await;
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"share-test","roomType":"sfu"}),
@@ -436,9 +443,9 @@ async fn test18a_start_share_success() {
 /// Â§18b: Start share while another is active â€” multi-share allows concurrent shares.
 #[tokio::test]
 async fn test18b_start_share_already_active() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-dup","roomType":"sfu"}),
@@ -447,7 +454,7 @@ async fn test18b_start_share_already_active() {
     let _ = recv_type(&mut r_host, "joined").await;
     drain(&mut r_host).await;
 
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"share-dup","roomType":"sfu"}),
@@ -473,9 +480,9 @@ async fn test18b_start_share_already_active() {
 /// Â§18c: Stop share by owner.
 #[tokio::test]
 async fn test18c_stop_share_by_owner() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-stop","roomType":"sfu"}),
@@ -485,7 +492,7 @@ async fn test18c_stop_share_by_owner() {
     let host_id = joined["peerId"].as_str().unwrap().to_string();
     drain(&mut r_host).await;
 
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"share-stop","roomType":"sfu"}),
@@ -513,10 +520,10 @@ async fn test18c_stop_share_by_owner() {
 /// Â§18d: Stop share by Host (override another participant's share).
 #[tokio::test]
 async fn test18d_stop_share_host_override() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins first
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-override","roomType":"sfu"}),
@@ -526,7 +533,7 @@ async fn test18d_stop_share_host_override() {
     drain(&mut r_host).await;
 
     // Guest joins second
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"share-override","roomType":"sfu"}),
@@ -559,9 +566,9 @@ async fn test18d_stop_share_host_override() {
 /// Â§18e: Stop share as non-owner Guest â€” silent no-op.
 #[tokio::test]
 async fn test18e_stop_share_non_owner_noop() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-noop","roomType":"sfu"}),
@@ -571,7 +578,7 @@ async fn test18e_stop_share_non_owner_noop() {
     let host_id = joined["peerId"].as_str().unwrap().to_string();
     drain(&mut r_host).await;
 
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"share-noop","roomType":"sfu"}),
@@ -596,7 +603,7 @@ async fn test18e_stop_share_non_owner_noop() {
 
     // Verify share is still active (host can still see it)
     assert!(
-        _state
+        state
             .room_state
             .get_room_info("share-noop")
             .map(|i| i.active_shares.contains(&host_id))
@@ -608,9 +615,9 @@ async fn test18e_stop_share_non_owner_noop() {
 /// Â§18f: Start share in P2P room â€” rejected.
 #[tokio::test]
 async fn test18f_start_share_p2p_rejected() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     // Join P2P room â€” must explicitly pass roomType:"p2p" since MAX_ROOM_PARTICIPANTS=6
     // defaults to SFU via determine_room_type(None, 6) = Sfu
     ws_send(
@@ -629,9 +636,9 @@ async fn test18f_start_share_p2p_rejected() {
 /// Â§18g: Disconnect cleanup â€” share cleared when owner disconnects.
 #[tokio::test]
 async fn test18g_disconnect_cleanup() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"share-dc","roomType":"sfu"}),
@@ -641,7 +648,7 @@ async fn test18g_disconnect_cleanup() {
     let host_id = joined["peerId"].as_str().unwrap().to_string();
     drain(&mut r_host).await;
 
-    let (mut _s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut _s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut _s_guest,
         json!({"type":"join","roomId":"share-dc","roomType":"sfu"}),
@@ -674,9 +681,9 @@ async fn test18g_disconnect_cleanup() {
 /// Â§19a: With TURN configured, Joined response includes iceConfig.
 #[tokio::test]
 async fn test19a_join_with_turn_includes_ice_config() {
-    let (addr, _state) = start_server_with_turn(false).await;
+    let (addr, state) = start_server_with_turn(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"turn-test","roomType":"sfu"}),
@@ -710,10 +717,10 @@ async fn test19a_join_with_turn_includes_ice_config() {
 /// Â§19a (continued): Each peer gets unique credentials.
 #[tokio::test]
 async fn test19a_unique_credentials_per_peer() {
-    let (addr, _state) = start_server_with_turn(false).await;
+    let (addr, state) = start_server_with_turn(false).await;
 
     // Peer 1
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"turn-unique","roomType":"sfu"}),
@@ -730,7 +737,7 @@ async fn test19a_unique_credentials_per_peer() {
         .to_string();
 
     // Peer 2
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"turn-unique","roomType":"sfu"}),
@@ -759,9 +766,9 @@ async fn test19a_unique_credentials_per_peer() {
 /// Â§19b: Without TURN configured, Joined response has no iceConfig.
 #[tokio::test]
 async fn test19b_join_without_turn_no_ice_config() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"no-turn","roomType":"sfu"}),
@@ -784,17 +791,17 @@ async fn test19b_join_without_turn_no_ice_config() {
 #[tokio::test]
 async fn test20a_global_ws_upgrade_ceiling() {
     // Set ceiling to 2 WS upgrades per second
-    let (addr, _state) = start_server_with_global_limits(2, 100).await;
+    let (addr, state) = start_server_with_global_limits(2, 100).await;
 
     // First 2 connections should succeed
-    let conn1 = try_ws_connect(addr).await;
+    let conn1 = try_ws_connect(addr, &state).await;
     assert!(conn1.is_some(), "1st connection should succeed");
 
-    let conn2 = try_ws_connect(addr).await;
+    let conn2 = try_ws_connect(addr, &state).await;
     assert!(conn2.is_some(), "2nd connection should succeed");
 
     // 3rd connection in the same second should be rejected (HTTP 429)
-    let conn3 = try_ws_connect(addr).await;
+    let conn3 = try_ws_connect(addr, &state).await;
     assert!(
         conn3.is_none(),
         "3rd connection should be rejected by global WS ceiling"
@@ -802,7 +809,7 @@ async fn test20a_global_ws_upgrade_ceiling() {
 
     // After waiting for the epoch to reset, new connections should work
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let conn4 = try_ws_connect(addr).await;
+    let conn4 = try_ws_connect(addr, &state).await;
     assert!(
         conn4.is_some(),
         "connection after epoch reset should succeed"
@@ -813,7 +820,7 @@ async fn test20a_global_ws_upgrade_ceiling() {
 #[tokio::test]
 async fn test20b_global_join_ceiling() {
     // Set join ceiling to 2 per second, WS ceiling high
-    let (addr, _state) = start_server_with_global_limits(100, 2).await;
+    let (addr, state) = start_server_with_global_limits(100, 2).await;
 
     // Note: global join ceiling is only checked when require_invite_code=true.
     // With require_invite=false, the join ceiling check is skipped.
@@ -827,7 +834,7 @@ async fn test20b_global_join_ceiling() {
     // The WS ceiling test (20a) validates the integration pattern.
 
     // Verify joins work normally with the high WS ceiling
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"join-ceil-1","roomType":"sfu"}),
@@ -836,7 +843,7 @@ async fn test20b_global_join_ceiling() {
     let j1 = recv_type(&mut r1, "joined").await;
     assert_eq!(j1["roomId"], "join-ceil-1");
 
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"join-ceil-2","roomType":"sfu"}),
@@ -857,9 +864,9 @@ async fn test20b_global_join_ceiling() {
 /// Â§21a: Oversized room_id (> 128 chars) â€” rejected with field name in error.
 #[tokio::test]
 async fn test21a_oversized_room_id() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     let long_room = "x".repeat(200);
     ws_send(&mut sink, json!({"type":"join","roomId": long_room})).await;
     let err = recv_type(&mut stream, "error").await;
@@ -889,9 +896,9 @@ async fn test21a_oversized_room_id() {
 /// Â§21b: Oversized invite_code (> 64 chars) â€” rejected.
 #[tokio::test]
 async fn test21b_oversized_invite_code() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     let long_code = "x".repeat(70);
     ws_send(
         &mut sink,
@@ -909,9 +916,9 @@ async fn test21b_oversized_invite_code() {
 /// Â§21c: Oversized target_participant_id in stop_share (> 128 chars) â€” rejected.
 #[tokio::test]
 async fn test21c_oversized_participant_id_in_stop_share() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     // Must join first (pre-join gate)
     ws_send(
         &mut sink,
@@ -938,9 +945,9 @@ async fn test21c_oversized_participant_id_in_stop_share() {
 /// Â§21d: Valid-length fields pass through normally.
 #[tokio::test]
 async fn test21d_valid_fields_pass() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"normal-room","roomType":"sfu"}),
@@ -960,9 +967,9 @@ async fn test21d_valid_fields_pass() {
 /// (Extends test10 with start_share specifically, as documented in Â§22a)
 #[tokio::test]
 async fn test22a_start_share_before_auth() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(&mut sink, json!({"type":"start_share"})).await;
     let err = recv_type(&mut stream, "error").await;
     assert_eq!(err["message"], "not authenticated");
@@ -976,9 +983,9 @@ async fn test22a_start_share_before_auth() {
 /// Â§22b: Re-Join after already joined â€” "already joined".
 #[tokio::test]
 async fn test22b_rejoin_after_joined() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"room-1","roomType":"sfu"}),

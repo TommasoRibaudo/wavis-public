@@ -31,6 +31,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::ip_tracker::IpConnectionTracker;
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
@@ -164,15 +165,24 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
 
 /// Try to connect â€” returns Err if server rejects upgrade (e.g. HTTP 429).
-async fn try_ws_connect(addr: SocketAddr) -> Result<(WsSink, WsStream), String> {
-    let url = format!("ws://{addr}/ws");
+async fn try_ws_connect(
+    addr: SocketAddr,
+    app_state: &AppState,
+) -> Result<(WsSink, WsStream), String> {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     match connect_async(&url).await {
         Ok((ws, _)) => Ok(ws.split()),
         Err(e) => Err(format!("{e}")),
@@ -252,10 +262,10 @@ async fn expect_close_or_error(stream: &mut WsStream, expected_error: &str) {
 // 10b: Host mutes Guest â†’ both receive participant_muted (BroadcastAll)
 #[tokio::test]
 async fn test10_mute_participant_host_flow() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins first
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"mute-test","roomType":"sfu"}),
@@ -266,7 +276,7 @@ async fn test10_mute_participant_host_flow() {
     drain(&mut r_host).await;
 
     // Guest joins second
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"mute-test","roomType":"sfu"}),
@@ -305,7 +315,7 @@ async fn test10_mute_participant_host_flow() {
 
     // Verify guest is still in the room (mute is advisory, not removal)
     assert_eq!(
-        _state.room_state.peer_count("mute-test"),
+        state.room_state.peer_count("mute-test"),
         2,
         "both peers should still be in room after mute"
     );
@@ -318,10 +328,10 @@ async fn test10_mute_participant_host_flow() {
 // 10c: Mute nonexistent participant â†’ error
 #[tokio::test]
 async fn test10c_mute_nonexistent_participant() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"mute-ghost","roomType":"sfu"}),
@@ -347,10 +357,10 @@ async fn test10c_mute_nonexistent_participant() {
 // 10d: Mute in P2P room â†’ "action not supported in P2P mode"
 #[tokio::test]
 async fn test10d_mute_in_p2p_room_rejected() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Join a P2P room (explicit roomType:"p2p")
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"p2p-mute","roomType":"p2p"}),
@@ -360,7 +370,7 @@ async fn test10d_mute_in_p2p_room_rejected() {
     drain(&mut r1).await;
 
     // Second peer joins P2P room
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"p2p-mute","roomType":"p2p"}),
@@ -398,9 +408,9 @@ async fn test11_1_ws_message_rate_limiting() {
         deafen_window: Duration::from_secs(60),
         max_json_depth: 32,
     };
-    let (addr, _state) = start_server_custom(false, Some(ws_config), None, None).await;
+    let (addr, state) = start_server_custom(false, Some(ws_config), None, None).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Message 1: join (counts toward rate limit)
     ws_send(
@@ -439,9 +449,9 @@ async fn test11_2_burst_detection() {
         deafen_window: Duration::from_secs(60),
         max_json_depth: 32,
     };
-    let (addr, _state) = start_server_custom(false, Some(ws_config), None, None).await;
+    let (addr, state) = start_server_custom(false, Some(ws_config), None, None).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Send 4 messages rapidly within 1 second â€” first 3 accepted, 4th triggers burst limit
     // Message 1: join
@@ -502,10 +512,10 @@ async fn test11_3_action_rate_limiting() {
         deafen_window: Duration::from_secs(60),
         max_json_depth: 32,
     };
-    let (addr, _state) = start_server_custom(false, Some(ws_config), None, None).await;
+    let (addr, state) = start_server_custom(false, Some(ws_config), None, None).await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"action-rl","roomType":"sfu"}),
@@ -515,7 +525,7 @@ async fn test11_3_action_rate_limiting() {
     drain(&mut r_host).await;
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"action-rl","roomType":"sfu"}),
@@ -571,10 +581,10 @@ async fn test11_3_kick_and_mute_share_action_counter() {
         deafen_max: 1000,
         deafen_window: Duration::from_secs(60),
     };
-    let (addr, _state) = start_server_custom(false, Some(ws_config), None, None).await;
+    let (addr, state) = start_server_custom(false, Some(ws_config), None, None).await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_host,
         json!({"type":"join","roomId":"shared-rl","roomType":"sfu"}),
@@ -584,7 +594,7 @@ async fn test11_3_kick_and_mute_share_action_counter() {
     drain(&mut r_host).await;
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest,
         json!({"type":"join","roomId":"shared-rl","roomType":"sfu"}),
@@ -614,7 +624,7 @@ async fn test11_3_kick_and_mute_share_action_counter() {
     let _ = recv_type(&mut r_host, "participant_kicked").await;
 
     // Need a new guest for the 3rd action attempt
-    let (mut s_guest2, mut r_guest2) = ws_connect(addr).await;
+    let (mut s_guest2, mut r_guest2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s_guest2,
         json!({"type":"join","roomId":"shared-rl","roomType":"sfu"}),
@@ -642,9 +652,9 @@ async fn test11_3_kick_and_mute_share_action_counter() {
 // ==========================================================================
 #[tokio::test]
 async fn test11_4_json_depth_limit() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Send a deeply nested JSON message (depth > 32)
     let nested = "{\"a\":".repeat(33) + "\"x\"" + &"}".repeat(33);
@@ -656,9 +666,9 @@ async fn test11_4_json_depth_limit() {
 // Verify that braces inside JSON strings do NOT count toward depth
 #[tokio::test]
 async fn test11_4_json_depth_ignores_string_braces() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Join first
     ws_send(
@@ -686,10 +696,10 @@ async fn test11_4_json_depth_ignores_string_braces() {
 #[tokio::test]
 async fn test11_5_per_ip_connection_cap() {
     let tracker = Arc::new(IpConnectionTracker::new(2));
-    let (addr, _state) = start_server_custom(false, None, Some(tracker), None).await;
+    let (addr, state) = start_server_custom(false, None, Some(tracker), None).await;
 
     // Connection 1: should succeed
-    let (mut s1, mut r1) = ws_connect(addr).await;
+    let (mut s1, mut r1) = ws_connect(addr, &state).await;
     ws_send(
         &mut s1,
         json!({"type":"join","roomId":"cap-test","roomType":"sfu"}),
@@ -698,7 +708,7 @@ async fn test11_5_per_ip_connection_cap() {
     let _ = recv_type(&mut r1, "joined").await;
 
     // Connection 2: should succeed
-    let (mut s2, mut r2) = ws_connect(addr).await;
+    let (mut s2, mut r2) = ws_connect(addr, &state).await;
     ws_send(
         &mut s2,
         json!({"type":"join","roomId":"cap-test-2","roomType":"sfu"}),
@@ -707,7 +717,7 @@ async fn test11_5_per_ip_connection_cap() {
     let _ = recv_type(&mut r2, "joined").await;
 
     // Connection 3: should be rejected with HTTP 429 (before WS upgrade)
-    let result = try_ws_connect(addr).await;
+    let result = try_ws_connect(addr, &state).await;
     assert!(
         result.is_err(),
         "3rd connection should be rejected, but got: {:?}",
@@ -720,7 +730,7 @@ async fn test11_5_per_ip_connection_cap() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Connection 3 retry: should now succeed
-    let result = try_ws_connect(addr).await;
+    let result = try_ws_connect(addr, &state).await;
     assert!(
         result.is_ok(),
         "connection after drop should succeed, but got: {:?}",
@@ -758,11 +768,11 @@ async fn test11_6_temp_ban_after_rate_limit_violations() {
         ban_duration: Duration::from_secs(600),
         max_entries: 100,
     }));
-    let (addr, _state) = start_server_custom(false, Some(ws_config), None, Some(temp_ban)).await;
+    let (addr, state) = start_server_custom(false, Some(ws_config), None, Some(temp_ban)).await;
 
     // Violation 1: connect, send 4+ messages to trigger rate limit close
     {
-        let (mut sink, mut stream) = ws_connect(addr).await;
+        let (mut sink, mut stream) = ws_connect(addr, &state).await;
         ws_send(
             &mut sink,
             json!({"type":"join","roomId":"ban-1","roomType":"sfu"}),
@@ -781,7 +791,7 @@ async fn test11_6_temp_ban_after_rate_limit_violations() {
 
     // Should still be able to connect (1 violation, threshold is 2)
     {
-        let result = try_ws_connect(addr).await;
+        let result = try_ws_connect(addr, &state).await;
         assert!(result.is_ok(), "should still connect after 1 violation");
         let (mut sink, mut stream) = result.unwrap();
 
@@ -801,7 +811,7 @@ async fn test11_6_temp_ban_after_rate_limit_violations() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Now IP should be temp-banned â†’ HTTP 429 at pre-upgrade
-    let result = try_ws_connect(addr).await;
+    let result = try_ws_connect(addr, &state).await;
     assert!(
         result.is_err(),
         "connection should be rejected after temp ban, but got: {:?}",
@@ -809,7 +819,7 @@ async fn test11_6_temp_ban_after_rate_limit_violations() {
     );
 
     // Verify abuse metrics
-    let snapshot = _state.abuse_metrics.snapshot();
+    let snapshot = state.abuse_metrics.snapshot();
     assert!(
         snapshot.connections_rejected_temp_ban >= 1,
         "expected at least 1 temp ban rejection, got: {}",
