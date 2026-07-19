@@ -81,7 +81,7 @@ impl Scenario for ChatFloodScenario {
         };
 
         // --- Connect host (first joiner) ---
-        let mut host = match StressClient::connect(&ctx.ws_url).await {
+        let mut host = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => return early_fail(self.name(), start, "host_connect", format!("{e}")),
         };
@@ -106,7 +106,7 @@ impl Scenario for ChatFloodScenario {
         }
 
         // --- Connect chatter (second joiner — Guest role) ---
-        let mut chatter = match StressClient::connect(&ctx.ws_url).await {
+        let mut chatter = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 host.close().await;
@@ -335,7 +335,7 @@ fn build_result(
 }
 
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

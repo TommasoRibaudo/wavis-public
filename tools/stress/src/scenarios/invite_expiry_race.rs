@@ -147,7 +147,7 @@ impl Scenario for InviteExpiryRaceScenario {
         let mut phase1_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..PHASE1_CLIENTS {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id_clone = room_id.clone();
             let code_clone = invite_code.clone();
 
@@ -227,7 +227,7 @@ impl Scenario for InviteExpiryRaceScenario {
         let mut phase2_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..PHASE2_CLIENTS {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id_clone = room_id.clone();
             let code_clone = invite_code.clone();
 

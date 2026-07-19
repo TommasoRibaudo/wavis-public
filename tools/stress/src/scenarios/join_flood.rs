@@ -122,7 +122,7 @@ impl Scenario for JoinFloodScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..n_clients {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id = room_id.clone();
             let invite_code = invite_code.clone();
             let barrier = barrier.clone();
@@ -339,7 +339,7 @@ async fn create_invite_via_signaling(
     room_id: &str,
     max_uses: u32,
 ) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("host connect failed: {e}"))?;
 
