@@ -32,6 +32,7 @@ use crate::abuse::temp_ban::{TempBanConfig, TempBanList};
 use crate::auth::auth_rate_limiter::AuthRateLimiter;
 use crate::auth::phrase;
 use crate::auth::recovery_rate_limiter::RecoveryRateLimiter;
+use crate::auth::ws_ticket::WsTicketStore;
 use crate::channel::channel_rate_limiter::{ChannelRateLimiter, ChannelRateLimiterConfig};
 use crate::channel::invite::InviteStore;
 use crate::connections::LiveConnections;
@@ -139,6 +140,9 @@ pub struct AppState {
     pub refresh_token_pepper_previous: Option<Arc<Vec<u8>>>,
     /// HMAC pepper for closed-alpha invite code hashing.
     pub alpha_invite_code_pepper: Arc<Vec<u8>>,
+    /// In-memory store for short-lived, one-use `/ws` pre-auth tickets.
+    /// Not Postgres-backed: a 60-second TTL has no value across restarts.
+    pub ws_ticket_store: Arc<WsTicketStore>,
     /// Channel_ID → active Room_ID mapping. A Channel has at most one active Room.
     /// Lock ordering position 0: active_room_map (0) → rooms (1) → per-room (2) → peer_to_room (3).
     pub active_room_map: ActiveRoomMap,
@@ -279,6 +283,21 @@ impl AppState {
         }
         let alpha_invite_code_pepper = Arc::new(alpha_invite_code_pepper.into_bytes());
 
+        let ws_ticket_pepper = match std::env::var("WS_TICKET_PEPPER") {
+            Ok(s) => s,
+            Err(_) => {
+                if cfg!(debug_assertions) {
+                    "dev-ws-ticket-pepper-32-bytes!!X".to_string()
+                } else {
+                    panic!("WS_TICKET_PEPPER must be set in release builds");
+                }
+            }
+        };
+        if ws_ticket_pepper.len() < 32 {
+            panic!("WS_TICKET_PEPPER must be at least 32 bytes");
+        }
+        let ws_ticket_store = Arc::new(WsTicketStore::new(ws_ticket_pepper.into_bytes()));
+
         Self {
             room_state: Arc::new(InMemoryRoomState::new()),
             connections: Arc::new(LiveConnections::new()),
@@ -345,6 +364,7 @@ impl AppState {
             refresh_token_pepper,
             refresh_token_pepper_previous,
             alpha_invite_code_pepper,
+            ws_ticket_store,
             active_room_map: Arc::new(RwLock::new(HashMap::new())),
             dummy_verifier,
             pairing_code_pepper,

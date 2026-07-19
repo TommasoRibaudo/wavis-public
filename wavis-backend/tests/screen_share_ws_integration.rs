@@ -32,6 +32,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -142,8 +143,11 @@ async fn start_server(require_invite: bool) -> (SocketAddr, AppState) {
     (addr, app_state)
 }
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -200,8 +204,12 @@ async fn drain(stream: &mut WsStream) {
 // ============================================================
 
 /// Creates an SFU room. Returns (sink, stream, peer_id, invite_code).
-async fn create_sfu_room(addr: SocketAddr, room_id: &str) -> (WsSink, WsStream, String, String) {
-    let (mut sink, mut stream) = ws_connect(addr).await;
+async fn create_sfu_room(
+    addr: SocketAddr,
+    room_id: &str,
+    app_state: &AppState,
+) -> (WsSink, WsStream, String, String) {
+    let (mut sink, mut stream) = ws_connect(addr, app_state).await;
     ws_send(
         &mut sink,
         json!({"type":"create_room","roomId":room_id,"roomType":"sfu"}),
@@ -220,8 +228,9 @@ async fn join_sfu_room(
     addr: SocketAddr,
     room_id: &str,
     invite_code: &str,
+    app_state: &AppState,
 ) -> (WsSink, WsStream, String) {
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, app_state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":room_id,"roomType":"sfu","inviteCode":invite_code}),
@@ -241,10 +250,12 @@ async fn join_sfu_room(
 /// Â§13: Start share â†’ share_started broadcast to all peers.
 #[tokio::test]
 async fn test_13_start_share_broadcast() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, _host_id, invite) = create_sfu_room(addr, "share-broadcast").await;
-    let (_sink2, mut stream2, _guest_id) = join_sfu_room(addr, "share-broadcast", &invite).await;
+    let (mut sink1, mut stream1, _host_id, invite) =
+        create_sfu_room(addr, "share-broadcast", &state).await;
+    let (_sink2, mut stream2, _guest_id) =
+        join_sfu_room(addr, "share-broadcast", &invite, &state).await;
 
     // Host on stream1 needs to drain the participant_joined from guest joining
     drain(&mut stream1).await;
@@ -262,12 +273,12 @@ async fn test_13_start_share_broadcast() {
 /// Â§13: Concurrent shares from different participants both succeed.
 #[tokio::test]
 async fn test_13_concurrent_shares() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     let (mut sink1, mut stream1, host_id, invite) =
-        create_sfu_room(addr, "concurrent-shares").await;
+        create_sfu_room(addr, "concurrent-shares", &state).await;
     let (mut sink2, mut stream2, guest_id) =
-        join_sfu_room(addr, "concurrent-shares", &invite).await;
+        join_sfu_room(addr, "concurrent-shares", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Host starts sharing
@@ -289,11 +300,12 @@ async fn test_13_concurrent_shares() {
 /// Â§13: Same sender's second start_share â†’ no-op (no error, no broadcast).
 #[tokio::test]
 async fn test_13_idempotent_start_share() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     let (mut sink1, mut stream1, _host_id, invite) =
-        create_sfu_room(addr, "idempotent-share").await;
-    let (_sink2, mut stream2, _guest_id) = join_sfu_room(addr, "idempotent-share", &invite).await;
+        create_sfu_room(addr, "idempotent-share", &state).await;
+    let (_sink2, mut stream2, _guest_id) =
+        join_sfu_room(addr, "idempotent-share", &invite, &state).await;
     drain(&mut stream1).await;
 
     // First start_share â†’ broadcast
@@ -314,10 +326,11 @@ async fn test_13_idempotent_start_share() {
 /// Â§13: Stop share â†’ share_stopped broadcast to all peers.
 #[tokio::test]
 async fn test_13_stop_share_broadcast() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, host_id, invite) = create_sfu_room(addr, "stop-share").await;
-    let (_sink2, mut stream2, _guest_id) = join_sfu_room(addr, "stop-share", &invite).await;
+    let (mut sink1, mut stream1, host_id, invite) =
+        create_sfu_room(addr, "stop-share", &state).await;
+    let (_sink2, mut stream2, _guest_id) = join_sfu_room(addr, "stop-share", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Start sharing
@@ -337,10 +350,12 @@ async fn test_13_stop_share_broadcast() {
 /// Â§13: Host-directed stop (targetParticipantId) â†’ share_stopped for target only.
 #[tokio::test]
 async fn test_13_host_directed_stop() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, _host_id, invite) = create_sfu_room(addr, "host-stop").await;
-    let (mut sink2, mut stream2, guest_id) = join_sfu_room(addr, "host-stop", &invite).await;
+    let (mut sink1, mut stream1, _host_id, invite) =
+        create_sfu_room(addr, "host-stop", &state).await;
+    let (mut sink2, mut stream2, guest_id) =
+        join_sfu_room(addr, "host-stop", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Guest starts sharing
@@ -364,10 +379,12 @@ async fn test_13_host_directed_stop() {
 /// Â§13: Non-host targeted stop â†’ permission error.
 #[tokio::test]
 async fn test_13_non_host_targeted_stop_rejected() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, host_id, invite) = create_sfu_room(addr, "nonhost-stop").await;
-    let (mut sink2, mut stream2, _guest_id) = join_sfu_room(addr, "nonhost-stop", &invite).await;
+    let (mut sink1, mut stream1, host_id, invite) =
+        create_sfu_room(addr, "nonhost-stop", &state).await;
+    let (mut sink2, mut stream2, _guest_id) =
+        join_sfu_room(addr, "nonhost-stop", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Host starts sharing
@@ -397,10 +414,12 @@ async fn test_13_non_host_targeted_stop_rejected() {
 /// Â§13: Stop all shares (host) â†’ one share_stopped per active sharer.
 #[tokio::test]
 async fn test_13_stop_all_shares_host() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, host_id, invite) = create_sfu_room(addr, "stop-all-host").await;
-    let (mut sink2, mut stream2, guest_id) = join_sfu_room(addr, "stop-all-host", &invite).await;
+    let (mut sink1, mut stream1, host_id, invite) =
+        create_sfu_room(addr, "stop-all-host", &state).await;
+    let (mut sink2, mut stream2, guest_id) =
+        join_sfu_room(addr, "stop-all-host", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Both start sharing
@@ -433,10 +452,12 @@ async fn test_13_stop_all_shares_host() {
 /// Â§13: Stop all shares (non-host) â†’ permission error.
 #[tokio::test]
 async fn test_13_stop_all_shares_non_host_rejected() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, _host_id, invite) = create_sfu_room(addr, "stop-all-guest").await;
-    let (mut sink2, mut stream2, _guest_id) = join_sfu_room(addr, "stop-all-guest", &invite).await;
+    let (mut sink1, mut stream1, _host_id, invite) =
+        create_sfu_room(addr, "stop-all-guest", &state).await;
+    let (mut sink2, mut stream2, _guest_id) =
+        join_sfu_room(addr, "stop-all-guest", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Host starts sharing
@@ -462,16 +483,17 @@ async fn test_13_stop_all_shares_non_host_rejected() {
 /// Â§13: Late joiner receives share_state snapshot with active sharers.
 #[tokio::test]
 async fn test_13_late_joiner_share_state() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (mut sink1, mut stream1, host_id, invite) = create_sfu_room(addr, "late-join-state").await;
+    let (mut sink1, mut stream1, host_id, invite) =
+        create_sfu_room(addr, "late-join-state", &state).await;
 
     // Host starts sharing before anyone else joins
     ws_send(&mut sink1, json!({"type":"start_share"})).await;
     recv_type(&mut stream1, "share_started").await;
 
     // Late joiner connects â€” should receive share_state after joined/media_token
-    let (mut _sink2, mut stream2) = ws_connect(addr).await;
+    let (mut _sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut _sink2,
         json!({"type":"join","roomId":"late-join-state","roomType":"sfu","inviteCode":invite}),
@@ -497,13 +519,14 @@ async fn test_13_late_joiner_share_state() {
 /// a room where no shares are active).
 #[tokio::test]
 async fn test_13_first_joiner_empty_share_state() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     // Creator makes the room (no share_state sent on create_room path)
-    let (_sink1, mut _stream1, _host_id, invite) = create_sfu_room(addr, "empty-share-state").await;
+    let (_sink1, mut _stream1, _host_id, invite) =
+        create_sfu_room(addr, "empty-share-state", &state).await;
 
     // Second peer joins â€” no shares active, should get empty share_state
-    let (mut _sink2, mut stream2) = ws_connect(addr).await;
+    let (mut _sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut _sink2,
         json!({"type":"join","roomId":"empty-share-state","roomType":"sfu","inviteCode":invite}),
@@ -523,11 +546,12 @@ async fn test_13_first_joiner_empty_share_state() {
 /// Â§13: Disconnect cleanup â€” sharing peer disconnects â†’ share_stopped broadcast.
 #[tokio::test]
 async fn test_13_disconnect_cleanup() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
-    let (_sink1, mut stream1, _host_id, invite) = create_sfu_room(addr, "disconnect-cleanup").await;
+    let (_sink1, mut stream1, _host_id, invite) =
+        create_sfu_room(addr, "disconnect-cleanup", &state).await;
     let (mut sink2, mut stream2, guest_id) =
-        join_sfu_room(addr, "disconnect-cleanup", &invite).await;
+        join_sfu_room(addr, "disconnect-cleanup", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Guest starts sharing
@@ -548,12 +572,12 @@ async fn test_13_disconnect_cleanup() {
 /// Â§13: Disconnect non-sharer â†’ no share_stopped signal.
 #[tokio::test]
 async fn test_13_disconnect_non_sharer_no_signal() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     let (mut sink1, mut stream1, _host_id, invite) =
-        create_sfu_room(addr, "disconnect-noshare").await;
+        create_sfu_room(addr, "disconnect-noshare", &state).await;
     let (mut sink2, mut stream2, _guest_id) =
-        join_sfu_room(addr, "disconnect-noshare", &invite).await;
+        join_sfu_room(addr, "disconnect-noshare", &invite, &state).await;
     drain(&mut stream1).await;
 
     // Host starts sharing (guest does NOT share)
@@ -578,10 +602,10 @@ async fn test_13_disconnect_non_sharer_no_signal() {
 /// Â§13: P2P room â†’ start_share returns "screen sharing unavailable in P2P mode".
 #[tokio::test]
 async fn test_13_p2p_room_rejected() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     // Create a P2P room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({"type":"create_room","roomId":"p2p-share-test","roomType":"p2p"}),

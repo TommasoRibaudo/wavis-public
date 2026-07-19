@@ -617,6 +617,7 @@ async fn main() -> io::Result<()> {
             post(auth::routes::revoke_device),
         )
         .route("/auth/phrase/rotate", post(auth::routes::rotate_phrase))
+        .route("/auth/ws-ticket", post(auth::routes::issue_ws_ticket))
         // Channel routes — static /channels/* routes MUST come before /channels/{channel_id}
         .route(
             "/channels",
@@ -1099,6 +1100,11 @@ pub fn spawn_auth_token_sweep(app_state: AppState) {
                 .prune_stale(std::time::Instant::now());
             if pruned > 0 {
                 tracing::debug!(pruned, "pruned stale auth rate limiter entries");
+            }
+            // Prune expired/consumed ws-tickets (in-memory, unbounded otherwise).
+            let ws_tickets_pruned = app_state.ws_ticket_store.prune_expired();
+            if ws_tickets_pruned > 0 {
+                tracing::debug!(ws_tickets_pruned, "pruned expired/consumed ws-tickets");
             }
         }
     });

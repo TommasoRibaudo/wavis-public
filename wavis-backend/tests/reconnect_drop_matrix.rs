@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -137,8 +138,11 @@ async fn start_server() -> (SocketAddr, AppState) {
 // ============================================================
 
 /// Connect a new WebSocket client to the server. Returns split (sink, stream).
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -266,7 +270,7 @@ async fn scaffolding_smoke_test() {
     assert_total_participants(&app_state, 0);
 
     // Connect and join a room.
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &app_state).await;
     let joined = join_room(&mut sink, &mut stream, "smoke-room").await;
     assert_eq!(joined["peerCount"], 1);
 
@@ -302,7 +306,7 @@ async fn drop_before_join() {
     assert_total_participants(&app_state, 0);
 
     // Connect and immediately close without sending Join.
-    let (mut sink, _stream) = ws_connect(addr).await;
+    let (mut sink, _stream) = ws_connect(addr, &app_state).await;
     ws_close(&mut sink).await;
 
     // Give the server a moment to process the disconnect.
@@ -335,12 +339,12 @@ async fn drop_after_join_before_offer() {
     let (addr, app_state) = start_server().await;
 
     // Client A joins "drop-room" as P2P — creates the room.
-    let (mut sink_a, mut stream_a) = ws_connect(addr).await;
+    let (mut sink_a, mut stream_a) = ws_connect(addr, &app_state).await;
     let joined_a = join_room_p2p(&mut sink_a, &mut stream_a, "drop-room").await;
     assert_eq!(joined_a["peerCount"], 1);
 
     // Client B joins "drop-room" as P2P.
-    let (mut sink_b, mut stream_b) = ws_connect(addr).await;
+    let (mut sink_b, mut stream_b) = ws_connect(addr, &app_state).await;
     let joined_b = join_room_p2p(&mut sink_b, &mut stream_b, "drop-room").await;
     assert_eq!(joined_b["peerCount"], 2);
 
@@ -368,7 +372,7 @@ async fn drop_after_join_before_offer() {
     assert_eq!(peer_left["type"], "peer_left");
 
     // Capacity restored: a new client can join (room max is 6).
-    let (mut sink_c, mut stream_c) = ws_connect(addr).await;
+    let (mut sink_c, mut stream_c) = ws_connect(addr, &app_state).await;
     let joined_c = join_room_p2p(&mut sink_c, &mut stream_c, "drop-room").await;
     assert_eq!(joined_c["peerCount"], 2);
     assert_peer_count(&app_state, "drop-room", 2);
@@ -389,12 +393,12 @@ async fn drop_during_ice_exchange() {
     let (addr, app_state) = start_server().await;
 
     // Client A joins "ice-room" as P2P — creates the room.
-    let (mut sink_a, mut stream_a) = ws_connect(addr).await;
+    let (mut sink_a, mut stream_a) = ws_connect(addr, &app_state).await;
     let joined_a = join_room_p2p(&mut sink_a, &mut stream_a, "ice-room").await;
     assert_eq!(joined_a["peerCount"], 1);
 
     // Client B joins "ice-room" as P2P.
-    let (mut sink_b, mut stream_b) = ws_connect(addr).await;
+    let (mut sink_b, mut stream_b) = ws_connect(addr, &app_state).await;
     let joined_b = join_room_p2p(&mut sink_b, &mut stream_b, "ice-room").await;
     assert_eq!(joined_b["peerCount"], 2);
 
@@ -474,7 +478,7 @@ async fn drop_during_ice_exchange() {
     assert_eq!(peer_left["type"], "peer_left");
 
     // Capacity restored: a new client can join (room max is 6).
-    let (mut sink_c, mut stream_c) = ws_connect(addr).await;
+    let (mut sink_c, mut stream_c) = ws_connect(addr, &app_state).await;
     let joined_c = join_room_p2p(&mut sink_c, &mut stream_c, "ice-room").await;
     assert_eq!(joined_c["peerCount"], 2);
     assert_peer_count(&app_state, "ice-room", 2);
@@ -498,7 +502,7 @@ async fn rejoin_after_drop() {
     let (addr, app_state) = start_server().await;
 
     // --- Phase 1: Client connects and joins "rejoin-room" as P2P ---
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &app_state).await;
     let joined1 = join_room_p2p(&mut sink1, &mut stream1, "rejoin-room").await;
     assert_eq!(joined1["peerCount"], 1);
     assert_peer_count(&app_state, "rejoin-room", 1);
@@ -517,7 +521,7 @@ async fn rejoin_after_drop() {
     assert_no_ghosts(&app_state);
 
     // --- Phase 3: Client reconnects with a NEW WebSocket connection ---
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &app_state).await;
 
     // --- Phase 4: Client joins the same "rejoin-room" again ---
     let joined2 = join_room_p2p(&mut sink2, &mut stream2, "rejoin-room").await;
@@ -559,7 +563,7 @@ async fn rapid_connect_disconnect_cycle() {
 
     for i in 0..3 {
         // --- Connect ---
-        let (mut sink, mut stream) = ws_connect(addr).await;
+        let (mut sink, mut stream) = ws_connect(addr, &app_state).await;
 
         // --- Join "cycle-room" as P2P ---
         let joined = join_room_p2p(&mut sink, &mut stream, "cycle-room").await;
@@ -599,7 +603,7 @@ async fn test_clean_session_lifecycle() {
     assert_active_rooms(&app_state, 0);
     assert_total_participants(&app_state, 0);
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &app_state).await;
     let joined = join_room_p2p(&mut sink, &mut stream, "lifecycle-room").await;
     assert_eq!(joined["peerCount"], 1);
 
@@ -627,7 +631,7 @@ async fn test_unclean_disconnect_cleans_up() {
     assert_active_rooms(&app_state, 0);
     assert_total_participants(&app_state, 0);
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &app_state).await;
     let joined = join_room_p2p(&mut sink, &mut stream, "unclean-room").await;
     assert_eq!(joined["peerCount"], 1);
 
@@ -648,7 +652,7 @@ async fn test_unclean_disconnect_cleans_up() {
     assert_total_participants(&app_state, 0);
     assert_no_ghosts(&app_state);
 
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &app_state).await;
     let joined2 = join_room_p2p(&mut sink2, &mut stream2, "unclean-room").await;
     assert_eq!(joined2["peerCount"], 1);
 
