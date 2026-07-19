@@ -6,6 +6,8 @@ import {
   recoverAccount,
   setUsername,
   INSECURE_TLS_ALLOWED,
+  DEFAULT_SERVER_URL,
+  SERVER_OVERRIDE_ALLOWED,
 } from './auth';
 import { AuthFieldRow } from './AuthFieldRow';
 import { AuthLogPanel } from './AuthLogPanel';
@@ -18,7 +20,7 @@ export default function RecoverAccount() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [recoveryId, setRecoveryId] = useState('');
   const [phrase, setPhrase] = useState('');
   const [username, setUsernameValue] = useState('');
@@ -69,7 +71,14 @@ export default function RecoverAccount() {
 
     const validation = validateServerUrl(serverUrl, insecureTls);
     if (!validation.valid) {
-      setUrlError(validation.reason ?? 'Invalid server URL');
+      // Field is hidden when SERVER_OVERRIDE_ALLOWED is false, so a failure
+      // here (e.g. DEFAULT_SERVER_URL unset) has no urlError field to render
+      // next to — route it through the visible recoverError banner instead.
+      if (SERVER_OVERRIDE_ALLOWED) {
+        setUrlError(validation.reason ?? 'Invalid server URL');
+      } else {
+        setRecoverError(validation.reason ?? 'Invalid server URL');
+      }
       return;
     }
 
@@ -167,18 +176,20 @@ export default function RecoverAccount() {
           maxLength={MAX_USERNAME_LENGTH}
         />
 
-        <AuthFieldRow
-          label="Server URL:"
-          placeholder="https://wavis.example.com"
-          value={serverUrl}
-          onChange={(value) => {
-            setServerUrl(value);
-            setUrlError(null);
-          }}
-          onKeyDown={handleKeyDown}
-          error={urlError}
-          disabled={recovering}
-        />
+        {SERVER_OVERRIDE_ALLOWED && (
+          <AuthFieldRow
+            label="Server URL:"
+            placeholder="https://wavis.example.com"
+            value={serverUrl}
+            onChange={(value) => {
+              setServerUrl(value);
+              setUrlError(null);
+            }}
+            onKeyDown={handleKeyDown}
+            error={urlError}
+            disabled={recovering}
+          />
+        )}
 
         {INSECURE_TLS_ALLOWED && (
           <div className="mb-6">

@@ -32,6 +32,20 @@ const LOG_PREFIX = '[wavis:auth]';
  */
 export const INSECURE_TLS_ALLOWED = import.meta.env.VITE_ALLOW_INSECURE_TLS === 'true';
 
+/**
+ * Build-time default server URL, used silently when the Server URL field is
+ * hidden (closed alpha has exactly one backend). Empty string if unset.
+ * Controlled by VITE_DEFAULT_SERVER_URL.
+ */
+export const DEFAULT_SERVER_URL = import.meta.env.VITE_DEFAULT_SERVER_URL || '';
+
+/**
+ * Whether the Server URL field is shown at all (letting DEFAULT_SERVER_URL be
+ * overridden). Controlled by VITE_ALLOW_SERVER_OVERRIDE. Defaults to false —
+ * same gating pattern as INSECURE_TLS_ALLOWED above.
+ */
+export const SERVER_OVERRIDE_ALLOWED = import.meta.env.VITE_ALLOW_SERVER_OVERRIDE === 'true';
+
 // --- Types ---
 export type AuthLogEntry = {
   time: string;

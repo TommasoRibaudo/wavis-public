@@ -182,7 +182,7 @@ a manual wait. Tear down when done:
 docker compose down
 ```
 
-**2. A debug exe built for live-backend use.** Two build-time env vars, on
+**2. A debug exe built for live-backend use.** Three build-time env vars, on
 top of the usual `npx tauri build --debug`:
 
 - `VITE_ALLOW_INSECURE_TLS=true` — the local backend serves plain HTTP
@@ -197,9 +197,13 @@ top of the usual `npx tauri build --debug`:
   var is the baseline for a single instance; two-instance specs additionally
   override it per-launch at runtime — see "Two simultaneous GUI instances"
   below.)
+- `VITE_ALLOW_SERVER_OVERRIDE=true` — release builds hide the Server URL
+  field entirely and silently use `VITE_DEFAULT_SERVER_URL` (see issue #332);
+  this flag brings the field back so `registerViaUi`/`loginViaUi` can keep
+  filling it by its `"Server URL"` accessible label.
 
 ```powershell
-$env:VITE_ALLOW_INSECURE_TLS="true"; $env:VITE_AUTH_STORE_NAME="wavis-auth-e2e.json"; npx tauri build --debug
+$env:VITE_ALLOW_INSECURE_TLS="true"; $env:VITE_AUTH_STORE_NAME="wavis-auth-e2e.json"; $env:VITE_ALLOW_SERVER_OVERRIDE="true"; npx tauri build --debug
 ```
 
 This **replaces** `target/debug/wavis-gui.exe` — the 4 backend-independent

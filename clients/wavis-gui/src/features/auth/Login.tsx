@@ -10,6 +10,8 @@ import {
   getInsecureTls,
   getStoredRecoveryId,
   INSECURE_TLS_ALLOWED,
+  DEFAULT_SERVER_URL,
+  SERVER_OVERRIDE_ALLOWED,
 } from './auth';
 import { AuthFieldRow } from './AuthFieldRow';
 import { AuthLogPanel } from './AuthLogPanel';
@@ -25,7 +27,7 @@ export default function Login() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [recoveryId, setRecoveryId] = useState('');
   const [phrase, setPhrase] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
@@ -92,7 +94,14 @@ export default function Login() {
 
     const validation = validateServerUrl(serverUrl, insecureTls);
     if (!validation.valid) {
-      setUrlError(validation.reason ?? 'Invalid server URL');
+      // Field is hidden when SERVER_OVERRIDE_ALLOWED is false, so a failure
+      // here (e.g. DEFAULT_SERVER_URL unset) has no urlError field to render
+      // next to — route it through the visible loginError banner instead.
+      if (SERVER_OVERRIDE_ALLOWED) {
+        setUrlError(validation.reason ?? 'Invalid server URL');
+      } else {
+        setLoginError(validation.reason ?? 'Invalid server URL');
+      }
       return;
     }
 
@@ -213,19 +222,21 @@ export default function Login() {
 
         {!trustedDevice && (
           <>
-            <AuthFieldRow
-              label="Server:"
-              placeholder="https://wavis.example.com"
-              value={serverUrl}
-              onChange={(value) => {
-                setServerUrl(value);
-                setUrlError(null);
-              }}
-              onKeyDown={handleKeyDown}
-              error={urlError}
-              disabled={logging}
-              ariaLabel="Server URL"
-            />
+            {SERVER_OVERRIDE_ALLOWED && (
+              <AuthFieldRow
+                label="Server:"
+                placeholder="https://wavis.example.com"
+                value={serverUrl}
+                onChange={(value) => {
+                  setServerUrl(value);
+                  setUrlError(null);
+                }}
+                onKeyDown={handleKeyDown}
+                error={urlError}
+                disabled={logging}
+                ariaLabel="Server URL"
+              />
+            )}
 
             {INSECURE_TLS_ALLOWED && (
               <div className="mb-6">
