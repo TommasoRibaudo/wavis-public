@@ -112,7 +112,10 @@ async fn start_server(pool: PgPool) -> (SocketAddr, AppState) {
         std::env::set_var("SFU_JWT_SECRET", TEST_SFU_SECRET);
         std::env::set_var("MAX_ROOM_PARTICIPANTS", "6");
         std::env::set_var("REQUIRE_INVITE_CODE", "false");
-        std::env::set_var("ALPHA_INVITE_CODE_PEPPER", "unused-32-bytes-min-not-read!!!X");
+        std::env::set_var(
+            "ALPHA_INVITE_CODE_PEPPER",
+            "unused-32-bytes-min-not-read!!!X",
+        );
         std::env::set_var("WS_TICKET_PEPPER", "e2e-closed-alpha-ws-ticket-pepper!");
         std::env::remove_var("TURN_SHARED_SECRET");
         std::env::remove_var("TURN_SHARED_SECRET_PREVIOUS");
@@ -200,7 +203,12 @@ async fn start_server(pool: PgPool) -> (SocketAddr, AppState) {
 // HTTP helpers
 // ============================================================
 
-async fn post_json(addr: SocketAddr, path: &str, body: Value, bearer: Option<&str>) -> (u16, Value) {
+async fn post_json(
+    addr: SocketAddr,
+    path: &str,
+    body: Value,
+    bearer: Option<&str>,
+) -> (u16, Value) {
     let client = reqwest::Client::new();
     let mut req = client.post(format!("http://{addr}{path}")).json(&body);
     if let Some(token) = bearer {
@@ -212,7 +220,12 @@ async fn post_json(addr: SocketAddr, path: &str, body: Value, bearer: Option<&st
     (status, body)
 }
 
-async fn register(addr: SocketAddr, phrase: &str, username: &str, invite_code: Option<&str>) -> (u16, Value) {
+async fn register(
+    addr: SocketAddr,
+    phrase: &str,
+    username: &str,
+    invite_code: Option<&str>,
+) -> (u16, Value) {
     let mut body = json!({"phrase": phrase, "username": username});
     if let Some(code) = invite_code {
         body["invite_code"] = json!(code);
@@ -292,13 +305,25 @@ async fn full_closed_alpha_path_invite_to_room_connection() {
     let (addr, _state) = start_server(pool).await;
 
     // 1. Invite redemption + token issuance.
-    let (status, body) = register(addr, "full-path-phrase-1234", "alice", Some("full-path-invite")).await;
-    assert_eq!(status, 201, "register with a valid invite must succeed: {body:?}");
+    let (status, body) = register(
+        addr,
+        "full-path-phrase-1234",
+        "alice",
+        Some("full-path-invite"),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "register with a valid invite must succeed: {body:?}"
+    );
     let access_token = body["access_token"].as_str().unwrap();
 
     // 2. WebSocket ticket issuance.
     let (status, body) = issue_ws_ticket(addr, access_token).await;
-    assert_eq!(status, 200, "ws-ticket for a freshly-registered user must succeed: {body:?}");
+    assert_eq!(
+        status, 200,
+        "ws-ticket for a freshly-registered user must succeed: {body:?}"
+    );
     let ticket = body["ticket"].as_str().unwrap();
 
     // 3. Successful room connection.
@@ -321,7 +346,13 @@ async fn registered_alpha_user_can_refresh_and_reconnect() {
     seed_alpha_invite(&pool, "refresh-reconnect-invite", 1).await;
     let (addr, _state) = start_server(pool).await;
 
-    let (status, body) = register(addr, "refresh-phrase-1234", "bob", Some("refresh-reconnect-invite")).await;
+    let (status, body) = register(
+        addr,
+        "refresh-phrase-1234",
+        "bob",
+        Some("refresh-reconnect-invite"),
+    )
+    .await;
     assert_eq!(status, 201, "{body:?}");
     let original_refresh = body["refresh_token"].as_str().unwrap().to_string();
 
@@ -332,10 +363,16 @@ async fn registered_alpha_user_can_refresh_and_reconnect() {
         None,
     )
     .await;
-    assert_eq!(status, 200, "refresh with a just-issued token must succeed: {body:?}");
+    assert_eq!(
+        status, 200,
+        "refresh with a just-issued token must succeed: {body:?}"
+    );
     let new_access = body["access_token"].as_str().unwrap().to_string();
     let new_refresh = body["refresh_token"].as_str().unwrap().to_string();
-    assert_ne!(new_refresh, original_refresh, "refresh must rotate the token");
+    assert_ne!(
+        new_refresh, original_refresh,
+        "refresh must rotate the token"
+    );
 
     // Reconnect using the post-refresh access token.
     let (status, body) = issue_ws_ticket(addr, &new_access).await;
@@ -363,8 +400,17 @@ async fn non_alpha_user_cannot_create_an_account() {
     let (status, _body) = register(addr, "no-invite-phrase-1234", "carol", None).await;
     assert_eq!(status, 401, "register with no invite_code must be rejected");
 
-    let (status, _body) = register(addr, "bad-invite-phrase-1234", "dave", Some("does-not-exist")).await;
-    assert_eq!(status, 401, "register with an unknown invite_code must be rejected");
+    let (status, _body) = register(
+        addr,
+        "bad-invite-phrase-1234",
+        "dave",
+        Some("does-not-exist"),
+    )
+    .await;
+    assert_eq!(
+        status, 401,
+        "register with an unknown invite_code must be rejected"
+    );
 
     assert_eq!(
         user_count(&pool).await,
@@ -402,7 +448,10 @@ async fn unauthorized_clients_cannot_open_websockets_on_the_full_route_surface()
     let (addr, _state) = start_server(pool).await;
 
     let result = connect_async(format!("ws://{addr}/ws")).await;
-    assert!(result.is_err(), "a connection with no ticket must be rejected before upgrade");
+    assert!(
+        result.is_err(),
+        "a connection with no ticket must be rejected before upgrade"
+    );
 }
 
 /// AC / Test: "One invite cannot be redeemed twice when max redemptions is 1."
@@ -418,13 +467,32 @@ async fn single_use_invite_cannot_be_redeemed_twice_over_http() {
     seed_alpha_invite(&pool, "single-use-http-invite", 1).await;
     let (addr, _state) = start_server(pool.clone()).await;
 
-    let (status, body) = register(addr, "first-phrase-1234", "erin", Some("single-use-http-invite")).await;
+    let (status, body) = register(
+        addr,
+        "first-phrase-1234",
+        "erin",
+        Some("single-use-http-invite"),
+    )
+    .await;
     assert_eq!(status, 201, "the first redemption must succeed: {body:?}");
 
-    let (status, _body) = register(addr, "second-phrase-1234", "frank", Some("single-use-http-invite")).await;
-    assert_eq!(status, 401, "redeeming the same single-use invite twice must be rejected");
+    let (status, _body) = register(
+        addr,
+        "second-phrase-1234",
+        "frank",
+        Some("single-use-http-invite"),
+    )
+    .await;
+    assert_eq!(
+        status, 401,
+        "redeeming the same single-use invite twice must be rejected"
+    );
 
-    assert_eq!(user_count(&pool).await, 1, "exactly one user must have been created");
+    assert_eq!(
+        user_count(&pool).await,
+        1,
+        "exactly one user must have been created"
+    );
 }
 
 /// AC / Test: "Consumed WebSocket ticket cannot be replayed."
@@ -439,7 +507,13 @@ async fn consumed_ws_ticket_cannot_be_replayed_over_http() {
     seed_alpha_invite(&pool, "ticket-replay-invite", 1).await;
     let (addr, _state) = start_server(pool).await;
 
-    let (status, body) = register(addr, "replay-phrase-1234", "grace", Some("ticket-replay-invite")).await;
+    let (status, body) = register(
+        addr,
+        "replay-phrase-1234",
+        "grace",
+        Some("ticket-replay-invite"),
+    )
+    .await;
     assert_eq!(status, 201, "{body:?}");
     let access_token = body["access_token"].as_str().unwrap();
 
@@ -449,9 +523,15 @@ async fn consumed_ws_ticket_cannot_be_replayed_over_http() {
 
     let url = format!("ws://{addr}/ws?ticket={ticket}");
     let first = connect_async(&url).await;
-    assert!(first.is_ok(), "first use of a freshly-issued ticket must succeed");
+    assert!(
+        first.is_ok(),
+        "first use of a freshly-issued ticket must succeed"
+    );
     drop(first);
 
     let second = connect_async(&url).await;
-    assert!(second.is_err(), "replaying an already-consumed ticket must be rejected");
+    assert!(
+        second.is_err(),
+        "replaying an already-consumed ticket must be rejected"
+    );
 }
