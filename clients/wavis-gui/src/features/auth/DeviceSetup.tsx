@@ -6,6 +6,8 @@ import {
   registerUser,
   setUsername,
   INSECURE_TLS_ALLOWED,
+  DEFAULT_SERVER_URL,
+  SERVER_OVERRIDE_ALLOWED,
   deleteStoredRecoveryId,
 } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
@@ -150,7 +152,7 @@ export default function DeviceSetup() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<SetupStep>(1);
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [username, setUsernameValue] = useState('');
   const [phrase, setPhrase] = useState('');
   const [confirmPhrase, setConfirmPhrase] = useState('');
@@ -220,7 +222,14 @@ export default function DeviceSetup() {
 
     const validation = validateServerUrl(serverUrl, insecureTls);
     if (!validation.valid) {
-      setUrlError(validation.reason ?? 'Invalid server URL');
+      // Field is hidden when SERVER_OVERRIDE_ALLOWED is false, so a failure
+      // here (e.g. DEFAULT_SERVER_URL unset) has no urlError field to render
+      // next to — route it through the visible registerError banner instead.
+      if (SERVER_OVERRIDE_ALLOWED) {
+        setUrlError(validation.reason ?? 'Invalid server URL');
+      } else {
+        setRegisterError(validation.reason ?? 'Invalid server URL');
+      }
       return;
     }
 
@@ -358,29 +367,35 @@ export default function DeviceSetup() {
       {step === 2 && (
         <>
           <div className="px-4 sm:px-6 py-4">
-            <AuthFieldRow
-              label="Server URL:"
-              placeholder="https://wavis.example.com"
-              value={serverUrl}
-              onChange={(value) => {
-                setServerUrl(value);
-                setUrlError(null);
-              }}
-              onKeyDown={handleKeyDown}
-              error={urlError}
-              disabled={registering}
-              inputRef={inputRef}
-              autoFocus
-            />
+            {SERVER_OVERRIDE_ALLOWED && (
+              <>
+                <AuthFieldRow
+                  label="Server URL:"
+                  placeholder="https://wavis.example.com"
+                  value={serverUrl}
+                  onChange={(value) => {
+                    setServerUrl(value);
+                    setUrlError(null);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  error={urlError}
+                  disabled={registering}
+                  inputRef={inputRef}
+                  autoFocus
+                />
 
-            <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
-              <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
-              <p>
-                The address of your Wavis server. Your admin will share it with you, or you can get
-                a hosted server at wavis.io.
-              </p>
-              <p className="mt-2 text-wavis-accent">It looks like: https://wavis.yourteam.com</p>
-            </div>
+                <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
+                  <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
+                  <p>
+                    The address of your Wavis server. Your admin will share it with you, or you can
+                    get a hosted server at wavis.io.
+                  </p>
+                  <p className="mt-2 text-wavis-accent">
+                    It looks like: https://wavis.yourteam.com
+                  </p>
+                </div>
+              </>
+            )}
 
             <AuthFieldRow
               label="Invite Code:"
@@ -393,6 +408,8 @@ export default function DeviceSetup() {
               onKeyDown={handleKeyDown}
               error={inviteCodeError}
               disabled={registering}
+              inputRef={SERVER_OVERRIDE_ALLOWED ? undefined : inputRef}
+              autoFocus={!SERVER_OVERRIDE_ALLOWED}
             />
 
             <InsecureTlsToggle
