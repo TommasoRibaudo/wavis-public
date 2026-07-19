@@ -1182,10 +1182,7 @@ async fn concurrent_rotate_refresh_token_same_token_triggers_reuse_detection() {
     let result_a = result_a.expect("task_a panicked");
     let result_b = result_b.expect("task_b panicked");
 
-    let successes = [&result_a, &result_b]
-        .iter()
-        .filter(|r| r.is_ok())
-        .count();
+    let successes = [&result_a, &result_b].iter().filter(|r| r.is_ok()).count();
     let reuse_detected = [&result_a, &result_b]
         .iter()
         .filter(|r| matches!(r, Err(AuthError::TokenReuseDetected)))
@@ -1206,12 +1203,11 @@ async fn concurrent_rotate_refresh_token_same_token_triggers_reuse_detection() {
     // every refresh token for the user (security.md #12) — this is the
     // "logs out every device" behavior #323's client-side fix prevents from
     // ever being reachable in the normal double-launch case.
-    let epoch_after: i32 =
-        sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let epoch_after: i32 = sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         epoch_after,
         epoch_before + 1,
