@@ -454,7 +454,28 @@ fn main() {
     crash_handler::install(log_buffer.clone());
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance lock (#323): scoped to the effective auth-store name so
+    // PR #292's two-real-GUI-instance e2e capability (each launch with a
+    // distinct WAVIS_AUTH_STORE_NAME) keeps working. The plugin only forwards
+    // the second launch's argv/cwd to the already-running instance's
+    // callback, not its env vars, so a live two-way key comparison isn't
+    // possible. Instead each process independently decides whether to join
+    // the OS-level lock based on its OWN store key: e2e instances (non-empty
+    // override) never register the plugin and stay invisible to it, while
+    // two real default-store launches (no override, the normal end-user
+    // case) lock against each other as intended.
+    #[cfg(desktop)]
+    if get_auth_store_name().is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(vis) = app.try_state::<tray::WindowVisibility>() {
+                let _ = tray::show_main_window(app.clone(), vis);
+            }
+        }));
+    }
+
+    builder
         .plugin(
             tauri_plugin_log::Builder::new()
                 // Global minimum is always Info so the ring buffer captures
