@@ -599,6 +599,43 @@ export async function rotatePhrase(currentPhrase: string, newPhrase: string): Pr
   }
 }
 
+// --- WS Pre-Auth Ticket (exported) ---
+
+/**
+ * Mint a short-lived, one-use ticket for the /ws upgrade (closed-alpha
+ * pre-auth gate, issue #267/#268). Bearer-authenticated REST call; the raw
+ * ticket is only ever sent back to the caller and as the WS `?ticket=`
+ * query param -- never over the WS connection itself.
+ */
+export async function fetchWsTicket(): Promise<string> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+  const insecure = await getInsecureTls();
+
+  let res: Response;
+  try {
+    res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/ws-ticket', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Network error -- could not reach server for WS ticket: ${message}`, {
+      cause: err,
+    });
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch WS ticket -- server returned ${res.status}`);
+  }
+
+  const body = (await res.json()) as { ticket: string; expires_in: number };
+  return body.ticket;
+}
+
 // --- Token Refresh (exported) ---
 
 export async function refreshTokens(): Promise<RefreshResult> {

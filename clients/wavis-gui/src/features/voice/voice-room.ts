@@ -4333,6 +4333,32 @@ export function initSession(
 
   // Detect disconnection during active session for reconnection flow
   unsubStatusChange = client.onStatusChange((status) => {
+    if (status === 'connected') {
+      // A ws-ticket authenticates the connection at upgrade time (#268), so
+      // there is no post-connect auth_success signal to wait for anymore —
+      // the socket opening IS the authentication success signal.
+      if (state.machineState === 'connecting' || state.machineState === 'reconnecting') {
+        authRefreshRetries = 0;
+        // On reconnect: clear peer-bound state before re-joining
+        if (state.machineState === 'reconnecting') {
+          wasReconnecting = true;
+          state.participants = [];
+          state.subRooms = [];
+          state.participantSubRoomById = {};
+          state.joinedSubRoomId = null;
+          state.passthrough = null;
+          state.selfParticipantId = null;
+          state.error = null;
+          state.rejectionReason = null;
+          state.sharePermission = 'anyone'; // reset stale permission; joined message will set authoritative value
+        }
+        state.machineState = 'authenticated';
+        state.machineState = 'joining';
+        sendJoinVoiceRequest();
+        notify();
+      }
+      return;
+    }
     if (status === 'disconnected') {
       stopColdStartRetry();
       if (state.machineState === 'active' || state.machineState === 'joining') {

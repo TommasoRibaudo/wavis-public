@@ -14,6 +14,7 @@ vi.mock('@features/auth/auth', () => ({
   getAccessToken: vi.fn().mockResolvedValue('test-access-token'),
   isTokenExpired: vi.fn().mockResolvedValue(false),
   refreshTokens: vi.fn().mockResolvedValue({ status: 'success' }),
+  fetchWsTicket: vi.fn().mockResolvedValue('test-ws-ticket'),
 }));
 
 // ─── Mock ws-message-buffer ────────────────────────────────────────
@@ -422,18 +423,59 @@ describe('reconnect backoff', () => {
 // ─── connectWithAuth() ────────────────────────────────────────────
 
 describe('connectWithAuth()', () => {
-  it('sends Auth message on open', async () => {
+  it('fetches a ticket before constructing WebSocket', async () => {
+    const { fetchWsTicket } = await import('@features/auth/auth');
     const client = new SignalingClient();
-    // connectWithAuth is async — it awaits isTokenExpired then opens WS
     const connectPromise = client.connectWithAuth('ws://localhost/ws');
-    // Flush the isTokenExpired + getAccessToken microtasks so the WS is created
+    // Flush the isTokenExpired + fetchWsTicket microtasks so the WS is created
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    lastWsInstance!.simulate('open');
+    await connectPromise;
+
+    expect(fetchWsTicket).toHaveBeenCalled();
+    expect(wsConstructorCalls.length).toBeGreaterThan(0);
+  });
+
+  it('WebSocket URL includes ?ticket=...', async () => {
+    const client = new SignalingClient();
+    const connectPromise = client.connectWithAuth('ws://localhost/ws');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    lastWsInstance!.simulate('open');
+    await connectPromise;
+    expect(wsConstructorCalls.at(-1)).toBe('ws://localhost/ws?ticket=test-ws-ticket');
+  });
+
+  it('does not send the initial signaling auth message', async () => {
+    const client = new SignalingClient();
+    const connectPromise = client.connectWithAuth('ws://localhost/ws');
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     lastWsInstance!.simulate('open');
     await connectPromise;
     const sentMessages = lastWsInstance!.send.mock.calls.map((c) => JSON.parse(c[0] as string));
-    expect(sentMessages.some((m) => m.type === 'auth')).toBe(true);
-    expect(sentMessages.find((m) => m.type === 'auth')?.accessToken).toBe('test-access-token');
+    expect(sentMessages.some((m) => m.type === 'auth')).toBe(false);
+  });
+
+  it('sets status to disconnected and throws when the ticket request fails, without opening a socket', async () => {
+    const { fetchWsTicket } = await import('@features/auth/auth');
+    vi.mocked(fetchWsTicket).mockRejectedValueOnce(new Error('server returned 401'));
+
+    const client = new SignalingClient();
+    const prevCount = wsConstructorCalls.length;
+    let threw = false;
+    try {
+      await client.connectWithAuth('ws://localhost/ws');
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(client.status).toBe('disconnected');
+    expect(wsConstructorCalls.length).toBe(prevCount);
   });
 
   it('refreshes token when expired before connecting', async () => {
@@ -507,19 +549,23 @@ describe('reconnectWithNewToken()', () => {
     expect(wsConstructorCalls.length).toBe(2);
   });
 
-  it('sends Auth message on the new connection', async () => {
+  it('fetches a fresh ticket for the new connection', async () => {
+    const { fetchWsTicket } = await import('@features/auth/auth');
     const client = new SignalingClient();
     client.connect('ws://localhost/ws');
     lastWsInstance!.simulate('open');
+    vi.mocked(fetchWsTicket).mockClear();
+    vi.mocked(fetchWsTicket).mockResolvedValueOnce('fresh-ws-ticket');
 
     const reconnectPromise = client.reconnectWithNewToken('ws://localhost/ws');
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     lastWsInstance!.simulate('open');
     await reconnectPromise;
 
-    const sentMessages = lastWsInstance!.send.mock.calls.map((c) => JSON.parse(c[0] as string));
-    expect(sentMessages.some((m) => m.type === 'auth')).toBe(true);
+    expect(fetchWsTicket).toHaveBeenCalledTimes(1);
+    expect(wsConstructorCalls.at(-1)).toBe('ws://localhost/ws?ticket=fresh-ws-ticket');
   });
 });
 
