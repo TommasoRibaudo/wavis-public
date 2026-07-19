@@ -167,14 +167,19 @@ export async function seedChannelWithInvite(name) {
  * have been built with VITE_ALLOW_INSECURE_TLS=true (see README) so the
  * insecure-TLS toggle is present for a plain-http serverUrl.
  *
- * CURRENTLY CANNOT SUCCEED against a closed-alpha backend: POST
- * /auth/register 401s without an invite code, and DeviceSetup has no
- * invite-code field yet (README's "Known gap"). No spec uses this anymore —
- * use registerAndLoginViaUi (REST registration + real Login UI) for spec
- * setup. Kept so it can be reinstated (with an invite-code fill step) once
- * DeviceSetup gains the field.
+ * `inviteCode` is required: DeviceSetup's registration form validates it
+ * client-side before submitting (see `validateInviteCode` in
+ * `DeviceSetup.tsx`), and `POST /auth/register` 401s without one against a
+ * closed-alpha backend. No spec currently uses this — specs that need a
+ * GUI-authenticated identity use `registerAndLoginViaUi` (REST registration
+ * + real Login UI) instead, since it doesn't need a live invite code passed
+ * through Playwright. Use this one when the thing under test is the
+ * registration UI itself.
  */
-export async function registerViaUi(page, { username, password, serverUrl = SERVER_URL } = {}) {
+export async function registerViaUi(
+  page,
+  { username, password, inviteCode, serverUrl = SERVER_URL } = {},
+) {
   // A stale wavis-auth-e2e.json (stored recovery ID from a previous run, but
   // a session the backend no longer knows — e.g. the docker DB was recreated
   // since) lands the app on /login instead of /setup. Trusted-device mode
@@ -200,6 +205,7 @@ export async function registerViaUi(page, { username, password, serverUrl = SERV
   await page.getByText('/next', { exact: true }).click();
 
   await page.getByLabel('Server URL', { exact: true }).fill(serverUrl);
+  await page.getByLabel('Invite Code', { exact: true }).fill(inviteCode);
   if (serverUrl.startsWith('http://')) {
     await page.getByText('--danger-insecure-tls', { exact: true }).click();
   }

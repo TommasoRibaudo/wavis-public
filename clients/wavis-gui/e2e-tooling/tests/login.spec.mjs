@@ -2,13 +2,12 @@
 // "new device" Wavis-ID entry path and the trusted-device password-only
 // path — with an account created out-of-band via REST.
 //
-// The DeviceSetup registration UI is deliberately NOT exercised here:
-// POST /auth/register 401s without a closed-alpha invite code
-// (wavis-backend/src/auth/routes.rs's register handler), and DeviceSetup has
-// no invite-code field, so UI registration cannot succeed against this
-// backend at all — see README.md's "Known gap" note. Until DeviceSetup gains
-// that field, account creation goes through registerDevice() (REST, which
-// does send ALPHA_INVITE_CODE), and this spec covers the login flows only.
+// The DeviceSetup registration UI is not exercised here: account creation
+// goes through registerDevice() (REST, which sends ALPHA_INVITE_CODE) so
+// this spec can focus on the login flows. DeviceSetup does have a working
+// invite-code field now (closed-alpha #266) and registerViaUi in
+// live-backend-helpers.mjs drives it — see README.md for why REST-seeding
+// stays the default for setup.
 //
 // Requires a reachable backend (see README's "Live-backend specs" section)
 // and a debug exe built with VITE_ALLOW_INSECURE_TLS=true /
