@@ -26,6 +26,8 @@ mod external_share_helper;
 #[cfg(target_os = "linux")]
 mod linux_mic;
 #[cfg(target_os = "windows")]
+mod repaint;
+#[cfg(target_os = "windows")]
 mod taskbar_toolbar;
 #[cfg(not(target_os = "linux"))]
 mod external_share_helper {
@@ -519,6 +521,9 @@ fn main() {
                 if let Err(err) = taskbar_toolbar::setup_taskbar_toolbar(app) {
                     log::warn!("wavis: taskbar toolbar unavailable: {err}");
                 }
+
+                #[cfg(target_os = "windows")]
+                repaint::start_periodic_nudge(app.handle().clone());
             }
 
             #[cfg(target_os = "linux")]
@@ -573,6 +578,14 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Focused(focused) => {
+                    #[cfg(target_os = "windows")]
+                    if *focused && repaint::is_repaint_nudge_target(window.label()) {
+                        if let Some(webview_window) =
+                            window.app_handle().get_webview_window(window.label())
+                        {
+                            repaint::nudge_repaint(&webview_window);
+                        }
+                    }
                     if window.label() == "main" {
                         let app = window.app_handle();
                         if let Some(vis) = app.try_state::<tray::WindowVisibility>() {
