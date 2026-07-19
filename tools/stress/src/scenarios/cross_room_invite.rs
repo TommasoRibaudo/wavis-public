@@ -109,7 +109,7 @@ impl Scenario for CrossRoomInviteScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..n_clients {
-            let ws_url = ctx.ws_connect_url();
+            let ws_url = ctx.ws_url.clone();
             let room_b_clone = room_b.clone();
             let invite_code_clone = invite_code.clone();
 
@@ -247,7 +247,7 @@ async fn create_invite_for_room_via_signaling(
     ctx: &TestContext,
     room_id: &str,
 ) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_connect_url())
+    let mut host = StressClient::connect(&ctx.ws_url)
         .await
         .map_err(|e| format!("host connect failed: {e}"))?;
 

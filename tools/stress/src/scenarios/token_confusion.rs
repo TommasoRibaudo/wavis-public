@@ -426,7 +426,7 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
             }
         };
 
-        let mut client_a = match StressClient::connect(&ctx.ws_connect_url()).await {
+        let mut client_a = match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => c,
             Err(e) => {
                 violations.push(InvariantViolation {
@@ -445,7 +445,7 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
 
         // Try to join room_b with the invite for room_a (cross-room invite confusion).
         // This tests that the backend validates the invite is scoped to the correct room.
-        let mut client_b = match StressClient::connect(&ctx.ws_connect_url()).await {
+        let mut client_b = match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => c,
             Err(e) => {
                 client_a.close().await;
@@ -507,7 +507,7 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
         };
 
         // Host joins.
-        let mut host = match StressClient::connect(&ctx.ws_connect_url()).await {
+        let mut host = match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => c,
             Err(e) => {
                 violations.push(InvariantViolation {
@@ -541,7 +541,7 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
         };
 
         // Guest joins.
-        let mut guest = match StressClient::connect(&ctx.ws_connect_url()).await {
+        let mut guest = match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => c,
             Err(e) => {
                 host.close().await;
@@ -589,7 +589,7 @@ async fn run_external(ctx: &TestContext, violations: &mut Vec<InvariantViolation
         tokio::time::sleep(Duration::from_millis(300)).await;
 
         // Guest attempts to rejoin — should be rejected (revoked_participants).
-        let mut rejoiner = match StressClient::connect(&ctx.ws_connect_url()).await {
+        let mut rejoiner = match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => c,
             Err(_) => {
                 host.close().await;
@@ -649,7 +649,7 @@ fn build_result(
 /// External-mode helper: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_connect_url())
+    let mut host = StressClient::connect(&ctx.ws_url)
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

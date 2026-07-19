@@ -123,7 +123,7 @@ async fn run_p21_oversized_frame(ctx: &TestContext) -> Result<(), InvariantViola
     // the global WS rate limiter for the current second.
     let mut client = None;
     for attempt in 0..5u32 {
-        match StressClient::connect(&ctx.ws_connect_url()).await {
+        match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => {
                 client = Some(c);
                 break;
@@ -176,7 +176,7 @@ async fn run_p22_deep_json(ctx: &TestContext) -> Result<(), InvariantViolation> 
     // the global WS rate limiter for the current second.
     let mut client = None;
     for attempt in 0..5u32 {
-        match StressClient::connect(&ctx.ws_connect_url()).await {
+        match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => {
                 client = Some(c);
                 break;
@@ -277,7 +277,7 @@ async fn run_p23_malformed_json(ctx: &TestContext) -> Vec<InvariantViolation> {
         // the global WS rate limiter for the current second.
         let mut result = Err(String::new());
         for attempt in 0..5u32 {
-            match StressClient::connect(&ctx.ws_connect_url()).await {
+            match StressClient::connect(&ctx.ws_url).await {
                 Ok(c) => {
                     result = Ok(c);
                     break;
@@ -511,7 +511,7 @@ fn build_result(
 /// External-mode: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_connect_url())
+    let mut host = StressClient::connect(&ctx.ws_url)
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

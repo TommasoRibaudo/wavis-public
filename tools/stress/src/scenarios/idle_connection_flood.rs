@@ -89,7 +89,7 @@ impl Scenario for IdleConnectionFloodScenario {
         let mut connect_failures = 0usize;
 
         for i in 0..DEFAULT_MAX_PER_IP {
-            match StressClient::connect(&ctx.ws_connect_url()).await {
+            match StressClient::connect(&ctx.ws_url).await {
                 Ok(c) => {
                     idle_connections.push(c);
                 }
@@ -127,16 +127,8 @@ impl Scenario for IdleConnectionFloodScenario {
         tokio::time::sleep(IDLE_HOLD_DURATION).await;
 
         // Attempt one more connection beyond the cap using raw TCP so we can
-        // inspect the HTTP response status code. Needs a valid ticket — the
-        // ws-ticket gate runs before the per-IP cap check, so an unticketed
-        // probe would always 401 there and never actually reach (or prove)
-        // the IP-cap rejection this scenario exists to validate.
-        let ticket_query = ctx
-            .ws_connect_url()
-            .rsplit_once('?')
-            .map(|(_, q)| q.to_owned())
-            .unwrap_or_default();
-        let extra_result = probe_connection_rejected(&host_port, &ticket_query).await;
+        // inspect the HTTP response status code.
+        let extra_result = probe_connection_rejected(&host_port).await;
 
         match extra_result {
             ProbeResult::Rejected429 => {
@@ -236,29 +228,20 @@ enum ProbeResult {
 
 /// Attempt a raw HTTP WebSocket upgrade and return the HTTP response status.
 /// This lets us distinguish HTTP 429 (per-IP cap) from a successful upgrade.
-/// `ticket_query` is the `ticket=<raw>` query string (no leading `?`) from a
-/// freshly-minted ws-ticket, or empty in external mode.
-async fn probe_connection_rejected(host_port: &str, ticket_query: &str) -> ProbeResult {
+async fn probe_connection_rejected(host_port: &str) -> ProbeResult {
     let mut stream = match TcpStream::connect(host_port).await {
         Ok(s) => s,
         Err(e) => return ProbeResult::ConnectFailed(e.to_string()),
     };
 
     // Send a complete HTTP upgrade request.
-    let path = if ticket_query.is_empty() {
-        "/ws".to_owned()
-    } else {
-        format!("/ws?{ticket_query}")
-    };
-    let request = format!(
-        "GET {path} HTTP/1.1\r\n\
+    let request = "GET /ws HTTP/1.1\r\n\
         Host: 127.0.0.1\r\n\
         Upgrade: websocket\r\n\
         Connection: Upgrade\r\n\
         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
         Sec-WebSocket-Version: 13\r\n\
-        \r\n"
-    );
+        \r\n";
 
     if stream.write_all(request.as_bytes()).await.is_err() {
         return ProbeResult::ConnectFailed("write failed".to_owned());

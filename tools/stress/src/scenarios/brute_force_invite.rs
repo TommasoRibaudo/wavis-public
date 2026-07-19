@@ -91,7 +91,7 @@ impl Scenario for BruteForceInviteScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for code in invite_codes {
-            let ws_url = ctx.ws_connect_url();
+            let ws_url = ctx.ws_url.clone();
             let room_id = room_id.clone();
 
             join_set.spawn(async move {

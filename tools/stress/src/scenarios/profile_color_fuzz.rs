@@ -515,7 +515,7 @@ async fn run_p25_broadcast_integrity(ctx: &TestContext) -> Vec<InvariantViolatio
 /// exhausted the global WS rate limiter).
 async fn connect_with_retry(ctx: &TestContext) -> Result<StressClient, InvariantViolation> {
     for attempt in 0..5u32 {
-        match StressClient::connect(&ctx.ws_connect_url()).await {
+        match StressClient::connect(&ctx.ws_url).await {
             Ok(c) => return Ok(c),
             Err(_) if attempt < 4 => {
                 tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;

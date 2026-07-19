@@ -35,7 +35,7 @@ TEST_METRICS_TOKEN=dev-token cargo run -p gui-surface-test -- --url http://127.0
 ### In-process (quick, no external dependencies)
 
 Starts its own backend internally with a mock SFU and dummy Postgres pool.
-Most scenarios run, but DB-dependent ones (cross-secret-token-confusion, refresh-token-reuse) are skipped. Stop any running backend on port 3000 first.
+Most scenarios run, but DB-dependent ones (auth-state-machine-race, cross-secret-token-confusion, refresh-token-reuse) are skipped. Stop any running backend on port 3000 first.
 
 ```bash
 cargo run -p stress-harness -- --in-process --ci

@@ -138,7 +138,7 @@ async fn trigger_bad_invite(ctx: &TestContext) {
         format!("INVALID-{:016x}", rng.next_u64())
     };
 
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         let _ = client
             .join_room("log-leak-room", "p2p", Some(&bad_code))
             .await;
@@ -155,7 +155,7 @@ async fn trigger_bad_token(ctx: &TestContext) {
                     .eyJzdWIiOiJiYWQtdG9rZW4iLCJleHAiOjF9\
                     .AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         // Send a Join with the fake token in the mediaToken field.
         let msg = serde_json::json!({
             "type": "join",
@@ -173,7 +173,7 @@ async fn trigger_bad_token(ctx: &TestContext) {
 
 /// Send malformed JSON to trigger parse error logs.
 async fn trigger_malformed_json(ctx: &TestContext) {
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         // Truncated JSON — will cause a parse error in the backend.
         let _ = client.send_raw("{\"type\":\"Join\",\"roomId\":").await;
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -186,7 +186,7 @@ async fn trigger_malformed_json(ctx: &TestContext) {
 
 /// Send an oversized payload (>64 KB) to trigger payload size violation logs.
 async fn trigger_oversized_payload(ctx: &TestContext) {
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         let oversized = "X".repeat(65_537);
         let _ = client.send_raw(&oversized).await;
         // Wait briefly for the backend to process and close the connection.
@@ -221,7 +221,7 @@ async fn trigger_wrong_room(ctx: &TestContext) {
         return;
     };
 
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         let join = client.join_room(&room_id, "p2p", Some(&invite_code)).await;
         if join.map(|r| r.success).unwrap_or(false) {
             // Send a signaling message referencing a completely different room.
@@ -240,7 +240,7 @@ async fn trigger_wrong_room(ctx: &TestContext) {
 
 /// External-mode helper: create an invite via signaling (host joins, requests invite, leaves).
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_connect_url())
+    let mut host = StressClient::connect(&ctx.ws_url)
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 
@@ -282,7 +282,7 @@ async fn trigger_bad_auth_token(ctx: &TestContext) {
                     .eyJzdWIiOiJiYWQtdXNlciIsImV4cCI6OTk5OTk5OTk5OSwiYXVkIjoid2F2aXMiLCJpc3MiOiJ3YXZpcy1iYWNrZW5kIiwiaWF0IjoxfQ\
                     .BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
-    if let Ok(mut client) = StressClient::connect(&ctx.ws_connect_url()).await {
+    if let Ok(mut client) = StressClient::connect(&ctx.ws_url).await {
         let msg = serde_json::json!({
             "type": "auth",
             "accessToken": fake_jwt,

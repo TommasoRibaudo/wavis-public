@@ -128,7 +128,7 @@ impl Scenario for InviteExhaustionRaceScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..n_clients {
-            let ws_url = ctx.ws_connect_url();
+            let ws_url = ctx.ws_url.clone();
             let room_id_clone = room_id.clone();
             let invite_code_clone = invite_code.clone();
 
@@ -322,7 +322,7 @@ impl Scenario for InviteExhaustionRaceScenario {
         // Give the backend a moment to process disconnects.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        match StressClient::connect(&ctx.ws_connect_url()).await {
+        match StressClient::connect(&ctx.ws_url).await {
             Ok(mut verifier) => {
                 match verifier
                     .join_room(&room_id, ROOM_TYPE, Some(&invite_code))
@@ -394,7 +394,7 @@ async fn create_limited_invite_via_signaling(
     room_id: &str,
     max_uses: u32,
 ) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_connect_url())
+    let mut host = StressClient::connect(&ctx.ws_url)
         .await
         .map_err(|e| format!("host connect failed: {e}"))?;
 

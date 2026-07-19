@@ -1,4 +1,5 @@
 pub mod auth_brute_force;
+pub mod auth_state_machine_race;
 pub mod authz_fuzz;
 pub mod brute_force_invite;
 pub mod chat_authz_fuzz;
