@@ -81,7 +81,7 @@ impl Scenario for ReplayAttackScenario {
         // Phase 1 — Capture: Connect client A and join the room
         // =====================================================================
 
-        let mut client_a = match StressClient::connect(&ctx.ws_url).await {
+        let mut client_a = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 return early_fail(self.name(), start, "client_a_connect", format!("{e}"));
@@ -139,7 +139,7 @@ impl Scenario for ReplayAttackScenario {
         //           and replay the captured messages
         // =====================================================================
 
-        let mut client_b = match StressClient::connect(&ctx.ws_url).await {
+        let mut client_b = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 return early_fail(self.name(), start, "client_b_connect", format!("{e}"));
@@ -152,7 +152,7 @@ impl Scenario for ReplayAttackScenario {
                 // If the connection was already closed by the backend, that's a valid rejection
                 if matches!(e, StressError::Closed) {
                     // Connection closed = rejection. Reconnect for remaining messages.
-                    client_b = match StressClient::connect(&ctx.ws_url).await {
+                    client_b = match StressClient::connect(&ctx.ws_connect_url()).await {
                         Ok(c) => c,
                         Err(_) => break, // Can't reconnect — stop replaying
                     };
@@ -196,7 +196,7 @@ impl Scenario for ReplayAttackScenario {
                 Err(StressError::Closed) => {
                     // Connection closed by backend = valid rejection (pre-join gate closed it)
                     // Reconnect for remaining messages
-                    client_b = match StressClient::connect(&ctx.ws_url).await {
+                    client_b = match StressClient::connect(&ctx.ws_connect_url()).await {
                         Ok(c) => c,
                         Err(_) => break,
                     };
@@ -281,7 +281,7 @@ fn build_result(
 /// External-mode: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

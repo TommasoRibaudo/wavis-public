@@ -76,7 +76,7 @@ impl Scenario for ChatAuthzFuzzScenario {
         // Test A — Pre-join client sends chat_send → "not authenticated"
         // =====================================================================
 
-        let mut pre_join = match StressClient::connect(&ctx.ws_url).await {
+        let mut pre_join = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => return early_fail(self.name(), start, "pre_join_connect", format!("{e}")),
         };
@@ -125,7 +125,7 @@ impl Scenario for ChatAuthzFuzzScenario {
         // =====================================================================
 
         // Connect and join a room so we have a valid session.
-        let mut host = match StressClient::connect(&ctx.ws_url).await {
+        let mut host = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => return early_fail(self.name(), start, "host_connect", format!("{e}")),
         };
@@ -278,7 +278,7 @@ fn build_result(
 }
 
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

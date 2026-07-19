@@ -285,7 +285,7 @@ async fn connect_and_join(
     room_id: &str,
     invite_code: &str,
 ) -> Result<(StressClient, String), String> {
-    let mut c = StressClient::connect(&ctx.ws_url)
+    let mut c = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect: {e}"))?;
     let r = c
@@ -316,7 +316,7 @@ async fn setup_room(ctx: &TestContext, room_id: &str) -> Result<String, String> 
 }
 
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
     let join = host

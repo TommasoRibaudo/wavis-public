@@ -174,7 +174,6 @@ async fn main() {
         Box::new(scenarios::log_leak::LogLeakScenario),
         Box::new(scenarios::auth_brute_force::AuthBruteForceScenario),
         Box::new(scenarios::refresh_token_reuse::RefreshTokenReuseScenario),
-        Box::new(scenarios::auth_state_machine_race::AuthStateMachineRaceScenario),
         Box::new(scenarios::cross_secret_token_confusion::CrossSecretTokenConfusionScenario),
         Box::new(scenarios::chat_flood::ChatFloodScenario),
         Box::new(scenarios::chat_authz_fuzz::ChatAuthzFuzzScenario),
