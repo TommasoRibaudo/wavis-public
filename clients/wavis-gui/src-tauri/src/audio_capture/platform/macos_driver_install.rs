@@ -11,6 +11,7 @@ use tauri::AppHandle;
 
 /// Returns true when a supported virtual audio loopback device (BlackHole,
 /// Loopback, or Wavis Audio Tap) is present in the CoreAudio device list.
+#[allow(dead_code)]
 pub(in super::super) fn is_driver_installed() -> bool {
     super::macos_virtual_device::detect_virtual_audio_device().is_some()
 }

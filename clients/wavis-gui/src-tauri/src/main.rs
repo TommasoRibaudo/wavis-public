@@ -287,18 +287,8 @@ mod screen_recording_auth {
 
     #[tauri::command]
     pub fn ensure_screen_recording_access() -> Result<ScreenRecordingAccessStatus, String> {
-        // CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess were
-        // added in macOS 10.15. Both symbols are weak-linked; on older macOS
-        // they resolve to NULL. Before Catalina there was no Screen Recording
-        // permission system, so capture was always implicitly allowed.
-        if (CGPreflightScreenCaptureAccess as *const ()).is_null() {
-            return Ok(ScreenRecordingAccessStatus {
-                authorized: true,
-                prompt_shown: false,
-                restart_required: false,
-            });
-        }
-
+        // CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess are
+        // available since macOS 10.15, which is our minimum deployment target.
         let already_authorized = unsafe { CGPreflightScreenCaptureAccess() };
         if already_authorized {
             return Ok(ScreenRecordingAccessStatus {

@@ -12,6 +12,7 @@ mod capture;
 /// Source type discriminant.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ShareSourceType {
     Screen,
     Window,
@@ -68,6 +69,7 @@ fn should_include_window(desc: &WindowDescriptor, self_pid: u32) -> bool {
 }
 
 /// Compute fallback routing from the presence or absence of video sources.
+#[allow(dead_code)]
 fn compute_fallback_reason(sources: &[ShareSource]) -> Option<FallbackReason> {
     let has_video = sources.iter().any(|source| {
         matches!(
@@ -91,15 +93,19 @@ fn compute_fallback_reason(sources: &[ShareSource]) -> Option<FallbackReason> {
 }
 
 /// Timeout for thumbnail capture before the picker falls back to a placeholder preview.
+#[allow(dead_code)]
 const THUMBNAIL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// Maximum thumbnail dimension. Larger frames are downscaled before encoding.
+#[allow(dead_code)]
 const THUMBNAIL_MAX_DIM: u32 = 320;
 
 /// JPEG quality for picker thumbnails.
+#[allow(dead_code)]
 const THUMBNAIL_JPEG_QUALITY: u8 = 75;
 
 /// Encode RGBA pixel data as a base64 JPEG thumbnail string.
+#[allow(dead_code)]
 fn encode_thumbnail_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Option<String>, String> {
     use base64::Engine;
     use image::{ImageBuffer, RgbaImage};
