@@ -16,9 +16,9 @@ Environment variables:
 Test sequence (each depends on prior steps):
   1  HTTPS /health                          blocking
   2  POST /auth/register                    blocking
-  3  WebSocket connect                      blocking
+  3  WebSocket connect (ticket pre-authenticates) blocking
   4  Ping (no error response)               blocking
-  5  Auth -> auth_success                   blocking
+  5  Connection already authenticated       blocking
   6  create_room -> room_created            NON-BLOCKING (legacy path)
   7  media_token arrives after room_created NON-BLOCKING (legacy path)
   8  media_token JWT structure              NON-BLOCKING (legacy path)
@@ -99,19 +99,33 @@ def register_smoke_user(label: str) -> dict:
     return response.json()
 
 
+def mint_ws_ticket(access_token: str) -> str:
+    """
+    Mint a short-lived, one-use ws-ticket (Req #267). Every /ws connection
+    must present one via ?ticket=... — the ticket authenticates the socket
+    before the message loop starts, so there is no separate WS auth handshake.
+    """
+    response = httpx.post(
+        f"{BACKEND_URL}/auth/ws-ticket",
+        headers=auth_headers(access_token),
+        timeout=TIMEOUT,
+    )
+    assert response.status_code == 200, f"HTTP {response.status_code} (expected 200 OK)"
+    ticket = response.json().get("ticket")
+    assert ticket, f"missing ticket in response: {response.json()}"
+    return ticket
+
+
+def ws_url_with_ticket(access_token: str) -> str:
+    return f"{WS_URL}?ticket={mint_ws_ticket(access_token)}"
+
+
 def normalize_livekit_url(url: str) -> str:
     if url.startswith("https://"):
         return "wss://" + url[len("https://"):]
     if url.startswith("http://"):
         return "ws://" + url[len("http://"):]
     return url
-
-
-async def ws_auth(ws, access_token: str) -> dict:
-    await ws.send(json.dumps({"type": "auth", "accessToken": access_token}))
-    msg = await recv_type(ws, "auth_success")
-    assert "userId" in msg, f"missing userId in auth_success: {msg}"
-    return msg
 
 
 async def ws_join_voice(ws, channel_id: str, display_name: str) -> tuple[dict, dict]:
@@ -251,7 +265,10 @@ async def run_smoke():
         fail("2_register", str(e))
 
     try:
-        async with websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws:
+        assert access_token, "no access_token from step 2 - cannot mint a ws-ticket"
+        async with websockets.connect(
+            ws_url_with_ticket(access_token), open_timeout=TIMEOUT
+        ) as ws:
             ok("3_ws_connect")
 
             try:
@@ -269,16 +286,11 @@ async def run_smoke():
             except Exception as e:
                 fail("4_ping", str(e))
 
-            if access_token:
-                try:
-                    await ws.send(json.dumps({"type": "auth", "accessToken": access_token}))
-                    msg = await recv_type(ws, "auth_success")
-                    assert "userId" in msg, f"missing userId in auth_success: {msg}"
-                    ok("5_ws_auth")
-                except Exception as e:
-                    fail("5_ws_auth", str(e))
-            else:
-                fail("5_ws_auth", "skipped - no access_token from step 2")
+            # The ws-ticket used to open this connection already authenticated
+            # it server-side (Req #267) — an explicit `auth` message would now
+            # be rejected as "already authenticated", so there is nothing left
+            # to do here beyond confirming we got this far.
+            ok("5_ws_auth")
 
             # Legacy direct-room path: keep coverage, but do not gate deploys on it.
             # The current GUI path is channel-based JoinVoice; direct create/join remains
@@ -450,11 +462,10 @@ async def run_smoke():
     else:
         try:
             async with (
-                websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws1,
-                websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws2,
+                websockets.connect(ws_url_with_ticket(access_token), open_timeout=TIMEOUT) as ws1,
+                websockets.connect(ws_url_with_ticket(second_access_token), open_timeout=TIMEOUT) as ws2,
             ):
                 try:
-                    await ws_auth(ws1, access_token)
                     owner_joined, owner_media_token = await ws_join_voice(
                         ws1, channel_id, "Smoke Owner"
                     )
@@ -480,7 +491,6 @@ async def run_smoke():
 
                 if owner_joined is not None:
                     try:
-                        await ws_auth(ws2, second_access_token)
                         member_joined, member_media_token = await ws_join_voice(
                             ws2, channel_id, "Smoke Member"
                         )
@@ -696,14 +706,12 @@ async def run_smoke():
         ban_member_joined = None
         try:
             async with (
-                websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws1,
-                websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws2,
+                websockets.connect(ws_url_with_ticket(access_token), open_timeout=TIMEOUT) as ws1,
+                websockets.connect(ws_url_with_ticket(second_access_token), open_timeout=TIMEOUT) as ws2,
             ):
                 try:
-                    await ws_auth(ws1, access_token)
                     ban_owner_joined, _ = await ws_join_voice(ws1, ban_channel_id, "Ban Owner")
 
-                    await ws_auth(ws2, second_access_token)
                     ban_member_joined, _ = await ws_join_voice(ws2, ban_channel_id, "Ban Member")
 
                     assert ban_owner_joined.get("roomId") == ban_member_joined.get("roomId"), (
@@ -744,8 +752,9 @@ async def run_smoke():
                     # SignalingSession, so join_voice on it hits "already joined" before
                     # the ban check runs. A real client would reconnect after being kicked.
                     try:
-                        async with websockets.connect(WS_URL, open_timeout=TIMEOUT) as ws3:
-                            await ws_auth(ws3, second_access_token)
+                        async with websockets.connect(
+                            ws_url_with_ticket(second_access_token), open_timeout=TIMEOUT
+                        ) as ws3:
                             await ws3.send(json.dumps({
                                 "type": "join_voice",
                                 "channelId": ban_channel_id,
