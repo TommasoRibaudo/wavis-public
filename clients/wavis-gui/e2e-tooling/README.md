@@ -18,12 +18,17 @@ whichever webview engine Tauri uses on the current platform. This replaced
 an earlier CDP-based mechanism (Playwright attached directly to WebView2's
 Chrome DevTools Protocol port) that only worked on Windows — WebView2 is the
 only Tauri webview engine that exposes CDP at all; WebKitGTK (Linux) and
-WKWebView (macOS, out of scope here — see #298) don't.
+WKWebView (macOS) don't.
 
 **Windows — `embedded` driver provider.** `tauri-plugin-wdio-webdriver`
 (feature-gated, see "Build the app to test against" below) runs an
 in-process WebDriver server inside the app itself; `@wdio/tauri-service`
 connects to it directly, no separate driver process needed.
+
+**macOS — `embedded` driver provider.** WKWebView has no standalone external
+WebDriver binary (unlike Linux's WebKitWebDriver), so `tauri-plugin-wdio-webdriver`
+is also the only supported path on macOS. Same feature-gated plugin as Windows,
+no extra system package required. See "macOS setup" below.
 
 **Linux — `external` driver provider.** `tauri-driver` proxies to
 WebKitWebDriver (the `webkit2gtk-driver` apt package's `WebKitWebDriver`
@@ -48,11 +53,13 @@ API.
 **Multi-window.** Each open Tauri window shows up as its own WebDriver
 window handle (`browser.getWindowHandles()`/`switchToWindow()`) — the
 migration's equivalent of Playwright's `context.pages()`. Confirmed
-empirically: the embedded provider uses the Tauri window **label** itself
-(`'main'`, `'diagnostics'`, ...) as the WebDriver handle, which `driver.mjs`
-relies on to reliably find the main window — `getWindowHandles()`'s order is
-not guaranteed to be stable run-to-run, so don't revert to picking
-`pages()[0]`.
+empirically on both Windows and macOS: the embedded provider uses the Tauri
+window **label** itself (`'main'`, `'diagnostics'`, ...) as the WebDriver
+handle, which `driver.mjs` relies on to reliably find the main window —
+`getWindowHandles()`'s order is not guaranteed to be stable run-to-run, so
+don't revert to picking `pages()[0]`. (The Linux external provider is
+different — it hands out opaque `page-<UUID>` handles; see the `page()`
+fallback in `driver.mjs` for how that's handled.)
 
 **Runner.** `node:test` (built in), not `@wdio/cli`/mocha — see "Formal test
 suite" below for why.
@@ -68,6 +75,10 @@ cover everything the spec suite needs.
 
 **Windows:** nothing else — the `embedded` driver provider needs no
 separate driver binary.
+
+**macOS:** nothing else — the `embedded` driver provider needs no separate
+driver binary. See "macOS setup" below for camera/mic permission handling
+(needed for live-backend media specs only).
 
 **Linux:** see "Linux setup" below for the one extra system package.
 
@@ -122,6 +133,61 @@ override `VITE_AUTH_STORE_NAME`/`WAVIS_AUTH_STORE_NAME` (see "Live-backend
 specs" — `build-app.mjs` already does this for you). It also talks to a
 **real backend** — UI state reflects real connection status
 (connecting/offline/joined), not canned data.
+
+## macOS setup
+
+No extra system package — `@wdio/tauri-service` auto-detects the `embedded`
+provider on `darwin`, and `tauri-plugin-wdio-webdriver` is already compiled
+in via the `e2e-webdriver` Cargo feature (same as Windows). Everything else
+is identical to Windows: same `driver.mjs`, same spec files, `driverProvider`
+picked automatically.
+
+**Xcode Command Line Tools** must be installed (`xcode-select --install`) if
+they aren't already — `cargo build` and `npm run build:app` need them on a
+fresh machine.
+
+**Camera and microphone permissions (for live-backend media specs).** On
+macOS, `getUserMedia` in WKWebView goes through the system TCC (Transparency,
+Consent, and Control) permission store. The embedded-provider debug binary
+produced by `tauri build --debug --no-bundle` is normally linker-signed with
+an auto-generated identifier, which would cause TCC to show a fresh permission
+dialog on every spec run. `npm run build:app` works around this by
+re-signing the binary with the app's real `com.wavis.desktop` bundle
+identifier and `Entitlements.plist`, so TCC looks up the same permission
+entry used by the production Wavis app.
+
+In practice: **grant camera and microphone access once** — either from the
+system dialog that appears on the first live-backend media spec run, or by
+launching the normal Wavis app and granting it there, or via:
+
+```bash
+# Grant camera and microphone to com.wavis.desktop once (persists in TCC)
+tccutil reset Camera com.wavis.desktop
+tccutil reset Microphone com.wavis.desktop
+# Then run any media spec — macOS will show the grant dialog once, then remember.
+```
+
+Subsequent runs (same machine, same bundle identifier) need no dialog.
+
+**WebRTC ICE candidates.** WKWebView (WebKit) does not implement Chromium's
+mDNS obfuscation of local IPs in WebRTC ICE candidates — real local IP
+addresses are already exposed by default. The `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+flag `--disable-features=WebRtcHideLocalIpsWithMdns` that the Windows path
+needs is not required on macOS; `driver.mjs` only sets that variable on
+`win32`.
+
+**Window handles.** Confirmed empirically: the macOS embedded provider (same
+`tauri-plugin-wdio-webdriver` as Windows) uses the Tauri window **label**
+(`'main'`, `'diagnostics'`, ...) as the WebDriver handle directly — the same
+semantic behaviour as Windows, not the opaque `page-<UUID>` pattern the Linux
+external provider produces. No macOS-specific handle logic is needed in
+`driver.mjs`.
+
+**Confirmed working on macOS (Apple Silicon / macOS 26.0):** `launch` (×2),
+`title-bar`, `multi-window`, `settings` (skipped — expected, no persisted
+session) — all 4 backend-independent specs pass cleanly. Live-backend and
+media specs require Docker Compose; the same `docker compose up -d --build`
+recipe used on Windows/Linux works identically on macOS.
 
 ## Linux setup
 

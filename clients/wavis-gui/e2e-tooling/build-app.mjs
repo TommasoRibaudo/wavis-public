@@ -27,6 +27,9 @@ import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = path.resolve(__dirname, '..');
+// src-tauri is a workspace member, so cargo places output at the workspace
+// root's target/, not under src-tauri/target/.
+const WORKSPACE_ROOT = path.resolve(GUI_ROOT, '..', '..');
 const TEMPLATE = path.join(GUI_ROOT, 'src-tauri', 'e2e-webdriver-capability.template.json');
 const CAPABILITY_FILE = path.join(GUI_ROOT, 'src-tauri', 'capabilities', 'e2e-webdriver.json');
 
@@ -62,6 +65,27 @@ try {
   exitCode = result.status ?? 1;
 } finally {
   if (existsSync(CAPABILITY_FILE)) rmSync(CAPABILITY_FILE);
+}
+
+if (exitCode === 0 && process.platform === 'darwin') {
+  // tauri build --debug --no-bundle on macOS produces an ad-hoc linker-signed
+  // flat binary whose TCC identity is an auto-generated hash ("wavis_gui-<hex>"),
+  // not the configured bundle identifier ("com.wavis.desktop"). macOS TCC tracks
+  // camera/mic/etc. grants by bundle identifier, so every getUserMedia call from
+  // the unidentified binary would trigger a new TCC dialog — blocking automated
+  // test runs. Re-signing with the real identifier makes TCC reuse whatever
+  // camera/mic grants are already stored for com.wavis.desktop (granted by the
+  // production app or by the first-run dialog — see README.md's macOS setup).
+  // Ad-hoc signing (--sign -) is sufficient for local development; no Developer
+  // ID certificate is required.
+  const binary = path.join(WORKSPACE_ROOT, 'target', 'debug', 'wavis-gui');
+  const entitlements = path.join(GUI_ROOT, 'src-tauri', 'Entitlements.plist');
+  const resign = spawnSync(
+    'codesign',
+    ['--force', '--sign', '-', '--identifier', 'com.wavis.desktop', '--entitlements', entitlements, binary],
+    { stdio: 'inherit' },
+  );
+  exitCode = resign.status ?? 1;
 }
 
 process.exit(exitCode);
