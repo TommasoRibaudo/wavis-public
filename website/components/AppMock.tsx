@@ -666,7 +666,7 @@ function MainAppWindow({
           ) : (
             <div className="overflow-hidden p-3">
               {self.cameraOn ? (
-                <div className="grid aspect-[16/10] w-20 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel sm:w-24 lg:w-28">
+                <div className="grid aspect-[16/10] w-full grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel">
                   <div className="wavis-stream-preview min-h-0" />
                   <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px]">
                     <span className="truncate text-blue">you</span>
