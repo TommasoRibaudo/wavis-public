@@ -1,5 +1,6 @@
 "use client";
 
+import { Camera, Mic, Music, ScreenShare } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -241,12 +242,24 @@ function MainAppWindow({
               <span className="border border-border px-1.5 py-0.5">””</span>
             </div>
             <div className="mb-1 flex items-center justify-between text-purple">
-              <span>[+] alex ○</span>
-              <span className="text-danger">◉</span>
+              <span className="inline-flex items-center gap-1">
+                [+] alex
+                <Mic size={9} strokeWidth={2} className="text-muted" aria-hidden="true" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Camera size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
+                <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+              </span>
             </div>
             <div className="mb-1 flex items-center justify-between text-blue">
-              <span><span className="text-accent">&gt;</span> sam ○</span>
-              <span className="text-danger">◉</span>
+              <span className="inline-flex items-center gap-1">
+                <span className="text-accent">&gt;</span> sam
+                <Mic size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Music size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+                <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+              </span>
             </div>
             <div>
               <span className="block border border-blue/60 bg-blue/10 px-2 py-1 text-center text-[1.08em] font-bold text-blue shadow-black/30">
