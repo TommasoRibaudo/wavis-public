@@ -20,6 +20,11 @@ bun.lockb
 # Rust compiled folders
 target/
 
+# e2e-only capability file, copied in from src-tauri/e2e-webdriver-capability.template.json
+# by e2e-tooling's build:app script — must never sit in capabilities/ for a default build
+# (Tauri's build script validates every file there, even ones outside the active allowlist).
+src-tauri/capabilities/e2e-webdriver.json
+
 # Logs
 logs
 *.log

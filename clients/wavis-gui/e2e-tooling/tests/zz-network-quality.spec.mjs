@@ -77,138 +77,139 @@ async function readStats(page) {
   });
 }
 
-test('media quality survives and reports a simulated bad network, then recovers', async ({
-  app,
-}) => {
+test(
+  'media quality survives and reports a simulated bad network, then recovers',
+  async ({ app, skip }) => {
+    await waitForBackendHealth();
+
+    skip(
+      !(await hasNetemSupport()),
+      'wavis-livekit container has no tc/netem support (offline apk add at start?)',
+    );
+
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-netq-${suffix}`;
+    const { owner, channel, invite } = await seedChannelWithInvite(channelName);
+
+    const main = await app.page();
+    await leaveRoomIfActive(main);
+    const pathname = new URL(await main.url()).pathname;
+
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
+    await enterChannelRoom(main, channelName);
+    await joinDefaultSubRoomViaUi(main);
+
+    const peer = await spawnPeer({ accessToken: owner.access_token });
+    let tone;
+    try {
+      await joinVoiceAsPeer(peer, {
+        channelId: channel.channel_id,
+        displayName: 'NetQualityPeer',
+      });
+      await joinDefaultSubRoomAsPeer(peer);
+
+      const { token, sfuUrl } = await waitForMediaToken(peer);
+      tone = await connectTonePeer({ sfuUrl, token });
+      await tone.startVideoPattern();
+      // Signaling half of the share — marks the peer as sharing so the GUI's
+      // "waiting for stream..." state resolves once the real track arrives.
+      peer.send({ type: 'start_share' });
+
+      /* ── Phase 1: baseline (good network) ─────────────────────────── */
+      let baseline;
+      await expect
+        .poll(
+          async () => {
+            const stats = await readStats(main);
+            if (!stats) return false;
+            baseline = stats;
+            return (
+              stats.peerRmsLevel !== null &&
+              stats.peerRmsLevel > DECODED_AUDIO_RMS_MIN &&
+              stats.peerRmsLevel < DECODED_AUDIO_RMS_MAX &&
+              stats.videoReceiveStats !== null &&
+              stats.videoReceiveStats.fps > 0 &&
+              stats.networkStats.concealmentEventsPerInterval <= GOOD_CONCEALMENT_MAX &&
+              stats.networkStats.packetLossPercent < GOOD_LOSS_MAX_PERCENT
+            );
+          },
+          {
+            timeout: 60_000,
+            intervals: [STATS_POLL_INTERVAL_MS],
+            message:
+              'media never reached a smooth baseline (decoded audio + decoded video + good network stats)',
+          },
+        )
+        .toBe(true);
+
+      /* ── Phase 2: degraded network ─────────────────────────────────── */
+      await setNetworkConditions({ delayMs: 150, jitterMs: 50, lossPct: 8 });
+
+      await expect
+        .poll(
+          async () => {
+            const stats = await readStats(main);
+            if (!stats) return false;
+            const audioOk =
+              stats.peerRmsLevel !== null &&
+              stats.peerRmsLevel > DECODED_AUDIO_RMS_MIN &&
+              stats.peerRmsLevel < DECODED_AUDIO_RMS_MAX;
+            const videoOk = stats.videoReceiveStats !== null && stats.videoReceiveStats.fps > 0;
+            // Comparative (>, not ==) against the recorded baseline to avoid
+            // flake from any single noisy interval — the impairment just has
+            // to be visibly worse than the known-good baseline, not hit an
+            // exact number.
+            const impaired =
+              stats.networkStats.packetLossPercent > baseline.networkStats.packetLossPercent ||
+              stats.networkStats.concealmentEventsPerInterval >
+                baseline.networkStats.concealmentEventsPerInterval;
+            return audioOk && videoOk && impaired;
+          },
+          {
+            timeout: 60_000,
+            intervals: [STATS_POLL_INTERVAL_MS],
+            message:
+              'media did not stay resilient under a degraded network, or the stats pipeline never reflected the impairment',
+          },
+        )
+        .toBe(true);
+
+      /* ── Phase 3: recovery ────────────────────────────────────────── */
+      await clearNetworkConditions();
+
+      await expect
+        .poll(
+          async () => {
+            const stats = await readStats(main);
+            if (!stats) return false;
+            return (
+              stats.networkStats.concealmentEventsPerInterval <= GOOD_CONCEALMENT_MAX &&
+              stats.networkStats.packetLossPercent < GOOD_LOSS_MAX_PERCENT
+            );
+          },
+          {
+            timeout: 60_000,
+            intervals: [STATS_POLL_INTERVAL_MS],
+            message: 'network stats never returned to a good band after clearing netem',
+          },
+        )
+        .toBe(true);
+    } finally {
+      // Unconditional and tolerant-if-absent (see clearNetworkConditions'
+      // comment) — a crashed prior assertion above must never leave the
+      // shared docker-compose LiveKit container shaped for the next spec.
+      await clearNetworkConditions();
+      if (tone) await tone.stopVideoPattern().catch(() => {});
+      if (tone) await tone.close();
+      await peer.close();
+      await leaveRoomIfActive(main);
+    }
+  },
   // Stats tick every 10s (voice-room.ts's statsInterval) — each phase needs
   // 2-3 fresh samples, plus peer spawn/join/publish overhead.
-  test.setTimeout(180_000);
-  await waitForBackendHealth();
-
-  if (!(await hasNetemSupport())) {
-    test.skip(true, 'wavis-livekit container has no tc/netem support (offline apk add at start?)');
-    return;
-  }
-
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-netq-${suffix}`;
-  const { owner, channel, invite } = await seedChannelWithInvite(channelName);
-
-  const main = app.page();
-  await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
-
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  const peer = await spawnPeer({ accessToken: owner.access_token });
-  let tone;
-  try {
-    await joinVoiceAsPeer(peer, {
-      channelId: channel.channel_id,
-      displayName: 'NetQualityPeer',
-    });
-    await joinDefaultSubRoomAsPeer(peer);
-
-    const { token, sfuUrl } = await waitForMediaToken(peer);
-    tone = await connectTonePeer({ sfuUrl, token });
-    await tone.startVideoPattern();
-    // Signaling half of the share — marks the peer as sharing so the GUI's
-    // "waiting for stream..." state resolves once the real track arrives.
-    peer.send({ type: 'start_share' });
-
-    /* ── Phase 1: baseline (good network) ─────────────────────────── */
-    let baseline;
-    await expect
-      .poll(
-        async () => {
-          const stats = await readStats(main);
-          if (!stats) return false;
-          baseline = stats;
-          return (
-            stats.peerRmsLevel !== null &&
-            stats.peerRmsLevel > DECODED_AUDIO_RMS_MIN &&
-            stats.peerRmsLevel < DECODED_AUDIO_RMS_MAX &&
-            stats.videoReceiveStats !== null &&
-            stats.videoReceiveStats.fps > 0 &&
-            stats.networkStats.concealmentEventsPerInterval <= GOOD_CONCEALMENT_MAX &&
-            stats.networkStats.packetLossPercent < GOOD_LOSS_MAX_PERCENT
-          );
-        },
-        {
-          timeout: 60_000,
-          intervals: [STATS_POLL_INTERVAL_MS],
-          message:
-            'media never reached a smooth baseline (decoded audio + decoded video + good network stats)',
-        },
-      )
-      .toBe(true);
-
-    /* ── Phase 2: degraded network ─────────────────────────────────── */
-    await setNetworkConditions({ delayMs: 150, jitterMs: 50, lossPct: 8 });
-
-    await expect
-      .poll(
-        async () => {
-          const stats = await readStats(main);
-          if (!stats) return false;
-          const audioOk =
-            stats.peerRmsLevel !== null &&
-            stats.peerRmsLevel > DECODED_AUDIO_RMS_MIN &&
-            stats.peerRmsLevel < DECODED_AUDIO_RMS_MAX;
-          const videoOk = stats.videoReceiveStats !== null && stats.videoReceiveStats.fps > 0;
-          // Comparative (>, not ==) against the recorded baseline to avoid
-          // flake from any single noisy interval — the impairment just has
-          // to be visibly worse than the known-good baseline, not hit an
-          // exact number.
-          const impaired =
-            stats.networkStats.packetLossPercent > baseline.networkStats.packetLossPercent ||
-            stats.networkStats.concealmentEventsPerInterval >
-              baseline.networkStats.concealmentEventsPerInterval;
-          return audioOk && videoOk && impaired;
-        },
-        {
-          timeout: 60_000,
-          intervals: [STATS_POLL_INTERVAL_MS],
-          message:
-            'media did not stay resilient under a degraded network, or the stats pipeline never reflected the impairment',
-        },
-      )
-      .toBe(true);
-
-    /* ── Phase 3: recovery ────────────────────────────────────────── */
-    await clearNetworkConditions();
-
-    await expect
-      .poll(
-        async () => {
-          const stats = await readStats(main);
-          if (!stats) return false;
-          return (
-            stats.networkStats.concealmentEventsPerInterval <= GOOD_CONCEALMENT_MAX &&
-            stats.networkStats.packetLossPercent < GOOD_LOSS_MAX_PERCENT
-          );
-        },
-        {
-          timeout: 60_000,
-          intervals: [STATS_POLL_INTERVAL_MS],
-          message: 'network stats never returned to a good band after clearing netem',
-        },
-      )
-      .toBe(true);
-  } finally {
-    // Unconditional and tolerant-if-absent (see clearNetworkConditions'
-    // comment) — a crashed prior assertion above must never leave the
-    // shared docker-compose LiveKit container shaped for the next spec.
-    await clearNetworkConditions();
-    if (tone) await tone.stopVideoPattern().catch(() => {});
-    if (tone) await tone.close();
-    await peer.close();
-    await leaveRoomIfActive(main);
-  }
-});
+  { timeoutMs: 180_000 },
+);

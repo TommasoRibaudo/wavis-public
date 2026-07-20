@@ -19,9 +19,9 @@ test('joining a channel by invite code shows it in the channel list', async ({ a
   const channelName = `e2e-room-join-${suffix}`;
   const { invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
+  const pathname = new URL(await main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
     await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });

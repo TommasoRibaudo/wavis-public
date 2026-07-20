@@ -5,7 +5,7 @@
 import { test, expect } from './fixtures.mjs';
 
 test('main window launches and renders content', async ({ app }) => {
-  const main = app.page();
+  const main = await app.page();
   expect(main).toBeTruthy();
 
   const bodyText = await main.locator('body').innerText();
@@ -16,6 +16,6 @@ test('diagnostics window opens automatically alongside the main window', async (
   // The debug build bakes in VITE_DIAGNOSTICS=true (see README), so this
   // window is always present without any prior click — a free second
   // window for exercising the multi-window path.
-  const diagnostics = app.getPageByPath('/diagnostics');
-  expect(diagnostics.url()).toContain('/diagnostics');
+  const diagnostics = await app.getPageByPath('/diagnostics');
+  expect(await diagnostics.url()).toContain('/diagnostics');
 });

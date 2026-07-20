@@ -74,99 +74,100 @@ async function readPeerVoiceStats(page) {
   });
 }
 
-test('audio published by a peer is decoded and reflected in the GUI as real rmsLevel', async ({
-  app,
-}) => {
-  // Default 30s (playwright.config.mjs) isn't enough headroom: the primary
-  // assertion alone can poll up to 20s, and the negative control's
-  // ActiveSpeakersChanged-hangover tolerance (see below) up to 30s more.
-  test.setTimeout(90_000);
-  await waitForBackendHealth();
+test(
+  'audio published by a peer is decoded and reflected in the GUI as real rmsLevel',
+  async ({ app }) => {
+    await waitForBackendHealth();
 
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-audio-${suffix}`;
-  const { owner, channel, invite } = await seedChannelWithInvite(channelName);
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-audio-${suffix}`;
+    const { owner, channel, invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
-  await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
-
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  const peer = await spawnPeer({ accessToken: owner.access_token });
-  let tone;
-  try {
-    await joinVoiceAsPeer(peer, {
-      channelId: channel.channel_id,
-      displayName: 'TonePeer',
-    });
-    // Same sub-room as the GUI — audio routing may be sub-room scoped, and
-    // this removes any ambiguity about why a track wouldn't arrive.
-    await joinDefaultSubRoomAsPeer(peer);
-
-    const { token, sfuUrl } = await waitForMediaToken(peer);
-    tone = await connectTonePeer({ sfuUrl, token });
-
-    await expect
-      .poll(
-        async () => {
-          const entry = await readPeerVoiceStats(main);
-          if (!entry) return false;
-          return (
-            entry.rmsLevel > DECODED_AUDIO_RMS_MIN &&
-            entry.rmsLevel < DECODED_AUDIO_RMS_MAX &&
-            entry.isSpeaking === true
-          );
-        },
-        { timeout: 20_000, message: 'peer rmsLevel never entered the decoded-audio band' },
-      )
-      .toBe(true);
-
-    // Corroboration only (see header comment) — active-speaker signaling
-    // could set this independent of real audio, so it's not the primary check.
-    const diagnostics = app.getPageByPath('/diagnostics');
-    // Case-insensitive and tolerant of spacing/colon: the diagnostics window
-    // applies CSS text-transform to this label (confirmed via a real DOM
-    // snapshot — the accessible text renders as "Remote speaking 1 / 1",
-    // lowercase "speaking", no colon, spaced slash), which is a rendering
-    // detail unrelated to what this check actually verifies.
-    await expect(visibleText(diagnostics, /remote speaking:?\s*1\s*\/\s*1/i)).toBeVisible({
-      timeout: 10_000,
-    });
-
-    // Negative control: once the tone stops (switches to real silent
-    // frames — see livekit-tone-peer.mjs's stopTone() comment for why
-    // stopping capture outright isn't equivalent), decoded RMS must decay
-    // back toward silence — proves the earlier reading tracked live audio
-    // rather than a stuck/cached value.
-    //
-    // 30s, not 15s: LiveKit's RoomEvent.ActiveSpeakersChanged hardcodes
-    // rmsLevel to 1.0 for anyone the server still considers an active
-    // speaker (livekit-media.ts), and observed empirically to have a
-    // multi-second server-side hangover after real audio stops before that
-    // clears — a real product behavior (smooths over brief pauses), not a
-    // bug, but it competes with the correct decaying analyser-derived value
-    // for the same participant. This is a timeout increase, not a threshold
-    // change — RMS_STOP_THRESHOLD stays the same.
-    tone.stopTone();
-    await expect
-      .poll(
-        async () => {
-          const entry = await readPeerVoiceStats(main);
-          return entry?.rmsLevel ?? null;
-        },
-        { timeout: 30_000, message: 'peer rmsLevel never decayed after stopTone()' },
-      )
-      .toBeLessThan(RMS_STOP_THRESHOLD);
-  } finally {
-    if (tone) await tone.close();
-    await peer.close();
+    const main = await app.page();
     await leaveRoomIfActive(main);
-  }
-});
+    const pathname = new URL(await main.url()).pathname;
+
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
+    await enterChannelRoom(main, channelName);
+    await joinDefaultSubRoomViaUi(main);
+
+    const peer = await spawnPeer({ accessToken: owner.access_token });
+    let tone;
+    try {
+      await joinVoiceAsPeer(peer, {
+        channelId: channel.channel_id,
+        displayName: 'TonePeer',
+      });
+      // Same sub-room as the GUI — audio routing may be sub-room scoped, and
+      // this removes any ambiguity about why a track wouldn't arrive.
+      await joinDefaultSubRoomAsPeer(peer);
+
+      const { token, sfuUrl } = await waitForMediaToken(peer);
+      tone = await connectTonePeer({ sfuUrl, token });
+
+      await expect
+        .poll(
+          async () => {
+            const entry = await readPeerVoiceStats(main);
+            if (!entry) return false;
+            return (
+              entry.rmsLevel > DECODED_AUDIO_RMS_MIN &&
+              entry.rmsLevel < DECODED_AUDIO_RMS_MAX &&
+              entry.isSpeaking === true
+            );
+          },
+          { timeout: 20_000, message: 'peer rmsLevel never entered the decoded-audio band' },
+        )
+        .toBe(true);
+
+      // Corroboration only (see header comment) — active-speaker signaling
+      // could set this independent of real audio, so it's not the primary check.
+      const diagnostics = await app.getPageByPath('/diagnostics');
+      // Case-insensitive and tolerant of spacing/colon: the diagnostics window
+      // applies CSS text-transform to this label (confirmed via a real DOM
+      // snapshot — the accessible text renders as "Remote speaking 1 / 1",
+      // lowercase "speaking", no colon, spaced slash), which is a rendering
+      // detail unrelated to what this check actually verifies.
+      await expect(visibleText(diagnostics, /remote speaking:?\s*1\s*\/\s*1/i)).toBeVisible({
+        timeout: 10_000,
+      });
+
+      // Negative control: once the tone stops (switches to real silent
+      // frames — see livekit-tone-peer.mjs's stopTone() comment for why
+      // stopping capture outright isn't equivalent), decoded RMS must decay
+      // back toward silence — proves the earlier reading tracked live audio
+      // rather than a stuck/cached value.
+      //
+      // 30s, not 15s: LiveKit's RoomEvent.ActiveSpeakersChanged hardcodes
+      // rmsLevel to 1.0 for anyone the server still considers an active
+      // speaker (livekit-media.ts), and observed empirically to have a
+      // multi-second server-side hangover after real audio stops before that
+      // clears — a real product behavior (smooths over brief pauses), not a
+      // bug, but it competes with the correct decaying analyser-derived value
+      // for the same participant. This is a timeout increase, not a threshold
+      // change — RMS_STOP_THRESHOLD stays the same.
+      tone.stopTone();
+      await expect
+        .poll(
+          async () => {
+            const entry = await readPeerVoiceStats(main);
+            return entry?.rmsLevel ?? null;
+          },
+          { timeout: 30_000, message: 'peer rmsLevel never decayed after stopTone()' },
+        )
+        .toBeLessThan(RMS_STOP_THRESHOLD);
+    } finally {
+      if (tone) await tone.close();
+      await peer.close();
+      await leaveRoomIfActive(main);
+    }
+  },
+  // Default 30s isn't enough headroom: the primary assertion alone can poll
+  // up to 20s, and the negative control's ActiveSpeakersChanged-hangover
+  // tolerance (see below) up to 30s more.
+  { timeoutMs: 90_000 },
+);

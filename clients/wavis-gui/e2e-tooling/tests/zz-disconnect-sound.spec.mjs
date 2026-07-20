@@ -30,67 +30,83 @@ import {
   visibleText,
 } from './live-backend-helpers.mjs';
 
-test('a real backend outage plays the disconnect sound once the reconnect budget is exhausted', async ({
-  app,
-}) => {
-  test.setTimeout(360_000);
+test(
+  'a real backend outage plays the disconnect sound once the reconnect budget is exhausted',
+  async ({ app }) => {
+    await waitForBackendHealth();
 
-  await waitForBackendHealth();
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-disconnect-sound-${suffix}`;
+    const { invite } = await seedChannelWithInvite(channelName);
 
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-disconnect-sound-${suffix}`;
-  const { invite } = await seedChannelWithInvite(channelName);
-
-  const main = app.page();
-  await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  const soundRequests = [];
-  main.on('request', (req) => {
-    const url = req.url();
-    if (url.includes('/sounds/')) soundRequests.push(url);
-  });
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  await expect(visibleText(main, 'LIVE')).toBeVisible();
-
-  try {
-    await stopBackendContainer();
-
-    // The disconnect sound is a real Web Audio fetch()+decodeAudioData()
-    // call (see notification-sounds.ts) — there is no product-side test
-    // hook for "a sound played" (unlike __wavisVoiceStats), so this
-    // observes the same /sounds/leave.mp3 fetch the manual live-proof run
-    // did, via Playwright's own request log.
-    await expect
-      .poll(() => soundRequests.some((url) => url.includes('leave')), {
-        timeout: 330_000,
-        intervals: [5_000],
-        message:
-          'expected /sounds/leave.mp3 to be fetched once the WS reconnect-give-up path fires',
-      })
-      .toBe(true);
-
-    await expect(visibleText(main, 'Connection lost')).toBeVisible();
-
-    // Exactly one disconnect sound — not one per failed reconnect attempt.
-    expect(soundRequests.filter((url) => url.includes('leave'))).toHaveLength(1);
-  } finally {
-    await startBackendContainer();
-    // The "Connection lost" screen replaces the normal room UI (no CLI
-    // input to send /leave through), but it renders its own /leave button —
-    // use that instead of leaveRoomIfActive's CLI-command path so the
-    // session doesn't restore mid-room for the next spec run.
-    const leaveButton = visibleText(main, '/leave');
-    if (await leaveButton.isVisible().catch(() => false)) {
-      await leaveButton.click();
-    }
+    const main = await app.page();
     await leaveRoomIfActive(main);
-  }
-});
+    const pathname = new URL(await main.url()).pathname;
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
+    await enterChannelRoom(main, channelName);
+    await joinDefaultSubRoomViaUi(main);
+
+    await expect(visibleText(main, 'LIVE')).toBeVisible();
+
+    try {
+      const outageStartedAt = Date.now();
+      await stopBackendContainer();
+
+      // The disconnect sound is a real Web Audio fetch()+decodeAudioData()
+      // call (see notification-sounds.ts). Watching for a fresh
+      // fetch('/sounds/leave.mp3') doesn't work reliably: notification-sounds
+      // .ts caches the decoded AudioBuffer per sound name for the process's
+      // lifetime, so a *second* "leave" play (e.g. this spec's own
+      // leaveRoomIfActive() cleanup step above already played one, if the
+      // account happened to start mid-room — a normal, expected scenario,
+      // it's why that cleanup step exists) never fetches again — the fetch
+      // watch would then wait out the full budget and time out even though
+      // the sound genuinely played. window.__wavisNotificationSoundLog
+      // (VITE_DIAGNOSTICS-only, notification-sounds.ts) fires on every play
+      // regardless of cache hit/miss, so it doesn't have this blind spot.
+      await expect
+        .poll(
+          () =>
+            main.evaluate(
+              (since) =>
+                (window.__wavisNotificationSoundLog ?? []).some(
+                  (e) => e.name === 'leave' && e.playedAt >= since,
+                ),
+              outageStartedAt,
+            ),
+          {
+            timeout: 330_000,
+            intervals: [5_000],
+            message:
+              'expected the "leave" disconnect sound to play once the WS reconnect-give-up path fires',
+          },
+        )
+        .toBe(true);
+
+      await expect(visibleText(main, 'Connection lost')).toBeVisible();
+
+      // Exactly one disconnect sound since the outage started — not one per
+      // failed reconnect attempt.
+      const soundLog = await main.evaluate(() => window.__wavisNotificationSoundLog ?? []);
+      expect(
+        soundLog.filter((e) => e.name === 'leave' && e.playedAt >= outageStartedAt),
+      ).toHaveLength(1);
+    } finally {
+      await startBackendContainer();
+      // The "Connection lost" screen replaces the normal room UI (no CLI
+      // input to send /leave through), but it renders its own /leave button —
+      // use that instead of leaveRoomIfActive's CLI-command path so the
+      // session doesn't restore mid-room for the next spec run.
+      const leaveButton = visibleText(main, '/leave');
+      if (await leaveButton.isVisible().catch(() => false)) {
+        await leaveButton.click();
+      }
+      await leaveRoomIfActive(main);
+    }
+  },
+  { timeoutMs: 360_000 },
+);

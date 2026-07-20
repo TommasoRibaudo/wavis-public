@@ -9,11 +9,19 @@ default-run = "wavis-gui"
 [lints]
 workspace = true
 
+# Embedded WebDriver server for the e2e-tooling harness (issue #297) — never
+# enabled in a production or plain `cargo tauri build`/`dev` invocation, only
+# via `--features e2e-webdriver` for local e2e test binaries. Mirrors
+# wavis-backend/Cargo.toml's `test-no-rate-limits = []` convention.
+[features]
+e2e-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-wdio-webdriver = { version = "1.2", optional = true }
 tauri-plugin-store = "2"
 tauri-plugin-http = "2"
 tauri-plugin-notification = "2"

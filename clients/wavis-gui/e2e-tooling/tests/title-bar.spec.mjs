@@ -8,7 +8,7 @@
 import { test, expect } from './fixtures.mjs';
 
 test('title bar renders with window controls', async ({ app }) => {
-  const main = app.page();
+  const main = await app.page();
 
   await expect(main.getByText('wavis', { exact: true })).toBeVisible();
   await expect(main.getByLabel('Minimize', { exact: true })).toBeVisible();

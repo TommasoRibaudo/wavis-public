@@ -11,15 +11,15 @@ import { test, expect } from './fixtures.mjs';
 
 const UNAUTHENTICATED_PATHS = ['/login', '/setup', '/recover', '/pair'];
 
-test('/settings navigates to the settings page and back', async ({ app }) => {
-  const main = app.page();
-  const { pathname } = new URL(main.url());
+test('/settings navigates to the settings page and back', async ({ app, skip }) => {
+  const main = await app.page();
+  const { pathname } = new URL(await main.url());
 
-  test.skip(
+  skip(
     UNAUTHENTICATED_PATHS.some((p) => pathname.startsWith(p)),
     'No authenticated session persisted on this machine — the AuthGate status bar (and its /settings link) never renders on /login, /setup, /recover, /pair.',
   );
-  test.skip(
+  skip(
     pathname.startsWith('/room'),
     'Main window is in an active room — AuthGate hides its status bar there; the in-room "/settings" toggle (ActiveRoom.tsx) is a different, live-backend-only affordance.',
   );

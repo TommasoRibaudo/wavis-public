@@ -77,7 +77,7 @@
       // Rebuilds wavis-backend without test-no-rate-limits (CARGO_FEATURES
       // unset → defaults to empty in docker-compose.yml) so the shared local
       // dev backend isn't left running rate-limit-free after an e2e run.
-      // Runs as "Test: GUI E2E (Playwright)"'s postDebugTask.
+      // Runs as "Test: GUI E2E (WebdriverIO)"'s postDebugTask.
       "label": "Restore Normal Backend",
       "type": "shell",
       "command": "docker compose up -d --build",

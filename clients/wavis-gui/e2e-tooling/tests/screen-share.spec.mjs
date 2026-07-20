@@ -52,9 +52,9 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
   const channelName = `e2e-share-${suffix}`;
   const { owner, channel, invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
+  const pathname = new URL(await main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
     await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });

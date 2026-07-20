@@ -71,91 +71,95 @@ const ATTACH_LOG = /\[mac-share-audio\] attached screen share audio/;
 // suppressed pre-intent and is NOT a reliable "arrived" signal.
 const TRACK_ARRIVED_LOG = /\[diag\] TrackPublished[^\n]*source: screen_share_audio/;
 
-test("a peer's screen-share audio stays silent until the user unmutes it", async ({ app }) => {
-  // Peer spawn (cargo run -p ws-sfu-test) + LiveKit connect + the settle
-  // window for the negative assertion push this past the 30s default.
-  test.setTimeout(90_000);
-  await waitForBackendHealth();
+test(
+  "a peer's screen-share audio stays silent until the user unmutes it",
+  async ({ app }) => {
+    await waitForBackendHealth();
 
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-ssaudio-${suffix}`;
-  const { owner, channel, invite } = await seedChannelWithInvite(channelName);
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-ssaudio-${suffix}`;
+    const { owner, channel, invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
-  // Capture console before anything publishes — the whole point is proving a
-  // log never fired, so the listener must predate the peer's track.
-  const logs = [];
-  main.on('console', (msg) => logs.push(msg.text()));
+    const main = await app.page();
+    // Capture console before anything publishes — the whole point is proving a
+    // log never fired, so the capture must predate the peer's track.
+    await main.startCapturingConsole();
 
-  await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  const peer = await spawnPeer({ accessToken: owner.access_token });
-  let tone;
-  try {
-    await joinVoiceAsPeer(peer, {
-      channelId: channel.channel_id,
-      displayName: 'AudioSharePeer',
-    });
-    // ParticipantsPanel only renders participants inside the joined sub-room,
-    // so the peer must share the GUI's sub-room for its row (and the unmute
-    // button) to appear at all.
-    await joinDefaultSubRoomAsPeer(peer);
-
-    const { token, sfuUrl } = await waitForMediaToken(peer);
-    // Real ScreenShareAudio track — the GUI routes this through its deferred
-    // screen-share-audio path (isDeferredScreenShareAudioTrack returns true
-    // for TrackSource.ScreenShareAudio), not the plain-voice attach path.
-    tone = await connectTonePeer({ sfuUrl, token, source: TrackSource.SOURCE_SCREENSHARE_AUDIO });
-    // The signaling half of a real audio-only share: makes the peer
-    // isSharing + a confirmed audioOnlySharer, so ParticipantsPanel renders
-    // the row's "unmute audio share" button (ParticipantRow.tsx:185-204).
-    peer.send({ type: 'start_share', shareType: 'audio_only' });
-
-    // The button only appears once share_started(audio_only) is processed —
-    // its visibility is the GUI's own confirmation it registered the share.
-    const unmuteBtn = visibleTitle(main, 'unmute audio share').first();
-    await unmuteBtn.waitFor({ state: 'visible', timeout: 15_000 });
-
-    // The track genuinely reached the client (so the negative below isn't a
-    // false pass from a track that never arrived).
-    await expect
-      .poll(() => logs.some((l) => TRACK_ARRIVED_LOG.test(l)), {
-        timeout: 15_000,
-        message: 'GUI never logged TrackPublished for the peer ScreenShareAudio track',
-      })
-      .toBe(true);
-
-    // CORE #174 ASSERTION: the track arrived and the row is on screen, yet
-    // nothing has attached/played it. Hold a settle window so a late attach
-    // would have fired, then assert it did not.
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
-    expect(
-      logs.some((l) => ATTACH_LOG.test(l)),
-      'screen-share audio attached before any user intent (issue #174 regression)',
-    ).toBe(false);
-
-    // POSITIVE: an explicit unmute is real viewer intent — attach must fire
-    // now, and only now (everything before this point already established no
-    // attach line existed).
-    const marker = logs.length;
-    await unmuteBtn.click();
-    await expect
-      .poll(() => logs.slice(marker).some((l) => ATTACH_LOG.test(l)), {
-        timeout: 10_000,
-        message: 'screen-share audio never attached after the user unmuted it',
-      })
-      .toBe(true);
-  } finally {
-    if (tone) await tone.close();
-    await peer.close();
     await leaveRoomIfActive(main);
-  }
-});
+    const pathname = new URL(await main.url()).pathname;
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
+    await enterChannelRoom(main, channelName);
+    await joinDefaultSubRoomViaUi(main);
+
+    const peer = await spawnPeer({ accessToken: owner.access_token });
+    let tone;
+    try {
+      await joinVoiceAsPeer(peer, {
+        channelId: channel.channel_id,
+        displayName: 'AudioSharePeer',
+      });
+      // ParticipantsPanel only renders participants inside the joined sub-room,
+      // so the peer must share the GUI's sub-room for its row (and the unmute
+      // button) to appear at all.
+      await joinDefaultSubRoomAsPeer(peer);
+
+      const { token, sfuUrl } = await waitForMediaToken(peer);
+      // Real ScreenShareAudio track — the GUI routes this through its deferred
+      // screen-share-audio path (isDeferredScreenShareAudioTrack returns true
+      // for TrackSource.ScreenShareAudio), not the plain-voice attach path.
+      tone = await connectTonePeer({ sfuUrl, token, source: TrackSource.SOURCE_SCREENSHARE_AUDIO });
+      // The signaling half of a real audio-only share: makes the peer
+      // isSharing + a confirmed audioOnlySharer, so ParticipantsPanel renders
+      // the row's "unmute audio share" button (ParticipantRow.tsx:185-204).
+      peer.send({ type: 'start_share', shareType: 'audio_only' });
+
+      // The button only appears once share_started(audio_only) is processed —
+      // its visibility is the GUI's own confirmation it registered the share.
+      const unmuteBtn = visibleTitle(main, 'unmute audio share').first();
+      await unmuteBtn.waitFor({ state: 'visible', timeout: 15_000 });
+
+      // The track genuinely reached the client (so the negative below isn't a
+      // false pass from a track that never arrived).
+      await expect
+        .poll(async () => (await main.consoleLogs()).some((l) => TRACK_ARRIVED_LOG.test(l)), {
+          timeout: 15_000,
+          message: 'GUI never logged TrackPublished for the peer ScreenShareAudio track',
+        })
+        .toBe(true);
+
+      // CORE #174 ASSERTION: the track arrived and the row is on screen, yet
+      // nothing has attached/played it. Hold a settle window so a late attach
+      // would have fired, then assert it did not.
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      const preUnmuteLogs = await main.consoleLogs();
+      expect(
+        preUnmuteLogs.some((l) => ATTACH_LOG.test(l)),
+        'screen-share audio attached before any user intent (issue #174 regression)',
+      ).toBe(false);
+
+      // POSITIVE: an explicit unmute is real viewer intent — attach must fire
+      // now, and only now (everything before this point already established no
+      // attach line existed).
+      const marker = preUnmuteLogs.length;
+      await unmuteBtn.click();
+      await expect
+        .poll(
+          async () => (await main.consoleLogs()).slice(marker).some((l) => ATTACH_LOG.test(l)),
+          {
+            timeout: 10_000,
+            message: 'screen-share audio never attached after the user unmuted it',
+          },
+        )
+        .toBe(true);
+    } finally {
+      if (tone) await tone.close();
+      await peer.close();
+      await leaveRoomIfActive(main);
+    }
+  },
+  { timeoutMs: 90_000 },
+);

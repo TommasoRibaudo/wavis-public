@@ -50,9 +50,9 @@ test('rejoining participant sees both video-share and audio-share badges for a c
   const channelName = `e2e-share-rejoin-${suffix}`;
   const { owner, channel, invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
+  const pathname = new URL(await main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
     await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
