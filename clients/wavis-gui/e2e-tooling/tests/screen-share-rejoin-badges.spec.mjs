@@ -41,87 +41,92 @@ async function goToChannelsList(page) {
   await page.getByRole('heading', { name: 'channels' }).waitFor({ state: 'visible' });
 }
 
-test('rejoining participant sees both video-share and audio-share badges for a concurrent sharer', async ({
-  app,
-}) => {
-  await waitForBackendHealth();
+test(
+  'rejoining participant sees both video-share and audio-share badges for a concurrent sharer',
+  async ({ app }) => {
+    await waitForBackendHealth();
 
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-share-rejoin-${suffix}`;
-  const { owner, channel, invite } = await seedChannelWithInvite(channelName);
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-share-rejoin-${suffix}`;
+    const { owner, channel, invite } = await seedChannelWithInvite(channelName);
 
-  const main = await app.page();
-  await leaveRoomIfActive(main);
-  const pathname = new URL(await main.url()).pathname;
-
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  const peer = await spawnPeer({ accessToken: owner.access_token });
-  try {
-    await joinVoiceAsPeer(peer, {
-      channelId: channel.channel_id,
-      displayName: 'SharerBot',
-    });
-    // Participant rows only render for sub-room members.
-    await joinDefaultSubRoomAsPeer(peer);
-    // Role-based, not visibleText: the room's event log also renders a
-    // "SharerBot joined" line, which a plain text match ambiguously matches
-    // too. The participant row itself is the only `role="button"` element
-    // with this name (see ParticipantRow.tsx).
-    await expect(
-      main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
-    ).toBeVisible({ timeout: 10_000 });
-
-    /* ── Peer starts a video-type share (no companion audio) ──────────── */
-    peer.send({ type: 'start_share', shareType: 'window' });
-    await peer.waitForOutput(/"type":"share_started"/, 15_000);
-    await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
-
-    /* ── Peer ALSO starts an independent standalone audio-only share ──── */
-    peer.send({ type: 'start_share', shareType: 'audio_only' });
-    // Lookaheads, not an ordered pattern: ws-sfu-test's print_text roundtrips
-    // through serde_json::Value (no preserve_order feature), which sorts
-    // object keys alphabetically — "shareType" ends up before "type" on the
-    // wire line, same phenomenon chatMessageReceivedPattern works around above.
-    await peer.waitForOutput(/(?=.*"type":"share_started")(?=.*"shareType":"audio_only")/, 15_000);
-
-    // Both badges must render at once: the audio-only start must not hide
-    // the still-active video share, and vice versa.
-    await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
-    await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
-
-    /* ── Regression: leave and rejoin — only the ShareState snapshot ──── */
-    // now describes the sharer's state to the rejoining client. Both slots
-    // must still be reflected, not just whichever share started last.
+    const main = await app.page();
     await leaveRoomIfActive(main);
-    await goToChannelsList(main);
+    const pathname = new URL(await main.url()).pathname;
+
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
     await enterChannelRoom(main, channelName);
-    // SharerBot never leaves the sub-room (it shares continuously across
-    // main's leave/rejoin — that's the point of this regression test), so
-    // main's rejoin brings the sub-room to 2 occupants, not 1.
-    await joinDefaultSubRoomViaUi(main, { expectedCount: 2 });
-    // Role-based, not visibleText: the room's event log also renders a
-    // "SharerBot joined" line, which a plain text match ambiguously matches
-    // too. The participant row itself is the only `role="button"` element
-    // with this name (see ParticipantRow.tsx).
-    await expect(
-      main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
-    ).toBeVisible({ timeout: 10_000 });
+    await joinDefaultSubRoomViaUi(main);
 
-    await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
-    await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
-  } finally {
-    await peer.close();
-    await leaveRoomIfActive(main);
-  }
-  // Default 30s isn't enough headroom: this is the only spec that runs the
-  // full join flow (joinChannelViaUi + enterChannelRoom +
-  // joinDefaultSubRoomViaUi, up to a 10s poll plus a 15s wait each) twice —
-  // once before the leave, once after the rejoin.
-}, { timeoutMs: 90_000 });
+    const peer = await spawnPeer({ accessToken: owner.access_token });
+    try {
+      await joinVoiceAsPeer(peer, {
+        channelId: channel.channel_id,
+        displayName: 'SharerBot',
+      });
+      // Participant rows only render for sub-room members.
+      await joinDefaultSubRoomAsPeer(peer);
+      // Role-based, not visibleText: the room's event log also renders a
+      // "SharerBot joined" line, which a plain text match ambiguously matches
+      // too. The participant row itself is the only `role="button"` element
+      // with this name (see ParticipantRow.tsx).
+      await expect(
+        main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
+      ).toBeVisible({ timeout: 10_000 });
+
+      /* ── Peer starts a video-type share (no companion audio) ──────────── */
+      peer.send({ type: 'start_share', shareType: 'window' });
+      await peer.waitForOutput(/"type":"share_started"/, 15_000);
+      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
+
+      /* ── Peer ALSO starts an independent standalone audio-only share ──── */
+      peer.send({ type: 'start_share', shareType: 'audio_only' });
+      // Lookaheads, not an ordered pattern: ws-sfu-test's print_text roundtrips
+      // through serde_json::Value (no preserve_order feature), which sorts
+      // object keys alphabetically — "shareType" ends up before "type" on the
+      // wire line, same phenomenon chatMessageReceivedPattern works around above.
+      await peer.waitForOutput(
+        /(?=.*"type":"share_started")(?=.*"shareType":"audio_only")/,
+        15_000,
+      );
+
+      // Both badges must render at once: the audio-only start must not hide
+      // the still-active video share, and vice versa.
+      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
+      await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
+
+      /* ── Regression: leave and rejoin — only the ShareState snapshot ──── */
+      // now describes the sharer's state to the rejoining client. Both slots
+      // must still be reflected, not just whichever share started last.
+      await leaveRoomIfActive(main);
+      await goToChannelsList(main);
+      await enterChannelRoom(main, channelName);
+      // SharerBot never leaves the sub-room (it shares continuously across
+      // main's leave/rejoin — that's the point of this regression test), so
+      // main's rejoin brings the sub-room to 2 occupants, not 1.
+      await joinDefaultSubRoomViaUi(main, { expectedCount: 2 });
+      // Role-based, not visibleText: the room's event log also renders a
+      // "SharerBot joined" line, which a plain text match ambiguously matches
+      // too. The participant row itself is the only `role="button"` element
+      // with this name (see ParticipantRow.tsx).
+      await expect(
+        main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
+      ).toBeVisible({ timeout: 10_000 });
+
+      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
+      await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await peer.close();
+      await leaveRoomIfActive(main);
+    }
+    // Default 30s isn't enough headroom: this is the only spec that runs the
+    // full join flow (joinChannelViaUi + enterChannelRoom +
+    // joinDefaultSubRoomViaUi, up to a 10s poll plus a 15s wait each) twice —
+    // once before the leave, once after the rejoin.
+  },
+  { timeoutMs: 90_000 },
+);

@@ -23,8 +23,12 @@ const hex = createHmac('sha256', pepper).update(`alpha-invite:v1:${CODE}`).diges
 
 const sql = `INSERT INTO alpha_invites (code_hash, max_redemptions) VALUES (decode('${hex}','hex'), 100000) ON CONFLICT (code_hash) DO UPDATE SET max_redemptions=100000, redemption_count=0, disabled_at=NULL, expires_at=NULL;`;
 
-execFileSync('docker', ['exec', 'wavis-postgres', 'psql', '-U', 'wavis', '-d', 'wavis', '-c', sql], {
-  stdio: 'inherit',
-});
+execFileSync(
+  'docker',
+  ['exec', 'wavis-postgres', 'psql', '-U', 'wavis', '-d', 'wavis', '-c', sql],
+  {
+    stdio: 'inherit',
+  },
+);
 
 console.log(`Seeded alpha invite "${CODE}"`);

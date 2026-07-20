@@ -45,60 +45,64 @@ function cameraButton(page, label) {
     .or(page.locator(`button[title="${label}"]:visible`));
 }
 
-test('toggling the camera publishes and un-publishes a real local video tile', async ({ app }) => {
-  await waitForBackendHealth();
+test(
+  'toggling the camera publishes and un-publishes a real local video tile',
+  async ({ app }) => {
+    await waitForBackendHealth();
 
-  const suffix = Date.now().toString(36);
-  const channelName = `e2e-camera-${suffix}`;
-  const { invite } = await seedChannelWithInvite(channelName);
+    const suffix = Date.now().toString(36);
+    const channelName = `e2e-camera-${suffix}`;
+    const { invite } = await seedChannelWithInvite(channelName);
 
-  const main = await app.page();
-  await leaveRoomIfActive(main);
-  const pathname = new URL(await main.url()).pathname;
-
-  if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
-    await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
-  }
-
-  await joinChannelViaUi(main, invite.code);
-  await enterChannelRoom(main, channelName);
-  await joinDefaultSubRoomViaUi(main);
-
-  try {
-    // Flake note: if another app already holds the webcam, the GUI toasts
-    // "camera device is already in use" instead of publishing, and the
-    // assertion below times out visibly rather than hanging silently.
-    await cameraButton(main, '/camera-on').click();
-    await expect(visibleIcon(main, 'your camera is on')).toBeVisible({ timeout: 10_000 });
-
-    await main
-      .locator('button:visible', { hasText: /^VIDEOS?\b/ })
-      .first()
-      .click();
-    await expect(visibleText(main, 'No video active')).toHaveCount(0);
-
-    await cameraButton(main, '/camera-off').click();
-    await expect(main.getByRole('img', { name: 'your camera is on' })).toHaveCount(0);
-
-    // By design (ActiveRoom.tsx's groupedPanelVideoActivityKey effect), the
-    // grouped panel auto-switches itself away from VIDEO the instant
-    // videoTilesById empties — so "No video active" never becomes visible
-    // right here: the tab itself switches away before the placeholder would
-    // render. Assert that designed auto-switch instead of a state this tier
-    // never reaches on its own.
-    const videoTab = main.locator('button:visible', { hasText: /^VIDEOS?\b/ }).first();
-    await expect(videoTab).toHaveAttribute('aria-selected', 'false');
-
-    // Re-select VIDEO explicitly — the effect only fires on tile-activity
-    // transitions, so a manual re-click sticks — and confirm the
-    // placeholder appears once the tab is actually being viewed.
-    await videoTab.click();
-    await expect(visibleText(main, 'No video active')).toBeVisible({ timeout: 10_000 });
-  } finally {
+    const main = await app.page();
     await leaveRoomIfActive(main);
-  }
-  // Default 30s isn't enough headroom: registerAndLoginViaUi + joinChannelViaUi
-  // + enterChannelRoom + joinDefaultSubRoomViaUi (up to a 10s poll plus a 15s
-  // wait on their own) already eat most of it before the real camera
-  // getUserMedia round-trip even starts.
-}, { timeoutMs: 90_000 });
+    const pathname = new URL(await main.url()).pathname;
+
+    if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
+      await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });
+    }
+
+    await joinChannelViaUi(main, invite.code);
+    await enterChannelRoom(main, channelName);
+    await joinDefaultSubRoomViaUi(main);
+
+    try {
+      // Flake note: if another app already holds the webcam, the GUI toasts
+      // "camera device is already in use" instead of publishing, and the
+      // assertion below times out visibly rather than hanging silently.
+      await cameraButton(main, '/camera-on').click();
+      await expect(visibleIcon(main, 'your camera is on')).toBeVisible({ timeout: 10_000 });
+
+      await main
+        .locator('button:visible', { hasText: /^VIDEOS?\b/ })
+        .first()
+        .click();
+      await expect(visibleText(main, 'No video active')).toHaveCount(0);
+
+      await cameraButton(main, '/camera-off').click();
+      await expect(main.getByRole('img', { name: 'your camera is on' })).toHaveCount(0);
+
+      // By design (ActiveRoom.tsx's groupedPanelVideoActivityKey effect), the
+      // grouped panel auto-switches itself away from VIDEO the instant
+      // videoTilesById empties — so "No video active" never becomes visible
+      // right here: the tab itself switches away before the placeholder would
+      // render. Assert that designed auto-switch instead of a state this tier
+      // never reaches on its own.
+      const videoTab = main.locator('button:visible', { hasText: /^VIDEOS?\b/ }).first();
+      await expect(videoTab).toHaveAttribute('aria-selected', 'false');
+
+      // Re-select VIDEO explicitly — the effect only fires on tile-activity
+      // transitions, so a manual re-click sticks — and confirm the
+      // placeholder appears once the tab is actually being viewed.
+      await videoTab.click();
+      await expect(visibleText(main, 'No video active')).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await leaveRoomIfActive(main);
+    }
+    // Default 30s isn't enough headroom: registerAndLoginViaUi + joinChannelViaUi
+    // + enterChannelRoom + joinDefaultSubRoomViaUi (up to a 10s poll plus a 15s
+    // wait on their own) already eat most of it before the real camera
+    // getUserMedia round-trip even starts.
+  },
+  { timeoutMs: 90_000 },
+);
