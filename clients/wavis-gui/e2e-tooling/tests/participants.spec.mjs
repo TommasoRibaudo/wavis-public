@@ -46,10 +46,9 @@ test('the participant count and row update when a second participant joins and l
   await enterChannelRoom(main, channelName);
   await joinDefaultSubRoomViaUi(main);
 
-  const peer = spawnPeer();
+  const peer = await spawnPeer({ accessToken: owner.access_token });
   try {
     await joinVoiceAsPeer(peer, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: 'PeerBot',
     });

@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -124,8 +125,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -177,14 +181,14 @@ async fn join_sfu(sink: &mut WsSink, stream: &mut WsStream, room_id: &str) -> St
 // ============================================================
 #[tokio::test]
 async fn guest_cannot_kick_participant() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Host joins first
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let host_id = join_sfu(&mut s_host, &mut r_host, "auth-kick").await;
 
     // Guest joins second
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     let _guest_id = join_sfu(&mut s_guest, &mut r_guest, "auth-kick").await;
     // Drain host's participant_joined notification
     let _ = recv_type(&mut r_host, "participant_joined").await;
@@ -205,12 +209,12 @@ async fn guest_cannot_kick_participant() {
 // ============================================================
 #[tokio::test]
 async fn guest_cannot_mute_participant() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let host_id = join_sfu(&mut s_host, &mut r_host, "auth-mute").await;
 
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     let _guest_id = join_sfu(&mut s_guest, &mut r_guest, "auth-mute").await;
     let _ = recv_type(&mut r_host, "participant_joined").await;
     drain(&mut r_host).await;
@@ -230,10 +234,10 @@ async fn guest_cannot_mute_participant() {
 // ============================================================
 #[tokio::test]
 async fn guest_cannot_revoke_invite() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Host joins and creates an invite
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let _host_id = join_sfu(&mut s_host, &mut r_host, "auth-revoke").await;
 
     ws_send(&mut s_host, json!({"type":"invite_create","maxUses":1})).await;
@@ -241,7 +245,7 @@ async fn guest_cannot_revoke_invite() {
     let invite_code = created["inviteCode"].as_str().unwrap().to_string();
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     let _guest_id = join_sfu(&mut s_guest, &mut r_guest, "auth-revoke").await;
     let _ = recv_type(&mut r_host, "participant_joined").await;
     drain(&mut r_host).await;
@@ -262,14 +266,14 @@ async fn guest_cannot_revoke_invite() {
 // ============================================================
 #[tokio::test]
 async fn host_cannot_kick_cross_room() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Host in room A
-    let (mut s_host_a, mut r_host_a) = ws_connect(addr).await;
+    let (mut s_host_a, mut r_host_a) = ws_connect(addr, &state).await;
     let _host_a_id = join_sfu(&mut s_host_a, &mut r_host_a, "room-a-kick").await;
 
     // Someone in room B (so we have a valid peer ID from a different room)
-    let (mut s_peer_b, mut r_peer_b) = ws_connect(addr).await;
+    let (mut s_peer_b, mut r_peer_b) = ws_connect(addr, &state).await;
     let peer_b_id = join_sfu(&mut s_peer_b, &mut r_peer_b, "room-b-kick").await;
 
     // Host A tries to kick peer B (who is in room B) → "target not in room"
@@ -287,10 +291,10 @@ async fn host_cannot_kick_cross_room() {
 // ============================================================
 #[tokio::test]
 async fn host_cannot_revoke_invite_cross_room() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Host in room A creates an invite (invite is bound to room A)
-    let (mut s_host_a, mut r_host_a) = ws_connect(addr).await;
+    let (mut s_host_a, mut r_host_a) = ws_connect(addr, &state).await;
     let _host_a_id = join_sfu(&mut s_host_a, &mut r_host_a, "room-a-rev").await;
 
     ws_send(&mut s_host_a, json!({"type":"invite_create","maxUses":1})).await;
@@ -298,7 +302,7 @@ async fn host_cannot_revoke_invite_cross_room() {
     let invite_code = created["inviteCode"].as_str().unwrap().to_string();
 
     // Host in room B tries to revoke room A's invite → "unauthorized"
-    let (mut s_host_b, mut r_host_b) = ws_connect(addr).await;
+    let (mut s_host_b, mut r_host_b) = ws_connect(addr, &state).await;
     let _host_b_id = join_sfu(&mut s_host_b, &mut r_host_b, "room-b-rev").await;
 
     ws_send(
@@ -315,10 +319,10 @@ async fn host_cannot_revoke_invite_cross_room() {
 // ============================================================
 #[tokio::test]
 async fn non_member_cannot_execute_privileged_actions() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Connect but do NOT join any room
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Try KickParticipant → "not authenticated"
     ws_send(
@@ -353,10 +357,10 @@ async fn non_member_cannot_execute_privileged_actions() {
 // ============================================================
 #[tokio::test]
 async fn host_can_kick_mute_revoke_in_own_room() {
-    let (addr, _state) = start_server().await;
+    let (addr, state) = start_server().await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let _host_id = join_sfu(&mut s_host, &mut r_host, "auth-success").await;
 
     // Host creates an invite for later revocation
@@ -366,7 +370,7 @@ async fn host_can_kick_mute_revoke_in_own_room() {
     drain(&mut r_host).await;
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     let guest_id = join_sfu(&mut s_guest, &mut r_guest, "auth-success").await;
     let _ = recv_type(&mut r_host, "participant_joined").await;
     drain(&mut r_host).await;

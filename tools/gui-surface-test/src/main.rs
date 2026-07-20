@@ -78,16 +78,7 @@ async fn main() {
 }
 
 fn print_summary(results: &[crate::results::ScenarioResult]) {
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-
-    for r in results {
-        if r.passed {
-            passed += 1;
-        } else {
-            failed += 1;
-        }
-    }
+    let summary = crate::results::summarize(results);
 
     println!("\n══════════════════════════════════════════════════════════════");
     println!("  Wavis GUI Surface Test — Final Report");
@@ -111,14 +102,15 @@ fn print_summary(results: &[crate::results::ScenarioResult]) {
     println!("──────────────────────────────────────────────────────────────");
     println!(
         "  Results:  {} passed  |  {} failed  |  {} total",
-        passed,
-        failed,
-        results.len(),
+        summary.passed, summary.failed, summary.total,
     );
     println!("──────────────────────────────────────────────────────────────");
 
-    if failed > 0 {
-        println!("\n  ✗ {} scenario(s) FAILED — see failures above.", failed);
+    if summary.should_exit_nonzero() {
+        println!(
+            "\n  ✗ {} scenario(s) FAILED — see failures above.",
+            summary.failed
+        );
         std::process::exit(1);
     } else {
         println!("\n  ✓ All scenarios passed.");

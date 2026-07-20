@@ -34,6 +34,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -322,8 +323,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -405,10 +409,10 @@ async fn http_get_status(addr: SocketAddr, path: &str, extra_headers: &str) -> u
 
 #[tokio::test]
 async fn test27d_revoke_nonexistent_code() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Host joins
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let _host_id = join_sfu(&mut s_host, &mut r_host, "revoke-nonexist").await;
 
     // Try to revoke a code that was never created
@@ -434,7 +438,7 @@ async fn test27_revoke_authorization_rejections_metric() {
     let (addr, state) = start_server(false).await;
 
     // Host joins and creates invite
-    let (mut s_host, mut r_host) = ws_connect(addr).await;
+    let (mut s_host, mut r_host) = ws_connect(addr, &state).await;
     let _host_id = join_sfu(&mut s_host, &mut r_host, "revoke-metric").await;
 
     ws_send(&mut s_host, json!({"type":"invite_create","maxUses":5})).await;
@@ -443,7 +447,7 @@ async fn test27_revoke_authorization_rejections_metric() {
     drain(&mut r_host).await;
 
     // Guest joins
-    let (mut s_guest, mut r_guest) = ws_connect(addr).await;
+    let (mut s_guest, mut r_guest) = ws_connect(addr, &state).await;
     let _guest_id = join_sfu(&mut s_guest, &mut r_guest, "revoke-metric").await;
     drain(&mut r_host).await;
     drain(&mut r_guest).await;
@@ -661,7 +665,7 @@ fn test29f_all_positive_values_accepted() {
 async fn test30a_media_token_includes_jti_nbf_iat() {
     let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"jwt-claims-test","roomType":"sfu"}),
@@ -764,7 +768,7 @@ async fn test30b_server_with_dual_secrets_issues_valid_tokens() {
 
     let (addr, state) = start_server_with_jwt_secrets(current, Some(previous)).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink,
         json!({"type":"join","roomId":"dual-secret-test","roomType":"sfu"}),
@@ -866,7 +870,7 @@ async fn test31_per_ip_failed_join_threshold_detection() {
     // Attempt 11: rate limiter's ip_failed dimension rejects (threshold=10),
     //   record_failure is called â†’ count=11 > threshold=10 â†’ Some(11) â†’ metric incremented.
     for i in 0..11 {
-        let (mut sink, mut stream) = ws_connect(addr).await;
+        let (mut sink, mut stream) = ws_connect(addr, &app_state).await;
         ws_send(
             &mut sink,
             json!({

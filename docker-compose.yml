@@ -64,6 +64,10 @@ services:
     build:
       context: .
       dockerfile: wavis-backend/Dockerfile
+      args:
+        # Empty by default (production behavior unchanged). Set to
+        # test-no-rate-limits for local e2e runs only — see security.md.
+        CARGO_FEATURES: ${CARGO_FEATURES:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,6 +107,7 @@ services:
       PHRASE_ENCRYPTION_KEY: ${PHRASE_ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
       PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER:-dev-pairing-pepper-32-bytes!!XXX}
       ALPHA_INVITE_CODE_PEPPER: ${ALPHA_INVITE_CODE_PEPPER:-dev-alpha-invite-pepper-32b!!XXX}
+      WS_TICKET_PEPPER: ${WS_TICKET_PEPPER:-dev-ws-ticket-pepper-32-bytes!!X}
       CF_ORIGIN_SECRET: ${CF_ORIGIN_SECRET:-}
       GITHUB_BUG_REPORT_TOKEN: ${GITHUB_BUG_REPORT_TOKEN:-ghp_dev_placeholder}
       GITHUB_BUG_REPORT_REPO: ${GITHUB_BUG_REPORT_REPO:-owner/repo}

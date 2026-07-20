@@ -24,6 +24,7 @@ pub struct AbuseMetrics {
     pub revoke_authorization_rejections: AtomicU64,
     pub tls_proto_rejections: AtomicU64,
     pub invite_usage_anomalies: AtomicU64,
+    pub ws_ticket_rejections: AtomicU64,
 }
 
 impl AbuseMetrics {
@@ -46,6 +47,7 @@ impl AbuseMetrics {
             revoke_authorization_rejections: AtomicU64::new(0),
             tls_proto_rejections: AtomicU64::new(0),
             invite_usage_anomalies: AtomicU64::new(0),
+            ws_ticket_rejections: AtomicU64::new(0),
         }
     }
 
@@ -82,6 +84,7 @@ impl AbuseMetrics {
                 .load(Ordering::Relaxed),
             tls_proto_rejections: self.tls_proto_rejections.load(Ordering::Relaxed),
             invite_usage_anomalies: self.invite_usage_anomalies.load(Ordering::Relaxed),
+            ws_ticket_rejections: self.ws_ticket_rejections.load(Ordering::Relaxed),
         }
     }
 }
@@ -112,6 +115,7 @@ pub struct AbuseMetricsSnapshot {
     pub revoke_authorization_rejections: u64,
     pub tls_proto_rejections: u64,
     pub invite_usage_anomalies: u64,
+    pub ws_ticket_rejections: u64,
 }
 
 /// Tracks per-IP failed join attempts within a sliding window.

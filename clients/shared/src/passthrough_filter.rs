@@ -1,5 +1,5 @@
+use crate::biquad::Biquad;
 use std::collections::HashSet;
-use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,90 +127,10 @@ impl Default for PassthroughBiquadChain {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    z1: f32,
-    z2: f32,
-}
-
-impl Biquad {
-    fn identity() -> Self {
-        Self {
-            b0: 1.0,
-            b1: 0.0,
-            b2: 0.0,
-            a1: 0.0,
-            a2: 0.0,
-            z1: 0.0,
-            z2: 0.0,
-        }
-    }
-
-    fn low_pass(sample_rate: f32, cutoff_hz: f32, q: f32) -> Self {
-        let cutoff = cutoff_hz.clamp(20.0, sample_rate * 0.45);
-        let omega = 2.0 * PI * cutoff / sample_rate;
-        let sin = omega.sin();
-        let cos = omega.cos();
-        let alpha = sin / (2.0 * q.max(0.001));
-        let b0 = (1.0 - cos) * 0.5;
-        let b1 = 1.0 - cos;
-        let b2 = (1.0 - cos) * 0.5;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos;
-        let a2 = 1.0 - alpha;
-        Self::normalize(b0, b1, b2, a0, a1, a2)
-    }
-
-    fn high_shelf(sample_rate: f32, frequency_hz: f32, gain_db: f32, slope: f32) -> Self {
-        let frequency = frequency_hz.clamp(20.0, sample_rate * 0.45);
-        let a = 10.0_f32.powf(gain_db / 40.0);
-        let omega = 2.0 * PI * frequency / sample_rate;
-        let sin = omega.sin();
-        let cos = omega.cos();
-        let sqrt_a = a.sqrt();
-        let alpha = (sin / 2.0) * ((a + 1.0 / a) * (1.0 / slope.max(0.001) - 1.0) + 2.0).sqrt();
-
-        let b0 = a * ((a + 1.0) + (a - 1.0) * cos + 2.0 * sqrt_a * alpha);
-        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos);
-        let b2 = a * ((a + 1.0) + (a - 1.0) * cos - 2.0 * sqrt_a * alpha);
-        let a0 = (a + 1.0) - (a - 1.0) * cos + 2.0 * sqrt_a * alpha;
-        let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos);
-        let a2 = (a + 1.0) - (a - 1.0) * cos - 2.0 * sqrt_a * alpha;
-        Self::normalize(b0, b1, b2, a0, a1, a2)
-    }
-
-    fn normalize(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Self {
-        if !a0.is_finite() || a0.abs() < f32::EPSILON {
-            return Self::identity();
-        }
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            z1: 0.0,
-            z2: 0.0,
-        }
-    }
-
-    fn process(&mut self, input: f32) -> f32 {
-        let input = if input.is_finite() { input } else { 0.0 };
-        let output = input * self.b0 + self.z1;
-        self.z1 = input * self.b1 + self.z2 - self.a1 * output;
-        self.z2 = input * self.b2 - self.a2 * output;
-        output
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::PI;
 
     fn sine(freq: f32, samples: usize) -> Vec<f32> {
         (0..samples)

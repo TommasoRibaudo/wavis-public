@@ -267,3 +267,46 @@ pub(crate) struct MovedSinkInput {
     /// Original sink index (as string) for restore.
     pub(crate) original_sink: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On every platform that tracks a real capture handle (Linux/Windows/macOS),
+    /// a freshly constructed state must be idle — no leftover session from a
+    /// previous run.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn audio_capture_state_starts_with_no_active_session() {
+        let state = AudioCaptureState::new();
+        assert!(
+            state.active.lock().unwrap().is_none(),
+            "AudioCaptureState::new() must start with no active capture session"
+        );
+    }
+
+    #[test]
+    fn audio_share_start_result_serializes_with_expected_field_names() {
+        let result = AudioShareStartResult {
+            loopback_exclusion_available: true,
+            real_output_device_id: Some("device-1".to_string()),
+            real_output_device_name: None,
+            requires_mute_for_echo_prevention: false,
+            capture_path: Some("wasapi".to_string()),
+            fallback_reason: None,
+        };
+
+        let value = serde_json::to_value(&result).unwrap();
+
+        assert_eq!(value["loopback_exclusion_available"], true);
+        assert_eq!(value["real_output_device_id"], "device-1");
+        assert_eq!(
+            value["real_output_device_name"],
+            serde_json::Value::Null,
+            "None fields must serialize to null, not be omitted (no skip_serializing_if)"
+        );
+        assert_eq!(value["requires_mute_for_echo_prevention"], false);
+        assert_eq!(value["capture_path"], "wasapi");
+        assert_eq!(value["fallback_reason"], serde_json::Value::Null);
+    }
+}

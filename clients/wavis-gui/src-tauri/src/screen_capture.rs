@@ -145,11 +145,29 @@ pub fn create_capture_backend(
     max_height: u32,
     max_fps: u32,
 ) -> Result<Box<dyn ScreenCapture>, CaptureError> {
+    create_capture_backend_with(
+        || {
+            Box::new(pipewire_capture::PipeWireCapture::new(
+                max_width, max_height, max_fps,
+            ))
+        },
+        || Box::new(x11_capture::X11Capture::new()),
+    )
+}
+
+/// Fallback-chain logic behind [`create_capture_backend`], with the two
+/// concrete backends injected as factories so the chain (portal → X11 →
+/// `NoBackendAvailable`) is testable without real PipeWire/X11.
+#[cfg(target_os = "linux")]
+fn create_capture_backend_with(
+    make_pipewire: impl FnOnce() -> Box<dyn ScreenCapture>,
+    make_x11: impl FnOnce() -> Box<dyn ScreenCapture>,
+) -> Result<Box<dyn ScreenCapture>, CaptureError> {
     // Step 1: Try PipeWire/portal (primary path).
     log::info!("screen_capture: trying PipeWire/portal backend");
-    let pw = pipewire_capture::PipeWireCapture::new(max_width, max_height, max_fps);
+    let pw = make_pipewire();
     match pw.start() {
-        Ok(()) => return Ok(Box::new(pw)),
+        Ok(()) => return Ok(pw),
         Err(CaptureError::UserCancelled) => return Err(CaptureError::UserCancelled),
         Err(CaptureError::PortalUnavailable(msg)) => {
             log::info!("Portal unavailable ({msg}), trying X11 fallback");
@@ -159,9 +177,9 @@ pub fn create_capture_backend(
 
     // Step 2: Try X11/XWayland fallback.
     log::info!("screen_capture: trying X11 fallback backend");
-    let x11 = x11_capture::X11Capture::new();
+    let x11 = make_x11();
     match x11.start() {
-        Ok(()) => Ok(Box::new(x11)),
+        Ok(()) => Ok(x11),
         Err(CaptureError::X11Unavailable(msg)) => {
             // On pure Wayland without XWayland, provide a specific message
             // so the user understands the environment gap.
@@ -207,5 +225,215 @@ mod tests {
         let display = err.to_string();
         assert!(display.contains("xdg-desktop-portal"));
         assert!(display.contains("Wayland"));
+    }
+
+    /// Wave 3 item 5: `create_capture_backend`'s portal → X11 →
+    /// `NoBackendAvailable` fallback chain, exercised via
+    /// `create_capture_backend_with` and fake backends (no real
+    /// PipeWire/X11 needed).
+    #[cfg(target_os = "linux")]
+    mod fallback_chain_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        /// Fake `ScreenCapture` backend whose `start()` result is fixed at
+        /// construction and handed out exactly once — matching how
+        /// `create_capture_backend_with` calls `start()` a single time per
+        /// backend.
+        struct FakeCapture {
+            start_result: Mutex<Option<Result<(), CaptureError>>>,
+        }
+
+        impl FakeCapture {
+            fn new(result: Result<(), CaptureError>) -> Self {
+                Self {
+                    start_result: Mutex::new(Some(result)),
+                }
+            }
+        }
+
+        impl ScreenCapture for FakeCapture {
+            fn start(&self) -> Result<(), CaptureError> {
+                self.start_result
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("start() called more than once on FakeCapture")
+            }
+            fn stop(&self) {}
+            fn is_active(&self) -> bool {
+                false
+            }
+            fn on_frame(&self, _cb: Box<dyn Fn(CapturedFrame) + Send + 'static>) {}
+        }
+
+        // WAYLAND_DISPLAY is process-global; serialize the two tests that
+        // mutate it so they can't race each other.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        #[test]
+        fn portal_success_short_circuits_without_trying_x11() {
+            let x11_tried = Arc::new(AtomicBool::new(false));
+            let x11_tried_clone = x11_tried.clone();
+
+            let result = create_capture_backend_with(
+                || Box::new(FakeCapture::new(Ok(()))),
+                move || {
+                    x11_tried_clone.store(true, Ordering::SeqCst);
+                    Box::new(FakeCapture::new(Ok(())))
+                },
+            );
+
+            assert!(result.is_ok());
+            assert!(
+                !x11_tried.load(Ordering::SeqCst),
+                "X11 must not be tried when portal succeeds"
+            );
+        }
+
+        #[test]
+        fn portal_user_cancelled_short_circuits_without_trying_x11() {
+            let x11_tried = Arc::new(AtomicBool::new(false));
+            let x11_tried_clone = x11_tried.clone();
+
+            let result = create_capture_backend_with(
+                || Box::new(FakeCapture::new(Err(CaptureError::UserCancelled))),
+                move || {
+                    x11_tried_clone.store(true, Ordering::SeqCst);
+                    Box::new(FakeCapture::new(Ok(())))
+                },
+            );
+
+            assert!(matches!(result, Err(CaptureError::UserCancelled)));
+            assert!(
+                !x11_tried.load(Ordering::SeqCst),
+                "X11 must not be tried after the user cancels the portal picker"
+            );
+        }
+
+        #[test]
+        fn portal_capture_start_failed_propagates_without_trying_x11() {
+            let x11_tried = Arc::new(AtomicBool::new(false));
+            let x11_tried_clone = x11_tried.clone();
+
+            let result = create_capture_backend_with(
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::CaptureStartFailed(
+                        "boom".into(),
+                    ))))
+                },
+                move || {
+                    x11_tried_clone.store(true, Ordering::SeqCst);
+                    Box::new(FakeCapture::new(Ok(())))
+                },
+            );
+
+            match result {
+                Err(CaptureError::CaptureStartFailed(msg)) => assert_eq!(msg, "boom"),
+                other => panic!("expected CaptureStartFailed(\"boom\"), got {other:?}"),
+            }
+            assert!(
+                !x11_tried.load(Ordering::SeqCst),
+                "a backend-specific portal failure must not fall through to X11"
+            );
+        }
+
+        #[test]
+        fn portal_unavailable_falls_through_to_x11_success() {
+            let result = create_capture_backend_with(
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::PortalUnavailable(
+                        "no portal".into(),
+                    ))))
+                },
+                || Box::new(FakeCapture::new(Ok(()))),
+            );
+
+            assert!(
+                result.is_ok(),
+                "X11 success after portal PortalUnavailable must return Ok"
+            );
+        }
+
+        #[test]
+        fn portal_and_x11_both_unavailable_without_wayland_uses_x11_message() {
+            let _guard = ENV_LOCK.lock().unwrap();
+            unsafe {
+                std::env::remove_var("WAYLAND_DISPLAY");
+            }
+
+            let result = create_capture_backend_with(
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::PortalUnavailable(
+                        "no portal".into(),
+                    ))))
+                },
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::X11Unavailable(
+                        "no display".into(),
+                    ))))
+                },
+            );
+
+            match result {
+                Err(CaptureError::NoBackendAvailable(msg)) => assert_eq!(msg, "no display"),
+                other => panic!("expected NoBackendAvailable(\"no display\"), got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn portal_and_x11_both_unavailable_with_wayland_uses_portal_specific_message() {
+            let _guard = ENV_LOCK.lock().unwrap();
+            unsafe {
+                std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+            }
+
+            let result = create_capture_backend_with(
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::PortalUnavailable(
+                        "no portal".into(),
+                    ))))
+                },
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::X11Unavailable(
+                        "no display".into(),
+                    ))))
+                },
+            );
+
+            unsafe {
+                std::env::remove_var("WAYLAND_DISPLAY");
+            }
+
+            match result {
+                Err(CaptureError::NoBackendAvailable(msg)) => {
+                    assert!(msg.contains("xdg-desktop-portal"));
+                    assert!(msg.contains("Wayland"));
+                }
+                other => panic!("expected a Wayland-specific NoBackendAvailable, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn x11_capture_start_failed_propagates() {
+            let result = create_capture_backend_with(
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::PortalUnavailable(
+                        "no portal".into(),
+                    ))))
+                },
+                || {
+                    Box::new(FakeCapture::new(Err(CaptureError::CaptureStartFailed(
+                        "x11 boom".into(),
+                    ))))
+                },
+            );
+
+            match result {
+                Err(CaptureError::CaptureStartFailed(msg)) => assert_eq!(msg, "x11 boom"),
+                other => panic!("expected CaptureStartFailed(\"x11 boom\"), got {other:?}"),
+            }
+        }
     }
 }

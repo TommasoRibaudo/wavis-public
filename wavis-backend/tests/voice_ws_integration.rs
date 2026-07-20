@@ -9,8 +9,10 @@
 //! Tables are truncated between tests for isolation.
 //!
 //! Covered:
-//!   28.1  JoinVoice â€” happy path (auth â†’ join_voice â†’ joined + media_token)
-//!   28.2  JoinVoice â€” requires authentication
+//!   28.1  JoinVoice â€” happy path (ws-ticket auth â†’ join_voice â†’ joined + media_token)
+//!   28.2  RETIRED (issue #267): every /ws connection is now pre-authenticated by
+//!         its ticket, so "connected but not authenticated" is no longer reachable.
+//!         See ws_ticket_gate_integration.rs instead.
 //!   28.3  JoinVoice â€” non-member rejection (opaque not_authorized)
 //!   28.4  JoinVoice â€” banned user rejection (opaque not_authorized)
 //!   28.5  JoinVoice â€” non-existent channel (opaque not_authorized)
@@ -266,8 +268,25 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+/// Connect to `/ws` pre-authenticated as a specific registered user via a
+/// freshly-issued ws-ticket. Replaces the old connect-then-send-Auth-message
+/// flow (`ws_auth`): a ticket-authenticated connection now rejects a
+/// subsequent signaling `Auth` message as "already authenticated"
+/// (ws/validation.rs), since the ticket already proved identity at upgrade
+/// time.
+async fn ws_connect_as(
+    addr: SocketAddr,
+    app_state: &AppState,
+    pool: &PgPool,
+    user_id: Uuid,
+) -> (WsSink, WsStream) {
+    let device_id: Uuid = sqlx::query_scalar("SELECT device_id FROM devices WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("device lookup failed");
+    let ticket = app_state.ws_ticket_store.issue(user_id, device_id);
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -318,16 +337,6 @@ async fn drain(stream: &mut WsStream) {
     while let Ok(Some(Ok(_))) = timeout(Duration::from_millis(200), stream.next()).await {
         // Continue draining
     }
-}
-
-/// Authenticate a WS connection. Sends Auth and waits for auth_success.
-async fn ws_auth(sink: &mut WsSink, stream: &mut WsStream, token: &str) {
-    ws_send(sink, json!({"type": "auth", "accessToken": token})).await;
-    let resp = recv_type(stream, "auth_success").await;
-    assert!(
-        resp["userId"].as_str().is_some(),
-        "auth_success must have userId"
-    );
 }
 
 /// Send join_voice and wait for joined + media_token. Returns the joined payload.
@@ -473,14 +482,8 @@ async fn test_28_1_join_voice_happy_path() {
 
     let (addr, state) = start_server(pool).await;
 
-    // Owner connects, authenticates, joins voice
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink1,
-        &mut stream1,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    // Owner connects, pre-authenticated via ws-ticket, joins voice
+    let (mut sink1, mut stream1) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
 
     let joined1 = ws_join_voice(&mut sink1, &mut stream1, &channel_id.to_string(), "Owner").await;
 
@@ -493,14 +496,8 @@ async fn test_28_1_join_voice_happy_path() {
     assert!(joined1["peerId"].as_str().is_some());
     assert_eq!(joined1["peerCount"].as_u64().unwrap(), 1);
 
-    // Member connects, authenticates, joins same channel voice
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink2,
-        &mut stream2,
-        &sign_test_token(&state.db_pool, &member).await,
-    )
-    .await;
+    // Member connects, pre-authenticated via ws-ticket, joins same channel voice
+    let (mut sink2, mut stream2) = ws_connect_as(addr, &state, &state.db_pool, member).await;
 
     let joined2 = ws_join_voice(&mut sink2, &mut stream2, &channel_id.to_string(), "Member").await;
 
@@ -516,33 +513,17 @@ async fn test_28_1_join_voice_happy_path() {
 
 // ===========================================================================
 // 28.2 JoinVoice â€” requires authentication
+//
+// Retired (issue #267): every `/ws` connection now requires a valid
+// pre-auth ticket, and a successfully-ticketed connection is authenticated
+// at upgrade time (see ws.rs's handle_socket). There is no longer a
+// reachable state where a client is WS-connected but not authenticated, so
+// "connect, skip auth, send join_voice" can no longer be constructed. The
+// invariant this test protected — an unauthenticated client cannot
+// join_voice — is now enforced earlier and unconditionally by the ticket
+// gate itself; see ws_ticket_gate_integration.rs's
+// `ws_without_ticket_fails_before_upgrade`.
 // ===========================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_28_2_join_voice_requires_auth() {
-    let pool = test_pool().await;
-    truncate_tables(&pool).await;
-
-    let owner = register_test_user(&pool).await;
-    let channel_id = create_test_channel(&pool, owner, "voice-noauth").await;
-
-    let (addr, _state) = start_server(pool).await;
-
-    // Connect WITHOUT authenticating, send join_voice
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_send(
-        &mut sink,
-        json!({
-            "type": "join_voice",
-            "channelId": channel_id.to_string()
-        }),
-    )
-    .await;
-
-    let err = recv_type(&mut stream, "error").await;
-    assert_eq!(err["message"].as_str().unwrap(), "not authenticated");
-}
 
 // ===========================================================================
 // 28.3 JoinVoice â€” non-member rejection
@@ -560,13 +541,7 @@ async fn test_28_3_join_voice_non_member() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &outsider).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, outsider).await;
 
     ws_send(
         &mut sink,
@@ -599,13 +574,7 @@ async fn test_28_4_join_voice_banned_user() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &target).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, target).await;
 
     ws_send(
         &mut sink,
@@ -638,13 +607,7 @@ async fn test_28_5_join_voice_nonexistent_channel() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &user).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, user).await;
 
     let fake_channel = Uuid::new_v4();
     ws_send(
@@ -674,13 +637,7 @@ async fn test_28_6_join_voice_invalid_channel_id() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &user).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, user).await;
 
     ws_send(
         &mut sink,
@@ -710,13 +667,7 @@ async fn test_28_7_join_voice_field_length_validation() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &user).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, user).await;
 
     // channelId > 64 chars â†’ field-length error
     let long_channel_id = "x".repeat(65);
@@ -771,13 +722,7 @@ async fn test_28_8_join_voice_already_joined() {
 
     let (addr, state) = start_server(pool).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
 
     // First join_voice succeeds
     ws_join_voice(&mut sink, &mut stream, &channel_id.to_string(), "Owner").await;
@@ -813,13 +758,7 @@ async fn test_28_9_voice_query_happy_path() {
     let (addr, state) = start_server(pool).await;
 
     // Owner joins voice via WS
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
     ws_join_voice(&mut sink, &mut stream, &channel_id.to_string(), "OwnerName").await;
 
     // REST query voice status
@@ -903,23 +842,11 @@ async fn test_28_12_ban_eject_from_voice() {
     let (addr, state) = start_server(pool).await;
 
     // Owner joins voice
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink1,
-        &mut stream1,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut sink1, mut stream1) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
     ws_join_voice(&mut sink1, &mut stream1, &channel_id.to_string(), "Owner").await;
 
     // Member joins voice
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink2,
-        &mut stream2,
-        &sign_test_token(&state.db_pool, &member).await,
-    )
-    .await;
+    let (mut sink2, mut stream2) = ws_connect_as(addr, &state, &state.db_pool, member).await;
     ws_join_voice(&mut sink2, &mut stream2, &channel_id.to_string(), "Member").await;
 
     // Owner should have received participant_joined for member
@@ -967,13 +894,7 @@ async fn test_28_13_room_cleanup_on_last_leave() {
     let (addr, state) = start_server(pool).await;
 
     // Join voice
-    let (mut sink, mut stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink,
-        &mut stream,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut sink, mut stream) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
     let joined = ws_join_voice(&mut sink, &mut stream, &channel_id.to_string(), "Owner").await;
     let room_id_1 = joined["roomId"].as_str().unwrap().to_string();
 
@@ -994,13 +915,7 @@ async fn test_28_13_room_cleanup_on_last_leave() {
 
     // Re-join voice â€” should get a different roomId
     // Need a new WS connection since the old session is in a post-leave state
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
-    ws_auth(
-        &mut sink2,
-        &mut stream2,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut sink2, mut stream2) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
     let joined2 = ws_join_voice(&mut sink2, &mut stream2, &channel_id.to_string(), "Owner").await;
     let room_id_2 = joined2["roomId"].as_str().unwrap().to_string();
 
@@ -1008,6 +923,125 @@ async fn test_28_13_room_cleanup_on_last_leave() {
         room_id_1, room_id_2,
         "re-join after cleanup should get a new room"
     );
+}
+
+// ===========================================================================
+// P1-7: session displacement (second JoinVoice for the same user)
+// ===========================================================================
+
+#[tokio::test]
+#[ignore]
+async fn second_join_voice_same_user_displaces_first_and_frees_slot() {
+    let pool = test_pool().await;
+    truncate_tables(&pool).await;
+
+    let owner = register_test_user(&pool).await;
+    let channel_id = create_test_channel(&pool, owner, "voice-displacement").await;
+
+    let (addr, state) = start_server(pool).await;
+    // Kept for the REST voice-status call near the end of this test — REST
+    // auth is still Bearer-token based, unaffected by the ws-ticket change.
+    let token = sign_test_token(&state.db_pool, &owner).await;
+
+    // Connection A: first session for the user.
+    let (mut sink_a, mut stream_a) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
+    let joined_a = ws_join_voice(
+        &mut sink_a,
+        &mut stream_a,
+        &channel_id.to_string(),
+        "SessionA",
+    )
+    .await;
+    let room_id = joined_a["roomId"].as_str().unwrap().to_string();
+    let peer_a_id = joined_a["peerId"].as_str().unwrap().to_string();
+
+    // Give A a hidden viewer identity (as a screen-share viewer window would
+    // register via RequestViewerToken — exercised directly against state
+    // here since the wire path requires real LiveKit credentials this test
+    // server doesn't configure), so displacement's cleanup of it is
+    // observable rather than vacuously true.
+    state.room_state.update_room_info(&room_id, |info| {
+        info.record_viewer_identity(&peer_a_id, &format!("{peer_a_id}-vw-w1"));
+    });
+    assert!(
+        state
+            .room_state
+            .get_room_info(&room_id)
+            .unwrap()
+            .viewer_identities
+            .get(&peer_a_id)
+            .is_some_and(|ids| !ids.is_empty()),
+        "precondition: A must hold a registered viewer identity before displacement"
+    );
+
+    // Connection B: same user, same channel, second WebSocket session.
+    let (mut sink_b, mut stream_b) = ws_connect_as(addr, &state, &state.db_pool, owner).await;
+    ws_send(
+        &mut sink_b,
+        json!({
+            "type": "join_voice",
+            "channelId": channel_id.to_string(),
+            "displayName": "SessionB"
+        }),
+    )
+    .await;
+
+    // A must be told it was displaced.
+    let displaced = recv_type(&mut stream_a, "session_displaced").await;
+    assert_eq!(
+        displaced["reason"].as_str().unwrap(),
+        "another session connected"
+    );
+
+    // B completes its join normally.
+    let joined_b = recv_type(&mut stream_b, "joined").await;
+    let _media_token_b = recv_type(&mut stream_b, "media_token").await;
+    let peer_b_id = joined_b["peerId"].as_str().unwrap().to_string();
+    assert_eq!(joined_b["roomId"].as_str().unwrap(), room_id);
+
+    // The room did not grow to 2 — A's slot was freed, not left occupied
+    // alongside B's.
+    assert_eq!(
+        joined_b["peerCount"].as_u64().unwrap(),
+        1,
+        "displacement must free A's slot, not add a second occupant"
+    );
+
+    // A's viewer identities were reclaimed by the eviction.
+    let room_after = state.room_state.get_room_info(&room_id).unwrap();
+    assert!(
+        room_after
+            .viewer_identities
+            .get(&peer_a_id)
+            .is_none_or(|ids| ids.is_empty()),
+        "A's viewer identities must be cleared on displacement"
+    );
+
+    // The room itself was NOT destroyed by the eviction (it uses
+    // remove_peer_preserve_room, not remove_peer) — it still exists with B
+    // as the sole occupant.
+    let (status, body) = rest_get(addr, &format!("/channels/{channel_id}/voice"), &token).await;
+    assert_eq!(status, 200);
+    assert!(
+        body["active"].as_bool().unwrap(),
+        "room must survive the displacement"
+    );
+    assert_eq!(body["participant_count"].as_u64().unwrap(), 1);
+
+    // If B observes A's departure (legitimate — A really did leave the
+    // room), it must never be a spurious report about B's own new peer id.
+    if let Some(left) = try_recv_type(&mut stream_b, "participant_left", 500).await {
+        assert_ne!(
+            left["participantId"].as_str().unwrap(),
+            peer_b_id,
+            "must never report B's own peer id as having left"
+        );
+        assert_eq!(
+            left["participantId"].as_str().unwrap(),
+            peer_a_id,
+            "any participant_left B observes here must be about the evicted A"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1022,13 +1056,8 @@ async fn passthrough_permission_allows_member_link_but_not_member_toggle() {
     add_member(&pool, channel_id, owner, member).await;
     let (addr, state) = start_server(pool).await;
 
-    let (mut owner_sink, mut owner_stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut owner_sink,
-        &mut owner_stream,
-        &sign_test_token(&state.db_pool, &owner).await,
-    )
-    .await;
+    let (mut owner_sink, mut owner_stream) =
+        ws_connect_as(addr, &state, &state.db_pool, owner).await;
     ws_join_voice(
         &mut owner_sink,
         &mut owner_stream,
@@ -1037,13 +1066,8 @@ async fn passthrough_permission_allows_member_link_but_not_member_toggle() {
     )
     .await;
 
-    let (mut member_sink, mut member_stream) = ws_connect(addr).await;
-    ws_auth(
-        &mut member_sink,
-        &mut member_stream,
-        &sign_test_token(&state.db_pool, &member).await,
-    )
-    .await;
+    let (mut member_sink, mut member_stream) =
+        ws_connect_as(addr, &state, &state.db_pool, member).await;
     ws_join_voice(
         &mut member_sink,
         &mut member_stream,

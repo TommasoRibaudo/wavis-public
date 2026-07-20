@@ -26,6 +26,8 @@ mod external_share_helper;
 #[cfg(target_os = "linux")]
 mod linux_mic;
 #[cfg(target_os = "windows")]
+mod repaint;
+#[cfg(target_os = "windows")]
 mod taskbar_toolbar;
 #[cfg(not(target_os = "linux"))]
 mod external_share_helper {
@@ -454,7 +456,28 @@ fn main() {
     crash_handler::install(log_buffer.clone());
     let log_layer = bug_report::build_bug_report_log_layer(log_buffer.clone());
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance lock (#323): scoped to the effective auth-store name so
+    // PR #292's two-real-GUI-instance e2e capability (each launch with a
+    // distinct WAVIS_AUTH_STORE_NAME) keeps working. The plugin only forwards
+    // the second launch's argv/cwd to the already-running instance's
+    // callback, not its env vars, so a live two-way key comparison isn't
+    // possible. Instead each process independently decides whether to join
+    // the OS-level lock based on its OWN store key: e2e instances (non-empty
+    // override) never register the plugin and stay invisible to it, while
+    // two real default-store launches (no override, the normal end-user
+    // case) lock against each other as intended.
+    #[cfg(desktop)]
+    if get_auth_store_name().is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(vis) = app.try_state::<tray::WindowVisibility>() {
+                let _ = tray::show_main_window(app.clone(), vis);
+            }
+        }));
+    }
+
+    builder
         .plugin(
             tauri_plugin_log::Builder::new()
                 // Global minimum is always Info so the ring buffer captures
@@ -483,6 +506,13 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Off by default (Windows registry Run key / macOS LaunchAgent /
+        // Linux desktop autostart file) — the frontend enables it only
+        // after the user opts in (see DeviceSetup step 4, Settings toggle).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(KeyringCache::new())
         .manage(media::MediaState::new())
         .manage(external_share_helper::ExternalShareHelperState::new())
@@ -512,6 +542,9 @@ fn main() {
                 if let Err(err) = taskbar_toolbar::setup_taskbar_toolbar(app) {
                     log::warn!("wavis: taskbar toolbar unavailable: {err}");
                 }
+
+                #[cfg(target_os = "windows")]
+                repaint::start_periodic_nudge(app.handle().clone());
             }
 
             #[cfg(target_os = "linux")]
@@ -566,6 +599,14 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Focused(focused) => {
+                    #[cfg(target_os = "windows")]
+                    if *focused && repaint::is_repaint_nudge_target(window.label()) {
+                        if let Some(webview_window) =
+                            window.app_handle().get_webview_window(window.label())
+                        {
+                            repaint::nudge_repaint(&webview_window);
+                        }
+                    }
                     if window.label() == "main" {
                         let app = window.app_handle();
                         if let Some(vis) = app.try_state::<tray::WindowVisibility>() {

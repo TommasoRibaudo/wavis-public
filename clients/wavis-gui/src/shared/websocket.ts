@@ -5,7 +5,7 @@
  * Standard WebSocket API works in Tauri webview.
  */
 
-import { getAccessToken, isTokenExpired, refreshTokens } from '@features/auth/auth';
+import { fetchWsTicket, isTokenExpired, refreshTokens } from '@features/auth/auth';
 import { wsMessageBuffer } from './ws-message-buffer';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -38,6 +38,16 @@ export class SignalingClient {
   private statusChangeHandler: ((status: WsStatus) => void) | null = null;
   private intentionalDisconnect = false;
   status: WsStatus = 'disconnected';
+  /**
+   * True once the fast exponential-backoff reconnect budget
+   * (maxReconnectAttempt) has been spent and periodic retry has taken over.
+   * Callers (voice-room.ts) use this — not "is a reconnect timer currently
+   * pending" — to decide the session is truly lost: a timer handle is
+   * transiently null between one attempt ending and the next being
+   * scheduled, so checking timer nullness alone declares defeat after a
+   * single failed attempt instead of after the real retry budget is spent.
+   */
+  reconnectExhausted = false;
 
   /** Legacy connect — no auth message sent. Preserved for backward compatibility. */
   connect(url: string): void {
@@ -50,6 +60,7 @@ export class SignalingClient {
     this.ws.onopen = () => {
       this.setStatus('connected');
       this.reconnectAttempt = 0;
+      this.reconnectExhausted = false;
       this.stopPeriodicRetry();
     };
 
@@ -77,34 +88,42 @@ export class SignalingClient {
   }
 
   /**
-   * Connect with auth bootstrap:
+   * Connect with pre-auth ticket bootstrap:
    * 1. If token expired, refreshTokens() first
-   * 2. Open WebSocket connection
-   * 3. On open, send Auth message with current access token
+   * 2. Fetch a short-lived, one-use ws-ticket via POST /auth/ws-ticket
+   * 3. Open the WebSocket with ?ticket=... — the ticket authenticates the
+   *    connection at upgrade time, so no post-connect signaling auth
+   *    message is sent (the backend rejects one as "already authenticated").
    */
   async connectWithAuth(wsUrl: string): Promise<void> {
     if (await isTokenExpired()) {
-      const ok = await refreshTokens();
-      if (!ok) {
+      const result = await refreshTokens();
+      if (result.status !== 'success') {
         this.setStatus('disconnected');
-        throw new Error('Token refresh failed — cannot connect');
+        throw new Error(`Token refresh failed — cannot connect (${result.status})`);
       }
     }
 
-    const token = await getAccessToken();
+    let ticket: string;
+    try {
+      ticket = await fetchWsTicket();
+    } catch (err) {
+      this.setStatus('disconnected');
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`WS ticket fetch failed — cannot connect (${message})`, { cause: err });
+    }
+
     if (this.ws) this.disconnect();
 
     this.intentionalDisconnect = false;
     this.setStatus('connecting');
-    this.ws = new WebSocket(wsUrl);
+    this.ws = new WebSocket(`${wsUrl}?ticket=${encodeURIComponent(ticket)}`);
 
     this.ws.onopen = () => {
       this.setStatus('connected');
       this.reconnectAttempt = 0;
+      this.reconnectExhausted = false;
       this.stopPeriodicRetry();
-      // Send Auth message as first message
-      this.send({ type: 'auth', accessToken: token });
-      console.log(LOG_PREFIX, 'Auth message sent');
     };
 
     this.ws.onmessage = (event) => {
@@ -151,6 +170,7 @@ export class SignalingClient {
     this.intentionalDisconnect = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.reconnectExhausted = false;
     this.stopPeriodicRetry();
     this.ws?.close();
     this.ws = null;
@@ -215,12 +235,14 @@ export class SignalingClient {
   private scheduleReconnect(url: string): void {
     if (this.reconnectAttempt >= this.maxReconnectAttempt) {
       console.log(LOG_PREFIX, 'fast reconnect exhausted — starting periodic retry');
+      this.reconnectExhausted = true;
       this.startPeriodicRetry(url);
       return;
     }
     const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 30_000);
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connectWithAuth(url).catch((err) => {
         console.error(LOG_PREFIX, 'Reconnect auth failed:', err);
       });

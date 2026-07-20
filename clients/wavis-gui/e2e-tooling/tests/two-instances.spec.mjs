@@ -107,12 +107,11 @@ test('the SAME account joining the same voice room a second time IS displaced', 
   await enterChannelRoom(main, channelName);
   await joinDefaultSubRoomViaUi(main, { expectedCount: 1 });
 
-  const peer = spawnPeer();
+  // Same account (identity.access_token), same channel -> server-side
+  // evict_stale_session evicts by user_id, displacing the GUI's session.
+  const peer = await spawnPeer({ accessToken: identity.access_token });
   try {
-    // Same account (identity.access_token), same channel -> server-side
-    // evict_stale_session evicts by user_id, displacing the GUI's session.
     await joinVoiceAsPeer(peer, {
-      accessToken: identity.access_token,
       channelId: channel.channel_id,
       displayName: 'DisplacerBot',
     });

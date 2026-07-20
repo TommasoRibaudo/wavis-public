@@ -56,7 +56,7 @@ export function mediaIndicator(
   }
 }
 
-function combinedStatusBadge(
+export function combinedStatusBadge(
   machine: VoiceRoomMachineState,
   media: MediaState,
 ): { text: string; color: string } {
@@ -77,7 +77,10 @@ function combinedStatusBadge(
     media === 'connecting'
   )
     return { text: 'CONNECTING', color: 'var(--wavis-warn)' };
-  // Idle / disconnected
+  // Signaling is fully active — the session itself is fine, media just hasn't
+  // started yet (e.g. not in a sub-room). Not actually offline.
+  if (machine === 'active') return { text: 'READY', color: 'var(--wavis-accent)' };
+  // No active session at all
   return { text: 'OFFLINE', color: 'var(--wavis-text-secondary)' };
 }
 

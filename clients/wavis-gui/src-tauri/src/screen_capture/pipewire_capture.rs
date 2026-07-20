@@ -26,6 +26,39 @@ struct EncodedFrame {
     jpeg_data: Vec<u8>,
 }
 
+/// Maximum accepted JPEG payload size in a `pw_capture_helper` frame header —
+/// guards against a corrupted stream (desynced framing) causing an
+/// unbounded allocation.
+const MAX_JPEG_LEN: u32 = 50_000_000;
+
+/// Decoded fields of the `pw_capture_helper` wire protocol's 12-byte frame
+/// header: `u32 LE width | u32 LE height | u32 LE jpeg_len` (see
+/// `bin/pw_capture_helper.rs`, which writes this exact layout to stdout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameHeader {
+    width: u32,
+    height: u32,
+    jpeg_len: u32,
+}
+
+impl FrameHeader {
+    /// A header is valid only if every dimension/length is non-zero and the
+    /// JPEG length is within the sanity ceiling. All-zero or oversized
+    /// values indicate a desynced stream, not a real frame.
+    fn is_valid(&self) -> bool {
+        self.width != 0 && self.height != 0 && self.jpeg_len != 0 && self.jpeg_len <= MAX_JPEG_LEN
+    }
+}
+
+/// Decode (without validating) the 12-byte frame header.
+fn decode_frame_header(header: &[u8; 12]) -> FrameHeader {
+    FrameHeader {
+        width: u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
+        height: u32::from_le_bytes([header[4], header[5], header[6], header[7]]),
+        jpeg_len: u32::from_le_bytes([header[8], header[9], header[10], header[11]]),
+    }
+}
+
 /// PipeWire/portal-based screen capture backend.
 ///
 /// Runs the PipeWire capture in a subprocess (`pw_capture_helper`) to avoid
@@ -209,21 +242,23 @@ impl PipeWireCapture {
                 break;
             }
 
-            let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-            let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-            let jpeg_len = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-
             frame_count += 1;
+            let parsed = decode_frame_header(&header);
 
             // Sanity checks.
-            if width == 0 || height == 0 || jpeg_len == 0 || jpeg_len > 50_000_000 {
+            if !parsed.is_valid() {
                 eprintln!(
                     "wavis: pipewire_capture: frame #{frame_count}: invalid header: {}x{} jpeg_len={}",
-                    width, height, jpeg_len
+                    parsed.width, parsed.height, parsed.jpeg_len
                 );
                 active.store(false, Ordering::SeqCst);
                 break;
             }
+            let FrameHeader {
+                width,
+                height,
+                jpeg_len,
+            } = parsed;
 
             if frame_count <= 3 || frame_count.is_multiple_of(300) {
                 eprintln!(
@@ -459,5 +494,67 @@ impl ChildExt for Child {
                 }
             }
         }
+    }
+}
+
+// P2-7: pw_capture_helper wire protocol framing (see `bin/pw_capture_helper.rs`
+// header comment: `u32 LE width | u32 LE height | u32 LE jpeg_len | jpeg bytes`).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Encode a header exactly as `pw_capture_helper` does: three little-endian
+    /// u32s written back to back (see bin/pw_capture_helper.rs ~line 891:
+    /// `w.to_le_bytes()` then `h.to_le_bytes()` then `len.to_le_bytes()`).
+    fn encode_header(width: u32, height: u32, jpeg_len: u32) -> [u8; 12] {
+        let mut buf = [0u8; 12];
+        buf[0..4].copy_from_slice(&width.to_le_bytes());
+        buf[4..8].copy_from_slice(&height.to_le_bytes());
+        buf[8..12].copy_from_slice(&jpeg_len.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn decode_frame_header_round_trips_pw_capture_helper_encoding() {
+        let header_bytes = encode_header(1920, 1080, 123_456);
+        let decoded = decode_frame_header(&header_bytes);
+        assert_eq!(
+            decoded,
+            FrameHeader {
+                width: 1920,
+                height: 1080,
+                jpeg_len: 123_456,
+            }
+        );
+    }
+
+    #[test]
+    fn frame_header_rejects_zero_width() {
+        assert!(!decode_frame_header(&encode_header(0, 1080, 1000)).is_valid());
+    }
+
+    #[test]
+    fn frame_header_rejects_zero_height() {
+        assert!(!decode_frame_header(&encode_header(1920, 0, 1000)).is_valid());
+    }
+
+    #[test]
+    fn frame_header_rejects_zero_jpeg_len() {
+        assert!(!decode_frame_header(&encode_header(1920, 1080, 0)).is_valid());
+    }
+
+    #[test]
+    fn frame_header_rejects_jpeg_len_over_sanity_ceiling() {
+        assert!(!decode_frame_header(&encode_header(1920, 1080, MAX_JPEG_LEN + 1)).is_valid());
+    }
+
+    #[test]
+    fn frame_header_accepts_jpeg_len_at_sanity_ceiling() {
+        assert!(decode_frame_header(&encode_header(1920, 1080, MAX_JPEG_LEN)).is_valid());
+    }
+
+    #[test]
+    fn frame_header_accepts_typical_1080p_frame() {
+        assert!(decode_frame_header(&encode_header(1920, 1080, 200_000)).is_valid());
     }
 }

@@ -106,11 +106,10 @@ test('media quality survives and reports a simulated bad network, then recovers'
   await enterChannelRoom(main, channelName);
   await joinDefaultSubRoomViaUi(main);
 
-  const peer = spawnPeer();
+  const peer = await spawnPeer({ accessToken: owner.access_token });
   let tone;
   try {
     await joinVoiceAsPeer(peer, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: 'NetQualityPeer',
     });

@@ -29,7 +29,9 @@ vi.mock('livekit-client', () => {
       this.state = 'disconnected';
       return Promise.resolve();
     });
-    constructor() {
+    options: Record<string, unknown> | undefined;
+    constructor(options?: Record<string, unknown>) {
+      this.options = options;
       roomState.current = this;
     }
     on(event: string, handler: (...args: unknown[]) => void) {
@@ -204,17 +206,41 @@ describe('pickScreenSharePublication', () => {
   });
 });
 
-/* ─── ViewerRoomConnection.refreshIdentity (Watch All dead-track recovery) ──
- * Regression coverage for #283: a single dead track used to call
- * forceReconnect(), tearing down the whole Room and blacking out every
- * Watch All tile. refreshIdentity resubscribes one identity in place. */
+/* ─── ViewerRoomConnection Room construction options — issue #117 ──
+ * Our self-hosted LiveKit server (pinned to v1.9.3) doesn't serve the SDK's
+ * default /rtc/v1 join path, so every viewer-window connect (Watch All,
+ * screen-share pop-outs) would otherwise pay a guaranteed-fail round trip
+ * before falling back to the legacy path it ends up using anyway. */
 
 interface TestRoom {
   state: string;
   remoteParticipants: Map<string, unknown>;
   disconnect: ReturnType<typeof vi.fn>;
   emit: (event: string, ...args: unknown[]) => void;
+  options?: Record<string, unknown>;
 }
+
+describe('ViewerRoomConnection Room construction', () => {
+  beforeEach(() => {
+    roomState.current = null;
+  });
+
+  it('constructs Room with singlePeerConnection:false', async () => {
+    const conn = new ViewerRoomConnection({ windowLabel: 'watch-all' });
+    conn.watch('alice', () => {});
+    await tick();
+    await tick();
+
+    const room = roomState.current as TestRoom;
+    expect(room).not.toBeNull();
+    expect(room.options?.singlePeerConnection).toBe(false);
+  });
+});
+
+/* ─── ViewerRoomConnection.refreshIdentity (Watch All dead-track recovery) ──
+ * Regression coverage for #283: a single dead track used to call
+ * forceReconnect(), tearing down the whole Room and blacking out every
+ * Watch All tile. refreshIdentity resubscribes one identity in place. */
 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -331,5 +357,64 @@ describe('ViewerRoomConnection.refreshIdentity', () => {
     expect(alicePub.setSubscribed).not.toHaveBeenCalled();
     expect(room.disconnect).not.toHaveBeenCalled();
     expect(events).toHaveLength(eventsBefore);
+  });
+});
+
+/* ─── ViewerRoomConnection onConnected (Watch All error-counter reset) ──
+ * Regression coverage for #283: WatchAllPage's connectionErrorCount is
+ * documented as "consecutive Room-level connect failures" and escalates
+ * tiles to a visible error state at 3, but nothing ever reset it back to 0
+ * after a successful (re)connect — unlike ScreenSharePage's equivalent
+ * counter, which resets when its watch() callback delivers a stream. Once a
+ * Watch All window accumulated 3 early transient failures, every
+ * subsequently-mounted tile immediately rendered "connection failed" on
+ * mount, even with a perfectly healthy Room. onConnected gives the caller a
+ * hook to reset the counter on the event that actually means "recovered":
+ * the Room itself reconnecting, not any one tile's track arriving. */
+describe('ViewerRoomConnection onConnected', () => {
+  beforeEach(() => {
+    roomState.current = null;
+  });
+
+  it('fires once after the initial successful connect', async () => {
+    const onConnected = vi.fn();
+    const conn = new ViewerRoomConnection({ windowLabel: 'watch-all', onConnected });
+    conn.watch('alice', () => {});
+    await tick();
+    await tick();
+
+    expect(onConnected).toHaveBeenCalledTimes(1);
+    conn.dispose();
+  });
+
+  it('fires again after forceReconnect() succeeds, so a caller can reset a failure counter per reconnect', async () => {
+    const onConnected = vi.fn();
+    const conn = new ViewerRoomConnection({ windowLabel: 'watch-all', onConnected });
+    conn.watch('alice', () => {});
+    await tick();
+    await tick();
+    expect(onConnected).toHaveBeenCalledTimes(1);
+
+    conn.forceReconnect();
+    await tick();
+    await tick();
+
+    expect(onConnected).toHaveBeenCalledTimes(2);
+    conn.dispose();
+  });
+
+  it('does not fire after dispose()', async () => {
+    const onConnected = vi.fn();
+    const conn = new ViewerRoomConnection({ windowLabel: 'watch-all', onConnected });
+    conn.watch('alice', () => {});
+    await tick();
+    await tick();
+    onConnected.mockClear();
+
+    conn.dispose();
+    await tick();
+    await tick();
+
+    expect(onConnected).not.toHaveBeenCalled();
   });
 });

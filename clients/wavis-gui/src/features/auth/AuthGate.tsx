@@ -11,27 +11,18 @@ import {
   fetchMyUsername,
   setUsername,
 } from './auth';
-import type { RefreshResult } from './auth';
+import {
+  runAuthGateInit,
+  runAuthGateResume,
+  decideScheduledRefreshAction,
+} from './auth-gate-model';
 import { parseHostname } from '@shared/helpers';
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 const LOG_PREFIX = '[wavis:authgate]';
-const MAX_REFRESH_RETRIES = 3;
-const STARTUP_RETRY_DELAYS = [250, 1000, 3000];
 
-/* ─── Helpers ───────────────────────────────────────────────────── */
-
-function jitteredDelay(baseMs: number): number {
-  const jitter = baseMs * 0.2 * (2 * Math.random() - 1); // ±20%
-  return Math.round(baseMs + jitter);
-}
-
-function isTransientFailure(result: RefreshResult): boolean {
-  return (
-    result.status === 'network_error' ||
-    result.status === 'server_error' ||
-    result.status === 'rate_limited'
-  );
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /* ═══ Component ═════════════════════════════════════════════════════ */
@@ -65,58 +56,25 @@ export default function AuthGate() {
       void (async () => {
         console.log(LOG_PREFIX, 'Scheduled refresh firing');
         const result = await refreshTokens();
+        const decision = decideScheduledRefreshAction(result, refreshRetriesRef.current);
+        refreshRetriesRef.current = decision.nextRetryCount;
 
-        if (result.status === 'success') {
-          refreshRetriesRef.current = 0;
+        if (decision.action === 'success') {
           void scheduleRefresh();
           return;
         }
 
-        // Non-recoverable: retry once more (the first 401 might be a transient
-        // race with token rotation), then navigate to /login preserving the
-        // refresh token so the Login page can offer "Reconnect".
-        if (!isTransientFailure(result)) {
-          if (refreshRetriesRef.current === 0) {
-            // First non-recoverable failure — retry once after a short delay
-            refreshRetriesRef.current = MAX_REFRESH_RETRIES - 1;
-            console.warn(
-              LOG_PREFIX,
-              `Scheduled refresh non-recoverable (${result.status}) — retrying once`,
-            );
-            refreshTimeoutRef.current = setTimeout(() => {
-              void scheduleRefresh();
-            }, jitteredDelay(1000));
-            return;
-          }
-          console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable: ${result.status}`);
-          // Preserve refresh token — only clear access tokens so Login shows
-          // "Reconnect" instead of forcing a full re-register.
-          await clearAccessTokens();
-          cancelScheduledRefresh();
-          void navigate('/login', { replace: true });
-          return;
-        }
-
-        // Transient: retry with backoff
-        refreshRetriesRef.current += 1;
-        console.warn(
-          LOG_PREFIX,
-          `Scheduled refresh failed (attempt ${refreshRetriesRef.current}/${MAX_REFRESH_RETRIES}): ${result.status}`,
-        );
-
-        if (refreshRetriesRef.current < MAX_REFRESH_RETRIES) {
-          const retryDelay =
-            result.status === 'rate_limited' && result.retryAfter
-              ? result.retryAfter
-              : jitteredDelay(STARTUP_RETRY_DELAYS[refreshRetriesRef.current - 1] ?? 3000);
+        if (decision.action === 'retry') {
+          console.warn(LOG_PREFIX, `Scheduled refresh failed (${result.status}) — retrying`);
           refreshTimeoutRef.current = setTimeout(() => {
             void scheduleRefresh();
-          }, retryDelay);
+          }, decision.retryDelayMs);
           return;
         }
 
-        // All retries exhausted — transient failure, preserve refresh token
-        console.warn(LOG_PREFIX, 'All scheduled refresh retries exhausted');
+        // login — preserve refresh token, only clear access tokens so Login
+        // shows "Reconnect" instead of forcing a full re-register.
+        console.warn(LOG_PREFIX, `Scheduled refresh non-recoverable: ${result.status}`);
         await clearAccessTokens();
         cancelScheduledRefresh();
         void navigate('/login', { replace: true });
@@ -148,21 +106,27 @@ export default function AuthGate() {
   useEffect(() => {
     async function handleVisibility() {
       if (document.visibilityState !== 'visible') return;
-      const expired = await isTokenExpired();
-      if (expired) {
-        console.log(LOG_PREFIX, 'App resumed with expired token — refreshing');
-        const result = await refreshTokens();
-        if (result.status === 'success') {
-          refreshRetriesRef.current = 0;
-          void scheduleRefresh();
-        } else if (!isTransientFailure(result)) {
-          await clearAccessTokens();
-          cancelScheduledRefresh();
-          void navigate('/login', { replace: true });
-        }
-      } else {
-        // Token still valid — re-schedule in case the timer was killed while backgrounded
-        console.log(LOG_PREFIX, 'App resumed — re-scheduling refresh timer');
+      console.log(LOG_PREFIX, 'App resumed — re-checking token and username');
+      const result = await runAuthGateResume({
+        isTokenExpired,
+        refreshTokens,
+        clearAccessTokens,
+        getUsername,
+        fetchMyUsername,
+        setUsername,
+      });
+
+      if (result.syncedUsername) setUsernameState(result.syncedUsername);
+
+      if (result.outcome === 'login') {
+        cancelScheduledRefresh();
+        void navigate('/login', { replace: true });
+        return;
+      }
+      if (result.outcome === 'refreshed') {
+        refreshRetriesRef.current = 0;
+      }
+      if (result.outcome === 'ready' || result.outcome === 'refreshed') {
         void scheduleRefresh();
       }
     }
@@ -177,93 +141,47 @@ export default function AuthGate() {
     let cancelled = false;
 
     async function init() {
-      // 1. Check device registration
-      const registered = await isDeviceRegistered();
-      if (!registered) {
-        if (!cancelled) void navigate('/setup', { replace: true });
-        return;
-      }
+      const result = await runAuthGateInit(
+        {
+          isDeviceRegistered,
+          getUsername,
+          isTokenExpired,
+          refreshTokens,
+          clearAccessTokens,
+          fetchMyUsername,
+          setUsername,
+          sleep,
+        },
+        { isCancelled: () => cancelled },
+      );
 
-      // Load server URL for status bar
+      if (cancelled) return;
+
+      // Load server URL for status bar (independent of the outcome above)
       const url = await getServerUrl();
       if (!cancelled && url) {
         setHostname(parseHostname(url));
       }
 
-      const localName = await getUsername();
-      if (!cancelled && localName) {
-        setUsernameState(localName);
+      if (result.localUsername) setUsernameState(result.localUsername);
+      if (result.syncedUsername) setUsernameState(result.syncedUsername);
+
+      if (result.outcome === 'setup') {
+        void navigate('/setup', { replace: true });
+        return;
+      }
+      if (result.outcome === 'login') {
+        cancelScheduledRefresh();
+        void navigate('/login', { replace: true });
+        return;
+      }
+      if (result.outcome === 'cancelled') {
+        return;
       }
 
-      // 2. Check token expiry
-      const expired = await isTokenExpired();
-      if (expired) {
-        const result = await refreshTokens();
-
-        if (result.status === 'success') {
-          // Refresh succeeded — fall through to schedule
-        } else if (!isTransientFailure(result)) {
-          // Non-recoverable on startup — preserve refresh token so Login
-          // page can offer "Reconnect" instead of forcing re-register.
-          if (!cancelled) {
-            await clearAccessTokens();
-            cancelScheduledRefresh();
-            void navigate('/login', { replace: true });
-          }
-          return;
-        } else {
-          // Transient: retry loop
-          let lastResult: RefreshResult = result;
-          for (let i = 0; i < STARTUP_RETRY_DELAYS.length; i++) {
-            if (cancelled) return;
-            const delay =
-              lastResult.status === 'rate_limited' && lastResult.retryAfter
-                ? lastResult.retryAfter
-                : jitteredDelay(STARTUP_RETRY_DELAYS[i]);
-            await new Promise((r) => setTimeout(r, delay));
-            if (cancelled) return;
-            lastResult = await refreshTokens();
-            if (lastResult.status === 'success') break;
-            if (!isTransientFailure(lastResult)) {
-              // Became non-recoverable mid-retry — preserve refresh token
-              await clearAccessTokens();
-              cancelScheduledRefresh();
-              void navigate('/login', { replace: true });
-              return;
-            }
-          }
-          if (lastResult.status !== 'success') {
-            // All retries exhausted — transient, preserve refresh token
-            if (!cancelled) {
-              await clearAccessTokens();
-              cancelScheduledRefresh();
-              void navigate('/login', { replace: true });
-            }
-            return;
-          }
-        }
-      }
-
-      // 3. If no username in local store, sync from server now that token is valid.
-      // This recovers accounts where username was never persisted locally (e.g.
-      // after device pairing when the best-effort sync failed, or after a store reset).
-      if (!localName) {
-        try {
-          const serverName = await fetchMyUsername();
-          if (!cancelled && serverName) {
-            await setUsername(serverName);
-            setUsernameState(serverName);
-          }
-        } catch {
-          // Best-effort — missing username is cosmetic, proceed without blocking
-        }
-      }
-
-      // 4. Token is valid (or just refreshed) — schedule background refresh
-      if (!cancelled) {
-        setReady(true);
-        void scheduleRefresh();
-      }
+      // ready — token is valid (or was just refreshed)
+      setReady(true);
+      void scheduleRefresh();
     }
 
     void init();

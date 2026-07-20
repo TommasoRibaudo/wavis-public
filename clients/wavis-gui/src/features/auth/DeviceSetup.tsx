@@ -6,9 +6,12 @@ import {
   registerUser,
   setUsername,
   INSECURE_TLS_ALLOWED,
+  DEFAULT_SERVER_URL,
+  SERVER_OVERRIDE_ALLOWED,
   deleteStoredRecoveryId,
 } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
+import { setLaunchOnStartupEnabled } from '@shared/autostart-bridge';
 import { AuthFieldRow } from './AuthFieldRow';
 import { AuthShell } from './AuthShell';
 import { AuthLogPanel } from './AuthLogPanel';
@@ -16,7 +19,7 @@ import { AuthLogPanel } from './AuthLogPanel';
 const MIN_PHRASE_LENGTH = 4;
 const MAX_USERNAME_LENGTH = 64;
 
-type SetupStep = 1 | 2 | 3;
+type SetupStep = 1 | 2 | 3 | 4;
 
 export function validateStep1(
   username: string,
@@ -52,6 +55,10 @@ export function validateStep1(
   }
 
   return { valid: Object.keys(errors).length === 0, errors };
+}
+
+export function validateInviteCode(inviteCode: string): string | null {
+  return inviteCode.trim() ? null : 'Invite code is required';
 }
 
 function InsecureTlsToggle({
@@ -98,15 +105,58 @@ function InsecureTlsToggle({
   );
 }
 
+function LaunchOnStartupStep({ onChoice }: { onChoice: (wantEnabled: boolean) => Promise<void> }) {
+  const [pending, setPending] = useState(false);
+
+  const choose = useCallback(
+    (wantEnabled: boolean) => {
+      if (pending) return;
+      setPending(true);
+      void onChoice(wantEnabled).finally(() => setPending(false));
+    },
+    [pending, onChoice],
+  );
+
+  return (
+    <div className="px-4 sm:px-6 py-4">
+      <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3">
+        <div className="mb-2 text-sm font-bold">LAUNCH WAVIS ON STARTUP</div>
+        <p className="text-sm text-wavis-text-secondary">
+          Start Wavis automatically when you log into this computer, so you never have to open it
+          manually. Off by default — you can change this anytime in Settings.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => choose(false)}
+          disabled={pending}
+          className="border border-wavis-text-secondary text-wavis-text-secondary hover:border-wavis-accent hover:text-wavis-accent transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          /skip
+        </button>
+        <button
+          onClick={() => choose(true)}
+          disabled={pending}
+          className="border border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg transition-colors px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {pending ? 'saving...' : '/enable'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DeviceSetup() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<SetupStep>(1);
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [username, setUsernameValue] = useState('');
   const [phrase, setPhrase] = useState('');
   const [confirmPhrase, setConfirmPhrase] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -114,6 +164,7 @@ export default function DeviceSetup() {
   const [nameError, setNameError] = useState<string | null>(null);
   const [phraseError, setPhraseError] = useState<string | null>(null);
   const [confirmPhraseError, setConfirmPhraseError] = useState<string | null>(null);
+  const [inviteCodeError, setInviteCodeError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
 
@@ -150,19 +201,42 @@ export default function DeviceSetup() {
     if (!trustedDevice) {
       await deleteStoredRecoveryId();
     }
-    navigate('/', { replace: true });
-  }, [username, trustedDevice, navigate]);
+    setStep(4);
+  }, [username, trustedDevice]);
+
+  const handleStartupChoice = useCallback(
+    async (wantEnabled: boolean) => {
+      await setLaunchOnStartupEnabled(wantEnabled);
+      navigate('/', { replace: true });
+    },
+    [navigate],
+  );
 
   const handleRegister = useCallback(async () => {
     if (registering) return;
 
     setUrlError(null);
+    setInviteCodeError(null);
     setRegisterError(null);
     setShowRetry(false);
 
     const validation = validateServerUrl(serverUrl, insecureTls);
     if (!validation.valid) {
-      setUrlError(validation.reason ?? 'Invalid server URL');
+      // Field is hidden when SERVER_OVERRIDE_ALLOWED is false, so a failure
+      // here (e.g. DEFAULT_SERVER_URL unset) has no urlError field to render
+      // next to — route it through the visible registerError banner instead.
+      if (SERVER_OVERRIDE_ALLOWED) {
+        setUrlError(validation.reason ?? 'Invalid server URL');
+      } else {
+        setRegisterError(validation.reason ?? 'Invalid server URL');
+      }
+      return;
+    }
+
+    const trimmedInviteCode = inviteCode.trim();
+    const inviteError = validateInviteCode(inviteCode);
+    if (inviteError) {
+      setInviteCodeError(inviteError);
       return;
     }
 
@@ -170,9 +244,16 @@ export default function DeviceSetup() {
     setRegistering(true);
     setLogs([]);
 
-    const result = await registerUser(serverUrl, phrase, trimmedName, insecureTls, (entry) => {
-      setLogs((prev) => [...prev, entry]);
-    });
+    const result = await registerUser(
+      serverUrl,
+      phrase,
+      trimmedName,
+      trimmedInviteCode,
+      insecureTls,
+      (entry) => {
+        setLogs((prev) => [...prev, entry]);
+      },
+    );
 
     setRegistering(false);
     setPhrase('');
@@ -184,6 +265,11 @@ export default function DeviceSetup() {
       return;
     }
 
+    if (result.inviteRejected) {
+      setInviteCodeError('Invalid or expired invite code');
+      return;
+    }
+
     const err = result.error ?? '';
     if (err.includes('too many requests')) {
       setRegisterError('too many requests - try again later');
@@ -191,7 +277,7 @@ export default function DeviceSetup() {
       setRegisterError('Registration failed - please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, username, phrase, insecureTls, registering]);
+  }, [serverUrl, username, phrase, inviteCode, insecureTls, registering]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -214,9 +300,10 @@ export default function DeviceSetup() {
     <AuthShell
       subtitle={
         <div className="mt-2 text-wavis-text-secondary text-sm">
-          {step === 1 && 'Step 1 of 3 - create credentials'}
-          {step === 2 && 'Step 2 of 3 - choose server'}
-          {step === 3 && 'Step 3 of 3 - save recovery details'}
+          {step === 1 && 'Step 1 of 4 - create credentials'}
+          {step === 2 && 'Step 2 of 4 - choose server'}
+          {step === 3 && 'Step 3 of 4 - save recovery details'}
+          {step === 4 && 'Step 4 of 4 - launch on startup'}
         </div>
       }
     >
@@ -280,29 +367,50 @@ export default function DeviceSetup() {
       {step === 2 && (
         <>
           <div className="px-4 sm:px-6 py-4">
+            {SERVER_OVERRIDE_ALLOWED && (
+              <>
+                <AuthFieldRow
+                  label="Server URL:"
+                  placeholder="https://wavis.example.com"
+                  value={serverUrl}
+                  onChange={(value) => {
+                    setServerUrl(value);
+                    setUrlError(null);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  error={urlError}
+                  disabled={registering}
+                  inputRef={inputRef}
+                  autoFocus
+                />
+
+                <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
+                  <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
+                  <p>
+                    The address of your Wavis server. Your admin will share it with you, or you can
+                    get a hosted server at wavis.io.
+                  </p>
+                  <p className="mt-2 text-wavis-accent">
+                    It looks like: https://wavis.yourteam.com
+                  </p>
+                </div>
+              </>
+            )}
+
             <AuthFieldRow
-              label="Server URL:"
-              placeholder="https://wavis.example.com"
-              value={serverUrl}
+              label="Invite Code:"
+              placeholder="the code your admin sent you"
+              value={inviteCode}
               onChange={(value) => {
-                setServerUrl(value);
-                setUrlError(null);
+                setInviteCode(value);
+                setInviteCodeError(null);
               }}
               onKeyDown={handleKeyDown}
-              error={urlError}
+              error={inviteCodeError}
               disabled={registering}
-              inputRef={inputRef}
-              autoFocus
+              inputRef={SERVER_OVERRIDE_ALLOWED ? undefined : inputRef}
+              autoFocus={!SERVER_OVERRIDE_ALLOWED}
             />
-
-            <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
-              <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
-              <p>
-                The address of your Wavis server. Your admin will share it with you, or you can get
-                a hosted server at wavis.io.
-              </p>
-              <p className="mt-2 text-wavis-accent">It looks like: https://wavis.yourteam.com</p>
-            </div>
 
             <InsecureTlsToggle
               insecureTls={insecureTls}
@@ -422,11 +530,13 @@ export default function DeviceSetup() {
         </div>
       )}
 
+      {step === 4 && <LaunchOnStartupStep onChoice={handleStartupChoice} />}
+
       <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-wavis-text-secondary text-xs">
         Tokens stored in local keychain - Auto-refresh - Device ID persisted
       </div>
 
-      {step !== 3 && (
+      {step !== 3 && step !== 4 && (
         <div className="px-4 sm:px-6 py-3 border-t border-wavis-text-secondary text-sm">
           <button
             onClick={() => navigate('/recover')}

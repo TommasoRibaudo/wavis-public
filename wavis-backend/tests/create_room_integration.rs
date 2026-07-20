@@ -27,6 +27,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -233,8 +234,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -296,9 +300,9 @@ async fn drain(stream: &mut WsStream) {
 /// Â§22c: CreateRoom after already joined â†’ "already joined"
 #[tokio::test]
 async fn test22c_create_room_after_join_rejected() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Join a room first
     ws_send(
@@ -323,9 +327,9 @@ async fn test22c_create_room_after_join_rejected() {
 /// Â§22d: Join after CreateRoom â†’ "already joined"
 #[tokio::test]
 async fn test22d_join_after_create_room_rejected() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Create a room first
     ws_send(
@@ -350,9 +354,9 @@ async fn test22d_join_after_create_room_rejected() {
 /// Â§22e: CreateRoom before authentication â†’ allowed (room_created response)
 #[tokio::test]
 async fn test22e_create_room_before_auth_allowed() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // CreateRoom without any prior join â€” should succeed
     ws_send(
@@ -373,9 +377,9 @@ async fn test22e_create_room_before_auth_allowed() {
 /// Â§36a: Create SFU room â€” room_created + media_token
 #[tokio::test]
 async fn test36a_create_sfu_room_success() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     ws_send(
         &mut sink,
@@ -403,9 +407,9 @@ async fn test36a_create_sfu_room_success() {
 /// Â§36b: Create P2P room â€” room_created, no media_token
 #[tokio::test]
 async fn test36b_create_p2p_room() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     ws_send(
         &mut sink,
@@ -428,10 +432,10 @@ async fn test36b_create_p2p_room() {
 /// Â§36c: Create room that already exists â†’ error
 #[tokio::test]
 async fn test36c_create_room_already_exists() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // First client creates the room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({"type":"create_room","roomId":"create-test","roomType":"sfu"}),
@@ -441,7 +445,7 @@ async fn test36c_create_room_already_exists() {
     drain(&mut stream1).await;
 
     // Second client tries to create the same room
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({"type":"create_room","roomId":"create-test","roomType":"sfu"}),
@@ -454,9 +458,9 @@ async fn test36c_create_room_already_exists() {
 /// Â§36d: Create room with empty room ID â†’ error "invalid room ID"
 #[tokio::test]
 async fn test36d_create_room_empty_id() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Empty string
     ws_send(
@@ -480,9 +484,9 @@ async fn test36d_create_room_empty_id() {
 /// Â§36e: CreateRoom while already in a room â†’ "already joined"
 #[tokio::test]
 async fn test36e_create_room_while_in_room() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     // Create first room
     ws_send(
@@ -506,10 +510,10 @@ async fn test36e_create_room_while_in_room() {
 /// Â§36f: Second client joins via invite code from CreateRoom
 #[tokio::test]
 async fn test36f_join_via_create_room_invite() {
-    let (addr, _state) = start_server(true).await;
+    let (addr, state) = start_server(true).await;
 
     // Client 1: create room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({"type":"create_room","roomId":"invite-room","roomType":"sfu"}),
@@ -521,7 +525,7 @@ async fn test36f_join_via_create_room_invite() {
     drain(&mut stream1).await;
 
     // Client 2: join with the invite code
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({"type":"join","roomId":"invite-room","roomType":"sfu","inviteCode": invite_code}),
@@ -550,9 +554,9 @@ async fn test36f_join_via_create_room_invite() {
 /// Â§36g: CreateRoom with TURN credentials â†’ iceConfig populated
 #[tokio::test]
 async fn test36g_create_room_with_turn() {
-    let (addr, _state) = start_server_with_turn(false).await;
+    let (addr, state) = start_server_with_turn(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     ws_send(
         &mut sink,
@@ -599,9 +603,9 @@ async fn test36g_create_room_with_turn() {
 /// Â§36g supplement: CreateRoom without TURN â†’ iceConfig is null
 #[tokio::test]
 async fn test36g_create_room_without_turn_no_ice_config() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
-    let (mut sink, mut stream) = ws_connect(addr).await;
+    let (mut sink, mut stream) = ws_connect(addr, &state).await;
 
     ws_send(
         &mut sink,

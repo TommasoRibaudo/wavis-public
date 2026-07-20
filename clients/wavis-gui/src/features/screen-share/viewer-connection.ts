@@ -79,12 +79,22 @@ export interface ViewerRoomConnectionOptions {
   windowLabel: string;
   /** Invoked after each failed connect attempt (already scheduled to retry). */
   onConnectionError?: (error: unknown) => void;
+  /**
+   * Invoked after each successful (re)connect — including the initial
+   * connect and every reconnect after a drop or forceReconnect(). Lets a
+   * caller reset a failure counter on the event that actually means
+   * "recovered": the Room itself connecting, not any one identity's track
+   * arriving (a Room can be healthy while a specific publication is still
+   * missing or dead).
+   */
+  onConnected?: () => void;
 }
 
 export class ViewerRoomConnection {
   private readonly windowLabel: string;
   private readonly windowId: string;
   private readonly onConnectionError?: (error: unknown) => void;
+  private readonly onConnected?: () => void;
 
   private room: Room | null = null;
   private connectPromise: Promise<void> | null = null;
@@ -101,6 +111,7 @@ export class ViewerRoomConnection {
   constructor(opts: ViewerRoomConnectionOptions) {
     this.windowLabel = opts.windowLabel;
     this.onConnectionError = opts.onConnectionError;
+    this.onConnected = opts.onConnected;
     this.windowId = makeViewerWindowId();
   }
 
@@ -215,7 +226,15 @@ export class ViewerRoomConnection {
 
       // adaptiveStream off: tiles attach via srcObject, invisible to LiveKit's
       // element observer, and we pin quality explicitly per subscription.
-      const room = new Room({ adaptiveStream: false, dynacast: false });
+      // singlePeerConnection:false — see livekit-media.ts LIVEKIT_ROOM_OPTIONS
+      // (issue #117): our self-hosted LiveKit server doesn't serve the SDK's
+      // default /rtc/v1 join path, so every viewer window connect would
+      // otherwise pay a guaranteed-fail round trip before falling back.
+      const room = new Room({
+        adaptiveStream: false,
+        dynacast: false,
+        singlePeerConnection: false,
+      });
       this.wireRoomEvents(room);
       this.room = room;
 
@@ -235,6 +254,7 @@ export class ViewerRoomConnection {
 
       this.attempt = 0;
       if (DEBUG_VIEWER_CONNECTION) console.log(LOG, `[${this.windowLabel}] connected`);
+      this.onConnected?.();
       this.subscribeAll();
     } catch (err) {
       if (this.disposed || generation !== this.generation) return;

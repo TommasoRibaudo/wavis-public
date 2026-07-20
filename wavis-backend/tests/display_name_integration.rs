@@ -23,6 +23,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use uuid::Uuid;
 
 use wavis_backend::abuse::join_rate_limiter::{JoinRateLimiter, JoinRateLimiterConfig};
 use wavis_backend::app_state::AppState;
@@ -135,8 +136,11 @@ type WsStream = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
-async fn ws_connect(addr: SocketAddr) -> (WsSink, WsStream) {
-    let url = format!("ws://{addr}/ws");
+async fn ws_connect(addr: SocketAddr, app_state: &AppState) -> (WsSink, WsStream) {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(Uuid::new_v4(), Uuid::new_v4());
+    let url = format!("ws://{addr}/ws?ticket={ticket}");
     let (ws, _) = connect_async(&url).await.expect("WS connect failed");
     ws.split()
 }
@@ -181,10 +185,10 @@ async fn drain(stream: &mut WsStream) {
 /// broadcast to existing peers carries that display name.
 #[tokio::test]
 async fn test41g_join_with_display_name_propagates_to_participant_joined() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create a room (no display name)
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -198,7 +202,7 @@ async fn test41g_join_with_display_name_propagates_to_participant_joined() {
     drain(&mut stream1).await;
 
     // Client 2: join with a displayName
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -224,10 +228,10 @@ async fn test41g_join_with_display_name_propagates_to_participant_joined() {
 /// stored and visible to late joiners in the participants list.
 #[tokio::test]
 async fn test41g_create_room_with_display_name_visible_to_joiner() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room with displayName
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -244,7 +248,7 @@ async fn test41g_create_room_with_display_name_visible_to_joiner() {
     drain(&mut stream1).await;
 
     // Client 2: join the room â€” should see "Charlie" in participants list
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -279,10 +283,10 @@ async fn test41g_create_room_with_display_name_visible_to_joiner() {
 /// using the peer_id as the display name in participant_joined events.
 #[tokio::test]
 async fn test41h_join_without_display_name_falls_back_to_peer_id() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create a room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -296,7 +300,7 @@ async fn test41h_join_without_display_name_falls_back_to_peer_id() {
     drain(&mut stream1).await;
 
     // Client 2: join WITHOUT displayName
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -326,10 +330,10 @@ async fn test41h_join_without_display_name_falls_back_to_peer_id() {
 /// falls back to peer_id in the participants list.
 #[tokio::test]
 async fn test41h_create_room_without_display_name_falls_back_to_peer_id() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room WITHOUT displayName
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -345,7 +349,7 @@ async fn test41h_create_room_without_display_name_falls_back_to_peer_id() {
     drain(&mut stream1).await;
 
     // Client 2: join the room
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -382,10 +386,10 @@ async fn test41h_create_room_without_display_name_falls_back_to_peer_id() {
 /// joiner in the participants list, and a second client sees the display name.
 #[tokio::test]
 async fn test41i_join_with_display_name_raw_json() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -400,7 +404,7 @@ async fn test41i_join_with_display_name_raw_json() {
     drain(&mut stream1).await;
 
     // Client 2: join with displayName "Charlie"
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -436,10 +440,10 @@ async fn test41i_join_with_display_name_raw_json() {
 /// in the participants list.
 #[tokio::test]
 async fn test41i_create_room_with_display_name_raw_json() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room with displayName "Dana"
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -456,7 +460,7 @@ async fn test41i_create_room_with_display_name_raw_json() {
     drain(&mut stream1).await;
 
     // Client 2: join the room
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -491,10 +495,10 @@ async fn test41i_create_room_with_display_name_raw_json() {
 /// - Joiner's name appears in creator's participant_joined event
 #[tokio::test]
 async fn test41_both_clients_with_display_names() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room as "Alice"
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -510,7 +514,7 @@ async fn test41_both_clients_with_display_names() {
     drain(&mut stream1).await;
 
     // Client 2: join as "Bob"
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({
@@ -543,10 +547,10 @@ async fn test41_both_clients_with_display_names() {
 /// Â§41h edge case: Join with empty displayName string â†’ falls back to peer_id
 #[tokio::test]
 async fn test41h_empty_display_name_falls_back_to_peer_id() {
-    let (addr, _state) = start_server(false).await;
+    let (addr, state) = start_server(false).await;
 
     // Client 1: create room
-    let (mut sink1, mut stream1) = ws_connect(addr).await;
+    let (mut sink1, mut stream1) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink1,
         json!({
@@ -560,7 +564,7 @@ async fn test41h_empty_display_name_falls_back_to_peer_id() {
     drain(&mut stream1).await;
 
     // Client 2: join with empty displayName
-    let (mut sink2, mut stream2) = ws_connect(addr).await;
+    let (mut sink2, mut stream2) = ws_connect(addr, &state).await;
     ws_send(
         &mut sink2,
         json!({

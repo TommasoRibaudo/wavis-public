@@ -1121,6 +1121,115 @@ async fn prop13_refresh_token_reuse_detection() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #323: concurrent rotate_refresh_token race. The sequential replay
+// tests above (prop16_reuse_detection_via_consumed_tokens,
+// prop13_refresh_token_reuse_detection) await the first rotation to complete
+// before replaying the consumed token — that only proves the conditional
+// UPDATE rejects an *already-consumed* token, not that two callers racing
+// the *same still-valid* token are handled safely. This fires both
+// rotations from separate spawned tasks on a multi-threaded runtime so they
+// genuinely contend for the same row, matching #323's real-world trigger:
+// two live app processes sharing one OS-keychain refresh token (e.g. no
+// single-instance enforcement on the desktop client — see the client-side
+// fix in clients/wavis-gui/src-tauri/src/main.rs). This documents the
+// pre-existing, intentional server-side invariant (security.md #12) that
+// the client-side fix prevents from ever being reachable in the normal
+// single-real-process case — it is not a behavior change.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+#[serial]
+async fn concurrent_rotate_refresh_token_same_token_triggers_reuse_detection() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+
+    let reg = register_device(&pool, &secret, 900, 30, &pepper)
+        .await
+        .unwrap();
+    let user_id = reg.user_id;
+    let raw_refresh = reg.refresh_token.clone();
+
+    let epoch_before: i32 =
+        sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Two separate spawned tasks racing the same still-valid raw token —
+    // the profile that hits #323 in the wild is two live processes, not one
+    // process awaiting a second call after the first already returned.
+    let task_a = tokio::spawn({
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let token = raw_refresh.clone();
+        async move { rotate_refresh_token(&pool, &token, &secret, 900, 30, &pepper).await }
+    });
+    let task_b = tokio::spawn({
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let token = raw_refresh.clone();
+        async move { rotate_refresh_token(&pool, &token, &secret, 900, 30, &pepper).await }
+    });
+
+    let (result_a, result_b) = tokio::join!(task_a, task_b);
+    let result_a = result_a.expect("task_a panicked");
+    let result_b = result_b.expect("task_b panicked");
+
+    let successes = [&result_a, &result_b].iter().filter(|r| r.is_ok()).count();
+    let reuse_detected = [&result_a, &result_b]
+        .iter()
+        .filter(|r| matches!(r, Err(AuthError::TokenReuseDetected)))
+        .count();
+
+    assert_eq!(
+        successes, 1,
+        "exactly one concurrent rotation of the same token should succeed, got: {:?} / {:?}",
+        result_a, result_b
+    );
+    assert_eq!(
+        reuse_detected, 1,
+        "exactly one concurrent rotation of the same token should trigger TokenReuseDetected, got: {:?} / {:?}",
+        result_a, result_b
+    );
+
+    // Account-wide fallout: reuse detection bumps session_epoch and revokes
+    // every refresh token for the user (security.md #12) — this is the
+    // "logs out every device" behavior #323's client-side fix prevents from
+    // ever being reachable in the normal double-launch case.
+    let epoch_after: i32 = sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        epoch_after,
+        epoch_before + 1,
+        "session_epoch should be bumped by 1 after concurrent-rotation reuse detection"
+    );
+
+    let active_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM refresh_tokens rt \
+         JOIN devices d ON rt.device_id = d.device_id \
+         WHERE d.user_id = $1 AND rt.revoked_at IS NULL AND rt.consumed_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        active_count.0, 0,
+        "all refresh tokens should be revoked after concurrent-rotation reuse detection"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Characterization tests for auth::authenticate_access_token — the shared
 // entry point behind the REST extractor and the WS Auth arm. These pin the
 // contract before/after the ws_dispatch auth extraction: JWT validity,
@@ -1456,6 +1565,159 @@ async fn alpha_invite_registration_exhausts_limited_invite() {
     assert!(matches!(result, Err(AuthError::InviteInvalid)));
 }
 
+// ---------------------------------------------------------------------------
+// P1-1: Concurrent redemption of the last alpha-invite slot — the invite's
+// `SELECT ... FOR UPDATE` row lock must serialize concurrent registrations
+// so exactly one wins, never zero and never more than one.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn concurrent_redemption_of_last_slot_admits_exactly_one() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    seed_alpha_invite(&pool, "race-single-slot", 1, None, false).await;
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+    let phrase_config = test_phrase_config();
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let phrase_config = phrase_config.clone();
+        handles.push(tokio::spawn(async move {
+            auth::register_user_with_invite(
+                &pool,
+                &format!("race-phrase-{i}"),
+                &format!("race-user-{i}"),
+                "race-single-slot",
+                &secret,
+                900,
+                30,
+                &pepper,
+                &test_alpha_invite_pepper(),
+                &phrase_config,
+                TEST_ENCRYPTION_KEY,
+            )
+            .await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        results.push(handle.await.expect("registration task panicked"));
+    }
+
+    let ok_count = results.iter().filter(|r| r.is_ok()).count();
+    let invalid_count = results
+        .iter()
+        .filter(|r| matches!(r, Err(AuthError::InviteInvalid)))
+        .count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one concurrent redemption of the last slot must win: {results:?}"
+    );
+    assert_eq!(
+        invalid_count, 7,
+        "the other 7 concurrent attempts must see InviteInvalid: {results:?}"
+    );
+
+    let redemption_count: i32 =
+        sqlx::query_scalar("SELECT redemption_count FROM alpha_invites WHERE code_hash = $1")
+            .bind(hash_invite_code("race-single-slot", &test_alpha_invite_pepper()).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        redemption_count, 1,
+        "redemption_count must stop at 1, not overshoot"
+    );
+
+    let redemption_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alpha_invite_redemptions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        redemption_rows, 1,
+        "exactly one redemption row, not one per loser"
+    );
+
+    // Negative: losers must not leave orphaned users/devices behind — the
+    // containing transaction (register_user_with_invite) rolls back whole.
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        user_count, 1,
+        "losing registrations must not leave orphaned user rows"
+    );
+    let device_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        device_count, 1,
+        "losing registrations must not leave orphaned device rows"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P1-1: Expiry boundary — an invite must be rejected at and after its exact
+// expiry instant (`now >= expires_at`), not just "well past" it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore]
+#[serial]
+async fn redeem_rejects_at_exact_expiry_instant() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    // expires_at set to a fixed instant already in the past by the time the
+    // query runs — exercises the `now >= expires_at` boundary from the
+    // production check.
+    let already_expired = chrono::Utc::now() - chrono::Duration::milliseconds(1);
+    seed_alpha_invite(&pool, "expiry-boundary", 5, Some(already_expired), false).await;
+
+    let result = auth::register_user_with_invite(
+        &pool,
+        "expiry-boundary-phrase",
+        "expiry-boundary-user",
+        "expiry-boundary",
+        &test_auth_secret(),
+        900,
+        30,
+        &test_pepper(),
+        &test_alpha_invite_pepper(),
+        &test_phrase_config(),
+        TEST_ENCRYPTION_KEY,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(AuthError::InviteInvalid)),
+        "an invite at/after its exact expiry instant must be rejected, got {result:?}"
+    );
+
+    // Negative: a rejected redemption at the expiry boundary must not
+    // increment redemption_count (the check runs before the UPDATE).
+    let redemption_count: i32 =
+        sqlx::query_scalar("SELECT redemption_count FROM alpha_invites WHERE code_hash = $1")
+            .bind(hash_invite_code("expiry-boundary", &test_alpha_invite_pepper()).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        redemption_count, 0,
+        "a rejected expired redemption must not consume a slot"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -1590,6 +1852,7 @@ async fn admin_disabled_invite_is_idempotent_and_leaves_no_auth_rows() {
         TEST_ENCRYPTION_KEY,
     )
     .await;
+
     assert!(matches!(result, Err(AuthError::InviteInvalid)));
 
     for table in [

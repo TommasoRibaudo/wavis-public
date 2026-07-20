@@ -7,6 +7,7 @@ on:
       - 'wavis-backend/**'
       - 'shared/**'
       - 'clients/**'
+      - 'tools/**'
       - '.github/workflows/workspace-ci.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -15,6 +16,7 @@ on:
       - 'wavis-backend/**'
       - 'shared/**'
       - 'clients/**'
+      - 'tools/**'
       - '.github/workflows/workspace-ci.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -61,6 +63,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       shared: ${{ steps.filter.outputs.shared }}
       clients: ${{ steps.filter.outputs.clients }}
+      tools: ${{ steps.filter.outputs.tools }}
       gui: ${{ steps.filter.outputs.gui }}
       tauri: ${{ steps.filter.outputs.tauri }}
       cargo-root: ${{ steps.filter.outputs.cargo-root }}
@@ -95,6 +98,13 @@ jobs:
             clients:
               - 'clients/**'
               - '!clients/wavis-gui/**'
+            # tools/stress (stress-harness) and tools/gui-surface-test are
+            # workspace members compiled/tested via $CI_PACKAGES but had no
+            # path filter of their own, so PRs touching only tools/** never
+            # triggered this workflow at all — silent phantom coverage at
+            # the trigger level, not just the feature-gate level (see P0-1).
+            tools:
+              - 'tools/**'
             gui:
               - 'clients/wavis-gui/**'
             tauri:
@@ -203,6 +213,7 @@ jobs:
       needs.changes.outputs.backend == 'true' ||
       needs.changes.outputs.shared == 'true' ||
       needs.changes.outputs.clients == 'true' ||
+      needs.changes.outputs.tools == 'true' ||
       needs.changes.outputs.cargo-root == 'true'
 
     steps:
@@ -265,44 +276,59 @@ jobs:
 
       # cargo test builds implicitly — no separate cargo build step needed.
       - name: Full workspace tests
-        if: github.ref == 'refs/heads/main' || needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true'
+        if: >-
+          github.ref == 'refs/heads/main' ||
+          needs.changes.outputs.core == 'true' ||
+          needs.changes.outputs.shared == 'true' ||
+          needs.changes.outputs.tools == 'true'
         run: cargo test $CI_PACKAGES
+
+      # test-support gates mock_sfu_bridge and most integration test files
+      # (#![cfg(feature = "test-support")]) — it can't go in $CI_PACKAGES
+      # above because the feature only exists on wavis-backend. Without this
+      # step those files never compile in the "core changed" path either and
+      # silently report 0 tests. test_metrics_integration.rs additionally
+      # gates its inner mod on test-metrics — both features are required or
+      # that file's tests silently report 0 too.
+      - name: Full workspace tests (wavis-backend, test-support feature)
+        if: github.ref == 'refs/heads/main' || needs.changes.outputs.core == 'true' || needs.changes.outputs.shared == 'true'
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support,test-metrics
 
       # Backend changed in a path no granular bucket covers (chat, diagnostics,
       # connections, …) — run the whole backend suite rather than nothing.
       - name: "Targeted Backend: Fallback (uncategorized paths)"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.backend-other == 'true'
-        run: cargo test -p wavis-backend
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support,test-metrics
 
       # Targeted runs only exercise --test binaries; unit tests in src/ must
       # still run whenever any backend code changed.
       - name: "Targeted Backend: Unit tests"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend-other != 'true'
-        run: cargo test -p wavis-backend --lib --bins
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --lib --bins
 
       - name: "Targeted Backend: Auth"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.auth == 'true'
-        run: cargo test -p wavis-backend --test auth_integration --test ws_auth_integration --test jwt_validation --test device_integration --test pairing_integration --test recovery_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test auth_integration --test ws_auth_integration --test jwt_validation --test device_integration --test pairing_integration --test recovery_integration
 
       - name: "Targeted Backend: Voice"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.voice == 'true'
-        run: cargo test -p wavis-backend --test voice_orchestration_integration --test voice_ws_integration --test sfu_relay_integration --test p2p_relay_integration --test turn_credentials_integration --test livekit_e2e_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test voice_orchestration_integration --test voice_ws_integration --test sfu_relay_integration --test p2p_relay_integration --test turn_credentials_integration --test livekit_e2e_integration
 
       - name: "Targeted Backend: Channel"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.channel == 'true'
-        run: cargo test -p wavis-backend --test channel_integration --test channel_rest_integration --test invite_lifecycle_integration --test create_room_integration --test display_name_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test channel_integration --test channel_rest_integration --test invite_lifecycle_integration --test create_room_integration --test display_name_integration
 
       - name: "Targeted Backend: WS & Signaling"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.ws == 'true'
-        run: cargo test -p wavis-backend --test signaling_relay_integration --test ws_auth_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test signaling_relay_integration --test ws_auth_integration --test concurrency
 
       - name: "Targeted Backend: Security & Abuse"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && (needs.changes.outputs.security == 'true' || needs.changes.outputs.abuse == 'true')
-        run: cargo test -p wavis-backend --test security_hardening_integration --test no_sensitive_logs --test authorization_matrix_integration --test abuse_controls_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test security_hardening_integration --test no_sensitive_logs --test authorization_matrix_integration --test abuse_controls_integration
 
       - name: "Targeted Backend: Screen Share"
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.screen == 'true'
-        run: cargo test -p wavis-backend --test screen_share_integration --test screen_share_ws_integration
+        run: bash .github/scripts/strict-cargo-test.sh cargo test -p wavis-backend --features test-support --test screen_share_integration --test screen_share_ws_integration
 
       - name: Client tests
         if: needs.changes.outputs.core != 'true' && needs.changes.outputs.shared != 'true' && needs.changes.outputs.clients == 'true'
@@ -518,3 +544,10 @@ jobs:
 
       - name: Cargo check Tauri crate
         run: cargo check -p wavis-gui --message-format=short
+
+      # wavis-gui has no [lib] target (main.rs only), so `--lib` errors with
+      # "no library targets found" — plain `cargo test -p wavis-gui` runs the
+      # crate's #[cfg(test)] unit tests (~95 of them), which previously never
+      # ran anywhere in CI (this job only compiled, never tested).
+      - name: Cargo test Tauri crate
+        run: cargo test -p wavis-gui --message-format=short

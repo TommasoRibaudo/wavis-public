@@ -17,6 +17,11 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
 
   wavis-backend:
+    build:
+      args:
+        # Pin empty so a stray CARGO_FEATURES in the deploy host's shell or
+        # .env can never build a test-no-rate-limits backend into a deployment.
+        CARGO_FEATURES: ""
     environment:
       RUST_LOG: ${RUST_LOG}
       REQUIRE_TLS: ${REQUIRE_TLS}
@@ -26,6 +31,8 @@ services:
       AUTH_REFRESH_PEPPER: ${AUTH_REFRESH_PEPPER}
       PHRASE_ENCRYPTION_KEY: ${PHRASE_ENCRYPTION_KEY}
       PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER}
+      ALPHA_INVITE_CODE_PEPPER: ${ALPHA_INVITE_CODE_PEPPER}
+      WS_TICKET_PEPPER: ${WS_TICKET_PEPPER}
       SFU_JWT_SECRET: ${SFU_JWT_SECRET}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}

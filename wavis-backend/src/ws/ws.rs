@@ -35,10 +35,11 @@ use crate::ws::ws_dispatch::{DispatchContext, DispatchOutcome, SfuConfig, dispat
 use crate::ws::ws_rate_limit::{WsRateLimiter, check_json_depth};
 use crate::ws::ws_session::{SignalingSession, cleanup_unjoined_connection};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use shared::signaling::{self, ErrorPayload, SignalingMessage};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -46,6 +47,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Query params accepted on the `/ws` upgrade request.
+#[derive(Deserialize)]
+pub struct WsUpgradeQuery {
+    ticket: Option<String>,
+}
 
 const MAX_TEXT_MESSAGE_BYTES: usize = 64 * 1024;
 const MSG_TOO_LARGE: &str = "message too large";
@@ -111,6 +118,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<WsUpgradeQuery>,
     State(app_state): State<AppState>,
 ) -> Response {
     let client_ip = extract_client_ip(&ConnectInfo(addr), &headers, &app_state.ip_config);
@@ -148,7 +156,33 @@ pub async fn ws_handler(
         return (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response();
     }
 
-    // Pre-upgrade check 2: per-IP connection cap (Req 2.2)
+    // Pre-upgrade check 2a: ws-ticket required (closed-alpha lockdown — every
+    // /ws connection must present a ticket minted by an authenticated
+    // POST /auth/ws-ticket call). Runs before the IP cap increment below so
+    // a rejected ticket never consumes a connection-count slot.
+    let authenticated = match query.ticket.as_deref() {
+        Some(ticket) if !ticket.is_empty() => {
+            match app_state.ws_ticket_store.validate_and_consume(ticket) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    app_state
+                        .abuse_metrics
+                        .increment(&app_state.abuse_metrics.ws_ticket_rejections);
+                    warn!(ip = %client_ip, error = %err, "ws upgrade rejected: invalid ticket");
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+            }
+        }
+        _ => {
+            app_state
+                .abuse_metrics
+                .increment(&app_state.abuse_metrics.ws_ticket_rejections);
+            warn!(ip = %client_ip, "ws upgrade rejected: missing ticket");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
+    // Pre-upgrade check 2b: per-IP connection cap (Req 2.2)
     if !app_state.ip_connection_tracker.try_add(client_ip) {
         app_state
             .abuse_metrics
@@ -157,10 +191,15 @@ pub async fn ws_handler(
         return (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, app_state, client_ip))
+    ws.on_upgrade(move |socket| handle_socket(socket, app_state, client_ip, authenticated))
 }
 
-async fn handle_socket(mut socket: WebSocket, app_state: AppState, client_ip: IpAddr) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    app_state: AppState,
+    client_ip: IpAddr,
+    authenticated: (Uuid, Uuid),
+) {
     // RAII guard: decrements per-IP connection count when this function exits for any reason (Req 2.3)
     let _conn_guard = ConnectionGuard {
         tracker: app_state.ip_connection_tracker.clone(),
@@ -174,12 +213,20 @@ async fn handle_socket(mut socket: WebSocket, app_state: AppState, client_ip: Ip
     let _ = &issuer_id;
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<String>();
     let mut rate_limiter = WsRateLimiter::new(&app_state.ws_rate_limit_config);
+    // Local e2e testing only, never production — see security.md.
+    #[cfg(feature = "test-no-rate-limits")]
+    let mut chat_rate_limiter = ChatRateLimiter::new(1_000_000.0);
+    #[cfg(not(feature = "test-no-rate-limits"))]
     let mut chat_rate_limiter = ChatRateLimiter::new(5.0);
     let sfu_config = SfuConfig::from_app_state(&app_state.jwt_secret, &app_state.jwt_issuer);
     let mut session: Option<SignalingSession> = None;
-    let mut authenticated_user_id: Option<String> = None;
+    // A validated ws-ticket authenticates the connection before the message
+    // loop even starts (Req: successful ticket validation initializes the
+    // WebSocket as authenticated for that user/device).
+    let (ticket_user_id, ticket_device_id) = authenticated;
+    let mut authenticated_user_id: Option<String> = Some(ticket_user_id.to_string());
     #[allow(unused_variables, unused_assignments)]
-    let mut authenticated_device_id: Option<Uuid> = None;
+    let mut authenticated_device_id: Option<Uuid> = Some(ticket_device_id);
     // authenticated_device_id is stored for the connection lifetime (audit logging, future use)
 
     app_state.connections.register(peer_id.clone(), outbound_tx);

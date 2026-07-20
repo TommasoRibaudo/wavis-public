@@ -112,7 +112,7 @@ impl Scenario for AuthzFuzzScenario {
             .unwrap_or(serde_json::Value::Null);
 
         // --- Connect Host (first joiner → Host role) ---
-        let mut host = match StressClient::connect(&ctx.ws_url).await {
+        let mut host = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 return early_fail(self.name(), start, "host_connect", format!("{e}"));
@@ -137,7 +137,7 @@ impl Scenario for AuthzFuzzScenario {
         let host_peer_id = host_join.peer_id.clone();
 
         // --- Connect Guest (second joiner → Guest role) ---
-        let mut guest = match StressClient::connect(&ctx.ws_url).await {
+        let mut guest = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 host.close().await;
@@ -272,7 +272,7 @@ impl Scenario for AuthzFuzzScenario {
         // Test B — Property 9: Pre-join client sends action → "not authenticated"
         // =====================================================================
 
-        let mut pre_join = match StressClient::connect(&ctx.ws_url).await {
+        let mut pre_join = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 // Non-fatal: record violation and continue
@@ -334,7 +334,7 @@ impl Scenario for AuthzFuzzScenario {
         // =====================================================================
 
         // Connect a client and join room_b (a different room)
-        let mut cross_client = match StressClient::connect(&ctx.ws_url).await {
+        let mut cross_client = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 violations.push(InvariantViolation {
@@ -583,7 +583,7 @@ fn build_result(
 /// External-mode: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

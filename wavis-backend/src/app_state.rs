@@ -32,6 +32,7 @@ use crate::abuse::temp_ban::{TempBanConfig, TempBanList};
 use crate::auth::auth_rate_limiter::AuthRateLimiter;
 use crate::auth::phrase;
 use crate::auth::recovery_rate_limiter::RecoveryRateLimiter;
+use crate::auth::ws_ticket::WsTicketStore;
 use crate::channel::channel_rate_limiter::{ChannelRateLimiter, ChannelRateLimiterConfig};
 use crate::channel::invite::InviteStore;
 use crate::connections::LiveConnections;
@@ -40,7 +41,9 @@ use crate::diagnostics::bug_report_rate_limiter::{
     BugReportRateLimiter, BugReportRateLimiterConfig,
 };
 use crate::diagnostics::llm_client::LlmClient;
+#[cfg(not(windows))]
 use crate::ec2_control::Ec2InstanceController;
+use crate::ec2_control::InstanceController;
 use crate::ip::IpConfig;
 use crate::state::InMemoryRoomState;
 use crate::voice::sfu_bridge::{SfuHealth, SfuRoomManager, SfuSignalingProxy};
@@ -77,7 +80,7 @@ pub struct AppState {
     /// SFU server URL sent to clients in MediaToken payloads.
     pub sfu_url: String,
     /// Optional EC2 controller for the LiveKit instance. Absent in local dev.
-    pub ec2_controller: Option<Arc<Ec2InstanceController>>,
+    pub ec2_controller: Option<Arc<dyn InstanceController>>,
     /// Set when idle shutdown is deferred until the last active room closes.
     pub pending_shutdown: Arc<AtomicBool>,
     /// Invite code store — tracks active invite codes and enforces limits.
@@ -137,6 +140,9 @@ pub struct AppState {
     pub refresh_token_pepper_previous: Option<Arc<Vec<u8>>>,
     /// HMAC pepper for closed-alpha invite code hashing.
     pub alpha_invite_code_pepper: Arc<Vec<u8>>,
+    /// In-memory store for short-lived, one-use `/ws` pre-auth tickets.
+    /// Not Postgres-backed: a 60-second TTL has no value across restarts.
+    pub ws_ticket_store: Arc<WsTicketStore>,
     /// Channel_ID → active Room_ID mapping. A Channel has at most one active Room.
     /// Lock ordering position 0: active_room_map (0) → rooms (1) → per-room (2) → peer_to_room (3).
     pub active_room_map: ActiveRoomMap,
@@ -210,10 +216,14 @@ impl AppState {
         let require_tls = std::env::var("REQUIRE_TLS")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or_else(|_| !cfg!(debug_assertions));
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let max_connections_per_ip = std::env::var("MAX_CONNECTIONS_PER_IP")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(10);
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let max_connections_per_ip = u32::MAX;
 
         // TURN config — Ok(None) if not configured, panic on bad config
         let turn_config = match TurnConfig::try_from_env() {
@@ -236,19 +246,24 @@ impl AppState {
             Err(e) => panic!("Invalid TURN configuration: {e}"),
         };
 
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let global_ws_per_sec = std::env::var("GLOBAL_WS_UPGRADES_PER_SEC")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(100);
+        #[cfg(not(feature = "test-no-rate-limits"))]
         let global_join_per_sec = std::env::var("GLOBAL_JOINS_PER_SEC")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(50);
+        // Local e2e testing only, never production — see security.md.
+        #[cfg(feature = "test-no-rate-limits")]
+        let (global_ws_per_sec, global_join_per_sec) = (u32::MAX, u32::MAX);
 
         #[cfg(not(windows))]
         let ec2_controller = std::env::var("LIVEKIT_EC2_INSTANCE_ID")
             .ok()
-            .map(|id| Arc::new(Ec2InstanceController::new(id)));
+            .map(|id| Arc::new(Ec2InstanceController::new(id)) as Arc<dyn InstanceController>);
 
         #[cfg(windows)]
         let ec2_controller = None;
@@ -267,6 +282,21 @@ impl AppState {
             panic!("ALPHA_INVITE_CODE_PEPPER must be at least 32 bytes");
         }
         let alpha_invite_code_pepper = Arc::new(alpha_invite_code_pepper.into_bytes());
+
+        let ws_ticket_pepper = match std::env::var("WS_TICKET_PEPPER") {
+            Ok(s) => s,
+            Err(_) => {
+                if cfg!(debug_assertions) {
+                    "dev-ws-ticket-pepper-32-bytes!!X".to_string()
+                } else {
+                    panic!("WS_TICKET_PEPPER must be set in release builds");
+                }
+            }
+        };
+        if ws_ticket_pepper.len() < 32 {
+            panic!("WS_TICKET_PEPPER must be at least 32 bytes");
+        }
+        let ws_ticket_store = Arc::new(WsTicketStore::new(ws_ticket_pepper.into_bytes()));
 
         Self {
             room_state: Arc::new(InMemoryRoomState::new()),
@@ -334,6 +364,7 @@ impl AppState {
             refresh_token_pepper,
             refresh_token_pepper_previous,
             alpha_invite_code_pepper,
+            ws_ticket_store,
             active_room_map: Arc::new(RwLock::new(HashMap::new())),
             dummy_verifier,
             pairing_code_pepper,

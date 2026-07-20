@@ -42,6 +42,7 @@
     "log:default",
     "updater:default",
     "process:default",
+    "autostart:default",
     "shell:allow-open"
   ]
 }

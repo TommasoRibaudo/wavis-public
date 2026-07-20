@@ -32,6 +32,20 @@ const LOG_PREFIX = '[wavis:auth]';
  */
 export const INSECURE_TLS_ALLOWED = import.meta.env.VITE_ALLOW_INSECURE_TLS === 'true';
 
+/**
+ * Build-time default server URL, used silently when the Server URL field is
+ * hidden (closed alpha has exactly one backend). Empty string if unset.
+ * Controlled by VITE_DEFAULT_SERVER_URL.
+ */
+export const DEFAULT_SERVER_URL = import.meta.env.VITE_DEFAULT_SERVER_URL || '';
+
+/**
+ * Whether the Server URL field is shown at all (letting DEFAULT_SERVER_URL be
+ * overridden). Controlled by VITE_ALLOW_SERVER_OVERRIDE. Defaults to false —
+ * same gating pattern as INSECURE_TLS_ALLOWED above.
+ */
+export const SERVER_OVERRIDE_ALLOWED = import.meta.env.VITE_ALLOW_SERVER_OVERRIDE === 'true';
+
 // --- Types ---
 export type AuthLogEntry = {
   time: string;
@@ -254,9 +268,13 @@ export async function registerUser(
   serverUrl: string,
   phrase: string,
   username: string,
+  inviteCode: string,
   insecureTls: boolean,
   onLog: (entry: AuthLogEntry) => void,
-): Promise<{ success: true; recovery_id: string } | { success: false; error?: string }> {
+): Promise<
+  | { success: true; recovery_id: string }
+  | { success: false; error?: string; inviteRejected?: boolean }
+> {
   onLog(makeLogEntry('Validating server URL: ' + serverUrl, 'info'));
   const validation = validateServerUrl(serverUrl, insecureTls);
   if (!validation.valid) {
@@ -274,7 +292,7 @@ export async function registerUser(
     res = await tauriFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phrase, username }),
+      body: JSON.stringify({ phrase, username, invite_code: inviteCode }),
       ...(INSECURE_TLS_ALLOWED && insecureTls ? { dangerouslyIgnoreCertificateErrors: true } : {}),
     });
   } catch (err) {
@@ -282,6 +300,12 @@ export async function registerUser(
     onLog(makeLogEntry(msg, 'error'));
     console.error(LOG_PREFIX, 'register network error:', err);
     return { success: false, error: msg };
+  }
+
+  if (res.status === 401) {
+    const msg = 'Invite code rejected -- check the code and try again';
+    onLog(makeLogEntry(msg, 'error'));
+    return { success: false, error: msg, inviteRejected: true };
   }
 
   if (res.status === 429) {
@@ -587,6 +611,43 @@ export async function rotatePhrase(currentPhrase: string, newPhrase: string): Pr
   if (!res.ok) {
     throw new Error('Failed to rotate phrase');
   }
+}
+
+// --- WS Pre-Auth Ticket (exported) ---
+
+/**
+ * Mint a short-lived, one-use ticket for the /ws upgrade (closed-alpha
+ * pre-auth gate, issue #267/#268). Bearer-authenticated REST call; the raw
+ * ticket is only ever sent back to the caller and as the WS `?ticket=`
+ * query param -- never over the WS connection itself.
+ */
+export async function fetchWsTicket(): Promise<string> {
+  const serverUrl = await getServerUrl();
+  if (!serverUrl) throw new Error('No server URL configured');
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error('Not authenticated');
+  const insecure = await getInsecureTls();
+
+  let res: Response;
+  try {
+    res = await tauriFetch(serverUrl.replace(/\/+$/, '') + '/auth/ws-ticket', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      ...(insecure ? { dangerouslyIgnoreCertificateErrors: true } : {}),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Network error -- could not reach server for WS ticket: ${message}`, {
+      cause: err,
+    });
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch WS ticket -- server returned ${res.status}`);
+  }
+
+  const body = (await res.json()) as { ticket: string; expires_in: number };
+  return body.ticket;
 }
 
 // --- Token Refresh (exported) ---

@@ -477,4 +477,92 @@ mod tests {
             prop_assert!(result.is_err(), "decrypting with a different key must fail");
         }
     }
+
+    // P1-4: verify_dummy is the functional half of the anti-timing-oracle for
+    // unknown Recovery IDs — it must NEVER return true, for any input.
+    // A stray `true` here would mean recovery-by-nonexistent-ID succeeds.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn prop_verify_dummy_always_false(phrase in ".{0,128}") {
+            let config = test_config();
+            let dummy = generate_dummy_verifier(&config);
+
+            let result = verify_dummy(&phrase, &dummy, &config).unwrap();
+            prop_assert!(!result, "verify_dummy must never return true, got true for phrase {:?}", phrase);
+        }
+    }
+
+    // P1-4: AES-GCM error paths — short ciphertext, tampered bytes, wrong key length.
+
+    #[test]
+    fn decrypt_rejects_short_ciphertext() {
+        // 27 bytes: one short of the 28-byte minimum (12-byte nonce + 16-byte tag).
+        let short = [0u8; 27];
+        let result = decrypt_blob(&short, &[0u8; 32]);
+        assert!(
+            matches!(result, Err(PhraseError::DecryptionFailed(_))),
+            "ciphertext shorter than nonce+tag must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn decrypt_accepts_minimum_length_empty_plaintext() {
+        // Exactly 28 bytes (12-byte nonce + 16-byte tag, empty plaintext) is a
+        // valid encrypted-empty-blob shape produced by encrypt_blob("").
+        let encrypted = encrypt_blob(&[], &[7u8; 32]).unwrap();
+        assert_eq!(encrypted.len(), 28);
+        let decrypted = decrypt_blob(&encrypted, &[7u8; 32]).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        #[test]
+        fn prop_single_byte_tamper_fails_decryption(
+            plaintext in prop::collection::vec(any::<u8>(), 1..64),
+            key in prop::collection::vec(any::<u8>(), 32),
+            tamper_idx_seed in any::<u64>(),
+            tamper_bit_seed in any::<u8>(),
+        ) {
+            let encrypted = encrypt_blob(&plaintext, &key).unwrap();
+
+            let mut tampered = encrypted.clone();
+            let idx = (tamper_idx_seed as usize) % tampered.len();
+            // Flip at least one bit — never a no-op XOR.
+            let bit = 1u8 << (tamper_bit_seed % 8);
+            tampered[idx] ^= bit;
+
+            let result = decrypt_blob(&tampered, &key);
+            prop_assert!(result.is_err(), "a single flipped bit anywhere in the blob must fail decryption");
+        }
+    }
+
+    #[test]
+    fn encrypt_rejects_wrong_key_length() {
+        for len in [31usize, 33] {
+            let key = vec![0u8; len];
+            let result = encrypt_blob(b"plaintext", &key);
+            assert!(
+                matches!(result, Err(PhraseError::EncryptionFailed(_))),
+                "encrypt_blob must reject a {len}-byte key, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decrypt_rejects_wrong_key_length() {
+        let valid_key = [9u8; 32];
+        let encrypted = encrypt_blob(b"plaintext", &valid_key).unwrap();
+        for len in [31usize, 33] {
+            let bad_key = vec![0u8; len];
+            let result = decrypt_blob(&encrypted, &bad_key);
+            assert!(
+                matches!(result, Err(PhraseError::DecryptionFailed(_))),
+                "decrypt_blob must reject a {len}-byte key, got {result:?}"
+            );
+        }
+    }
 }

@@ -26,6 +26,7 @@ use crate::auth::device::{self, DeviceError};
 use crate::auth::extractor::AuthenticatedUser;
 use crate::auth::jwt::ACCESS_TOKEN_TTL_SECS;
 use crate::auth::pairing::{self, PairingError};
+use crate::auth::ws_ticket;
 use crate::ip::extract_client_ip;
 use crate::redaction::redact_token;
 use axum::Json;
@@ -140,6 +141,12 @@ pub struct UpdateUsernameRequest {
 #[derive(Serialize)]
 pub struct MeResponse {
     pub username: String,
+}
+
+#[derive(Serialize)]
+pub struct WsTicketResponse {
+    pub ticket: String,
+    pub expires_in: u64,
 }
 
 #[derive(Serialize)]
@@ -378,7 +385,7 @@ pub async fn recover(
     if retry_after_secs.is_some() {
         warn!(
             ip = %client_ip,
-            recovery_id = %body.recovery_id,
+            recovery_id = %redact_token(&body.recovery_id),
             retry_after = retry_after_secs,
             "recover rate-limited (recovery_id)"
         );
@@ -407,7 +414,7 @@ pub async fn recover(
                 .recovery_rate_limiter
                 .record_recovery_id(&body.recovery_id, now);
             warn!(
-                recovery_id = %body.recovery_id,
+                recovery_id = %redact_token(&body.recovery_id),
                 new_device_id = %reg.device_id,
                 "account recovered"
             );
@@ -434,7 +441,7 @@ pub async fn recover(
             };
             warn!(
                 ip = %client_ip,
-                recovery_id = %body.recovery_id,
+                recovery_id = %redact_token(&body.recovery_id),
                 reason = reason,
                 "recovery failed"
             );
@@ -711,6 +718,24 @@ pub async fn rotate_phrase(
 }
 
 // ---------------------------------------------------------------------------
+// POST /auth/ws-ticket (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn issue_ws_ticket(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Json<WsTicketResponse> {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(user.user_id, user.device_id);
+
+    Json(WsTicketResponse {
+        ticket,
+        expires_in: ws_ticket::TICKET_TTL_SECS,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // GET /auth/me (Bearer auth required)
 // ---------------------------------------------------------------------------
 
@@ -949,6 +974,89 @@ mod tests {
             app_state
                 .auth_rate_limiter
                 .check_register(ip, std::time::Instant::now())
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // P1-5: map_pairing_error / map_device_error HTTP contract — every
+    // variant must map to the exact status + opaque body security.md
+    // documents, and DatabaseError must never leak its inner SQL detail.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn map_pairing_error_matches_security_contract() {
+        let cases: Vec<(PairingError, StatusCode, &str)> = vec![
+            (PairingError::NotFound, StatusCode::NOT_FOUND, "not found"),
+            (
+                PairingError::Expired,
+                StatusCode::UNAUTHORIZED,
+                "authentication failed",
+            ),
+            (
+                PairingError::CodeMismatch,
+                StatusCode::UNAUTHORIZED,
+                "authentication failed",
+            ),
+            (PairingError::AlreadyUsed, StatusCode::CONFLICT, "conflict"),
+            (
+                PairingError::AlreadyApproved,
+                StatusCode::CONFLICT,
+                "conflict",
+            ),
+            (
+                PairingError::NotApproved,
+                StatusCode::FORBIDDEN,
+                "forbidden",
+            ),
+            (
+                PairingError::LockedOut,
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests",
+            ),
+        ];
+        for (err, expected_status, expected_body) in cases {
+            let (status, _headers, Json(body)) = map_pairing_error(&err);
+            assert_eq!(status, expected_status, "status mismatch for {err:?}");
+            assert_eq!(body.error, expected_body, "body mismatch for {err:?}");
+        }
+    }
+
+    #[test]
+    fn map_pairing_error_database_error_never_leaks_sql_detail() {
+        let secret_detail = "duplicate key value violates unique constraint \"users_pkey\"";
+        let (status, _headers, Json(body)) =
+            map_pairing_error(&PairingError::DatabaseError(secret_detail.to_string()));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.error, "internal error");
+        assert!(
+            !body.error.contains(secret_detail),
+            "SQL error detail must never reach the client"
+        );
+    }
+
+    #[test]
+    fn map_device_error_matches_security_contract() {
+        let cases: Vec<(DeviceError, StatusCode, &str)> = vec![
+            (DeviceError::NotFound, StatusCode::NOT_FOUND, "not found"),
+            (DeviceError::NotOwned, StatusCode::FORBIDDEN, "forbidden"),
+        ];
+        for (err, expected_status, expected_body) in cases {
+            let (status, _headers, Json(body)) = map_device_error(&err);
+            assert_eq!(status, expected_status, "status mismatch for {err:?}");
+            assert_eq!(body.error, expected_body, "body mismatch for {err:?}");
+        }
+    }
+
+    #[test]
+    fn map_device_error_database_error_never_leaks_sql_detail() {
+        let secret_detail = "connection refused at 10.0.0.5:5432";
+        let (status, _headers, Json(body)) =
+            map_device_error(&DeviceError::DatabaseError(secret_detail.to_string()));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.error, "internal error");
+        assert!(
+            !body.error.contains(secret_detail),
+            "SQL error detail must never reach the client"
         );
     }
 }

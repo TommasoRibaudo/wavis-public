@@ -167,14 +167,19 @@ export async function seedChannelWithInvite(name) {
  * have been built with VITE_ALLOW_INSECURE_TLS=true (see README) so the
  * insecure-TLS toggle is present for a plain-http serverUrl.
  *
- * CURRENTLY CANNOT SUCCEED against a closed-alpha backend: POST
- * /auth/register 401s without an invite code, and DeviceSetup has no
- * invite-code field yet (README's "Known gap"). No spec uses this anymore —
- * use registerAndLoginViaUi (REST registration + real Login UI) for spec
- * setup. Kept so it can be reinstated (with an invite-code fill step) once
- * DeviceSetup gains the field.
+ * `inviteCode` is required: DeviceSetup's registration form validates it
+ * client-side before submitting (see `validateInviteCode` in
+ * `DeviceSetup.tsx`), and `POST /auth/register` 401s without one against a
+ * closed-alpha backend. No spec currently uses this — specs that need a
+ * GUI-authenticated identity use `registerAndLoginViaUi` (REST registration
+ * + real Login UI) instead, since it doesn't need a live invite code passed
+ * through Playwright. Use this one when the thing under test is the
+ * registration UI itself.
  */
-export async function registerViaUi(page, { username, password, serverUrl = SERVER_URL } = {}) {
+export async function registerViaUi(
+  page,
+  { username, password, inviteCode, serverUrl = SERVER_URL } = {},
+) {
   // A stale wavis-auth-e2e.json (stored recovery ID from a previous run, but
   // a session the backend no longer knows — e.g. the docker DB was recreated
   // since) lands the app on /login instead of /setup. Trusted-device mode
@@ -200,6 +205,7 @@ export async function registerViaUi(page, { username, password, serverUrl = SERV
   await page.getByText('/next', { exact: true }).click();
 
   await page.getByLabel('Server URL', { exact: true }).fill(serverUrl);
+  await page.getByLabel('Invite Code', { exact: true }).fill(inviteCode);
   if (serverUrl.startsWith('http://')) {
     await page.getByText('--danger-insecure-tls', { exact: true }).click();
   }
@@ -434,17 +440,29 @@ export async function sendChatMessage(page, text) {
  * client — see scripts/ws-sfu-test/src/main.rs) as a scriptable second
  * participant. Chosen over `wavis-client`'s REPL because wavis-client has no
  * chat send/receive support at all (verified against its command parser);
- * ws-sfu-test lets the test send exact SignalingMessage JSON (auth,
- * join_voice, chat_send, ...) and read raw `<< {...}` echoes of whatever the
- * server sends back.
+ * ws-sfu-test lets the test send exact SignalingMessage JSON (join_voice,
+ * chat_send, ...) and read raw `<< {...}` echoes of whatever the server
+ * sends back.
+ *
+ * `accessToken` is required: `/ws` has required `?ticket=<raw>` since the
+ * closed-alpha ws-ticket gate (backend `ws/ws.rs`) — every connection must
+ * present a ticket minted by an authenticated `POST /auth/ws-ticket` call, or
+ * the upgrade 401s before the child process ever gets a socket. This mints
+ * one for the given identity first and connects the child pre-authenticated
+ * as that user/device (ticket validation sets the connection's authenticated
+ * user *before* the message loop starts — see `joinVoiceAsPeer`, which no
+ * longer sends an explicit `auth` message because of this).
  *
  * This verifies the GUI's own rendering reacts to a second real signaling
  * participant — it does not exercise a second real GUI instance.
  */
-export function spawnPeer() {
+export async function spawnPeer({ accessToken }) {
+  const { ticket } = await postJson('/auth/ws-ticket', undefined, accessToken);
+  const wsUrl = `${WS_URL}?ticket=${encodeURIComponent(ticket)}`;
+
   const child = spawn('cargo', ['run', '-p', 'ws-sfu-test'], {
     cwd: WORKSPACE_ROOT,
-    env: { ...process.env, WS_URL },
+    env: { ...process.env, WS_URL: wsUrl },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -505,10 +523,14 @@ export function spawnPeer() {
   return { send, waitForOutput, close, pid: child.pid };
 }
 
-/** auth -> join_voice against a channel, resolving once the server confirms both. */
-export async function joinVoiceAsPeer(peer, { accessToken, channelId, displayName }) {
-  peer.send({ type: 'auth', accessToken });
-  await peer.waitForOutput(/"type":\s*"auth_success"/);
+/**
+ * join_voice against a channel, resolving once the server confirms. No
+ * explicit `auth` message: spawnPeer()'s ws-ticket already authenticated the
+ * connection as its identity at upgrade time, and the server rejects `auth`
+ * afterward as "already authenticated" (ws/validation.rs) — see spawnPeer's
+ * doc comment.
+ */
+export async function joinVoiceAsPeer(peer, { channelId, displayName }) {
   peer.send({ type: 'join_voice', channelId, displayName });
   await peer.waitForOutput(/"type":\s*"joined"/);
 }
@@ -601,4 +623,55 @@ export async function clearNetworkConditions() {
   } catch {
     // No qdisc present — already clear.
   }
+}
+
+/* ─── Backend outage simulation (wavis-backend container) ──────────────
+ * Unlike the netem helpers above (which degrade the LiveKit media leg),
+ * these fully stop the signaling/REST backend to simulate a real "server
+ * down" outage. `docker stop` (not `pause`) is deliberate: `pause` freezes
+ * the process via the cgroup freezer but leaves existing sockets open and
+ * silent, so the GUI's WebSocket would never see a close event and could
+ * hang far longer than intended; `stop` tears the process down, so the OS
+ * immediately refuses/resets connections the way a genuinely dead backend
+ * would.
+ */
+const BACKEND_CONTAINER = 'wavis-backend';
+
+/** Stops the backend container. Used by zz-disconnect-sound.spec.mjs. */
+export async function stopBackendContainer() {
+  await execFileAsync('docker', ['stop', BACKEND_CONTAINER]);
+}
+
+/**
+ * Starts the backend container and waits for /health to respond again.
+ * Safe to call unconditionally (e.g. in a finally) — `docker start` on an
+ * already-running container is a no-op. Used by zz-disconnect-sound.spec.mjs.
+ */
+export async function startBackendContainer(healthTimeoutMs = 30_000) {
+  try {
+    await execFileAsync('docker', ['start', BACKEND_CONTAINER]);
+  } catch {
+    // Already running.
+  }
+  await waitForBackendHealth(healthTimeoutMs);
+}
+
+/**
+ * Restarts the backend container (stop + start) and waits for /health to
+ * report ok again — used by reconnect.spec.mjs. Composed from the two
+ * primitives above rather than `docker restart`, so both specs share one
+ * "server down" mechanism (a hard stop, not a pause) instead of two subtly
+ * different ones. Dropping the connection this way takes down every WS
+ * connection to the backend (both the GUI's signaling socket and any
+ * spawnPeer()/ws-sfu-test connection — ws-sfu-test is a one-shot
+ * connect_async with no reconnect loop of its own, confirmed via its
+ * source, so a peer connection does not survive this and must be
+ * re-established by the caller if the scenario needs a peer present both
+ * before and after). wavis-livekit is untouched, so an already-negotiated
+ * LiveKit media session (e.g. a connectTonePeer() publish) is not expected
+ * to drop on its own.
+ */
+export async function restartBackend({ healthTimeoutMs = 60_000 } = {}) {
+  await stopBackendContainer();
+  await startBackendContainer(healthTimeoutMs);
 }
