@@ -3,12 +3,14 @@
 //
 // Drives the real app via WebdriverIO's @wdio/tauri-service in standalone
 // mode (startWdioSession/cleanupWdioSession) — genuine click/type/screenshot/
-// DOM-read against the real app, on Windows AND Linux. Windows uses the
-// `embedded` driver provider (tauri-plugin-wdio-webdriver's in-process
+// DOM-read against the real app, on Windows, Linux, AND macOS. Windows uses
+// the `embedded` driver provider (tauri-plugin-wdio-webdriver's in-process
 // WebDriver server, gated behind the app's `e2e-webdriver` Cargo feature).
-// Linux uses the `external` provider (tauri-driver + WebKitWebDriver, see
-// README.md's Linux setup section) per this ticket's resolved decision to
-// use the more standard/documented Linux path.
+// macOS also uses the `embedded` provider — WKWebView has no standalone
+// external WebDriver binary, so `tauri-plugin-wdio-webdriver` is the only
+// supported path there too. Linux uses the `external` provider (tauri-driver +
+// WebKitWebDriver, see README.md's Linux setup section) per this ticket's
+// resolved decision to use the more standard/documented Linux path.
 //
 // Each Tauri window shows up as a distinct WebDriver window handle
 // (browser.getWindowHandles()/switchToWindow()) — the multi-window
@@ -86,22 +88,27 @@ export async function launchApp({
     // like conditions; give it real headroom rather than racing the default.
     startTimeout: 60_000,
     env: {
-      // --disable-features=WebRtcHideLocalIpsWithMdns: test-launches only —
-      // exposes real local IPs in ICE host candidates instead of Chromium's
-      // default randomly-generated ".local" mDNS obfuscation. Needed because
-      // the dockerized LiveKit used by live-backend media specs can't resolve
-      // those mDNS names (Docker's bridge network doesn't forward the UDP
-      // multicast mDNS needs), which otherwise breaks all real WebRTC media
-      // for the browser client. Must never move into tauri.conf.json —
-      // production/normal dev launches keep the default privacy behavior.
+      // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS is a Windows/WebView2-only env
+      // var. WKWebView (macOS) and WebKitGTK (Linux) ignore it entirely.
       //
-      // --use-fake-ui-for-media-stream: test-launches only — auto-accepts
-      // getUserMedia permission requests, suppressing the WebView's own
-      // mic/camera permission bar. Without this, every live-backend media
-      // spec blocks on a manual click. "Fake" refers only to the permission
-      // UI — capture still uses real devices.
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
-        '--disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream',
+      // --disable-features=WebRtcHideLocalIpsWithMdns: disables Chromium's
+      // default mDNS obfuscation of local IPs in WebRTC ICE candidates, so
+      // dockerized LiveKit can see real local IPs and connect. WebKit (both
+      // macOS WKWebView and Linux WebKitGTK) does not implement mDNS
+      // obfuscation at all — real IPs appear in ICE candidates by default on
+      // both platforms, so no equivalent flag is needed there.
+      //
+      // --use-fake-ui-for-media-stream: auto-accepts getUserMedia permission
+      // requests in WebView2 without a visible dialog. macOS uses TCC instead:
+      // `npm run build:app` re-signs the binary with the com.wavis.desktop
+      // bundle ID so TCC reuses the app's existing camera/mic grants; see
+      // README.md's "macOS setup" section. No equivalent exists for Linux
+      // WebKitGTK in the external-driver path (camera/mic specs are known-
+      // failing on Linux for separate reasons — see README.md).
+      ...(process.platform === 'win32' && {
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+          '--disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream',
+      }),
       // Keeps the OS keychain refresh-token entry (src-tauri/src/main.rs's
       // keyring_service()) separate from a developer's real persisted login
       // on this machine. Defaults to one shared e2e service; pass a distinct

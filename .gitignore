@@ -84,3 +84,4 @@ deploy/MIGRATION-RUNBOOK.md
 /compat-results
 /tools/compat
 *.stackdump
+.worktree-lock-298
