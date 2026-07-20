@@ -105,7 +105,7 @@ impl Scenario for MessageFloodScenario {
         // Step 1 — Connect healthy client and join the room
         // =====================================================================
 
-        let mut healthy = match StressClient::connect(&ctx.ws_url).await {
+        let mut healthy = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 return early_fail(self.name(), start, "healthy_connect", format!("{e}"));
@@ -137,7 +137,7 @@ impl Scenario for MessageFloodScenario {
         // Step 2 — Connect flooding client and join the same room
         // =====================================================================
 
-        let mut flood = match StressClient::connect(&ctx.ws_url).await {
+        let mut flood = match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(c) => c,
             Err(e) => {
                 healthy.close().await;
@@ -174,7 +174,6 @@ impl Scenario for MessageFloodScenario {
         // Property 20: Flood isolation
         // =====================================================================
 
-        let ws_url = ctx.ws_url.clone();
         let metrics_url = ctx.metrics_url.clone();
         let http_client = ctx.http_client.clone();
 
@@ -338,7 +337,10 @@ impl Scenario for MessageFloodScenario {
         // attempts we should exceed it within one second.
         let mut connect_handles = Vec::with_capacity(GLOBAL_CEILING_PROBE_COUNT);
         for _ in 0..GLOBAL_CEILING_PROBE_COUNT {
-            let url = ws_url.clone();
+            // Each attempt needs its own ticket — tickets are one-use, and reusing
+            // one across all 200 probes would make every attempt but the first fail
+            // on "already consumed" before ever reaching the global-ceiling check.
+            let url = ctx.ws_connect_url();
             connect_handles.push(tokio::spawn(async move {
                 // We don't care if these succeed or fail — we just want to hammer
                 // the upgrade path to trigger the global ceiling.
@@ -432,7 +434,7 @@ fn build_result(
 /// External-mode: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

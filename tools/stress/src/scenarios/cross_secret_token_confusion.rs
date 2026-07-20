@@ -97,7 +97,7 @@ impl Scenario for CrossSecretTokenConfusionScenario {
         // Test A: Send wrong-secret token via WS Auth → must get AuthFailed
         // =====================================================================
         {
-            let mut client = match StressClient::connect(&ctx.ws_url).await {
+            let mut client = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     return early_fail(self.name(), start, "connect", format!("{e}"));
@@ -145,67 +145,21 @@ impl Scenario for CrossSecretTokenConfusionScenario {
         }
 
         // =====================================================================
-        // Test B (in-process only): Verify the correct auth secret DOES work
-        // Skipped when using a dummy Postgres pool (in-process without real DB).
+        // Test B: RETIRED. Previously connected anonymously and sent the correct
+        // auth secret's token via a WS Auth message, expecting auth_success. Since
+        // the ws-ticket gate (backend ws/ws.rs) now authenticates every /ws
+        // connection at upgrade time, a subsequent Auth message is always rejected
+        // as "already authenticated" (ws/validation.rs) regardless of whether the
+        // token is correctly signed — the same reason auth_state_machine_race.rs
+        // was retired. "Correct secret accepted" is covered by the ws-ticket REST
+        // flow instead (wavis-backend/tests/ws_ticket_rest_integration.rs).
         // =====================================================================
-        if let Some(ref app_state) = ctx.app_state {
-            // Register a real device so the token passes epoch + revocation checks.
-            let correct_token = match wavis_backend::domain::auth::register_device(
-                &app_state.db_pool,
-                &app_state.auth_jwt_secret,
-                wavis_backend::domain::auth::ACCESS_TOKEN_TTL_SECS,
-                app_state.refresh_token_ttl_days,
-                &app_state.refresh_token_pepper,
-            )
-            .await
-            {
-                Ok(reg) => reg.access_token,
-                Err(_) => {
-                    // DB unavailable (dummy pool in in-process mode) — skip Test B.
-                    return build_result(self.name(), start, violations, latency);
-                }
-            };
-
-            let mut client = match StressClient::connect(&ctx.ws_url).await {
-                Ok(c) => c,
-                Err(e) => {
-                    return early_fail(self.name(), start, "connect_b", format!("{e}"));
-                }
-            };
-
-            client
-                .send_json(&serde_json::json!({
-                    "type": "auth",
-                    "accessToken": correct_token,
-                }))
-                .await
-                .ok();
-
-            match client
-                .recv_type("auth_success", Duration::from_secs(5))
-                .await
-            {
-                Ok(_) => {
-                    // Correct secret accepted — good.
-                }
-                Err(e) => {
-                    violations.push(InvariantViolation {
-                        invariant: "cross_secret: correct auth secret must produce auth_success"
-                            .to_owned(),
-                        expected: "auth_success".to_owned(),
-                        actual: format!("error: {e}"),
-                    });
-                }
-            }
-
-            client.close().await;
-        }
 
         // =====================================================================
         // Test C: Completely garbage token → must get AuthFailed
         // =====================================================================
         {
-            let mut client = match StressClient::connect(&ctx.ws_url).await {
+            let mut client = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     return early_fail(self.name(), start, "connect_c", format!("{e}"));

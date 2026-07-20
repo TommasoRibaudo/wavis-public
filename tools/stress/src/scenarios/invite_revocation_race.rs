@@ -123,7 +123,7 @@ impl Scenario for InviteRevocationRaceScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..PHASE1_CLIENTS {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id_clone = room_id.clone();
             let invite_code_clone = invite_code.clone();
 
@@ -218,7 +218,7 @@ impl Scenario for InviteRevocationRaceScenario {
             }
             None => {
                 // External mode: send InviteRevoke via a connected host client.
-                if let Ok(mut host) = StressClient::connect(&ctx.ws_url).await {
+                if let Ok(mut host) = StressClient::connect(&ctx.ws_connect_url()).await {
                     if let Ok(r) = host.join_room(&room_id, ROOM_TYPE, None).await
                         && r.success
                     {
@@ -255,7 +255,7 @@ impl Scenario for InviteRevocationRaceScenario {
         let mut join_set2: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..PHASE2_CLIENTS {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id_clone = room_id.clone();
             let invite_code_clone = invite_code.clone();
 
@@ -364,7 +364,7 @@ impl Scenario for InviteRevocationRaceScenario {
         }
 
         // --- Final verification: a new join attempt must fail (invite is revoked) ---
-        match StressClient::connect(&ctx.ws_url).await {
+        match StressClient::connect(&ctx.ws_connect_url()).await {
             Ok(mut verifier) => {
                 match verifier
                     .join_room(&room_id, ROOM_TYPE, Some(&invite_code))
@@ -430,7 +430,7 @@ async fn create_invite_via_signaling(
     room_id: &str,
     max_uses: u32,
 ) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("host connect failed: {e}"))?;
 

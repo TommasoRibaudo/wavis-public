@@ -38,10 +38,9 @@ test('chat messages are exchanged between the GUI and a second participant', asy
   await joinChannelViaUi(main, invite.code);
   await enterChannelRoom(main, channelName);
 
-  const peer = spawnPeer();
+  const peer = await spawnPeer({ accessToken: owner.access_token });
   try {
     await joinVoiceAsPeer(peer, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: 'PeerBot',
     });

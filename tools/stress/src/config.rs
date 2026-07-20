@@ -216,3 +216,30 @@ pub struct TestContext {
     /// `None` when running against an external backend.
     pub log_capture: Option<LogCapture>,
 }
+
+impl TestContext {
+    /// Build a `/ws` connect URL, minting a fresh single-use ws-ticket first.
+    ///
+    /// `/ws` has required `?ticket=<raw>` since the closed-alpha ws-ticket gate
+    /// (backend `ws/ws.rs`): every connection must present a ticket minted by
+    /// `POST /auth/ws-ticket`, and each ticket is consumed on first use. Call this
+    /// once per connection attempt — never cache the returned URL for reuse.
+    ///
+    /// In-process mode mints directly via `app_state.ws_ticket_store`, the same
+    /// shortcut the backend's own integration tests use for anonymous test
+    /// connections (`WsTicketStore::issue` isn't tied to a real registered
+    /// account, just opaque UUIDs). External mode has no Bearer/login
+    /// bootstrapping in this harness, so it returns the bare URL — connecting to
+    /// a real ws-ticket-gated backend without one will 401.
+    pub fn ws_connect_url(&self) -> String {
+        match &self.app_state {
+            Some(app_state) => {
+                let ticket = app_state
+                    .ws_ticket_store
+                    .issue(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+                format!("{}?ticket={ticket}", self.ws_url)
+            }
+            None => self.ws_url.clone(),
+        }
+    }
+}

@@ -109,7 +109,7 @@ impl Scenario for JoinLeaveStormScenario {
         let mut join_set: JoinSet<ClientOutcome> = JoinSet::new();
 
         for _ in 0..n_clients {
-            let ws_url = ctx.ws_url.clone();
+            let ws_url = ctx.ws_connect_url();
             let room_id = room_id.clone();
             let invite_code = invite_code.clone();
 
@@ -261,7 +261,7 @@ struct ClientOutcome {
 /// External-mode invite creation: connect a client, join the room, send InviteCreate,
 /// receive InviteCreated with maxUses=100, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("host connect failed: {e}"))?;
 

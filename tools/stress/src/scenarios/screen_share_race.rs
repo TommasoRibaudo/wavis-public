@@ -77,7 +77,7 @@ impl Scenario for ScreenShareRaceScenario {
             let mut join_failed = false;
 
             for i in 0..6usize {
-                match StressClient::connect(&ctx.ws_url).await {
+                match StressClient::connect(&ctx.ws_connect_url()).await {
                     Ok(mut c) => match c.join_room(&room_id, "sfu", Some(&invite_code)).await {
                         Ok(r) if r.success => {
                             clients.push(c);
@@ -123,7 +123,6 @@ impl Scenario for ScreenShareRaceScenario {
             }
 
             // --- P16: All ready clients send StartShare concurrently ---
-            let ws_url = ctx.ws_url.clone();
             let room_id_clone = room_id.clone();
             let invite_clone = invite_code.clone();
 
@@ -138,7 +137,7 @@ impl Scenario for ScreenShareRaceScenario {
             for (replacement_idx, stale_client) in setup_clients.into_iter().enumerate() {
                 stale_client.close().await;
 
-                match StressClient::connect(&ws_url).await {
+                match StressClient::connect(&ctx.ws_connect_url()).await {
                     Ok(mut c) => match c
                         .join_room(&room_id_clone, "sfu", Some(&invite_clone))
                         .await
@@ -353,7 +352,7 @@ impl Scenario for ScreenShareRaceScenario {
             };
 
             // Connect 2 participants: sharer and racer
-            let mut sharer = match StressClient::connect(&ctx.ws_url).await {
+            let mut sharer = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     violations.push(InvariantViolation {
@@ -387,7 +386,7 @@ impl Scenario for ScreenShareRaceScenario {
             };
             let sharer_peer_id = sharer_join.peer_id.clone();
 
-            let mut racer = match StressClient::connect(&ctx.ws_url).await {
+            let mut racer = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     sharer.close().await;
@@ -555,7 +554,7 @@ impl Scenario for ScreenShareRaceScenario {
             };
 
             // One legitimate participant joins (to establish the room)
-            let mut participant = match StressClient::connect(&ctx.ws_url).await {
+            let mut participant = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     violations.push(InvariantViolation {
@@ -600,7 +599,7 @@ impl Scenario for ScreenShareRaceScenario {
                     .await;
 
             // Non-participant: connect but do NOT join the room, then send StartShare
-            let mut outsider = match StressClient::connect(&ctx.ws_url).await {
+            let mut outsider = match StressClient::connect(&ctx.ws_connect_url()).await {
                 Ok(c) => c,
                 Err(e) => {
                     participant.close().await;
@@ -698,7 +697,7 @@ async fn goto_p19(
     };
 
     // Connect sharer and a second participant
-    let mut sharer = match StressClient::connect(&ctx.ws_url).await {
+    let mut sharer = match StressClient::connect(&ctx.ws_connect_url()).await {
         Ok(c) => c,
         Err(e) => {
             violations.push(InvariantViolation {
@@ -731,7 +730,7 @@ async fn goto_p19(
         }
     }
 
-    let mut next_sharer = match StressClient::connect(&ctx.ws_url).await {
+    let mut next_sharer = match StressClient::connect(&ctx.ws_connect_url()).await {
         Ok(c) => c,
         Err(e) => {
             sharer.close().await;
@@ -868,7 +867,7 @@ async fn setup_room(ctx: &TestContext, room_id: &str) -> Result<String, String> 
 /// External-mode: connect a client, join the room as first joiner (host),
 /// request an invite code, then leave.
 async fn create_invite_via_signaling(ctx: &TestContext, room_id: &str) -> Result<String, String> {
-    let mut host = StressClient::connect(&ctx.ws_url)
+    let mut host = StressClient::connect(&ctx.ws_connect_url())
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 

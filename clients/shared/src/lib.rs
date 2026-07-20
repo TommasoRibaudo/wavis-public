@@ -28,9 +28,13 @@ pub mod audio_network_monitor;
 #[cfg(feature = "real-backends")]
 pub mod audio_pipeline_real;
 #[cfg(feature = "real-backends")]
+mod biquad;
+#[cfg(feature = "real-backends")]
 pub mod cpal_audio;
 #[cfg(feature = "real-backends")]
 mod cpal_device;
+#[cfg(feature = "real-backends")]
+pub mod deesser_filter;
 #[cfg(feature = "real-backends")]
 pub mod denoise_filter;
 #[cfg(feature = "real-backends")]

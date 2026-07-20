@@ -182,7 +182,7 @@ a manual wait. Tear down when done:
 docker compose down
 ```
 
-**2. A debug exe built for live-backend use.** Two build-time env vars, on
+**2. A debug exe built for live-backend use.** Three build-time env vars, on
 top of the usual `npx tauri build --debug`:
 
 - `VITE_ALLOW_INSECURE_TLS=true` — the local backend serves plain HTTP
@@ -197,9 +197,13 @@ top of the usual `npx tauri build --debug`:
   var is the baseline for a single instance; two-instance specs additionally
   override it per-launch at runtime — see "Two simultaneous GUI instances"
   below.)
+- `VITE_ALLOW_SERVER_OVERRIDE=true` — release builds hide the Server URL
+  field entirely and silently use `VITE_DEFAULT_SERVER_URL` (see issue #332);
+  this flag brings the field back so `registerViaUi`/`loginViaUi` can keep
+  filling it by its `"Server URL"` accessible label.
 
 ```powershell
-$env:VITE_ALLOW_INSECURE_TLS="true"; $env:VITE_AUTH_STORE_NAME="wavis-auth-e2e.json"; npx tauri build --debug
+$env:VITE_ALLOW_INSECURE_TLS="true"; $env:VITE_AUTH_STORE_NAME="wavis-auth-e2e.json"; $env:VITE_ALLOW_SERVER_OVERRIDE="true"; npx tauri build --debug
 ```
 
 This **replaces** `target/debug/wavis-gui.exe` — the 4 backend-independent
@@ -297,23 +301,26 @@ try {
 }
 ```
 
-**Known gap (routed around, not fixed):** the real `DeviceSetup`
-registration UI has no invite-code field, but `POST /auth/register` requires
-one (`routes.rs`'s `register` handler 401s without
-`invite_code`/`inviteCode`) — so UI-driven registration (`registerViaUi`,
-kept in `live-backend-helpers.mjs` but unused) cannot succeed against a
-backend that enforces closed-alpha invites. Every live-backend spec
-therefore authenticates via `registerAndLoginViaUi` instead:
-`registerDevice()` (REST, already sends `inviteCode`) creates the account,
-then `loginViaUi` authenticates it through the real `Login` UI
-(`/login` is a top-level route reachable via direct navigation even on a
-device that's never registered locally — see `routes.ts` — so this doesn't
-need the broken registration form at all). Before this was suite-wide, full
-sequential runs cascade-failed: `login.spec.mjs` logged out the persisted
-session, its UI registration 401'd, and every later spec that fell back to
-`registerViaUi` died in setup — while the same specs passed in isolation by
-silently riding the persisted session. Giving `DeviceSetup` an invite-code
-field is the real fix, out of scope here.
+**Formerly a known gap, fixed:** `DeviceSetup` now has an invite-code field
+(closed-alpha #266) that `registerViaUi` fills from a required `inviteCode`
+argument, so UI-driven registration can succeed against a backend that
+enforces closed-alpha invites (`routes.rs`'s `register` handler 401s without
+one). No spec uses `registerViaUi` yet — every live-backend spec still
+authenticates via `registerAndLoginViaUi`: `registerDevice()` (REST, already
+sends `inviteCode`) creates the account, then `loginViaUi` authenticates it
+through the real `Login` UI (`/login` is a top-level route reachable via
+direct navigation even on a device that's never registered locally — see
+`routes.ts`). That's a deliberate choice, not a limitation: REST-seeded setup
+keeps specs whose subject is something else (chat, screen-share, ...) from
+paying the cost of driving the full registration form, and avoids the
+cascade-failure history below recurring for suite-wide runs. `login.spec.mjs`
+is the one spec that exercises real auth UI as the thing under test — it
+could be extended to cover `registerViaUi`'s new-device registration path
+alongside its existing Login-UI coverage. Before REST-seeding was suite-wide,
+full sequential runs cascade-failed: `login.spec.mjs` logged out the
+persisted session, its UI registration 401'd, and every later spec that fell
+back to `registerViaUi` died in setup — while the same specs passed in
+isolation by silently riding the persisted session.
 
 Run once the backend is up and the live-backend exe is built:
 

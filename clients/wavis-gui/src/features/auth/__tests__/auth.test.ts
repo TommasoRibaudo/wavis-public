@@ -106,6 +106,8 @@ let mockKeychain: Record<string, string> = {};
 let deleteTokenCalls: Array<{ key: string }> = [];
 let mockFetchBehavior: 'network_error' | '401' | '400' | '429' | '500' | '200' = '200';
 let mockRetryAfterHeader: string | null = null;
+let mockWsTicketBehavior: 'network_error' | '401' | '200' = '200';
+let wsTicketAuthHeaders: string[] = [];
 
 /* ─── Module Mocks ──────────────────────────────────────────────── */
 
@@ -140,7 +142,27 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/plugin-http', () => ({
-  fetch: vi.fn(async (url: string) => {
+  fetch: vi.fn(async (url: string, options?: { headers?: Record<string, string> }) => {
+    if (typeof url === 'string' && url.includes('/auth/ws-ticket')) {
+      wsTicketAuthHeaders.push(options?.headers?.Authorization ?? '');
+      if (mockWsTicketBehavior === 'network_error') {
+        throw new Error('Network error: connection refused');
+      }
+      if (mockWsTicketBehavior === '401') {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: () => null },
+          json: async () => ({ error: 'authentication failed' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ ticket: 'raw-ws-ticket-abc123', expires_in: 60 }),
+      };
+    }
     if (typeof url === 'string' && url.includes('/auth/refresh')) {
       if (mockFetchBehavior === 'network_error') {
         throw new Error('Network error: connection refused');
@@ -514,5 +536,61 @@ describe('refreshTokens RefreshResult mapping', () => {
     expect(result2.status).toBe('success');
     // Both should be the exact same promise resolution
     expect(result1).toEqual(result2);
+  });
+});
+
+/* ═══ fetchWsTicket Tests ═════════════════════════════════════════════
+ *
+ * Issue #268: connect GUI WebSocket with pre-auth ticket.
+ */
+describe('fetchWsTicket', () => {
+  beforeEach(() => {
+    mockStore = {};
+    mockKeychain = {};
+    deleteTokenCalls = [];
+    mockWsTicketBehavior = '200';
+    wsTicketAuthHeaders = [];
+    vi.resetModules();
+  });
+
+  it('returns the raw ticket on success, sent with the access token as a Bearer header', async () => {
+    mockStore = { server_url: 'https://wavis.example.com', access_token: 'my-access-token' };
+    mockWsTicketBehavior = '200';
+
+    const auth = await import('../auth');
+    const ticket = await auth.fetchWsTicket();
+
+    expect(ticket).toBe('raw-ws-ticket-abc123');
+    expect(wsTicketAuthHeaders).toContainEqual('Bearer my-access-token');
+  });
+
+  it('throws when no server URL is configured', async () => {
+    mockStore = { access_token: 'my-access-token' };
+
+    const auth = await import('../auth');
+    await expect(auth.fetchWsTicket()).rejects.toThrow('No server URL configured');
+  });
+
+  it('throws when not authenticated (no access token)', async () => {
+    mockStore = { server_url: 'https://wavis.example.com' };
+
+    const auth = await import('../auth');
+    await expect(auth.fetchWsTicket()).rejects.toThrow('Not authenticated');
+  });
+
+  it('throws a descriptive error on a non-ok server response', async () => {
+    mockStore = { server_url: 'https://wavis.example.com', access_token: 'my-access-token' };
+    mockWsTicketBehavior = '401';
+
+    const auth = await import('../auth');
+    await expect(auth.fetchWsTicket()).rejects.toThrow('401');
+  });
+
+  it('throws a descriptive error on a network failure', async () => {
+    mockStore = { server_url: 'https://wavis.example.com', access_token: 'my-access-token' };
+    mockWsTicketBehavior = 'network_error';
+
+    const auth = await import('../auth');
+    await expect(auth.fetchWsTicket()).rejects.toThrow('Network error');
   });
 });

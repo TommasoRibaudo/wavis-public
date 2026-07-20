@@ -6,6 +6,8 @@ import {
   registerUser,
   setUsername,
   INSECURE_TLS_ALLOWED,
+  DEFAULT_SERVER_URL,
+  SERVER_OVERRIDE_ALLOWED,
   deleteStoredRecoveryId,
 } from './auth';
 import { useCopyToClipboardFeedback } from '@shared/hooks/useCopyToClipboardFeedback';
@@ -53,6 +55,10 @@ export function validateStep1(
   }
 
   return { valid: Object.keys(errors).length === 0, errors };
+}
+
+export function validateInviteCode(inviteCode: string): string | null {
+  return inviteCode.trim() ? null : 'Invite code is required';
 }
 
 function InsecureTlsToggle({
@@ -146,10 +152,11 @@ export default function DeviceSetup() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<SetupStep>(1);
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [username, setUsernameValue] = useState('');
   const [phrase, setPhrase] = useState('');
   const [confirmPhrase, setConfirmPhrase] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [insecureTls, setInsecureTls] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [logs, setLogs] = useState<AuthLogEntry[]>([]);
@@ -157,6 +164,7 @@ export default function DeviceSetup() {
   const [nameError, setNameError] = useState<string | null>(null);
   const [phraseError, setPhraseError] = useState<string | null>(null);
   const [confirmPhraseError, setConfirmPhraseError] = useState<string | null>(null);
+  const [inviteCodeError, setInviteCodeError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
 
@@ -208,12 +216,27 @@ export default function DeviceSetup() {
     if (registering) return;
 
     setUrlError(null);
+    setInviteCodeError(null);
     setRegisterError(null);
     setShowRetry(false);
 
     const validation = validateServerUrl(serverUrl, insecureTls);
     if (!validation.valid) {
-      setUrlError(validation.reason ?? 'Invalid server URL');
+      // Field is hidden when SERVER_OVERRIDE_ALLOWED is false, so a failure
+      // here (e.g. DEFAULT_SERVER_URL unset) has no urlError field to render
+      // next to — route it through the visible registerError banner instead.
+      if (SERVER_OVERRIDE_ALLOWED) {
+        setUrlError(validation.reason ?? 'Invalid server URL');
+      } else {
+        setRegisterError(validation.reason ?? 'Invalid server URL');
+      }
+      return;
+    }
+
+    const trimmedInviteCode = inviteCode.trim();
+    const inviteError = validateInviteCode(inviteCode);
+    if (inviteError) {
+      setInviteCodeError(inviteError);
       return;
     }
 
@@ -221,9 +244,16 @@ export default function DeviceSetup() {
     setRegistering(true);
     setLogs([]);
 
-    const result = await registerUser(serverUrl, phrase, trimmedName, insecureTls, (entry) => {
-      setLogs((prev) => [...prev, entry]);
-    });
+    const result = await registerUser(
+      serverUrl,
+      phrase,
+      trimmedName,
+      trimmedInviteCode,
+      insecureTls,
+      (entry) => {
+        setLogs((prev) => [...prev, entry]);
+      },
+    );
 
     setRegistering(false);
     setPhrase('');
@@ -235,6 +265,11 @@ export default function DeviceSetup() {
       return;
     }
 
+    if (result.inviteRejected) {
+      setInviteCodeError('Invalid or expired invite code');
+      return;
+    }
+
     const err = result.error ?? '';
     if (err.includes('too many requests')) {
       setRegisterError('too many requests - try again later');
@@ -242,7 +277,7 @@ export default function DeviceSetup() {
       setRegisterError('Registration failed - please try again');
       setShowRetry(true);
     }
-  }, [serverUrl, username, phrase, insecureTls, registering]);
+  }, [serverUrl, username, phrase, inviteCode, insecureTls, registering]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -332,29 +367,50 @@ export default function DeviceSetup() {
       {step === 2 && (
         <>
           <div className="px-4 sm:px-6 py-4">
+            {SERVER_OVERRIDE_ALLOWED && (
+              <>
+                <AuthFieldRow
+                  label="Server URL:"
+                  placeholder="https://wavis.example.com"
+                  value={serverUrl}
+                  onChange={(value) => {
+                    setServerUrl(value);
+                    setUrlError(null);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  error={urlError}
+                  disabled={registering}
+                  inputRef={inputRef}
+                  autoFocus
+                />
+
+                <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
+                  <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
+                  <p>
+                    The address of your Wavis server. Your admin will share it with you, or you can
+                    get a hosted server at wavis.io.
+                  </p>
+                  <p className="mt-2 text-wavis-accent">
+                    It looks like: https://wavis.yourteam.com
+                  </p>
+                </div>
+              </>
+            )}
+
             <AuthFieldRow
-              label="Server URL:"
-              placeholder="https://wavis.example.com"
-              value={serverUrl}
+              label="Invite Code:"
+              placeholder="the code your admin sent you"
+              value={inviteCode}
               onChange={(value) => {
-                setServerUrl(value);
-                setUrlError(null);
+                setInviteCode(value);
+                setInviteCodeError(null);
               }}
               onKeyDown={handleKeyDown}
-              error={urlError}
+              error={inviteCodeError}
               disabled={registering}
-              inputRef={inputRef}
-              autoFocus
+              inputRef={SERVER_OVERRIDE_ALLOWED ? undefined : inputRef}
+              autoFocus={!SERVER_OVERRIDE_ALLOWED}
             />
-
-            <div className="mb-6 border border-wavis-text-secondary bg-wavis-bg p-3 text-sm text-wavis-text-secondary">
-              <div className="mb-2 font-bold text-wavis-text">What is the Server URL?</div>
-              <p>
-                The address of your Wavis server. Your admin will share it with you, or you can get
-                a hosted server at wavis.io.
-              </p>
-              <p className="mt-2 text-wavis-accent">It looks like: https://wavis.yourteam.com</p>
-            </div>
 
             <InsecureTlsToggle
               insecureTls={insecureTls}

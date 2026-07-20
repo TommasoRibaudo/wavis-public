@@ -26,6 +26,7 @@ use crate::auth::device::{self, DeviceError};
 use crate::auth::extractor::AuthenticatedUser;
 use crate::auth::jwt::ACCESS_TOKEN_TTL_SECS;
 use crate::auth::pairing::{self, PairingError};
+use crate::auth::ws_ticket;
 use crate::ip::extract_client_ip;
 use crate::redaction::redact_token;
 use axum::Json;
@@ -140,6 +141,12 @@ pub struct UpdateUsernameRequest {
 #[derive(Serialize)]
 pub struct MeResponse {
     pub username: String,
+}
+
+#[derive(Serialize)]
+pub struct WsTicketResponse {
+    pub ticket: String,
+    pub expires_in: u64,
 }
 
 #[derive(Serialize)]
@@ -708,6 +715,24 @@ pub async fn rotate_phrase(
             ))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// POST /auth/ws-ticket (Bearer auth required)
+// ---------------------------------------------------------------------------
+
+pub async fn issue_ws_ticket(
+    State(app_state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Json<WsTicketResponse> {
+    let ticket = app_state
+        .ws_ticket_store
+        .issue(user.user_id, user.device_id);
+
+    Json(WsTicketResponse {
+        ticket,
+        expires_in: ws_ticket::TICKET_TTL_SECS,
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -74,6 +74,7 @@ export const STORE_KEYS = {
   lastChannelId: 'wavis_last_channel_id',
   lastChannelName: 'wavis_last_channel_name',
   lastChannelRole: 'wavis_last_channel_role',
+  hasSeenTutorial: 'wavis_has_seen_tutorial',
 } as const;
 
 export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
@@ -379,6 +380,16 @@ export async function clearLastChannel(): Promise<void> {
     setStoreValue(STORE_KEYS.lastChannelName, null),
     setStoreValue(STORE_KEYS.lastChannelRole, null),
   ]);
+}
+
+// ─── First-Time Tutorial ───────────────────────────────────────────
+
+export async function getHasSeenTutorial(): Promise<boolean> {
+  return getStoreValue(STORE_KEYS.hasSeenTutorial, false);
+}
+
+export async function setHasSeenTutorial(seen: boolean): Promise<void> {
+  return setStoreValue(STORE_KEYS.hasSeenTutorial, seen);
 }
 
 // ─── Screen Share Codec Override (W4 post-shootout) ────────────────

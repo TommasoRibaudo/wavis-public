@@ -62,10 +62,9 @@ test('rejoining participant sees both video-share and audio-share badges for a c
   await enterChannelRoom(main, channelName);
   await joinDefaultSubRoomViaUi(main);
 
-  const peer = spawnPeer();
+  const peer = await spawnPeer({ accessToken: owner.access_token });
   try {
     await joinVoiceAsPeer(peer, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: 'SharerBot',
     });

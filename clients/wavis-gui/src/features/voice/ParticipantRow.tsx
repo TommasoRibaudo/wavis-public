@@ -6,6 +6,7 @@ import {
   ScreenShare,
   ScreenShareOff,
   Music,
+  VolumeX,
   type LucideIcon,
 } from 'lucide-react';
 import { LoadingBars } from '@shared/LoadingBars';
@@ -191,16 +192,22 @@ export function ParticipantRow({
                   }}
                   title={shareMuted ? 'unmute audio share' : 'mute audio share'}
                 >
-                  <Music
-                    size={14}
-                    strokeWidth={1.8}
-                    color="var(--wavis-danger)"
-                    fill={shareMuted ? 'var(--wavis-danger)' : 'none'}
-                    style={{
-                      animation: shareMuted ? 'watchPulse 2s ease-in-out infinite' : undefined,
-                    }}
-                    aria-hidden="true"
-                  />
+                  {shareMuted ? (
+                    <VolumeX
+                      size={14}
+                      strokeWidth={1.8}
+                      color="var(--wavis-danger)"
+                      style={{ animation: 'watchPulse 2s ease-in-out infinite' }}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Music
+                      size={14}
+                      strokeWidth={1.8}
+                      color="var(--wavis-danger)"
+                      aria-hidden="true"
+                    />
+                  )}
                 </button>
               )}
               {p.hasVideoShare && (

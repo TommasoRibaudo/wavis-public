@@ -1121,6 +1121,115 @@ async fn prop13_refresh_token_reuse_detection() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #323: concurrent rotate_refresh_token race. The sequential replay
+// tests above (prop16_reuse_detection_via_consumed_tokens,
+// prop13_refresh_token_reuse_detection) await the first rotation to complete
+// before replaying the consumed token — that only proves the conditional
+// UPDATE rejects an *already-consumed* token, not that two callers racing
+// the *same still-valid* token are handled safely. This fires both
+// rotations from separate spawned tasks on a multi-threaded runtime so they
+// genuinely contend for the same row, matching #323's real-world trigger:
+// two live app processes sharing one OS-keychain refresh token (e.g. no
+// single-instance enforcement on the desktop client — see the client-side
+// fix in clients/wavis-gui/src-tauri/src/main.rs). This documents the
+// pre-existing, intentional server-side invariant (security.md #12) that
+// the client-side fix prevents from ever being reachable in the normal
+// single-real-process case — it is not a behavior change.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+#[serial]
+async fn concurrent_rotate_refresh_token_same_token_triggers_reuse_detection() {
+    let pool = test_pool().await;
+    truncate_auth_tables(&pool).await;
+
+    let secret = test_auth_secret();
+    let pepper = test_pepper();
+
+    let reg = register_device(&pool, &secret, 900, 30, &pepper)
+        .await
+        .unwrap();
+    let user_id = reg.user_id;
+    let raw_refresh = reg.refresh_token.clone();
+
+    let epoch_before: i32 =
+        sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Two separate spawned tasks racing the same still-valid raw token —
+    // the profile that hits #323 in the wild is two live processes, not one
+    // process awaiting a second call after the first already returned.
+    let task_a = tokio::spawn({
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let token = raw_refresh.clone();
+        async move { rotate_refresh_token(&pool, &token, &secret, 900, 30, &pepper).await }
+    });
+    let task_b = tokio::spawn({
+        let pool = pool.clone();
+        let secret = secret.clone();
+        let pepper = pepper.clone();
+        let token = raw_refresh.clone();
+        async move { rotate_refresh_token(&pool, &token, &secret, 900, 30, &pepper).await }
+    });
+
+    let (result_a, result_b) = tokio::join!(task_a, task_b);
+    let result_a = result_a.expect("task_a panicked");
+    let result_b = result_b.expect("task_b panicked");
+
+    let successes = [&result_a, &result_b].iter().filter(|r| r.is_ok()).count();
+    let reuse_detected = [&result_a, &result_b]
+        .iter()
+        .filter(|r| matches!(r, Err(AuthError::TokenReuseDetected)))
+        .count();
+
+    assert_eq!(
+        successes, 1,
+        "exactly one concurrent rotation of the same token should succeed, got: {:?} / {:?}",
+        result_a, result_b
+    );
+    assert_eq!(
+        reuse_detected, 1,
+        "exactly one concurrent rotation of the same token should trigger TokenReuseDetected, got: {:?} / {:?}",
+        result_a, result_b
+    );
+
+    // Account-wide fallout: reuse detection bumps session_epoch and revokes
+    // every refresh token for the user (security.md #12) — this is the
+    // "logs out every device" behavior #323's client-side fix prevents from
+    // ever being reachable in the normal double-launch case.
+    let epoch_after: i32 = sqlx::query_scalar("SELECT session_epoch FROM users WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        epoch_after,
+        epoch_before + 1,
+        "session_epoch should be bumped by 1 after concurrent-rotation reuse detection"
+    );
+
+    let active_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM refresh_tokens rt \
+         JOIN devices d ON rt.device_id = d.device_id \
+         WHERE d.user_id = $1 AND rt.revoked_at IS NULL AND rt.consumed_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        active_count.0, 0,
+        "all refresh tokens should be revoked after concurrent-rotation reuse detection"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Characterization tests for auth::authenticate_access_token — the shared
 // entry point behind the REST extractor and the WS Auth arm. These pin the
 // contract before/after the ws_dispatch auth extraction: JWT validity,
