@@ -552,13 +552,20 @@
       "name": "Test: GUI E2E (WebdriverIO)",
       // Brings the docker stack up — rebuilt with test-no-rate-limits and
       // raised auth register/recover limits (see "Ensure E2E Backend Stack"
-      // in tasks.json) — and waits for /health before running. postDebugTask
-      // rebuilds the backend back to normal afterward either way, so the
-      // shared local dev backend never stays rate-limit-free.
+      // in tasks.json) — installs e2e-tooling's own npm deps (isolated
+      // package.json, absent in a fresh checkout/worktree), seeds a
+      // multi-use closed-alpha invite so REST auth seeding never dies with
+      // "ALPHA_INVITE_CODE must be set", and waits for /health before
+      // running (see "E2E Stack Ready" in tasks.json for the full chain).
+      // postDebugTask rebuilds the backend back to normal afterward either
+      // way, so the shared local dev backend never stays rate-limit-free.
       "preLaunchTask": "E2E Stack Ready",
       "postDebugTask": "Restore Normal Backend",
       "command": "npm run test",
       "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling",
+      "env": {
+        "ALPHA_INVITE_CODE": "E2EALPHA174"
+      },
       "presentation": { "group": "7_gui-tauri", "order": 1 }
     },
     {
@@ -574,6 +581,7 @@
       // the e2e-webdriver Cargo feature, so the resulting exe has no
       // embedded WebDriver server and "Test: GUI E2E" can't drive it on
       // Windows.
+      "preLaunchTask": "Ensure E2E Tooling Deps",
       "command": "npm run build:app",
       "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling",
       "presentation": { "group": "7_gui-tauri", "order": 2 }
