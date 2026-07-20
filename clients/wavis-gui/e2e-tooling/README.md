@@ -152,6 +152,50 @@ Live-backend specs need the same Docker Compose stack as Windows — this
 repo's infra is already Linux-native, so `docker compose up -d --build`
 works identically from inside WSL/a native Linux dev machine.
 
+**Confirmed working on Linux (WSL2/Ubuntu 24.04 + WSLg), no real audio
+decode involved:** `launch`, `title-bar`, `multi-window`, `settings`,
+`login` (×2), `chat`, `leave-rejoin`, `participants`, `room-join` — all
+pass cleanly, both standalone and batched together in one `node --test`
+invocation.
+
+**Known gap, unresolved: real-audio-decode specs fail on Linux.**
+`audio-received` and `reconnect` (both assert on `window.__wavisVoiceStats`
+rmsLevel derived from a genuinely decoded incoming WebRTC/Opus audio
+track — see audio-received.spec.mjs's header comment) fail with `peer
+rmsLevel never entered the decoded-audio band`. Ruled out: this is _not_
+the `Linux Dependencies: 4 packages may be missing` diagnostic warning
+(`libgtk-3-0`/`libasound2`/`libatk-bridge2.0-0`/`libcups2`) — those are a
+false positive on Ubuntu 24.04 (renamed to `libgtk-3-0t64`/
+`libasound2t64`/etc. for the 64-bit time_t transition; all four were
+already installed under their real names, confirmed via `dpkg -l`, and
+installing them explicitly by the new names made no difference). The
+rmsLevel check is computed entirely client-side via a Web Audio
+`AnalyserNode` on the decoded PCM — it doesn't depend on the OS audio
+output path (WSLg's PulseAudio RDP bridge) at all, which points at
+WebKitGTK's WebRTC audio _decode_ itself failing silently rather than an
+OS-level audio routing problem. Leading suspect, not yet confirmed:
+missing GStreamer plugin packages for Opus/WebRTC — this machine has
+`gstreamer1.0-plugins-base`/`-good` but not `-bad`/`-libav`, and
+`gst-inspect-1.0` (the tool to check for the `opusdec`/`webrtcbin`
+elements directly) isn't installed either. Not yet tried: `camera`,
+`zz-network-quality`, `screen-share*` (×3), `two-instances`,
+`zz-disconnect-sound` — all plausibly hit the same gap (real media), but
+none were individually confirmed in this pass; do that first before
+assuming they're all blocked on the same root cause.
+
+**Known gap, unresolved: full-suite runs cascade-fail from one hung spec.**
+When a spec's `launchApp()` call hangs badly enough to hit its outer
+`test.timeoutMs` (as the real-audio-decode specs above do), the next spec
+in the same `node --test` invocation can inherit stale state and also
+fail — confirmed directly: `chat`/`leave-rejoin`/`launch`/`login` all pass
+cleanly run together as their own batch, but failed when run as part of
+the full 18-file `npm run test` suite immediately after `audio-received`'s
+own hang. Root cause not isolated (a stale WebKitWebDriver session, an
+orphaned process, or something else) — the pragmatic workaround used to
+verify this branch was running specs in batches that exclude the specs
+known to hang. Fix the real-audio-decode gap above first; this may turn
+out to be entirely downstream of it.
+
 ## Usage
 
 ```js

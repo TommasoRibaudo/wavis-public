@@ -549,7 +549,7 @@
     {
       "type": "node-terminal",
       "request": "launch",
-      "name": "Test: GUI E2E (Playwright)",
+      "name": "Test: GUI E2E (WebdriverIO)",
       // Brings the docker stack up — rebuilt with test-no-rate-limits and
       // raised auth register/recover limits (see "Ensure E2E Backend Stack"
       // in tasks.json) — and waits for /health before running. postDebugTask
@@ -565,16 +565,17 @@
       "type": "node-terminal",
       "request": "launch",
       "name": "Build GUI Debug Exe (for E2E tests)",
-      "command": "npx tauri build --debug",
-      "cwd": "${workspaceFolder}/clients/wavis-gui",
-      // Both vars are REQUIRED for e2e (see e2e-tooling/README.md). Without
-      // them the exe reads the developer's real wavis-auth.json and the
-      // live-backend specs drive the real session (log it out, hang on the
-      // missing insecure-TLS toggle). Never build the e2e exe without these.
-      "env": {
-        "VITE_ALLOW_INSECURE_TLS": "true",
-        "VITE_AUTH_STORE_NAME": "wavis-auth-e2e.json"
-      },
+      // Wraps `npx tauri build --debug --features e2e-webdriver --config
+      // tauri.e2e.conf.json --no-bundle` and bakes in all four required env
+      // vars (VITE_ALLOW_INSECURE_TLS/VITE_AUTH_STORE_NAME/
+      // VITE_ALLOW_SERVER_OVERRIDE/VITE_DIAGNOSTICS) plus the feature-gated
+      // WebDriver capability dance — see e2e-tooling/README.md's "Build the
+      // app to test against". A raw `tauri build --debug` here would omit
+      // the e2e-webdriver Cargo feature, so the resulting exe has no
+      // embedded WebDriver server and "Test: GUI E2E" can't drive it on
+      // Windows.
+      "command": "npm run build:app",
+      "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling",
       "presentation": { "group": "7_gui-tauri", "order": 2 }
     },
 

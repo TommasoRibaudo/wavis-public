@@ -157,11 +157,21 @@ export async function launchApp({
       const url = await p.url();
       if (url.includes('/room')) return p;
     }
-    // tauri-plugin-wdio-webdriver's embedded server uses the Tauri window
-    // label as the WebDriver window handle directly, so this is a reliable
-    // way to find the main window — unlike positional pages[0], which
-    // races getWindowHandles()'s unspecified ordering (observed to vary
-    // between runs).
+    // Window handles aren't reliably semantic across providers: the
+    // Windows embedded provider (tauri-plugin-wdio-webdriver) happens to
+    // use the Tauri window label ('main', 'diagnostics') as the WebDriver
+    // handle directly, but Linux's external provider (tauri-driver +
+    // WebKitWebDriver) hands out opaque `page-<UUID>` handles that never
+    // equal 'main' — confirmed directly: every live-backend spec's
+    // joinChannelViaUi() timed out waiting for a "channels" heading
+    // because page() silently fell back to positional all[0] and picked
+    // the diagnostics window instead. Excluding the one window we *know*
+    // isn't main (its URL contains '/diagnostics') works identically on
+    // both providers and doesn't depend on handle semantics at all.
+    for (const p of all) {
+      const url = await p.url();
+      if (!url.includes('/diagnostics')) return p;
+    }
     return all.find((p) => p.handle === 'main') ?? all[0];
   };
 
