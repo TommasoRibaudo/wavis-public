@@ -97,4 +97,8 @@ test('toggling the camera publishes and un-publishes a real local video tile', a
   } finally {
     await leaveRoomIfActive(main);
   }
-});
+  // Default 30s isn't enough headroom: registerAndLoginViaUi + joinChannelViaUi
+  // + enterChannelRoom + joinDefaultSubRoomViaUi (up to a 10s poll plus a 15s
+  // wait on their own) already eat most of it before the real camera
+  // getUserMedia round-trip even starts.
+}, { timeoutMs: 90_000 });

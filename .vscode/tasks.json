@@ -35,8 +35,7 @@
         "cwd": "${workspaceFolder}"
       },
       "presentation": {
-        "reveal": "silent",
-        "close": true
+        "reveal": "silent"
       },
       "problemMatcher": []
     },
@@ -50,6 +49,10 @@
       // running container matches these env vars and any local backend code
       // changes; paired with "Restore Normal Backend" as this launch
       // config's postDebugTask so the dev backend isn't left rate-limit-free.
+      // NOTE: no "close":true here on purpose — if this fails (e.g. port 3000
+      // already held by another process's dev server), the panel needs to
+      // stay open with "reveal":"silent" showing the real docker error
+      // instead of flashing and closing before it can be read.
       "label": "Ensure E2E Backend Stack",
       "type": "shell",
       "command": "docker compose up -d --build",
@@ -62,14 +65,51 @@
         }
       },
       "presentation": {
-        "reveal": "silent",
-        "close": true
+        "reveal": "silent"
+      },
+      "problemMatcher": []
+    },
+    {
+      // e2e-tooling has its own isolated package.json (see its comment on
+      // why) so a fresh checkout/worktree never has @wdio/tauri-service etc.
+      // installed. `npm install` is a fast no-op when already satisfied, so
+      // this is safe to run on every launch rather than assuming it's done.
+      "label": "Ensure E2E Tooling Deps",
+      "type": "shell",
+      "command": "npm install",
+      "options": {
+        "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling"
+      },
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": []
+    },
+    {
+      // Idempotent: (re)inserts a multi-use closed-alpha invite (code
+      // E2EALPHA174) into the local postgres so live-backend-helpers.mjs's
+      // registerDevice() never dies with "ALPHA_INVITE_CODE must be set" —
+      // every live-backend spec needs one seeded before npm run test starts.
+      // Runs after "Wait for Backend Ready" so migrations (which create the
+      // alpha_invites table) have applied. Logic lives in
+      // seed-alpha-invite.mjs (uses execFileSync, no shell) rather than
+      // inline here — an inline `node -e "..."` with nested double-quotes
+      // gets its quoting eaten by VS Code's Windows task runner, which wraps
+      // the whole command in an extra powershell.exe -Command "..." layer.
+      "label": "Seed E2E Alpha Invite",
+      "type": "shell",
+      "command": "node seed-alpha-invite.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}/clients/wavis-gui/e2e-tooling"
+      },
+      "presentation": {
+        "reveal": "silent"
       },
       "problemMatcher": []
     },
     {
       "label": "E2E Stack Ready",
-      "dependsOn": ["Ensure E2E Backend Stack", "Wait for Backend Ready"],
+      "dependsOn": ["Ensure E2E Backend Stack", "Ensure E2E Tooling Deps", "Wait for Backend Ready", "Seed E2E Alpha Invite"],
       "dependsOrder": "sequence",
       "problemMatcher": []
     },
@@ -85,8 +125,7 @@
         "cwd": "${workspaceFolder}"
       },
       "presentation": {
-        "reveal": "silent",
-        "close": true
+        "reveal": "silent"
       },
       "problemMatcher": []
     },

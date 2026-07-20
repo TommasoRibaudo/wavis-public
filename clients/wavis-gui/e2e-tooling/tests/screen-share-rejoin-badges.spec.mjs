@@ -102,7 +102,10 @@ test('rejoining participant sees both video-share and audio-share badges for a c
     await leaveRoomIfActive(main);
     await goToChannelsList(main);
     await enterChannelRoom(main, channelName);
-    await joinDefaultSubRoomViaUi(main);
+    // SharerBot never leaves the sub-room (it shares continuously across
+    // main's leave/rejoin — that's the point of this regression test), so
+    // main's rejoin brings the sub-room to 2 occupants, not 1.
+    await joinDefaultSubRoomViaUi(main, { expectedCount: 2 });
     // Role-based, not visibleText: the room's event log also renders a
     // "SharerBot joined" line, which a plain text match ambiguously matches
     // too. The participant row itself is the only `role="button"` element
@@ -117,4 +120,8 @@ test('rejoining participant sees both video-share and audio-share badges for a c
     await peer.close();
     await leaveRoomIfActive(main);
   }
-});
+  // Default 30s isn't enough headroom: this is the only spec that runs the
+  // full join flow (joinChannelViaUi + enterChannelRoom +
+  // joinDefaultSubRoomViaUi, up to a 10s poll plus a 15s wait each) twice —
+  // once before the leave, once after the rejoin.
+}, { timeoutMs: 90_000 });
