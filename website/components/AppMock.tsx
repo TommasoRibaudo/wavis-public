@@ -34,12 +34,19 @@ const LOGS = [
   { time: "09:45:31", text: "nora joined Room 2", tone: "text-accent" },
 ];
 
-const SHARE_QUALITY_LABEL = "1440p60 · 7.6 Mbps";
-
 type RoomId = "room1" | "room2";
 type ActivePanel = "main" | "watchAll";
 type ActivityTab = "logs" | "videos";
+type ShareQuality = "low" | "high" | "max";
 type DragPosition = { x: number; y: number };
+
+// Matches the real quality picker in ActiveRoom.tsx (a <select> that appears
+// under /stopshare, not an overlay on the Watch All tiles).
+const SHARE_QUALITY_LABELS: Record<ShareQuality, string> = {
+  low: "Smooth  1080p @ 60fps",
+  high: "Sharp   1440p @ 30fps",
+  max: "Max     1440p @ 60fps",
+};
 
 interface Participant {
   id: string;
@@ -53,7 +60,6 @@ interface WatchAllStream {
   id: string;
   name: string;
   tone: string;
-  isYou?: boolean;
 }
 
 interface SelfState {
@@ -61,6 +67,7 @@ interface SelfState {
   isDeafened: boolean;
   cameraOn: boolean;
   isSharing: boolean;
+  shareQuality: ShareQuality;
 }
 
 interface SelfActions {
@@ -68,6 +75,7 @@ interface SelfActions {
   toggleDeafen: () => void;
   toggleCamera: () => void;
   toggleSharing: () => void;
+  setShareQuality: (quality: ShareQuality) => void;
 }
 
 interface RoomState {
@@ -280,6 +288,7 @@ export function AppMock() {
     isDeafened: false,
     cameraOn: false,
     isSharing: false,
+    shareQuality: "max",
   });
   const [activityTab, setActivityTab] = useState<ActivityTab>("logs");
 
@@ -320,6 +329,7 @@ export function AppMock() {
         return { ...s, cameraOn };
       }),
     toggleSharing: () => setSelf((s) => ({ ...s, isSharing: !s.isSharing })),
+    setShareQuality: (quality) => setSelf((s) => ({ ...s, shareQuality: quality })),
   };
 
   const expand: ExpandState = {
@@ -332,9 +342,7 @@ export function AppMock() {
   const sharingMembers = currentRoomMembers.filter((p) => p.hasShare);
   const streams: WatchAllStream[] = [
     ...sharingMembers.map((p) => ({ id: p.id, name: p.name, tone: p.tone })),
-    ...(youConnected && self.isSharing
-      ? [{ id: "you", name: "you", tone: "text-blue", isYou: true }]
-      : []),
+    ...(youConnected && self.isSharing ? [{ id: "you", name: "you", tone: "text-blue" }] : []),
   ];
 
   return (
@@ -560,6 +568,26 @@ function MainAppWindow({
                 >
                   {self.isSharing ? "/stop-sharing" : "/share-screen"}
                 </button>
+                {self.isSharing && (
+                  // Matches ActiveRoom.tsx's real quality <select>, which sits
+                  // directly under /stopshare rather than on a Watch All tile.
+                  <select
+                    value={self.shareQuality}
+                    onChange={(event) =>
+                      selfActions.setShareQuality(event.target.value as ShareQuality)
+                    }
+                    className="w-full cursor-pointer border border-muted bg-panel px-1 py-0.5 text-text"
+                    aria-label="Share quality"
+                  >
+                    {(Object.entries(SHARE_QUALITY_LABELS) as [ShareQuality, string][]).map(
+                      ([quality, label]) => (
+                        <option key={quality} value={quality}>
+                          {label}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                )}
                 <span className="block border border-muted px-1 py-0.5 text-center text-text">
                   /settings
                 </span>
@@ -638,7 +666,7 @@ function MainAppWindow({
           ) : (
             <div className="overflow-hidden p-3">
               {self.cameraOn ? (
-                <div className="grid h-full grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel">
+                <div className="grid aspect-[16/10] w-20 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel sm:w-24 lg:w-28">
                   <div className="wavis-stream-preview min-h-0" />
                   <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px]">
                     <span className="truncate text-blue">you</span>
@@ -759,28 +787,20 @@ function WatchAllMock({
 
       <div
         className={`grid aspect-[1.05/1] gap-1.5 bg-bg p-1.5 sm:p-2 ${
-          streams.length <= 1
-            ? "grid-rows-1"
-            : streams.length === 2
-              ? "grid-rows-2"
-              : "grid-cols-2 grid-rows-2"
+          streams.length <= 1 ? "grid-rows-1" : "grid-cols-2 grid-rows-2"
         }`}
       >
         {streams.length === 0 ? (
           <p className="flex items-center justify-center text-muted">no active shares</p>
         ) : (
-          streams.map((stream) => (
+          streams.map((stream, index) => (
             <div
               key={stream.id}
-              className="grid min-w-0 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel"
+              className={`grid min-w-0 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel ${
+                streams.length === 3 && index === 2 ? "col-span-2" : ""
+              }`}
             >
-              <div className="wavis-stream-preview min-h-0">
-                {stream.isYou && (
-                  <span className="absolute bottom-1 left-1 rounded border border-blue/50 bg-crust/85 px-1 py-0.5 text-[6px] text-blue sm:text-[7px]">
-                    {SHARE_QUALITY_LABEL}
-                  </span>
-                )}
-              </div>
+              <div className="wavis-stream-preview min-h-0" />
               <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px] sm:text-[8px]">
                 <span className={`truncate ${stream.tone}`}>{stream.name}</span>
                 <span className="text-accent">live</span>
