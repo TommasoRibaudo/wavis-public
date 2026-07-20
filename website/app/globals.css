@@ -18,6 +18,7 @@
   --color-purple: #cba6f7; /* Mauve */
   --color-warn: #f9e2af; /* Yellow */
   --color-danger: #f38ba8; /* Red */
+  --color-danger-glow: #eba0ac; /* Maroon — lighter danger (animations) */
   --color-teal: #94e2d5; /* Teal */
   --color-peach: #fab387; /* Peach */
   --color-pink: #f5c2e7; /* Pink */
@@ -197,6 +198,21 @@
   to {
     background-position: 28px 20px, 28px 20px;
   }
+}
+
+/* Matches the app's `watchPulse` keyframe (theme.css) for live share badges. */
+@keyframes wavis-share-pulse {
+  0%,
+  100% {
+    color: var(--color-danger);
+  }
+  50% {
+    color: var(--color-danger-glow);
+  }
+}
+
+.wavis-share-pulse {
+  animation: wavis-share-pulse 2s ease-in-out infinite;
 }
 
 /* Respect users who ask for less motion: freeze the waveform and caret. */

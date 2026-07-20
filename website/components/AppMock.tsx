@@ -1,5 +1,6 @@
 "use client";
 
+import { Camera, Mic, Music, ScreenShare } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -7,7 +8,6 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
 } from "react";
 
 // A functional mock of the Wavis window — the page's main product signal.
@@ -54,14 +54,12 @@ function handlePanelKeyDown(
   focusPanel();
 }
 
-function useDesktopPanelDrag(
-  containerRef: RefObject<HTMLDivElement | null>,
-  focusPanel: () => void,
-) {
+function useDesktopPanelDrag(focusPanel: () => void) {
   const panelRef = useRef<HTMLDivElement>(null);
   const positionRef = useRef<DragPosition>({ x: 0, y: 0 });
   const cleanupDragRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
+  const lastPointerDownRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const [position, setPosition] = useState<DragPosition>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
 
@@ -83,27 +81,60 @@ function useDesktopPanelDrag(
     });
   }
 
+  function resetPosition() {
+    cleanupDragRef.current?.();
+    cleanupDragRef.current = null;
+    if (rafRef.current !== null) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    positionRef.current = { x: 0, y: 0 };
+    panelRef.current?.style.setProperty("--drag-x", "0px");
+    panelRef.current?.style.setProperty("--drag-y", "0px");
+    setIsDragging(false);
+    setPosition({ x: 0, y: 0 });
+  }
+
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !isDesktopDragPointer()) return;
 
-    const container = containerRef.current;
     const panel = panelRef.current;
-    if (!container || !panel) return;
+    if (!panel) return;
 
     focusPanel();
     event.preventDefault();
+
+    // event.preventDefault() above suppresses the browser's own click/dblclick
+    // compat events, so double-click-to-reset has to be detected by hand from
+    // consecutive pointerdowns rather than an onDoubleClick handler.
+    const now = event.timeStamp;
+    const last = lastPointerDownRef.current;
+    const isDoubleClick =
+      last !== null &&
+      now - last.time < 600 &&
+      Math.abs(event.clientX - last.x) < 10 &&
+      Math.abs(event.clientY - last.y) < 10;
+    lastPointerDownRef.current = { time: now, x: event.clientX, y: event.clientY };
+
+    if (isDoubleClick) {
+      lastPointerDownRef.current = null;
+      resetPosition();
+      return;
+    }
+
     panel.setPointerCapture?.(event.pointerId);
 
     const start = positionRef.current;
     const startPointer = { x: event.clientX, y: event.clientY };
-    const boundsElement = container.closest("header") ?? container;
-    const containerRect = boundsElement.getBoundingClientRect();
+    // Bound to the whole document, not just the hero — lets the panel be
+    // dragged anywhere on the page instead of being trapped in the header.
+    const pageRect = document.documentElement.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
     const bounds = {
-      minX: start.x + containerRect.left - panelRect.left,
-      maxX: start.x + containerRect.right - panelRect.right,
-      minY: start.y + containerRect.top - panelRect.top,
-      maxY: start.y + containerRect.bottom - panelRect.bottom,
+      minX: start.x + pageRect.left - panelRect.left,
+      maxX: start.x + pageRect.right - panelRect.right,
+      minY: start.y + pageRect.top - panelRect.top,
+      maxY: start.y + pageRect.bottom - panelRect.bottom,
     };
     const previousCursor = document.documentElement.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
@@ -152,16 +183,14 @@ function useDesktopPanelDrag(
 
 export function AppMock() {
   const [activePanel, setActivePanel] = useState<ActivePanel>("watchAll");
-  const containerRef = useRef<HTMLDivElement>(null);
-  const mainDrag = useDesktopPanelDrag(containerRef, () => setActivePanel("main"));
-  const watchAllDrag = useDesktopPanelDrag(containerRef, () => setActivePanel("watchAll"));
+  const mainDrag = useDesktopPanelDrag(() => setActivePanel("main"));
+  const watchAllDrag = useDesktopPanelDrag(() => setActivePanel("watchAll"));
 
   return (
     <div
-      ref={containerRef}
-      className="relative isolate mx-auto w-full max-w-[840px] overflow-visible pb-[clamp(44px,7vw,76px)]"
+      className="relative isolate z-40 mx-auto w-full max-w-[840px] overflow-visible pb-[clamp(44px,7vw,76px)]"
       role="group"
-      aria-label="The Wavis app preview: a private room window in front of a Watch All screen sharing panel."
+      aria-label="The Wavis app preview: a private room window in front of a Watch All screen sharing panel. Drag either panel anywhere on the page; double-click to reset its position."
     >
       <WatchAllMock
         isActive={activePanel === "watchAll"}
@@ -198,7 +227,7 @@ function MainAppWindow({
       role="button"
       tabIndex={0}
       aria-pressed={isActive}
-      aria-label="Focus the main Wavis app preview"
+      aria-label="Focus the main Wavis app preview. Double-click to reset its position."
       onClick={onFocus}
       onKeyDown={(event) => handlePanelKeyDown(event, onFocus)}
       onPointerDown={drag.onPointerDown}
@@ -241,12 +270,24 @@ function MainAppWindow({
               <span className="border border-border px-1.5 py-0.5">””</span>
             </div>
             <div className="mb-1 flex items-center justify-between text-purple">
-              <span>[+] alex ○</span>
-              <span className="text-danger">◉</span>
+              <span className="inline-flex items-center gap-1">
+                [+] alex
+                <Mic size={9} strokeWidth={2} className="text-muted" aria-hidden="true" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Camera size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
+                <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+              </span>
             </div>
             <div className="mb-1 flex items-center justify-between text-blue">
-              <span><span className="text-accent">&gt;</span> sam ○</span>
-              <span className="text-danger">◉</span>
+              <span className="inline-flex items-center gap-1">
+                <span className="text-accent">&gt;</span> sam
+                <Mic size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Music size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+                <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+              </span>
             </div>
             <div>
               <span className="block border border-blue/60 bg-blue/10 px-2 py-1 text-center text-[1.08em] font-bold text-blue shadow-black/30">
@@ -355,7 +396,7 @@ function WatchAllMock({
       role="button"
       tabIndex={0}
       aria-pressed={isActive}
-      aria-label="Focus the Watch All preview panel"
+      aria-label="Focus the Watch All preview panel. Double-click to reset its position."
       onClick={onFocus}
       onKeyDown={(event) => handlePanelKeyDown(event, onFocus)}
       onPointerDown={drag.onPointerDown}
