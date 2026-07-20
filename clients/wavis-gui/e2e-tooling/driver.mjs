@@ -1,26 +1,27 @@
 // Dev-only launch/drive harness for the Wavis Tauri app. Not shipped — see
 // README.md.
 //
-// Primary path: launch the exe with WebView2's remote-debugging port enabled
-// and connect real Playwright to it over CDP (chromium.connectOverCDP). This
-// gives genuine click/type/screenshot/DOM-read on the real app, including
-// real multi-window support (each Tauri window shows up as its own
-// Playwright `Page` in `context.pages()`). Confirmed working — see the CDP
-// spike results referenced in README.md. This is NOT WebDriver: it bypasses
-// the WebDriver-protocol translation layer entirely, which is where an
-// earlier `tauri-driver` attempt hit a dead end (see
-// webdriver-spike-DEAD-END.mjs).
+// Drives the real app via WebdriverIO's @wdio/tauri-service in standalone
+// mode (startWdioSession/cleanupWdioSession) — genuine click/type/screenshot/
+// DOM-read against the real app, on Windows AND Linux. Windows uses the
+// `embedded` driver provider (tauri-plugin-wdio-webdriver's in-process
+// WebDriver server, gated behind the app's `e2e-webdriver` Cargo feature).
+// Linux uses the `external` provider (tauri-driver + WebKitWebDriver, see
+// README.md's Linux setup section) per this ticket's resolved decision to
+// use the more standard/documented Linux path.
 //
-// Fallback path: launchAppWin32() + listWindows()/screenshotWindow() drive
-// the app at the OS/Win32 level (enumerate real windows, screenshot via
-// PrintWindow) with no DOM interaction. Kept for cases CDP can't reach.
-
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+// Each Tauri window shows up as a distinct WebDriver window handle
+// (browser.getWindowHandles()/switchToWindow()) — the multi-window
+// equivalent of Playwright's old context.pages(). This is the ONLY
+// multi-window mechanism used here: browser.tauri.switchWindow()/
+// listWindows() require the separate tauri-plugin-wdio (execute/mock
+// bridge), which is out of scope for this ticket — basic element
+// interactions and window handles work without it.
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { startWdioSession, cleanupWdioSession, createTauriCapabilities } from '@wdio/tauri-service';
+import { Page } from './page-adapter.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = path.resolve(__dirname, '..');
@@ -30,42 +31,35 @@ const GUI_ROOT = path.resolve(__dirname, '..');
 const WORKSPACE_ROOT = path.resolve(GUI_ROOT, '..', '..');
 
 export function debugBinaryPath() {
-  const exe = path.join(WORKSPACE_ROOT, 'target', 'debug', 'wavis-gui.exe');
+  const exe =
+    process.platform === 'win32'
+      ? path.join(WORKSPACE_ROOT, 'target', 'debug', 'wavis-gui.exe')
+      : path.join(WORKSPACE_ROOT, 'target', 'debug', 'wavis-gui');
   if (!existsSync(exe)) {
     throw new Error(
-      `Debug binary not found at ${exe}. Build it first: cd clients/wavis-gui && npx tauri build --debug`,
+      `Debug binary not found at ${exe}. Build it first: cd clients/wavis-gui/e2e-tooling && npm run build:app`,
     );
   }
   return exe;
 }
 
-/* ─── CDP + Playwright (primary path — real click/type/screenshot) ────── */
-
-async function connectWithRetry(port, maxAttempts, delayMs) {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      return await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-    } catch (err) {
-      if (i === maxAttempts - 1) throw err;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-  throw new Error('unreachable');
-}
+const DEFAULT_EMBEDDED_PORT = 4445;
+const DEFAULT_TAURI_DRIVER_PORT = 4444;
 
 /**
- * Launch the Wavis app with WebView2's CDP debugging port enabled and
- * connect real Playwright to it. Returns { browser, context, pages, page,
- * getPageByPath, close }. Always call close(), or the app process and
- * Playwright connection linger in the background.
+ * Launch the Wavis app under WebdriverIO and return { browser, pages,
+ * getPageByPath, page, close }. Always call close(), or the app process and
+ * WebDriver session linger in the background.
  *
- * Each launch gets a fresh, unique WEBVIEW2_USER_DATA_FOLDER (temp dir) so
- * it never conflicts with a normally-running Wavis instance's profile, and
- * multiple harness launches can coexist — including TWO REAL launches of
- * the same debug exe at once (e.g. a two-instance live-backend spec): give
- * each its own `port` and, since they'd otherwise share one Tauri store file
- * and one OS keychain service, its own `authStoreName` / `keyringService`
- * too. See README.md's "Two simultaneous GUI instances" section.
+ * Each launch gets a fresh, unique WEBVIEW2_USER_DATA_FOLDER-equivalent
+ * profile via WAVIS_AUTH_STORE_NAME/WAVIS_KEYRING_SERVICE isolation (same
+ * scheme as before) so it never conflicts with a normally-running Wavis
+ * instance's profile, and multiple harness launches can coexist — including
+ * TWO REAL launches of the same debug exe at once (e.g. a two-instance
+ * live-backend spec): give each its own `port` and, since they'd otherwise
+ * share one Tauri store file and one OS keychain service, its own
+ * `authStoreName` / `keyringService` too. See README.md's "Two simultaneous
+ * GUI instances" section.
  *
  * `settleMs` (default 4000) is how long to wait after connecting before
  * windows/content are expected to be meaningfully rendered — the app talks
@@ -74,15 +68,24 @@ async function connectWithRetry(port, maxAttempts, delayMs) {
  */
 export async function launchApp({
   applicationPath = debugBinaryPath(),
-  port = 9222,
+  port,
   settleMs = 4000,
   keyringService = 'com.wavis.gui.e2e',
   authStoreName,
 } = {}) {
-  const userDataDir = mkdtempSync(path.join(tmpdir(), 'wavis-cdp-'));
-  const child = spawn(applicationPath, [], {
+  const driverProvider = process.platform === 'linux' ? 'external' : 'embedded';
+  const embeddedPort = port ?? DEFAULT_EMBEDDED_PORT;
+  const tauriDriverPort = port ?? DEFAULT_TAURI_DRIVER_PORT;
+
+  const capabilities = createTauriCapabilities(applicationPath, {
+    driverProvider,
+    embeddedPort,
+    tauriDriverPort,
+    autoInstallTauriDriver: driverProvider === 'external',
+    // The embedded WebDriver server takes longer to come up on Windows CI-
+    // like conditions; give it real headroom rather than racing the default.
+    startTimeout: 60_000,
     env: {
-      ...process.env,
       // --disable-features=WebRtcHideLocalIpsWithMdns: test-launches only —
       // exposes real local IPs in ICE host candidates instead of Chromium's
       // default randomly-generated ".local" mDNS obfuscation. Needed because
@@ -93,15 +96,12 @@ export async function launchApp({
       // production/normal dev launches keep the default privacy behavior.
       //
       // --use-fake-ui-for-media-stream: test-launches only — auto-accepts
-      // getUserMedia permission requests, suppressing WebView2's own
-      // mic/camera permission bar (Windows-level privacy settings are
-      // already "Allow"; the prompts the suite hits are Chromium's, and
-      // nothing in src-tauri handles them). Without this, every live-backend
-      // media spec blocks on a manual click, and granting mid-tone was
-      // observed to perturb the GUI's audio pipeline mid-assertion. "Fake"
-      // refers only to the permission UI — capture still uses real devices.
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream`,
-      WEBVIEW2_USER_DATA_FOLDER: userDataDir,
+      // getUserMedia permission requests, suppressing the WebView's own
+      // mic/camera permission bar. Without this, every live-backend media
+      // spec blocks on a manual click. "Fake" refers only to the permission
+      // UI — capture still uses real devices.
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+        '--disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream',
       // Keeps the OS keychain refresh-token entry (src-tauri/src/main.rs's
       // keyring_service()) separate from a developer's real persisted login
       // on this machine. Defaults to one shared e2e service; pass a distinct
@@ -113,137 +113,65 @@ export async function launchApp({
       // get_auth_store_name). Undefined `authStoreName` means "use the
       // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
       // (not simply omitting the key) so a value inherited from the
-      // caller's own shell environment can't leak through the ...process.env
-      // spread above; the Rust side treats an empty string as unset too.
+      // caller's own shell environment can't leak through.
       WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
+      // Runtime auto-open for the diagnostics window — separate from the
+      // build-time VITE_DIAGNOSTICS flag (build-app.mjs) which only
+      // controls whether it's bundled at all. multi-window.spec.mjs relies
+      // on it being open with no prior click needed.
+      WAVIS_DIAGNOSTICS_WINDOW: '1',
     },
-    stdio: 'ignore',
   });
-  const pid = child.pid;
 
-  let browser;
-  try {
-    browser = await connectWithRetry(port, 20, 500);
-  } catch (err) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // already exited
-    }
-    throw err;
-  }
+  const browser = await startWdioSession(capabilities);
 
   await new Promise((resolve) => setTimeout(resolve, settleMs));
 
-  const context = browser.contexts()[0];
+  let activeHandle = null;
+  const focus = async (handle) => {
+    if (activeHandle === handle) return;
+    await browser.switchToWindow(handle);
+    activeHandle = handle;
+  };
+
+  const pages = async () => {
+    const handles = await browser.getWindowHandles();
+    return handles.map((handle) => new Page(browser, handle, focus));
+  };
+
+  const getPageByPath = async (pathSubstring) => {
+    const all = await pages();
+    for (const p of all) {
+      const url = await p.url();
+      if (url.includes(pathSubstring)) return p;
+    }
+    const urls = await Promise.all(all.map((p) => p.url()));
+    throw new Error(
+      `No open window with URL containing "${pathSubstring}". Open: ${urls.join(', ') || '(none)'}`,
+    );
+  };
+
+  const page = async () => {
+    const all = await pages();
+    for (const p of all) {
+      const url = await p.url();
+      if (url.includes('/room')) return p;
+    }
+    // tauri-plugin-wdio-webdriver's embedded server uses the Tauri window
+    // label as the WebDriver window handle directly, so this is a reliable
+    // way to find the main window — unlike positional pages[0], which
+    // races getWindowHandles()'s unspecified ordering (observed to vary
+    // between runs).
+    return all.find((p) => p.handle === 'main') ?? all[0];
+  };
 
   const close = async () => {
     try {
-      await browser.close();
+      await cleanupWdioSession(browser);
     } catch {
-      // connection may already be gone
-    }
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // already exited
+      // session may already be gone
     }
   };
 
-  return {
-    pid,
-    browser,
-    context,
-    /** All open Playwright pages (one per Tauri window) right now. */
-    pages: () => context.pages(),
-    /** First page whose URL contains pathSubstring, e.g. "/watch-all", "/diagnostics", "/room". */
-    getPageByPath: (pathSubstring) => {
-      const found = context.pages().find((p) => p.url().includes(pathSubstring));
-      if (!found) {
-        throw new Error(
-          `No open window with URL containing "${pathSubstring}". Open: ${
-            context
-              .pages()
-              .map((p) => p.url())
-              .join(', ') || '(none)'
-          }`,
-        );
-      }
-      return found;
-    },
-    /** The main window's page, if open. */
-    page: () => context.pages().find((p) => p.url().includes('/room')) ?? context.pages()[0],
-    close,
-  };
-}
-
-/* ─── Win32 (fallback path — screenshot only, no DOM interaction) ──────── */
-
-function runPs(scriptName, args) {
-  const scriptPath = path.join(__dirname, scriptName);
-  return execFileSync(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-File', scriptPath, ...args],
-    { encoding: 'utf8' },
-  );
-}
-
-/**
- * Launch the Wavis app with no CDP/Playwright involvement at all — a plain
- * child process. Use this only if the CDP path (launchApp) can't reach a
- * window for some reason; otherwise prefer launchApp for real interaction.
- */
-export async function launchAppWin32({ applicationPath = debugBinaryPath(), waitMs = 6000 } = {}) {
-  const child = spawn(applicationPath, [], { stdio: 'ignore', detached: false });
-  const pid = child.pid;
-
-  await new Promise((resolve) => setTimeout(resolve, waitMs));
-
-  const close = () => {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // already exited
-    }
-  };
-
-  return {
-    pid,
-    close,
-    listWindows: () => listWindows(pid),
-    screenshotWindow: (hwnd, outPath) => screenshotWindow(hwnd, outPath),
-    screenshotWindowByTitle: (titleSubstring, outPath) =>
-      screenshotWindowByTitle(pid, titleSubstring, outPath),
-  };
-}
-
-/** List this process's visible top-level windows as [{ hwnd, title }]. */
-export function listWindows(pid) {
-  const out = runPs('list-windows.ps1', ['-ProcessId', String(pid)]);
-  return out
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [hwnd, ...titleParts] = line.split('|');
-      return { hwnd: hwnd.trim(), title: titleParts.join('|').trim() };
-    });
-}
-
-/** Screenshot a specific window by its exact HWND (from listWindows()). */
-export function screenshotWindow(hwnd, outPath) {
-  runPs('capture-window.ps1', ['-Hwnd', String(hwnd), '-OutPath', outPath]);
-  return outPath;
-}
-
-/** Find a window by case-insensitive title substring (e.g. "Watch All", "Diagnostics") and screenshot it. */
-export function screenshotWindowByTitle(pid, titleSubstring, outPath) {
-  const windows = listWindows(pid);
-  const match = windows.find((w) => w.title.toLowerCase().includes(titleSubstring.toLowerCase()));
-  if (!match) {
-    throw new Error(
-      `No window with title containing "${titleSubstring}" found. Open windows: ${windows.map((w) => `"${w.title}"`).join(', ') || '(none)'}`,
-    );
-  }
-  return screenshotWindow(match.hwnd, outPath);
+  return { browser, pages, getPageByPath, page, close };
 }

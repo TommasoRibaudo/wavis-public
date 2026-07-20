@@ -13,9 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // e2e-tooling -> wavis-gui -> clients -> workspace root
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-export default function globalSetup() {
-  execFileSync('cargo', ['build', '-p', 'ws-sfu-test'], {
-    cwd: WORKSPACE_ROOT,
-    stdio: 'inherit',
-  });
-}
+execFileSync('cargo', ['build', '-p', 'ws-sfu-test'], {
+  cwd: WORKSPACE_ROOT,
+  stdio: 'inherit',
+});

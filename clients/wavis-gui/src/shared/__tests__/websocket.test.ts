@@ -478,6 +478,44 @@ describe('connectWithAuth()', () => {
     expect(wsConstructorCalls.length).toBe(prevCount);
   });
 
+  it('reconnect chain still exhausts when the backend is fully down (fetchWsTicket keeps failing, not just the socket)', async () => {
+    // Regression guard: the retry chain (scheduleReconnect -> timer ->
+    // connectWithAuth -> [onclose ->] scheduleReconnect) only continued when
+    // connectWithAuth failed AFTER opening a WebSocket (onclose fires
+    // scheduleReconnect). A full backend outage (container stopped, not just
+    // the WS port) fails earlier — at the fetchWsTicket() REST call — and
+    // that failure path only called setStatus('disconnected') before
+    // rethrowing, never scheduleReconnect(). The chain died after exactly
+    // one attempt, reconnectExhausted stayed false forever, and
+    // voice-room.ts's give-up branch (disconnect sound / "Connection lost")
+    // never fired — see zz-disconnect-sound.spec.mjs.
+    const { fetchWsTicket } = await import('@features/auth/auth');
+    const client = new SignalingClient();
+    const connectPromise = client.connectWithAuth('ws://localhost/ws');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    lastWsInstance!.simulate('open');
+    await connectPromise;
+
+    // Backend goes fully down: every subsequent ticket fetch fails too, not
+    // just the socket. mockRejectedValue (not Once) persists past this test
+    // — vi.restoreAllMocks() in afterEach only affects vi.spyOn mocks, not
+    // vi.fn()s from a vi.mock() factory — so restore it in a finally.
+    vi.mocked(fetchWsTicket).mockRejectedValue(new Error('network error'));
+    try {
+      lastWsInstance!.readyState = WebSocket.CLOSED;
+      lastWsInstance!.onclose?.();
+
+      // Drive well past the real ~181s fast-retry budget.
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      expect(client.reconnectExhausted).toBe(true);
+    } finally {
+      vi.mocked(fetchWsTicket).mockResolvedValue('test-ws-ticket');
+    }
+  });
+
   it('refreshes token when expired before connecting', async () => {
     const { isTokenExpired, refreshTokens } = await import('@features/auth/auth');
     vi.mocked(isTokenExpired).mockResolvedValueOnce(true);

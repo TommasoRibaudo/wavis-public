@@ -100,6 +100,13 @@ export class SignalingClient {
       const result = await refreshTokens();
       if (result.status !== 'success') {
         this.setStatus('disconnected');
+        // A failure here happens before a WebSocket is ever created, so no
+        // onclose fires to keep the retry chain alive — schedule the next
+        // attempt directly, the same way onclose does, or a fully-down
+        // backend (this REST call fails too, not just the WS) kills the
+        // chain after a single attempt and reconnectExhausted never becomes
+        // true (see the "reconnect chain still exhausts" regression test).
+        if (!this.intentionalDisconnect) this.scheduleReconnect(wsUrl);
         throw new Error(`Token refresh failed — cannot connect (${result.status})`);
       }
     }
@@ -109,6 +116,8 @@ export class SignalingClient {
       ticket = await fetchWsTicket();
     } catch (err) {
       this.setStatus('disconnected');
+      // Same reasoning as the refreshTokens() failure above.
+      if (!this.intentionalDisconnect) this.scheduleReconnect(wsUrl);
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`WS ticket fetch failed — cannot connect (${message})`, { cause: err });
     }

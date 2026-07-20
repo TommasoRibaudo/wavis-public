@@ -32,7 +32,7 @@ test('recovery ID logs in on the new-device path, then password-only on the trus
 }) => {
   await waitForBackendHealth();
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
 
   const identity = await registerDevice();
@@ -40,7 +40,7 @@ test('recovery ID logs in on the new-device path, then password-only on the trus
   // Log out any persisted session first so the login flows under test start
   // from a real logged-out state. (On /recover or /pair there is nothing to
   // log out of — loginViaUi navigates straight to /login from anywhere.)
-  const pathname = new URL(main.url()).pathname;
+  const pathname = new URL(await main.url()).pathname;
   if (!UNAUTHENTICATED_PATHS.some((p) => pathname.startsWith(p))) {
     await main.getByText('/settings', { exact: true }).first().click();
     await main.getByText('/logout — sign out of this device', { exact: true }).click();
@@ -78,13 +78,13 @@ test('a closed-alpha account registered through the real DeviceSetup UI can log 
   const inviteCode = process.env.ALPHA_INVITE_CODE;
   if (!inviteCode) throw new Error('ALPHA_INVITE_CODE must be set for this spec');
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
   // /setup is a top-level route reachable via direct navigation regardless
   // of auth state (DeviceSetup sits outside AuthGate — see routes.ts), the
   // same property loginViaUi relies on for /login. No prior-session
   // logout dance needed.
-  await main.goto(new URL('/setup', main.url()).href);
+  await main.goto(new URL('/setup', await main.url()).href);
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const password = `e2e-register-ui-${suffix}`;

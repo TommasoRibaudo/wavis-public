@@ -458,6 +458,14 @@ fn main() {
 
     let mut builder = tauri::Builder::default();
 
+    // Embedded WebDriver server for the e2e-tooling harness (issue #297) —
+    // only compiled in when built with `--features e2e-webdriver`; absent
+    // from production and plain dev builds.
+    #[cfg(feature = "e2e-webdriver")]
+    {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    }
+
     // Single-instance lock (#323): scoped to the effective auth-store name so
     // PR #292's two-real-GUI-instance e2e capability (each launch with a
     // distinct WAVIS_AUTH_STORE_NAME) keeps working. The plugin only forwards

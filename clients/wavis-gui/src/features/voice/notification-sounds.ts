@@ -1,5 +1,19 @@
 import { getNotificationVolume, getSoundVolumes } from '@features/settings/settings-store';
 
+/**
+ * Exposed only in VITE_DIAGNOSTICS builds — lets e2e tooling observe that a
+ * sound actually played. Fires unconditionally on every playNotificationSound
+ * call (cache hit or miss), unlike watching for a fetch('/sounds/*.mp3') —
+ * bufferCache below means a given sound only ever fetches once per process
+ * lifetime, so a fetch-based check silently misses every replay after the
+ * first (see zz-disconnect-sound.spec.mjs).
+ */
+declare global {
+  interface Window {
+    __wavisNotificationSoundLog?: Array<{ name: string; playedAt: number }>;
+  }
+}
+
 let cachedVolume: number | null = null;
 let cachedSoundVolumes: Record<string, number> | null = null;
 
@@ -117,6 +131,10 @@ export async function playNotificationSound(name: string): Promise<void> {
     source.buffer = buffer;
     source.connect(gainNode);
     source.start();
+
+    if (import.meta.env.VITE_DIAGNOSTICS === 'true') {
+      (window.__wavisNotificationSoundLog ??= []).push({ name, playedAt: Date.now() });
+    }
   } catch (e) {
     console.error(`[notification-sounds] "${name}" failed:`, e);
   }

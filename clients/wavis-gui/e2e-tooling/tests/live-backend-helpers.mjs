@@ -188,7 +188,7 @@ export async function registerViaUi(
   // "Not you / log in on a new device" swaps in the /setup button (they're
   // the two branches of one ternary — Login.tsx). The try/catch covers
   // new-device mode, where "Not you" doesn't exist and /setup is direct.
-  if (new URL(page.url()).pathname.startsWith('/login')) {
+  if (new URL(await page.url()).pathname.startsWith('/login')) {
     try {
       await page
         .getByText('Not you / log in on a new device', { exact: true })
@@ -232,8 +232,8 @@ export async function registerViaUi(
  * and Login.tsx already defaults to new-device mode (deriveLoginMode).
  */
 export async function loginViaUi(page, { recoveryId, password, serverUrl = SERVER_URL } = {}) {
-  if (new URL(page.url()).pathname !== '/login') {
-    await page.goto(new URL('/login', page.url()).href);
+  if (new URL(await page.url()).pathname !== '/login') {
+    await page.goto(new URL('/login', await page.url()).href);
   }
 
   // Trusted-device mode (a locally-saved recovery ID from a prior run in
@@ -260,7 +260,7 @@ export async function loginViaUi(page, { recoveryId, password, serverUrl = SERVE
     // toggle, clicking unconditionally can turn an already-ON value OFF if a
     // prior run in this same auth store left it set — check state first.
     const insecureTlsCheckbox = page.locator(
-      'label:has-text("--danger-insecure-tls") input[type="checkbox"]',
+      './/label[contains(., "--danger-insecure-tls")]//input[@type="checkbox"]',
     );
     if (!(await insecureTlsCheckbox.isChecked())) {
       await page.getByText('--danger-insecure-tls', { exact: true }).click();
@@ -414,7 +414,7 @@ export async function sendCliCommand(page, command) {
  * suite unrunnable a second time.
  */
 export async function leaveRoomIfActive(page) {
-  if (!new URL(page.url()).pathname.startsWith('/room')) return;
+  if (!new URL(await page.url()).pathname.startsWith('/room')) return;
   await sendCliCommand(page, '/leave');
   await page.waitForURL((url) => !url.pathname.startsWith('/room'), { timeout: 10_000 });
 }

@@ -5,14 +5,20 @@
   "type": "module",
   "description": "Dev-only harness for launching and driving the Wavis Tauri desktop app. Not part of the shipped app; isolated package.json so it never touches clients/wavis-gui's own dependency tree.",
   "scripts": {
-    "test": "playwright test"
+    "build:app": "node build-app.mjs",
+    "test": "node global-setup.mjs && node --test --test-force-exit --test-concurrency=1 tests/**/*.spec.mjs"
   },
   "dependencies": {
     "@livekit/rtc-node": "^0.13",
-    "playwright-core": "^1",
     "webdriverio": "^9"
   },
   "devDependencies": {
-    "@playwright/test": "^1"
+    "@wdio/native-utils": "^2.5.0",
+    "@wdio/tauri-service": "^1.2.0"
+  },
+  "overrides": {
+    "@wdio/tauri-service": {
+      "@wdio/native-utils": "^2.5.0"
+    }
   }
 }

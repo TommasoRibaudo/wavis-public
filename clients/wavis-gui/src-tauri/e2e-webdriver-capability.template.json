@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "e2e-webdriver",
+  "description": "Embedded WebDriver server capability for the e2e-tooling harness (issue #297). Only merged in for local e2e builds via tauri.e2e.conf.json — production builds pin app.security.capabilities to [\"default\"] in tauri.conf.json, so this file is never loaded unless explicitly opted into.",
+  "windows": ["main", "screen-share-*", "share-picker", "share-indicator", "watch-all", "watch-all-diagnostics", "camera-popout", "diagnostics"],
+  "permissions": ["wdio-webdriver:default"]
+}

@@ -52,9 +52,9 @@ test('toggling the camera publishes and un-publishes a real local video tile', a
   const channelName = `e2e-camera-${suffix}`;
   const { invite } = await seedChannelWithInvite(channelName);
 
-  const main = app.page();
+  const main = await app.page();
   await leaveRoomIfActive(main);
-  const pathname = new URL(main.url()).pathname;
+  const pathname = new URL(await main.url()).pathname;
 
   if (pathname.startsWith('/login') || pathname.startsWith('/setup')) {
     await registerAndLoginViaUi(main, { serverUrl: SERVER_URL });

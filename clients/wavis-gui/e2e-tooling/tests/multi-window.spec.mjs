@@ -6,13 +6,13 @@
 import { test, expect } from './fixtures.mjs';
 
 test('main and diagnostics windows are independent pages', async ({ app }) => {
-  const pages = app.pages();
+  const pages = await app.pages();
   expect(pages.length).toBeGreaterThanOrEqual(2);
 
-  const main = app.page();
-  const diagnostics = app.getPageByPath('/diagnostics');
+  const main = await app.page();
+  const diagnostics = await app.getPageByPath('/diagnostics');
   expect(main).not.toBe(diagnostics);
-  expect(diagnostics.url()).not.toBe(main.url());
+  expect(await diagnostics.url()).not.toBe(await main.url());
 
   // Each page reads its own DOM independently — not a stale/shared snapshot.
   const diagnosticsBodyText = await diagnostics.locator('body').innerText();
