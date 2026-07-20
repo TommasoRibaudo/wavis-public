@@ -68,8 +68,8 @@ async function switchToLogTab(page) {
   }
 }
 
-async function connectPeerWithTone(peer, { accessToken, channelId, displayName }) {
-  await joinVoiceAsPeer(peer, { accessToken, channelId, displayName });
+async function connectPeerWithTone(peer, { channelId, displayName }) {
+  await joinVoiceAsPeer(peer, { channelId, displayName });
   await joinDefaultSubRoomAsPeer(peer);
   const { token, sfuUrl } = await waitForMediaToken(peer);
   return connectTonePeer({ sfuUrl, token });
@@ -106,9 +106,8 @@ test('a backend restart mid-call recovers automatically: no manual rejoin, no du
   let tone2;
   try {
     /* ── Baseline: a peer's tone is detected before any disruption ────── */
-    peer1 = spawnPeer();
+    peer1 = await spawnPeer({ accessToken: owner.access_token });
     tone1 = await connectPeerWithTone(peer1, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: PEER_DISPLAY_NAME,
     });
@@ -153,9 +152,8 @@ test('a backend restart mid-call recovers automatically: no manual rejoin, no du
      * actually cleaned up server-side, not left as a stale duplicate next
      * to the new one) and a fresh tone lands back in the decoded-audio band.
      */
-    peer2 = spawnPeer();
+    peer2 = await spawnPeer({ accessToken: owner.access_token });
     tone2 = await connectPeerWithTone(peer2, {
-      accessToken: owner.access_token,
       channelId: channel.channel_id,
       displayName: PEER_DISPLAY_NAME,
     });

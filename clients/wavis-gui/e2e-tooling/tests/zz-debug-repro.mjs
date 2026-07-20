@@ -4,13 +4,13 @@ const token1 = process.argv[2];
 const token2 = process.argv[3];
 const channelId = process.argv[4];
 
-const peer1 = spawnPeer();
-const peer2 = spawnPeer();
+const peer1 = await spawnPeer({ accessToken: token1 });
+const peer2 = await spawnPeer({ accessToken: token2 });
 
 try {
-  await joinVoiceAsPeer(peer1, { accessToken: token1, channelId, displayName: 'Peer1' });
+  await joinVoiceAsPeer(peer1, { channelId, displayName: 'Peer1' });
   console.log('peer1 joined');
-  await joinVoiceAsPeer(peer2, { accessToken: token2, channelId, displayName: 'Peer2' });
+  await joinVoiceAsPeer(peer2, { channelId, displayName: 'Peer2' });
   console.log('peer2 joined');
 
   peer1.send({ type: 'chat_send', text: 'hello-from-peer1' });

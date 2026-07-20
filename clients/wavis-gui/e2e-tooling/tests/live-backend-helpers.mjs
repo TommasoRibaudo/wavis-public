@@ -440,17 +440,29 @@ export async function sendChatMessage(page, text) {
  * client — see scripts/ws-sfu-test/src/main.rs) as a scriptable second
  * participant. Chosen over `wavis-client`'s REPL because wavis-client has no
  * chat send/receive support at all (verified against its command parser);
- * ws-sfu-test lets the test send exact SignalingMessage JSON (auth,
- * join_voice, chat_send, ...) and read raw `<< {...}` echoes of whatever the
- * server sends back.
+ * ws-sfu-test lets the test send exact SignalingMessage JSON (join_voice,
+ * chat_send, ...) and read raw `<< {...}` echoes of whatever the server
+ * sends back.
+ *
+ * `accessToken` is required: `/ws` has required `?ticket=<raw>` since the
+ * closed-alpha ws-ticket gate (backend `ws/ws.rs`) — every connection must
+ * present a ticket minted by an authenticated `POST /auth/ws-ticket` call, or
+ * the upgrade 401s before the child process ever gets a socket. This mints
+ * one for the given identity first and connects the child pre-authenticated
+ * as that user/device (ticket validation sets the connection's authenticated
+ * user *before* the message loop starts — see `joinVoiceAsPeer`, which no
+ * longer sends an explicit `auth` message because of this).
  *
  * This verifies the GUI's own rendering reacts to a second real signaling
  * participant — it does not exercise a second real GUI instance.
  */
-export function spawnPeer() {
+export async function spawnPeer({ accessToken }) {
+  const { ticket } = await postJson('/auth/ws-ticket', undefined, accessToken);
+  const wsUrl = `${WS_URL}?ticket=${encodeURIComponent(ticket)}`;
+
   const child = spawn('cargo', ['run', '-p', 'ws-sfu-test'], {
     cwd: WORKSPACE_ROOT,
-    env: { ...process.env, WS_URL },
+    env: { ...process.env, WS_URL: wsUrl },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -511,10 +523,14 @@ export function spawnPeer() {
   return { send, waitForOutput, close, pid: child.pid };
 }
 
-/** auth -> join_voice against a channel, resolving once the server confirms both. */
-export async function joinVoiceAsPeer(peer, { accessToken, channelId, displayName }) {
-  peer.send({ type: 'auth', accessToken });
-  await peer.waitForOutput(/"type":\s*"auth_success"/);
+/**
+ * join_voice against a channel, resolving once the server confirms. No
+ * explicit `auth` message: spawnPeer()'s ws-ticket already authenticated the
+ * connection as its identity at upgrade time, and the server rejects `auth`
+ * afterward as "already authenticated" (ws/validation.rs) — see spawnPeer's
+ * doc comment.
+ */
+export async function joinVoiceAsPeer(peer, { channelId, displayName }) {
   peer.send({ type: 'join_voice', channelId, displayName });
   await peer.waitForOutput(/"type":\s*"joined"/);
 }
