@@ -620,6 +620,10 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
         {step === 'describe' && (
           <div>
             <p className="text-sm text-wavis-text-secondary mb-3">Describe the Bug</p>
+            <p className="text-xs text-wavis-warn mb-3">
+              ⚠ This report is filed as a public GitHub issue, visible to anyone on the internet —
+              including your description, diagnostic logs, and screenshot (if attached).
+            </p>
             <div className="flex items-start gap-2 mb-2">
               <span className="text-wavis-accent mt-1">&gt;</span>
               <textarea
@@ -791,6 +795,9 @@ export default function BugReportFlow({ onClose, preScreenshot }: BugReportFlowP
                     📎 Screenshot attached ({(screenshotBlob.size / 1024).toFixed(1)} KB)
                   </p>
                 )}
+                <p className="text-xs text-wavis-warn mb-3">
+                  ⚠ Submitting creates a public GitHub issue, visible to anyone on the internet.
+                </p>
                 <div className="flex justify-end gap-3">
                   <button
                     className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-bg transition-colors px-4 py-1"
