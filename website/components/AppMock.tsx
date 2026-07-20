@@ -136,6 +136,24 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+// Literal strings (not built from interpolation) so Tailwind's scanner picks
+// them up regardless of which index is actually used at runtime.
+const GRID_COLS_CLASS = ["", "grid-cols-1", "grid-cols-2", "grid-cols-3", "grid-cols-4"];
+const GRID_ROWS_CLASS = ["", "grid-rows-1", "grid-rows-2", "grid-rows-3", "grid-rows-4"];
+
+/** Auto-fit gallery layout (Discord/Zoom-style): pick the col/row count that
+ * keeps tiles closest to square for however many streams are live, instead
+ * of a hardcoded template per count. */
+function watchAllGridLayout(count: number) {
+  const cols = count <= 1 ? 1 : Math.min(Math.ceil(Math.sqrt(count)), 4);
+  const rows = count <= 1 ? 1 : Math.min(Math.ceil(count / cols), 4);
+  const lastRowCount = count - (rows - 1) * cols;
+  return {
+    gridClass: `${GRID_COLS_CLASS[cols]} ${GRID_ROWS_CLASS[rows]}`,
+    isLonelyLastTile: (index: number) => cols > 1 && lastRowCount === 1 && index === count - 1,
+  };
+}
+
 function handlePanelKeyDown(
   event: KeyboardEvent<HTMLDivElement>,
   focusPanel: () => void,
@@ -785,30 +803,31 @@ function WatchAllMock({
         </span>
       </div>
 
-      <div
-        className={`grid aspect-[1.05/1] gap-1.5 bg-bg p-1.5 sm:p-2 ${
-          streams.length <= 1 ? "grid-rows-1" : "grid-cols-2 grid-rows-2"
-        }`}
-      >
-        {streams.length === 0 ? (
-          <p className="flex items-center justify-center text-muted">no active shares</p>
-        ) : (
-          streams.map((stream, index) => (
-            <div
-              key={stream.id}
-              className={`grid min-w-0 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel ${
-                streams.length === 3 && index === 2 ? "col-span-2" : ""
-              }`}
-            >
-              <div className="wavis-stream-preview min-h-0" />
-              <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px] sm:text-[8px]">
-                <span className={`truncate ${stream.tone}`}>{stream.name}</span>
-                <span className="text-accent">live</span>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      {(() => {
+        const { gridClass, isLonelyLastTile } = watchAllGridLayout(streams.length);
+        return (
+          <div className={`grid aspect-[1.05/1] gap-1.5 bg-bg p-1.5 sm:p-2 ${gridClass}`}>
+            {streams.length === 0 ? (
+              <p className="flex items-center justify-center text-muted">no active shares</p>
+            ) : (
+              streams.map((stream, index) => (
+                <div
+                  key={stream.id}
+                  className={`grid min-w-0 grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel ${
+                    isLonelyLastTile(index) ? "col-span-full" : ""
+                  }`}
+                >
+                  <div className="wavis-stream-preview min-h-0" />
+                  <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px] sm:text-[8px]">
+                    <span className={`truncate ${stream.tone}`}>{stream.name}</span>
+                    <span className="text-accent">live</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
