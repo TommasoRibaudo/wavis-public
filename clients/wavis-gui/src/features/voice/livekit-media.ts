@@ -115,7 +115,11 @@ function emitAudioCaptureSelectionTelemetry(result: AudioShareStartResult): void
 }
 const DEBUG_NOISE_SUPPRESSION = import.meta.env.VITE_DEBUG_NOISE_SUPPRESSION === 'true';
 
-const CAMERA_CAPTURE_TIMEOUT_MS = 10_000;
+// 30s (not 10s) so a slow-but-eventual "Allow" click on the first-run OS
+// camera permission dialog doesn't spuriously fail with a `timeout` error —
+// getUserMedia only resolves after the user decides, and human reaction time
+// to an unexpected permission prompt can exceed a few seconds (issue #233).
+const CAMERA_CAPTURE_TIMEOUT_MS = 30_000;
 const CAMERA_PUBLISH_TIMEOUT_MS = 5_000;
 const REMOTE_CAMERA_READY_TIMEOUT_MS = 10_000;
 export type RemoteShareType = ShareMode | 'browser';
@@ -3689,9 +3693,10 @@ export class LiveKitModule {
       );
     } catch (err) {
       if (enabled) {
-        this.callbacks.onSystemEvent(
-          `mic permission denied: ${err instanceof Error ? err.message : String(err)} - listen-only mode`,
-        );
+        const message = isMac()
+          ? 'Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone, then try again. Continuing in listen-only mode.'
+          : `mic permission denied: ${err instanceof Error ? err.message : String(err)} - listen-only mode`;
+        this.callbacks.onSystemEvent(message);
       }
     }
   }

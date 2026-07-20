@@ -36,6 +36,7 @@ pub(super) enum MacosAudioCapturePath {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum VirtualDeviceTeardownTrigger {
     ManualStop,
     SessionDisconnect,

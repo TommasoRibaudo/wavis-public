@@ -89,6 +89,7 @@ fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MacAudioBuffer {
     mNumberChannels: u32,
     mDataByteSize: u32,
@@ -100,6 +101,7 @@ struct MacAudioBuffer {
 /// stereo; 2 buffers covers both cases.
 #[cfg(target_os = "macos")]
 #[repr(C)]
+#[allow(non_snake_case)]
 struct MacAudioBufferList {
     mNumberBuffers: u32,
     mBuffers: [MacAudioBuffer; 2],

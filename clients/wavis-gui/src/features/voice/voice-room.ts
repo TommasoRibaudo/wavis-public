@@ -1806,7 +1806,9 @@ function appendCameraSystemEvent(message: string): void {
 function cameraErrorMessage(error: CameraStartError): string {
   switch (error.kind) {
     case 'permission_denied':
-      return 'camera permission denied';
+      return isMacPlatform()
+        ? 'Camera access denied. Enable it in System Settings > Privacy & Security > Camera, then try again.'
+        : 'camera permission denied';
     case 'device_unavailable':
       return 'camera device unavailable';
     case 'device_in_use':

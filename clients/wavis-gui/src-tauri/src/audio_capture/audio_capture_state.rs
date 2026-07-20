@@ -130,6 +130,7 @@ pub(crate) struct IoProcCtx {
     /// One-shot channel: the IOProc takes the sender and fires it on the first
     /// audio callback to confirm the tap is live. `None` after first use.
     pub(crate) first_frame_tx: std::sync::Mutex<Option<SyncSender<()>>>,
+    #[allow(dead_code)]
     pub(crate) native_rate: f64,
     pub(crate) native_channels: u32,
 }
