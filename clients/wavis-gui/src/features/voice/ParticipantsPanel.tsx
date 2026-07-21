@@ -222,7 +222,6 @@ function ParticipantsPanelImpl({
                   : null;
             const isWatchAllScopedRoom = isJoinedRoom || pairedSubRoomId === subRoom.id;
             const showEnabledWatchAll = isWatchAllScopedRoom && roomRemoteSharers.length > 0;
-            const showDisabledWatchAll = !isWatchAllScopedRoom && roomRemoteSharers.length > 0;
             const roomRemovalText =
               roomParticipants.length === 0
                 ? roomRemovalCountdownText(subRoom.deleteAtMs, countdownNowMs)
@@ -285,7 +284,7 @@ function ParticipantsPanelImpl({
                 </TooltipContent>
               </Tooltip>
             );
-            const roomActionButton = isJoinedRoom ? (
+            const leaveButton = (
               <button
                 type="button"
                 onPointerDown={(event) => {
@@ -299,7 +298,11 @@ function ParticipantsPanelImpl({
               >
                 /leave
               </button>
-            ) : (
+            );
+            // /join lives in the header only while the room is collapsed (no
+            // participant list to sit under); once expanded it moves below
+            // the participant list instead — see the isExpanded block below.
+            const joinButton = (
               <button
                 type="button"
                 onPointerDown={(event) => {
@@ -344,7 +347,8 @@ function ParticipantsPanelImpl({
                     {subRooms.length >= 2 &&
                       (!isJoinedRoom || activePassthroughInvolvesRoom) &&
                       passthroughButton}
-                    {roomActionButton}
+                    {isJoinedRoom && leaveButton}
+                    {!isJoinedRoom && !isExpanded && joinButton}
                   </div>
                 </div>
                 {isExpanded && (
@@ -413,31 +417,19 @@ function ParticipantsPanelImpl({
                         {roomRemovalText && <div>{roomRemovalText}</div>}
                       </div>
                     )}
-                    {(showEnabledWatchAll || showDisabledWatchAll) && (
+                    {!isJoinedRoom && <div className="pt-2">{joinButton}</div>}
+                    {showEnabledWatchAll && (
                       <div className="pt-2 flex items-center gap-2">
-                        {showEnabledWatchAll && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void toggleWatchAllWindow();
-                            }}
-                            title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${watchAllHotkeyLabel})`}
-                            className={`w-full block text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
-                          >
-                            {watchAllOpen ? '/close-all' : '/watch-all'}
-                          </button>
-                        )}
-                        {showDisabledWatchAll && (
-                          <button
-                            type="button"
-                            disabled
-                            aria-disabled="true"
-                            title="Join this room to watch all streams together."
-                            className="text-xs py-0.5 px-1 border border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed"
-                          >
-                            /watch-all
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void toggleWatchAllWindow();
+                          }}
+                          title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${watchAllHotkeyLabel})`}
+                          className={`w-full block text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                        >
+                          {watchAllOpen ? '/close-all' : '/watch-all'}
+                        </button>
                       </div>
                     )}
                   </div>
