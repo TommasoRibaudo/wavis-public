@@ -389,7 +389,7 @@ function ParticipantsPanelImpl({
                   </div>
                 )}
                 {(showEnabledWatchAll || showDisabledWatchAll) && (
-                  <div className="pt-2 flex items-center justify-end gap-2">
+                  <div className="pt-2 flex items-center gap-2">
                     {showEnabledWatchAll && (
                       <button
                         type="button"
@@ -397,7 +397,7 @@ function ParticipantsPanelImpl({
                           void toggleWatchAllWindow();
                         }}
                         title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${watchAllHotkeyLabel})`}
-                        className={`text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                        className={`w-full block text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                       >
                         {watchAllOpen ? '/close-all' : '/watch-all'}
                       </button>
