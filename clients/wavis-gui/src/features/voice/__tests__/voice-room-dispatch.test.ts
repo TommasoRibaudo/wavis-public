@@ -335,7 +335,9 @@ describe('sub_room_state', () => {
 
     inject({ type: 'sub_room_state', rooms: [], passthrough, passthroughVolumePercent: 30 });
 
-    expect(getState().events.filter((event) => event.type === 'passthrough')).toHaveLength(eventCount);
+    expect(getState().events.filter((event) => event.type === 'passthrough')).toHaveLength(
+      eventCount,
+    );
   });
 
   it('clamps passthroughVolumePercent to 0–100', async () => {
