@@ -18,6 +18,7 @@
 // bridge), which is out of scope for this ticket — basic element
 // interactions and window handles work without it.
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startWdioSession, cleanupWdioSession, createTauriCapabilities } from '@wdio/tauri-service';
@@ -51,15 +52,15 @@ const DEFAULT_TAURI_DRIVER_PORT = 4444;
  * getPageByPath, page, close }. Always call close(), or the app process and
  * WebDriver session linger in the background.
  *
- * Each launch gets a fresh, unique WEBVIEW2_USER_DATA_FOLDER-equivalent
- * profile via WAVIS_AUTH_STORE_NAME/WAVIS_KEYRING_SERVICE isolation (same
- * scheme as before) so it never conflicts with a normally-running Wavis
- * instance's profile, and multiple harness launches can coexist — including
- * TWO REAL launches of the same debug exe at once (e.g. a two-instance
- * live-backend spec): give each its own `port` and, since they'd otherwise
- * share one Tauri store file and one OS keychain service, its own
- * `authStoreName` / `keyringService` too. See README.md's "Two simultaneous
- * GUI instances" section.
+ * Each launch gets its own WEBVIEW2_USER_DATA_FOLDER (keyed by `port`) so it
+ * never conflicts with a normally-running Wavis instance's profile — WebView2
+ * refuses to open a second environment against a folder another process
+ * already has open — and, since they'd otherwise share one Tauri store file
+ * and one OS keychain service, its own `authStoreName` / `keyringService`
+ * too. Together this is what lets multiple harness launches coexist,
+ * including TWO REAL launches of the same debug exe at once (e.g. a
+ * two-instance live-backend spec): give each its own `port`. See README.md's
+ * "Two simultaneous GUI instances" section.
  *
  * `settleMs` (default 4000) is how long to wait after connecting before
  * windows/content are expected to be meaningfully rendered — the app talks
@@ -77,6 +78,24 @@ export async function launchApp({
   const embeddedPort = port ?? DEFAULT_EMBEDDED_PORT;
   const tauriDriverPort = port ?? DEFAULT_TAURI_DRIVER_PORT;
 
+  // Everything below the `env` key on this options object — including `env`
+  // itself and `embeddedPort` above it — is silently dropped by
+  // @wdio/tauri-service@1.2.0's createTauriCapabilities: its implementation
+  // only copies appArgs/tauriDriverPort/logLevel/commandTimeout/startTimeout/
+  // driverProvider/autoInstallTauriDriver into the `wdio:tauriServiceOptions`
+  // object it returns (verified directly against
+  // node_modules/@wdio/tauri-service/dist/esm/index.js's createTauriCapabilities
+  // and the getEmbeddedPort/startEmbeddedDriver functions that later read
+  // `options.embeddedPort`/`options.env` from exactly that object — there is
+  // no other path either field could reach the spawned process through).
+  // Concretely this meant every launch fell back to the same default
+  // embedded-WebDriver port regardless of the `port` argument (fatal for two
+  // simultaneous instances — see two-instances.spec.mjs) AND every custom env
+  // var below (auth store name, keyring service, WebRTC test flags,
+  // diagnostics auto-open) was never actually applied, so every launch used
+  // the build's single default auth store — the real cause of stale
+  // wavis-auth-e2e.json cross-contaminating unrelated spec runs. Patched back
+  // in below until upstream forwards these itself.
   const capabilities = createTauriCapabilities(applicationPath, {
     driverProvider,
     embeddedPort,
@@ -85,43 +104,57 @@ export async function launchApp({
     // The embedded WebDriver server takes longer to come up on Windows CI-
     // like conditions; give it real headroom rather than racing the default.
     startTimeout: 60_000,
-    env: {
-      // --disable-features=WebRtcHideLocalIpsWithMdns: test-launches only —
-      // exposes real local IPs in ICE host candidates instead of Chromium's
-      // default randomly-generated ".local" mDNS obfuscation. Needed because
-      // the dockerized LiveKit used by live-backend media specs can't resolve
-      // those mDNS names (Docker's bridge network doesn't forward the UDP
-      // multicast mDNS needs), which otherwise breaks all real WebRTC media
-      // for the browser client. Must never move into tauri.conf.json —
-      // production/normal dev launches keep the default privacy behavior.
-      //
-      // --use-fake-ui-for-media-stream: test-launches only — auto-accepts
-      // getUserMedia permission requests, suppressing the WebView's own
-      // mic/camera permission bar. Without this, every live-backend media
-      // spec blocks on a manual click. "Fake" refers only to the permission
-      // UI — capture still uses real devices.
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
-        '--disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream',
-      // Keeps the OS keychain refresh-token entry (src-tauri/src/main.rs's
-      // keyring_service()) separate from a developer's real persisted login
-      // on this machine. Defaults to one shared e2e service; pass a distinct
-      // `keyringService` per launch when running two real instances at once
-      // so neither's token rotation can clobber the other's keychain entry.
-      WAVIS_KEYRING_SERVICE: keyringService,
-      // Runtime override for the Tauri store filename (auth.ts's
-      // resolveStoreName, read via src-tauri/src/main.rs's
-      // get_auth_store_name). Undefined `authStoreName` means "use the
-      // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
-      // (not simply omitting the key) so a value inherited from the
-      // caller's own shell environment can't leak through.
-      WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
-      // Runtime auto-open for the diagnostics window — separate from the
-      // build-time VITE_DIAGNOSTICS flag (build-app.mjs) which only
-      // controls whether it's bundled at all. multi-window.spec.mjs relies
-      // on it being open with no prior click needed.
-      WAVIS_DIAGNOSTICS_WINDOW: '1',
-    },
   });
+  capabilities['wdio:tauriServiceOptions'].embeddedPort = embeddedPort;
+  capabilities['wdio:tauriServiceOptions'].env = {
+    // --disable-features=WebRtcHideLocalIpsWithMdns: test-launches only —
+    // exposes real local IPs in ICE host candidates instead of Chromium's
+    // default randomly-generated ".local" mDNS obfuscation. Needed because
+    // the dockerized LiveKit used by live-backend media specs can't resolve
+    // those mDNS names (Docker's bridge network doesn't forward the UDP
+    // multicast mDNS needs), which otherwise breaks all real WebRTC media
+    // for the browser client. Must never move into tauri.conf.json —
+    // production/normal dev launches keep the default privacy behavior.
+    //
+    // --use-fake-ui-for-media-stream: test-launches only — auto-accepts
+    // getUserMedia permission requests, suppressing the WebView's own
+    // mic/camera permission bar. Without this, every live-backend media
+    // spec blocks on a manual click. "Fake" refers only to the permission
+    // UI — capture still uses real devices.
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+      '--disable-features=WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream',
+    // WebView2's user-data folder otherwise defaults to a location keyed
+    // purely off the Tauri app identifier (com.wavis.desktop) — shared by
+    // EVERY build of this app on the machine, including a developer's own
+    // long-running normal launch. A second WebView2 environment can't open
+    // against a folder another process already has open with different
+    // settings: confirmed via captureBackendLogs against a real run, the
+    // failure is WebView2 HRESULT 0x8007139F ("group or resource is not in
+    // the correct state") — not a crash in this app. Officially-supported
+    // WebView2 Loader env var (not Tauri-specific), so it's the actual fix
+    // rather than a workaround. Keyed by port so the two simultaneous
+    // instances a two-instance spec launches don't collide with each other
+    // either.
+    WEBVIEW2_USER_DATA_FOLDER: path.join(os.tmpdir(), 'wavis-e2e-webview2', `port-${embeddedPort}`),
+    // Keeps the OS keychain refresh-token entry (src-tauri/src/main.rs's
+    // keyring_service()) separate from a developer's real persisted login
+    // on this machine. Defaults to one shared e2e service; pass a distinct
+    // `keyringService` per launch when running two real instances at once
+    // so neither's token rotation can clobber the other's keychain entry.
+    WAVIS_KEYRING_SERVICE: keyringService,
+    // Runtime override for the Tauri store filename (auth.ts's
+    // resolveStoreName, read via src-tauri/src/main.rs's
+    // get_auth_store_name). Undefined `authStoreName` means "use the
+    // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
+    // (not simply omitting the key) so a value inherited from the
+    // caller's own shell environment can't leak through.
+    WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
+    // Runtime auto-open for the diagnostics window — separate from the
+    // build-time VITE_DIAGNOSTICS flag (build-app.mjs) which only
+    // controls whether it's bundled at all. multi-window.spec.mjs relies
+    // on it being open with no prior click needed.
+    WAVIS_DIAGNOSTICS_WINDOW: '1',
+  };
 
   const browser = await startWdioSession(capabilities);
 

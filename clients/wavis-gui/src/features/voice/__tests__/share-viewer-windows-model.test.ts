@@ -21,6 +21,7 @@ import {
   decideWatchAllOpenWhenClosed,
   decideWatchAllToggleWhenOpen,
   shouldCloseOnSubRoomChange,
+  planAudioOnlySharerBaselineSeed,
 } from '../share-viewer-windows-model';
 import type { ShareViewerScope } from '../useShareViewerWindows';
 
@@ -146,6 +147,49 @@ describe('shouldCloseOnSubRoomChange', () => {
           const decision = shouldCloseOnSubRoomChange(scope, participantId, scopeIds);
           const expected = scope === 'watch-all' && !includeSelf;
           expect(decision).toBe(expected);
+        },
+      ),
+      { numRuns: 30 },
+    );
+  });
+});
+
+/* ═══ Audio-only sharer baseline: rejoin regression (#346) ═════════ */
+
+describe('planAudioOnlySharerBaselineSeed', () => {
+  it('not yet joined a sub-room: defers (ShareState not guaranteed settled)', () => {
+    expect(planAudioOnlySharerBaselineSeed(false, null, new Set(['p1']))).toBeNull();
+  });
+
+  it('regression #346: a share already active when the sub-room settles seeds into the baseline, not treated as new', () => {
+    const seed = planAudioOnlySharerBaselineSeed(false, 'room-1', new Set(['p1']));
+    expect(seed).toEqual(new Set(['p1']));
+  });
+
+  it('already seeded: never reseeds, even if the sub-room id changes', () => {
+    expect(planAudioOnlySharerBaselineSeed(true, 'room-1', new Set(['p1']))).toBeNull();
+    expect(planAudioOnlySharerBaselineSeed(true, null, new Set())).toBeNull();
+  });
+
+  it('no active shares yet when the sub-room settles: seeds an empty baseline', () => {
+    expect(planAudioOnlySharerBaselineSeed(false, 'room-1', new Set())).toEqual(new Set());
+  });
+
+  it('property: seeding only ever happens once, exactly when unseeded and joined', () => {
+    fc.assert(
+      fc.property(
+        fc.boolean(),
+        fc.option(fc.string({ minLength: 1, maxLength: 8 }), { nil: null }),
+        fc.array(fc.string({ minLength: 1, maxLength: 8 })),
+        (alreadySeeded, joinedSubRoomId, curr) => {
+          const currSet = new Set(curr);
+          const seed = planAudioOnlySharerBaselineSeed(alreadySeeded, joinedSubRoomId, currSet);
+          const shouldSeed = !alreadySeeded && joinedSubRoomId !== null;
+          if (shouldSeed) {
+            expect(seed).toEqual(currSet);
+          } else {
+            expect(seed).toBeNull();
+          }
         },
       ),
       { numRuns: 30 },

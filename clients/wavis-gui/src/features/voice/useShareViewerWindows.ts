@@ -66,6 +66,7 @@ import {
   decideWatchAllOpenWhenClosed,
   decideWatchAllToggleWhenOpen,
   shouldCloseOnSubRoomChange,
+  planAudioOnlySharerBaselineSeed,
 } from './share-viewer-windows-model';
 
 export type ShareViewerScope = 'direct' | 'watch-all';
@@ -138,6 +139,9 @@ export function useShareViewerWindows({
   const watchAllReadyRef = useRef(false);
   const prevWatchAllStreamsRef = useRef<Map<string, MediaStream | null>>(new Map());
   const prevAudioOnlySharersRef = useRef<Set<string>>(new Set());
+  // See planAudioOnlySharerBaselineSeed's doc comment for why this baseline
+  // can't just be seeded at mount.
+  const hasSeededAudioOnlySharersRef = useRef(false);
 
   // Mirrors pushed to child windows; assigned during render so the values
   // are always fresh when a viewer-ready callback fires.
@@ -968,6 +972,17 @@ export function useShareViewerWindows({
     const participants = roomState?.participants;
     if (!audioOnlySharers || !participants) return;
     const curr = audioOnlySharers;
+    const baselineSeed = planAudioOnlySharerBaselineSeed(
+      hasSeededAudioOnlySharersRef.current,
+      roomState?.joinedSubRoomId ?? null,
+      curr,
+    );
+    if (baselineSeed) {
+      prevAudioOnlySharersRef.current = baselineSeed;
+      hasSeededAudioOnlySharersRef.current = true;
+    } else if (!hasSeededAudioOnlySharersRef.current) {
+      return;
+    }
     const prev = prevAudioOnlySharersRef.current;
     for (const identity of curr) {
       if (prev.has(identity)) continue;
@@ -1001,7 +1016,13 @@ export function useShareViewerWindows({
       }
     }
     prevAudioOnlySharersRef.current = new Set(curr);
-  }, [getSavedShareVolume, watchAllOpen, roomState?.audioOnlySharers, roomState?.participants]);
+  }, [
+    getSavedShareVolume,
+    watchAllOpen,
+    roomState?.audioOnlySharers,
+    roomState?.participants,
+    roomState?.joinedSubRoomId,
+  ]);
 
   // Watch All: emit share-updated when participant info changes
   const prevParticipantsRef = useRef<Map<string, { displayName: string; color: string }>>(

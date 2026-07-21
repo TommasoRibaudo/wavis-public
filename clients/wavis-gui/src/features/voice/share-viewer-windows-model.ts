@@ -82,3 +82,33 @@ export function shouldCloseOnSubRoomChange(
   if (windowScope !== 'watch-all') return false;
   return !newScopeParticipantIds.has(participantId);
 }
+
+/* ─── Audio-only sharer baseline: which arrivals count as "new" ────── */
+
+/**
+ * Decide whether to (re)establish the "already active" baseline for
+ * audio-only sharers this effect pass, and what it should be.
+ *
+ * A share present in `curr` only counts as newly-arrived (and gets forced
+ * to start muted) if it appears *after* this baseline exists — otherwise a
+ * rejoin's ShareState snapshot, which reports every share already in
+ * progress, would make each of them look "new" to a freshly-mounted
+ * viewer and force-mute a share the user never actually just started.
+ *
+ * The baseline can't simply be seeded at mount: ShareState arrives
+ * asynchronously, so `curr` is still empty on the render that creates the
+ * ref holding it. Instead, seeding is deferred until `joinedSubRoomId` is
+ * non-null — SubRoomJoined/SubRoomState always arrive after ShareState in
+ * the join sequence (see voice_orchestrator.rs's join_voice signal order),
+ * so once it settles, `curr` is guaranteed to already reflect every share
+ * active at join time.
+ */
+export function planAudioOnlySharerBaselineSeed(
+  alreadySeeded: boolean,
+  joinedSubRoomId: string | null,
+  curr: ReadonlySet<string>,
+): Set<string> | null {
+  if (alreadySeeded) return null;
+  if (joinedSubRoomId === null) return null;
+  return new Set(curr);
+}
