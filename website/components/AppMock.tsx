@@ -36,7 +36,7 @@ const LOGS = [
 
 type RoomId = "room1" | "room2";
 type ActivePanel = "main" | "watchAll";
-type ActivityTab = "logs" | "videos";
+type ActivityTab = "chat" | "logs" | "videos";
 type ShareQuality = "low" | "high" | "max";
 type DragPosition = { x: number; y: number };
 
@@ -331,7 +331,7 @@ export function AppMock() {
     isSharing: false,
     shareQuality: "max",
   });
-  const [activityTab, setActivityTab] = useState<ActivityTab>("logs");
+  const [activityTab, setActivityTab] = useState<ActivityTab>("chat");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [volumes, setVolumes] = useState<Record<string, number>>({});
@@ -371,7 +371,12 @@ export function AppMock() {
         if (cameraOn) setActivityTab("videos");
         return { ...s, cameraOn };
       }),
-    toggleSharing: () => setSelf((s) => ({ ...s, isSharing: !s.isSharing })),
+    toggleSharing: () =>
+      setSelf((s) => {
+        const isSharing = !s.isSharing;
+        if (isSharing) setActivePanel("watchAll");
+        return { ...s, isSharing };
+      }),
     setShareQuality: (quality) => setSelf((s) => ({ ...s, shareQuality: quality })),
   };
 
@@ -656,35 +661,69 @@ function MainAppWindow({
           </div>
         </aside>
 
-        {/* Chat */}
-        <section className="grid min-w-0 grid-rows-[auto_1fr_auto] bg-bg">
-          <div className="border-b border-border px-3 py-3 font-bold text-muted">CHAT</div>
-
-          <div className="space-y-1.5 overflow-hidden p-3">
-            {CHAT.map((item) => (
-              <p key={`${item.time}-${item.user}`} className="truncate text-text">
-                <span className="text-muted">[{item.time}] </span>
-                <span className={item.color}>{item.user}</span>
-                <span>: </span>
-                <span>{item.text}</span>
-              </p>
-            ))}
+        {/* Chat/Logs/Videos — combined into one tabbed pane below sm (matches
+            ActiveRoom.tsx's groupedPanel), split into separate columns at sm+ */}
+        <section className="grid min-w-0 grid-rows-[auto_1fr_auto] bg-bg sm:hidden">
+          <div className="grid grid-cols-3 border-b border-border text-center font-bold">
+            <button
+              type="button"
+              onClick={() => onSetActivityTab("chat")}
+              className={`border-r border-border px-1 py-3 transition-colors ${
+                activityTab === "chat" ? "bg-teal/10 text-accent" : "text-muted hover:text-text"
+              }`}
+            >
+              CHAT
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetActivityTab("logs")}
+              className={`border-r border-border px-1 py-3 transition-colors ${
+                activityTab === "logs" ? "bg-teal/10 text-accent" : "text-muted hover:text-text"
+              }`}
+            >
+              LOGS
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetActivityTab("videos")}
+              className={`px-1 py-3 transition-colors ${
+                activityTab === "videos" ? "bg-teal/10 text-accent" : "text-muted hover:text-text"
+              }`}
+            >
+              VIDEOS
+            </button>
           </div>
 
+          {activityTab === "chat" && <ChatMessages />}
+          {activityTab === "logs" && <LogsList />}
+          {activityTab === "videos" && <VideosPanel cameraOn={self.cameraOn} />}
+
+          <div className="border-t border-border px-3 py-1.5">
+            <span className="mr-3 text-accent">&gt;</span>
+            <span className="text-muted">
+              {activityTab === "chat" ? "type message..." : "type command..."}
+            </span>
+          </div>
+        </section>
+
+        {/* Chat — desktop column (sm+) */}
+        <section className="hidden min-w-0 grid-rows-[auto_1fr_auto] bg-bg sm:grid">
+          <div className="border-b border-border px-3 py-3 font-bold text-muted">CHAT</div>
+          <ChatMessages />
           <div className="border-t border-border px-3 py-1.5">
             <span className="mr-3 text-accent">&gt;</span>
             <span className="text-muted">type message...</span>
           </div>
         </section>
 
-        {/* Activity */}
+        {/* Activity — desktop column (sm+) */}
         <aside className="hidden min-w-0 grid-rows-[auto_1fr_auto] border-l border-border bg-panel sm:grid">
           <div className="grid grid-cols-2 border-b border-border text-center font-bold">
             <button
               type="button"
               onClick={() => onSetActivityTab("logs")}
               className={`border-r border-border px-2 py-3 transition-colors ${
-                activityTab === "logs" ? "bg-teal/10 text-accent" : "text-muted hover:text-text"
+                activityTab !== "videos" ? "bg-teal/10 text-accent" : "text-muted hover:text-text"
               }`}
             >
               LOGS
@@ -700,34 +739,10 @@ function MainAppWindow({
             </button>
           </div>
 
-          {activityTab === "logs" ? (
-            <div className="space-y-1.5 overflow-hidden p-3">
-              <div className="flex items-center gap-2 text-muted">
-                <span className="h-px flex-1 bg-muted" />
-                <span>today</span>
-                <span className="h-px flex-1 bg-muted" />
-              </div>
-              {LOGS.map((log) => (
-                <p key={`${log.time}-${log.text}`} className="text-text">
-                  <span className="text-muted">[{log.time}] </span>
-                  <span className={log.tone}>{log.text}</span>
-                </p>
-              ))}
-            </div>
+          {activityTab === "videos" ? (
+            <VideosPanel cameraOn={self.cameraOn} />
           ) : (
-            <div className="overflow-hidden p-3">
-              {self.cameraOn ? (
-                <div className="grid aspect-[16/10] w-full grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel">
-                  <div className="wavis-stream-preview min-h-0" />
-                  <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px]">
-                    <span className="truncate text-blue">you</span>
-                    <span className="text-accent">live</span>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-muted">no active cameras</p>
-              )}
-            </div>
+            <LogsList />
           )}
 
           <div className="border-t border-border px-3 py-1.5">
@@ -736,6 +751,57 @@ function MainAppWindow({
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function ChatMessages() {
+  return (
+    <div className="space-y-1.5 overflow-hidden p-3">
+      {CHAT.map((item) => (
+        <p key={`${item.time}-${item.user}`} className="truncate text-text">
+          <span className="text-muted">[{item.time}] </span>
+          <span className={item.color}>{item.user}</span>
+          <span>: </span>
+          <span>{item.text}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function LogsList() {
+  return (
+    <div className="space-y-1.5 overflow-hidden p-3">
+      <div className="flex items-center gap-2 text-muted">
+        <span className="h-px flex-1 bg-muted" />
+        <span>today</span>
+        <span className="h-px flex-1 bg-muted" />
+      </div>
+      {LOGS.map((log) => (
+        <p key={`${log.time}-${log.text}`} className="text-text">
+          <span className="text-muted">[{log.time}] </span>
+          <span className={log.tone}>{log.text}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function VideosPanel({ cameraOn }: { cameraOn: boolean }) {
+  return (
+    <div className="overflow-hidden p-3">
+      {cameraOn ? (
+        <div className="grid aspect-[16/10] w-full grid-rows-[1fr_auto] overflow-hidden border border-border bg-panel">
+          <div className="wavis-stream-preview min-h-0" />
+          <div className="flex items-center justify-between gap-2 border-t border-border px-1.5 py-1 text-[7px]">
+            <span className="truncate text-blue">you</span>
+            <span className="text-accent">live</span>
+          </div>
+        </div>
+      ) : (
+        <p className="text-muted">no active cameras</p>
+      )}
     </div>
   );
 }
