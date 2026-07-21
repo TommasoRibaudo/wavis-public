@@ -28,10 +28,10 @@ const CHAT = [
 ];
 
 const LOGS = [
-  { time: "09:41:08", text: "alex joined Room 1", tone: "text-accent" },
-  { time: "09:42:05", text: "sam started sharing", tone: "text-purple" },
-  { time: "09:43:10", text: "Room 2 created", tone: "text-warn" },
-  { time: "09:45:31", text: "nora joined Room 2", tone: "text-accent" },
+  { time: "09:41:08", text: "alex joined Room 1", tone: "text-purple" },
+  { time: "09:41:45", text: "alex started sharing", tone: "text-purple" },
+  { time: "09:42:05", text: "sam joined Room 1", tone: "text-warn" },
+  { time: "09:42:31", text: "sam started sharing", tone: "text-warn" },
 ];
 
 type RoomId = "room1" | "room2";
@@ -52,7 +52,6 @@ interface Participant {
   id: string;
   name: string;
   tone: string;
-  hasCamera?: boolean;
   hasShare?: boolean;
 }
 
@@ -104,7 +103,7 @@ interface ExpandState {
 
 const ROOM_SEEDS: Record<RoomId, Participant[]> = {
   room1: [
-    { id: "alex", name: "alex", tone: "text-purple", hasCamera: true, hasShare: true },
+    { id: "alex", name: "alex", tone: "text-purple", hasShare: true },
     { id: "sam", name: "sam", tone: "text-warn", hasShare: true },
   ],
   room2: [],
@@ -624,11 +623,10 @@ function MainAppWindow({
                 </span>
               </>
             ) : (
-              // Matches ChannelDetail.tsx's real handleJoinVoice button styling.
               <button
                 type="button"
                 onClick={roomActions.onJoinVoice}
-                className="block w-full border border-accent px-1 py-0.5 text-center text-accent transition-colors hover:bg-accent hover:text-bg"
+                className="block w-full border border-accent/60 bg-accent/10 px-2 py-1 text-center text-[1.08em] font-bold text-accent shadow-black/30"
               >
                 /join voice
               </button>
@@ -745,14 +743,8 @@ function ParticipantMockRow({
           <Mic size={9} strokeWidth={2} className="text-muted" aria-hidden="true" />
         </span>
         <span className="inline-flex items-center gap-1">
-          {participant.hasCamera && (
-            <Camera size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
-          )}
           {participant.hasShare && (
-            <>
-              <Music size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
-              <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
-            </>
+            <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
           )}
         </span>
       </button>
