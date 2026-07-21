@@ -215,6 +215,13 @@
   animation: wavis-share-pulse 2s ease-in-out infinite;
 }
 
+/* Passthrough-volume slider on an expanded participant row. */
+.wavis-volume-slider {
+  accent-color: var(--color-blue);
+  height: 3px;
+  cursor: pointer;
+}
+
 /* Respect users who ask for less motion: freeze the waveform and caret. */
 @media (prefers-reduced-motion: reduce) {
   *,
