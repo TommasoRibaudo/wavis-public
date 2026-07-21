@@ -53,6 +53,7 @@ interface Participant {
   name: string;
   tone: string;
   hasShare?: boolean;
+  hasAudioShare?: boolean;
 }
 
 interface WatchAllStream {
@@ -101,10 +102,20 @@ interface ExpandState {
   onVolumeChange: (id: string, value: number) => void;
 }
 
+/** Watch All's audio-only shares strip (below the video grid), mirroring
+ * AudioOnlyTile.tsx in the real app. */
+interface AudioShareState {
+  streams: Participant[];
+  mutedFor: (id: string) => boolean;
+  volumeFor: (id: string) => number;
+  onToggleMute: (id: string) => void;
+  onVolumeChange: (id: string, value: number) => void;
+}
+
 const ROOM_SEEDS: Record<RoomId, Participant[]> = {
   room1: [
     { id: "alex", name: "alex", tone: "text-purple", hasShare: true },
-    { id: "sam", name: "sam", tone: "text-warn", hasShare: true },
+    { id: "sam", name: "sam", tone: "text-warn", hasShare: true, hasAudioShare: true },
   ],
   room2: [],
 };
@@ -324,6 +335,8 @@ export function AppMock() {
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [volumes, setVolumes] = useState<Record<string, number>>({});
+  const [audioShareMuted, setAudioShareMuted] = useState<Record<string, boolean>>({});
+  const [audioShareVolumes, setAudioShareVolumes] = useState<Record<string, number>>({});
 
   const youConnected = connectedRoomId !== null;
   const viewedRoomId: RoomId = connectedRoomId ?? "room1";
@@ -375,6 +388,17 @@ export function AppMock() {
     ...(youConnected && self.isSharing ? [{ id: "you", name: "you", tone: "text-blue" }] : []),
   ];
 
+  const audioShares: AudioShareState = {
+    streams: currentRoomMembers.filter((p) => p.hasAudioShare),
+    mutedFor: (id) => audioShareMuted[id] ?? false,
+    volumeFor: (id) => audioShareVolumes[id] ?? 70,
+    onToggleMute: (id) => setAudioShareMuted((cur) => ({ ...cur, [id]: !cur[id] })),
+    onVolumeChange: (id, value) => {
+      setAudioShareVolumes((cur) => ({ ...cur, [id]: value }));
+      if (value === 0) setAudioShareMuted((cur) => ({ ...cur, [id]: true }));
+    },
+  };
+
   return (
     <div
       className="relative isolate z-40 mx-auto w-full max-w-[840px] overflow-visible pb-[clamp(44px,7vw,76px)]"
@@ -386,6 +410,7 @@ export function AppMock() {
         onFocus={() => setActivePanel("watchAll")}
         drag={watchAllDrag}
         streams={streams}
+        audioShares={audioShares}
       />
       <MainAppWindow
         isActive={activePanel === "main"}
@@ -772,11 +797,13 @@ function WatchAllMock({
   onFocus,
   drag,
   streams,
+  audioShares,
 }: {
   isActive: boolean;
   onFocus: () => void;
   drag: ReturnType<typeof useDesktopPanelDrag>;
   streams: WatchAllStream[];
+  audioShares: AudioShareState;
 }) {
   return (
     <div
@@ -833,6 +860,57 @@ function WatchAllMock({
           </div>
         );
       })()}
+
+      {/* Audio-only shares strip — below the video grid, mirrors AudioOnlyTile.tsx */}
+      {audioShares.streams.length > 0 && (
+        <div className="divide-y divide-border border-t border-border bg-panel/95">
+          {audioShares.streams.map((p) => {
+            const muted = audioShares.mutedFor(p.id);
+            const volume = audioShares.volumeFor(p.id);
+            return (
+              <div
+                key={p.id}
+                className="flex items-center gap-1.5 px-2 py-1.5 text-[7px] sm:text-[8px]"
+              >
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    audioShares.onToggleMute(p.id);
+                  }}
+                  className="shrink-0"
+                  aria-label={muted ? `Unmute ${p.name} audio` : `Mute ${p.name} audio`}
+                  title={muted ? "click to unmute" : "click to mute"}
+                >
+                  <Music
+                    size={11}
+                    strokeWidth={1.8}
+                    fill={muted ? "currentColor" : "none"}
+                    className={muted ? "wavis-share-pulse" : "text-danger"}
+                    aria-hidden="true"
+                  />
+                </button>
+                <span className={`min-w-0 truncate ${p.tone}`}>{p.name}</span>
+                <span className="ml-auto hidden text-muted sm:inline">audio vol</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={volume}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    audioShares.onVolumeChange(p.id, Number(event.target.value));
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                  className="wavis-volume-slider w-10 shrink-0 sm:w-14"
+                  aria-label={`${p.name} audio volume`}
+                />
+                <span className="w-5 shrink-0 text-right text-muted">{muted ? 0 : volume}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
