@@ -527,15 +527,12 @@ function MainAppWindow({
                       <Camera size={9} strokeWidth={2} className="text-accent" aria-hidden="true" />
                     )}
                     {self.isSharing && (
-                      <>
-                        <Music size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
-                        <ScreenShare
-                          size={9}
-                          strokeWidth={2}
-                          className="wavis-share-pulse"
-                          aria-hidden="true"
-                        />
-                      </>
+                      <ScreenShare
+                        size={9}
+                        strokeWidth={2}
+                        className="wavis-share-pulse"
+                        aria-hidden="true"
+                      />
                     )}
                   </span>
                 </div>
