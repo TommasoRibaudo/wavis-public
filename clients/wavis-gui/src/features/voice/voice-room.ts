@@ -3295,21 +3295,21 @@ function dispatchMessage(raw: unknown): void {
             id: makeEventId(),
             timestamp: timestamp(),
             type: 'passthrough',
-            message: `set ${newPassthrough.label}`,
+            message: `Passthrough turned on for rooms ${newPassthrough.label}`,
           });
         } else if (wasActive && !isActive) {
           appendEvent({
             id: makeEventId(),
             timestamp: timestamp(),
             type: 'passthrough',
-            message: `cleared`,
+            message: `Passthrough turned off for rooms ${previousPassthrough.label}`,
           });
         } else if (pairChanged) {
           appendEvent({
             id: makeEventId(),
             timestamp: timestamp(),
             type: 'passthrough',
-            message: `set ${newPassthrough.label}`,
+            message: `Passthrough turned on for rooms ${newPassthrough.label}`,
           });
         }
       }
