@@ -294,7 +294,7 @@ describe('sub_room_state', () => {
     expect(getState().passthrough).toBeNull();
   });
 
-  it('appends passthrough set event when passthrough becomes active', async () => {
+  it('logs the relevant rooms when passthrough is turned on', async () => {
     await setupActiveSession();
     inject({
       type: 'sub_room_state',
@@ -303,10 +303,14 @@ describe('sub_room_state', () => {
       passthroughVolumePercent: 20,
     });
     const events = getState().events;
-    expect(events.some((e) => e.type === 'passthrough' && e.message.includes('set'))).toBe(true);
+    expect(
+      events.some(
+        (e) => e.type === 'passthrough' && e.message === 'Passthrough turned on for rooms 1 - 2',
+      ),
+    ).toBe(true);
   });
 
-  it('appends passthrough cleared event when passthrough is removed', async () => {
+  it('logs the prior relevant rooms when passthrough is turned off', async () => {
     await setupActiveSession();
     inject({
       type: 'sub_room_state',
@@ -316,7 +320,22 @@ describe('sub_room_state', () => {
     });
     inject({ type: 'sub_room_state', rooms: [], passthroughVolumePercent: 20 });
     const events = getState().events;
-    expect(events.some((e) => e.type === 'passthrough' && e.message === 'cleared')).toBe(true);
+    expect(
+      events.some(
+        (e) => e.type === 'passthrough' && e.message === 'Passthrough turned off for rooms 1 - 2',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not log a passthrough event for an unchanged room pair', async () => {
+    await setupActiveSession();
+    const passthrough = { sourceSubRoomId: 'sr-1', targetSubRoomId: 'sr-2', label: '1 - 2' };
+    inject({ type: 'sub_room_state', rooms: [], passthrough, passthroughVolumePercent: 20 });
+    const eventCount = getState().events.filter((event) => event.type === 'passthrough').length;
+
+    inject({ type: 'sub_room_state', rooms: [], passthrough, passthroughVolumePercent: 30 });
+
+    expect(getState().events.filter((event) => event.type === 'passthrough')).toHaveLength(eventCount);
   });
 
   it('clamps passthroughVolumePercent to 0–100', async () => {
