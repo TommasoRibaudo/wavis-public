@@ -143,10 +143,23 @@ const GRID_ROWS_CLASS = ["", "grid-rows-1", "grid-rows-2", "grid-rows-3", "grid-
 
 /** Auto-fit gallery layout (Discord/Zoom-style): pick the col/row count that
  * keeps tiles closest to square for however many streams are live, instead
- * of a hardcoded template per count. */
+ * of a hardcoded template per count. The panel itself is roughly square, so
+ * a plain sqrt(count) split would put 2 tiles side by side and make them
+ * tall and narrow — the wrong way round for landscape share/camera content
+ * — so 2 is special-cased to stack top/bottom instead. */
 function watchAllGridLayout(count: number) {
-  const cols = count <= 1 ? 1 : Math.min(Math.ceil(Math.sqrt(count)), 4);
-  const rows = count <= 1 ? 1 : Math.min(Math.ceil(count / cols), 4);
+  let cols: number;
+  let rows: number;
+  if (count <= 1) {
+    cols = 1;
+    rows = 1;
+  } else if (count === 2) {
+    cols = 1;
+    rows = 2;
+  } else {
+    cols = Math.min(Math.ceil(Math.sqrt(count)), 4);
+    rows = Math.min(Math.ceil(count / cols), 4);
+  }
   const lastRowCount = count - (rows - 1) * cols;
   return {
     gridClass: `${GRID_COLS_CLASS[cols]} ${GRID_ROWS_CLASS[rows]}`,
