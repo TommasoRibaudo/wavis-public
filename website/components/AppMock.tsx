@@ -768,6 +768,9 @@ function ParticipantMockRow({
           <Mic size={9} strokeWidth={2} className="text-muted" aria-hidden="true" />
         </span>
         <span className="inline-flex items-center gap-1">
+          {participant.hasAudioShare && (
+            <Music size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
+          )}
           {participant.hasShare && (
             <ScreenShare size={9} strokeWidth={2} className="wavis-share-pulse" aria-hidden="true" />
           )}
