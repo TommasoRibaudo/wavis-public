@@ -320,7 +320,7 @@ function ParticipantsPanelImpl({
                 <span className="text-wavis-text-secondary">({roomParticipants.length})</span>
               </div>
               <div className="shrink-0 flex items-center gap-1">
-                {passthroughButton}
+                {subRooms.length >= 2 && passthroughButton}
                 {roomActionButton}
               </div>
             </div>
