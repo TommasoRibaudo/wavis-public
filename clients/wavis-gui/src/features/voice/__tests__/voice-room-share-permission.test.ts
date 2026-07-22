@@ -38,9 +38,9 @@ describe('isShareEnabled', () => {
 });
 
 describe('shareButtonLabel', () => {
-  it('shows /stopshare when self is sharing', () => {
-    expect(shareButtonLabel(true, true, 'anyone', false)).toBe('/stopshare');
-    expect(shareButtonLabel(false, true, 'host_only', false)).toBe('/stopshare');
+  it('shows /stop-share when self is sharing', () => {
+    expect(shareButtonLabel(true, true, 'anyone', false)).toBe('/stop-share');
+    expect(shareButtonLabel(false, true, 'host_only', false)).toBe('/stop-share');
   });
 
   it('shows /share when sharing is enabled and not self-sharing', () => {

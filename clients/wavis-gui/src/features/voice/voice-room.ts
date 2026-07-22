@@ -621,7 +621,7 @@ export function shareButtonLabel(
   sharePermission: 'anyone' | 'host_only',
   selfIsHost: boolean,
 ): string {
-  if (selfSharing) return '/stopshare';
+  if (selfSharing) return '/stop-share';
   if (shareEnabled) return '/share';
   if (sharePermission === 'host_only' && !selfIsHost) return '/share (host only)';
   return '/share';

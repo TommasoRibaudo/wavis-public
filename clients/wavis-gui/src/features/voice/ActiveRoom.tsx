@@ -478,7 +478,7 @@ export default function ActiveRoom() {
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
   // True when video capture (or fallback getDisplayMedia) is active — does NOT include audio-only share.
-  // Used to decide whether the ◉ compact button and the expanded /stopshare button should be in stop-mode.
+  // Used to decide whether the ◉ compact button and the expanded /stop-share button should be in stop-mode.
   const isVideoOrFallbackSharing =
     !!roomState?.activeVideoShare || (selfSharing && !roomState?.activeAudioShare);
   const voiceRoomConnected = roomState
@@ -837,7 +837,7 @@ export default function ActiveRoom() {
     '/deafen',
     '/kick',
     '/share',
-    '/stopshare',
+    '/stop-share',
     '/revoke',
     '/stopall',
     '/shareperm',
@@ -918,7 +918,7 @@ export default function ActiveRoom() {
         '  /deafen                      — toggle deafen (mute + silence)',
         '  /kick <name>                 — kick a participant',
         '  /share                       — start screen share',
-        '  /stopshare                   — stop your share',
+        '  /stop-share                  — stop your share',
         "  /revoke <name>               — stop a participant's share",
         '  /stopall                     — stop all shares',
         '  /shareperm anyone|host       — set share permission',
@@ -953,7 +953,7 @@ export default function ActiveRoom() {
       } else {
         void handleStartShare();
       }
-    } else if (raw === '/stopshare') {
+    } else if (raw === '/stop-share') {
       stopShareAction();
     } else if (raw.startsWith('/revoke ')) {
       const name = raw.replace('/revoke ', '').trim();
@@ -1173,7 +1173,7 @@ export default function ActiveRoom() {
                   ? 'var(--wavis-danger)'
                   : 'var(--wavis-text-secondary)',
               }}
-              title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
+              title={isVideoOrFallbackSharing ? '/stop-share' : '/share'}
             >
               {isVideoOrFallbackSharing ? (
                 <ScreenShareOff size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -1198,7 +1198,7 @@ export default function ActiveRoom() {
               </button>
               <button
                 onClick={toggleSelfDeafen}
-                className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                className={`flex-1 py-0.5 px-1 text-xs text-center transition-colors border ${roomState.isDeafened ? 'border-wavis-danger bg-wavis-danger/8 text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
                 {roomState.isDeafened ? '/undeafen' : '/deafen'}
               </button>
@@ -1225,7 +1225,7 @@ export default function ActiveRoom() {
                       onClick={stopShareAction}
                       className="w-full py-0.5 px-1 text-xs text-center transition-colors border text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
                     >
-                      /stopshare
+                      /stop-share
                     </button>
                     {sharePickerLoading &&
                       shareLoadingNotice(
@@ -1306,7 +1306,7 @@ export default function ActiveRoom() {
                                       : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
                                 }`}
                               >
-                                {shareAudioOn ? '/audio on' : '/audio off'}
+                                {shareAudioOn ? '/audio-on' : '/audio-off'}
                               </button>
                             );
                           })()}
@@ -1362,7 +1362,7 @@ export default function ActiveRoom() {
                       void handleStartShare();
                     }}
                     disabled={shareDisabled}
-                    className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-purple text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg"
+                    className="w-full py-0.5 px-1 text-xs text-center transition-colors border disabled:opacity-40 disabled:cursor-not-allowed border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg"
                   >
                     {shareButtonLabel(shareEnabled, false, roomState.sharePermission, isHost)}
                   </button>
@@ -1417,7 +1417,7 @@ export default function ActiveRoom() {
                     setChannelSwitcherOpen(false);
                   }
                 }}
-                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-danger bg-wavis-danger/8 text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
                 {showSettings ? '/close-settings' : '/settings'}
               </button>
@@ -1717,7 +1717,7 @@ export default function ActiveRoom() {
 
       {/* Intermediate layout (md to 1038px) */}
       <div className="wavis-room-intermediate-layout flex-1 overflow-hidden">
-        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col min-h-0">
           {roomHeader}
           {mediaStatusBanners}
           {participantsPanel}
@@ -1728,7 +1728,7 @@ export default function ActiveRoom() {
 
       {/* Desktop layout (1039px+) */}
       <div className="hidden md:flex flex-1 overflow-hidden">
-        <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 border-r border-wavis-text-secondary flex flex-col min-h-0">
           {roomHeader}
           {mediaStatusBanners}
           {participantsPanel}
@@ -1753,7 +1753,9 @@ export default function ActiveRoom() {
             chatPanel
           )}
         </div>
-        <div className="w-80 border-l border-wavis-text-secondary flex flex-col">{logPanel}</div>
+        <div className="w-80 border-l border-wavis-text-secondary flex flex-col min-h-0">
+          {logPanel}
+        </div>
       </div>
       {showDriverPrompt && (
         <AudioDriverInstallPrompt
