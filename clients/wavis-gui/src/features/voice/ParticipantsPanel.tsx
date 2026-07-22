@@ -206,7 +206,7 @@ function ParticipantsPanelImpl({
         <button
           type="button"
           onClick={() => createSubRoom()}
-          className="shrink-0 text-sm font-bold py-1 px-2 border border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast cursor-pointer"
+          className="shrink-0 text-xs py-0.5 px-1 border border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast cursor-pointer"
         >
           /create-room
         </button>
@@ -282,7 +282,7 @@ function ParticipantsPanelImpl({
                         setPassthrough(subRoom.id);
                       }
                     }}
-                    className={`min-w-7 text-sm py-1 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
+                    className={`min-w-7 text-xs py-0.5 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
                   >
                     {passthroughLabel}
                   </button>
@@ -305,7 +305,7 @@ function ParticipantsPanelImpl({
                   event.stopPropagation();
                   leaveSubRoom();
                 }}
-                className="text-sm font-bold py-1 px-2 border border-wavis-danger bg-wavis-danger/8 text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg cursor-pointer"
+                className="text-xs py-0.5 px-1 border border-wavis-danger bg-wavis-danger/8 text-wavis-danger transition-colors hover:bg-wavis-danger hover:text-wavis-bg cursor-pointer"
               >
                 /leave
               </button>
@@ -315,7 +315,7 @@ function ParticipantsPanelImpl({
             // participant list only shows while you're not in any room at
             // all — see noRoomJoined — after which /join is always small,
             // even for an expanded room. Two call sites need different
-            // widths, hence a function rather than a single JSX value.
+            // sizing, hence a function rather than a single JSX value.
             const joinButton = (fullWidth: boolean) => (
               <button
                 type="button"
@@ -326,7 +326,7 @@ function ParticipantsPanelImpl({
                   event.stopPropagation();
                   joinSubRoom(subRoom.id);
                 }}
-                className={`${fullWidth ? 'w-full block ' : ''}text-sm font-bold py-1 px-2 border border-wavis-accent bg-wavis-accent/8 text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer`}
+                className={`border border-wavis-accent bg-wavis-accent/8 text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer ${fullWidth ? 'w-full block text-sm font-bold py-1 px-2' : 'text-xs py-0.5 px-1'}`}
               >
                 /join
               </button>
