@@ -1717,7 +1717,7 @@ export default function ActiveRoom() {
 
       {/* Intermediate layout (md to 1038px) */}
       <div className="wavis-room-intermediate-layout flex-1 overflow-hidden">
-        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 shrink-0 border-r border-wavis-text-secondary flex flex-col min-h-0">
           {roomHeader}
           {mediaStatusBanners}
           {participantsPanel}
@@ -1728,7 +1728,7 @@ export default function ActiveRoom() {
 
       {/* Desktop layout (1039px+) */}
       <div className="hidden md:flex flex-1 overflow-hidden">
-        <div className="w-80 border-r border-wavis-text-secondary flex flex-col">
+        <div className="w-80 border-r border-wavis-text-secondary flex flex-col min-h-0">
           {roomHeader}
           {mediaStatusBanners}
           {participantsPanel}
@@ -1753,7 +1753,9 @@ export default function ActiveRoom() {
             chatPanel
           )}
         </div>
-        <div className="w-80 border-l border-wavis-text-secondary flex flex-col">{logPanel}</div>
+        <div className="w-80 border-l border-wavis-text-secondary flex flex-col min-h-0">
+          {logPanel}
+        </div>
       </div>
       {showDriverPrompt && (
         <AudioDriverInstallPrompt
