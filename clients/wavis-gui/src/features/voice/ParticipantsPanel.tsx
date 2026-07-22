@@ -333,7 +333,7 @@ function ParticipantsPanelImpl({
             );
 
             return (
-              <div key={subRoom.id} className="border-b border-wavis-text-secondary">
+              <div key={subRoom.id} className="border-b border-wavis-text-secondary bg-wavis-panel">
                 <div
                   role="button"
                   tabIndex={0}
