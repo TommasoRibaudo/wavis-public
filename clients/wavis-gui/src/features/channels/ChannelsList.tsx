@@ -269,34 +269,40 @@ export default function ChannelsList() {
                 {channels.map((ch) => (
                   <div
                     key={ch.id}
-                    onClick={() => {
-                      void setLastChannel(ch.id, ch.name, ch.role);
-                      void navigate('/room', {
-                        state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
-                      });
-                    }}
-                    className="flex items-center justify-between gap-4 px-3 sm:px-4 py-3 bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors text-left mb-1 cursor-pointer"
+                    className="flex items-center bg-wavis-panel border border-wavis-text-secondary hover:border-wavis-accent transition-colors mb-1"
                   >
-                    <span className="min-w-0 truncate">{ch.name}</span>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {voiceStatus.get(ch.id)?.active && (
-                        <span className="text-wavis-accent text-xs flex items-center gap-1">
-                          <span>●</span>
-                          <span>{voiceStatus.get(ch.id)?.participantCount}</span>
-                        </span>
-                      )}
-                      <ChannelRoleBadge role={ch.role} variant="list" />
-                      {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void navigate(`/channel/${ch.id}`);
-                        }}
-                        className="border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
-                      >
-                        /channel settings
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      aria-label={`Open ${ch.name}`}
+                      onClick={() => {
+                        void setLastChannel(ch.id, ch.name, ch.role);
+                        void navigate('/room', {
+                          state: { channelId: ch.id, channelName: ch.name, channelRole: ch.role },
+                        });
+                      }}
+                      className="flex min-w-0 flex-1 items-center justify-between gap-4 px-3 sm:pl-4 py-3 text-left cursor-pointer"
+                    >
+                      <span className="min-w-0 truncate">{ch.name}</span>
+                      <span className="flex items-center gap-2 shrink-0">
+                        {voiceStatus.get(ch.id)?.active && (
+                          <span className="text-wavis-accent text-xs flex items-center gap-1">
+                            <span>●</span>
+                            <span>{voiceStatus.get(ch.id)?.participantCount}</span>
+                          </span>
+                        )}
+                        <ChannelRoleBadge role={ch.role} variant="list" />
+                        {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigate(`/channel/${ch.id}`);
+                      }}
+                      className="shrink-0 mr-3 sm:mr-4 border border-wavis-text-secondary text-wavis-text-secondary hover:bg-wavis-text-secondary hover:text-wavis-text-contrast transition-colors px-1 py-0.5 text-[0.625rem]"
+                    >
+                      /channel settings
+                    </button>
                   </div>
                 ))}
               </div>

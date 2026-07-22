@@ -302,17 +302,33 @@ export async function joinChannelViaUi(page, inviteCode) {
   // Bottom command bar's "/join" toggle — the only "/join" text on screen
   // until the form below opens.
   await page.getByText('/join', { exact: true }).click();
-  await page.getByLabel('Invite code', { exact: true }).fill(inviteCode);
-  // The form's own submit button now also reads "/join" and renders before
-  // the (still-present) toggle in DOM order — .first() is the submit
-  // button, not the toggle (re-clicking the toggle would close the form).
-  await page.getByText('/join', { exact: true }).first().click();
-  await page.getByText('joined!', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
+  const inviteInput = page.getByLabel('Invite code', { exact: true });
+  await inviteInput.fill(inviteCode);
+  // Submit from the focused field. This avoids relying on the DOM order of
+  // two identically-labelled /join buttons and follows the component's
+  // explicit Enter-key path on every WebDriver provider.
+  await inviteInput.press('Enter');
+  // The success message is intentionally visible for only 1.5s. On Linux,
+  // WebKitWebDriver can return from click() after that transient has already
+  // disappeared, so it is not a reliable completion signal. A successful
+  // join closes the form; failures leave it open with an error.
+  await inviteInput.waitFor({
+    state: 'hidden',
+    timeout: 10_000,
+  });
 }
 
 /** Clicks a channel row by name and waits for the voice room to open. */
 export async function enterChannelRoom(page, channelName) {
-  await page.getByText(channelName, { exact: true }).click();
+  const channelButton = page.getByRole('button', {
+    name: `Open ${channelName}`,
+    exact: true,
+  });
+  // WebKitWebDriver intermittently drops pointer activation even for a real
+  // button in this scrolling list. Focus + Enter exercises the button's
+  // native keyboard activation path and is stable on both providers.
+  await channelButton.focus();
+  await channelButton.press('Enter');
   await page.waitForURL(/\/room/, { timeout: 10_000 });
 }
 

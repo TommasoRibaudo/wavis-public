@@ -77,11 +77,30 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
 
     /* ── Direction A: GUI shares, peer observes ───────────────────── */
     await sendCliCommand(main, '/share');
-    await visibleText(main, '▲ Share Picker').waitFor({ state: 'visible', timeout: 10_000 });
+    // Linux/WebKitGTK opens the picker in its own Tauri window because
+    // getDisplayMedia() is unavailable there. Other platforms may render
+    // the inline picker in the main room, so drive whichever surface the
+    // application actually opened.
+    const picker =
+      process.platform === 'linux' ? await app.getPageByPath('/share-picker') : main;
+    await visibleText(picker, '▲ Share Picker').waitFor({ state: 'visible', timeout: 10_000 });
 
-    const listbox = main.getByRole('listbox', { name: 'Available sources' });
-    await listbox.getByRole('option').first().click();
-    await main.getByRole('button', { name: 'Share', exact: true }).click();
+    const listbox = picker.getByRole('listbox', { name: 'Available sources' });
+    await listbox.getByRole('option').first().click({ timeout: 15_000 });
+    const shareButton = picker.getByRole('button', { name: 'Share', exact: true });
+    if (process.platform === 'linux') {
+      // The picker closes itself from this handler. WebKitWebDriver's W3C
+      // pointer action otherwise waits to release the pointer in a window
+      // that no longer exists and strands the whole session. Schedule the
+      // same native button click after execute() has returned to the driver.
+      await shareButton.waitFor({ state: 'visible', timeout: 10_000 });
+      const element = await shareButton.resolveOne();
+      await picker.browser.execute((target) => {
+        setTimeout(() => target.click(), 0);
+      }, element);
+    } else {
+      await shareButton.click();
+    }
 
     await peer.waitForOutput(/"type":"share_started"/, 15_000);
     await expect(visibleIcon(main, 'you are sharing')).toBeVisible({ timeout: 10_000 });
