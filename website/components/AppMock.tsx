@@ -555,6 +555,16 @@ function MainAppWindow({
               ))}
             </div>
 
+            {!room.youConnected && (
+              <button
+                type="button"
+                onClick={roomActions.onJoinVoice}
+                className="mt-1.5 block w-full border border-accent/60 bg-accent/10 px-2 py-1 text-center text-[1.08em] font-bold text-accent shadow-black/30"
+              >
+                /join voice
+              </button>
+            )}
+
             <button
               type="button"
               onClick={roomActions.onWatchAll}
@@ -591,74 +601,64 @@ function MainAppWindow({
             )}
           </div>
 
-          <div className="space-y-1 p-2">
-            {room.youConnected ? (
-              <>
-                <div className="text-blue">[-] you</div>
-                <div className="grid grid-cols-2 gap-1">
-                  <button
-                    type="button"
-                    onClick={selfActions.toggleMute}
-                    className={commandButtonClass(self.isMuted ? "danger" : "neutral")}
-                  >
-                    {self.isMuted ? "/unmute" : "/mute"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={selfActions.toggleDeafen}
-                    className={commandButtonClass(self.isDeafened ? "danger" : "neutral")}
-                  >
-                    {self.isDeafened ? "/undeafen" : "/deafen"}
-                  </button>
-                </div>
+          {room.youConnected && (
+            <div className="space-y-1 p-2">
+              <div className="text-blue">[-] you</div>
+              <div className="grid grid-cols-2 gap-1">
                 <button
                   type="button"
-                  onClick={selfActions.toggleCamera}
-                  className={`block w-full ${commandButtonClass(self.cameraOn ? "accent" : "neutral")}`}
+                  onClick={selfActions.toggleMute}
+                  className={commandButtonClass(self.isMuted ? "danger" : "neutral")}
                 >
-                  {self.cameraOn ? "/camera-off" : "/camera-on"}
+                  {self.isMuted ? "/unmute" : "/mute"}
                 </button>
                 <button
                   type="button"
-                  onClick={selfActions.toggleSharing}
-                  className={`block w-full ${commandButtonClass(self.isSharing ? "danger-glow" : "purple")}`}
+                  onClick={selfActions.toggleDeafen}
+                  className={commandButtonClass(self.isDeafened ? "danger" : "neutral")}
                 >
-                  {self.isSharing ? "/stop-sharing" : "/share-screen"}
+                  {self.isDeafened ? "/undeafen" : "/deafen"}
                 </button>
-                {self.isSharing && (
-                  // Matches ActiveRoom.tsx's real quality <select>, which sits
-                  // directly under /stopshare rather than on a Watch All tile.
-                  <select
-                    value={self.shareQuality}
-                    onChange={(event) =>
-                      selfActions.setShareQuality(event.target.value as ShareQuality)
-                    }
-                    className="w-full cursor-pointer border border-muted bg-panel px-1 py-0.5 text-text"
-                    aria-label="Share quality"
-                  >
-                    {(Object.entries(SHARE_QUALITY_LABELS) as [ShareQuality, string][]).map(
-                      ([quality, label]) => (
-                        <option key={quality} value={quality}>
-                          {label}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                )}
-                <span className="block border border-muted px-1 py-0.5 text-center text-text">
-                  /settings
-                </span>
-              </>
-            ) : (
+              </div>
               <button
                 type="button"
-                onClick={roomActions.onJoinVoice}
-                className="block w-full border border-accent/60 bg-accent/10 px-2 py-1 text-center text-[1.08em] font-bold text-accent shadow-black/30"
+                onClick={selfActions.toggleCamera}
+                className={`block w-full ${commandButtonClass(self.cameraOn ? "accent" : "neutral")}`}
               >
-                /join voice
+                {self.cameraOn ? "/camera-off" : "/camera-on"}
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={selfActions.toggleSharing}
+                className={`block w-full ${commandButtonClass(self.isSharing ? "danger-glow" : "purple")}`}
+              >
+                {self.isSharing ? "/stop-sharing" : "/share-screen"}
+              </button>
+              {self.isSharing && (
+                // Matches ActiveRoom.tsx's real quality <select>, which sits
+                // directly under /stopshare rather than on a Watch All tile.
+                <select
+                  value={self.shareQuality}
+                  onChange={(event) =>
+                    selfActions.setShareQuality(event.target.value as ShareQuality)
+                  }
+                  className="w-full cursor-pointer border border-muted bg-panel px-1 py-0.5 text-text"
+                  aria-label="Share quality"
+                >
+                  {(Object.entries(SHARE_QUALITY_LABELS) as [ShareQuality, string][]).map(
+                    ([quality, label]) => (
+                      <option key={quality} value={quality}>
+                        {label}
+                      </option>
+                    ),
+                  )}
+                </select>
+              )}
+              <span className="block border border-muted px-1 py-0.5 text-center text-text">
+                /settings
+              </span>
+            </div>
+          )}
         </aside>
 
         {/* Chat/Logs/Videos — combined into one tabbed pane below sm (matches

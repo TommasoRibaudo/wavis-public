@@ -40,10 +40,28 @@ pub fn should_periodic_nudge(label: &str, visible: bool, minimized: bool) -> boo
     is_repaint_nudge_target(label) && visible && !minimized
 }
 
+/// Whether a repaint nudge should actually resize the window given its
+/// current maximized/fullscreen state. Windows treats an explicit
+/// `set_size` call as "go windowed at this size" — issuing one against a
+/// maximized or fullscreen window silently exits that state, and the
+/// window lands at whatever bounds it last remembered as "restored"
+/// instead of staying maximized/fullscreen. That's a far more disruptive,
+/// user-visible side effect than the paint-stall this nudge works around,
+/// so skip nudging in either state (#349).
+pub fn should_nudge_repaint(maximized: bool, fullscreen: bool) -> bool {
+    !maximized && !fullscreen
+}
+
 /// Force a WebView2/compositor redraw without a visible size change: grow
 /// the window by one physical pixel, then immediately restore its original
-/// size.
+/// size. No-op if the window is currently maximized or fullscreen — see
+/// `should_nudge_repaint`.
 pub fn nudge_repaint(window: &tauri::WebviewWindow) {
+    let maximized = window.is_maximized().unwrap_or(false);
+    let fullscreen = window.is_fullscreen().unwrap_or(false);
+    if !should_nudge_repaint(maximized, fullscreen) {
+        return;
+    }
     let Ok(size) = window.inner_size() else {
         return;
     };
@@ -128,5 +146,25 @@ mod tests {
     fn periodic_nudge_fires_for_visible_non_minimized_in_scope_windows() {
         assert!(should_periodic_nudge("watch-all", true, false));
         assert!(should_periodic_nudge("main", true, false));
+    }
+
+    #[test]
+    fn nudge_skips_maximized_windows() {
+        assert!(!should_nudge_repaint(true, false));
+    }
+
+    #[test]
+    fn nudge_skips_fullscreen_windows() {
+        assert!(!should_nudge_repaint(false, true));
+    }
+
+    #[test]
+    fn nudge_skips_windows_that_are_both_maximized_and_fullscreen() {
+        assert!(!should_nudge_repaint(true, true));
+    }
+
+    #[test]
+    fn nudge_proceeds_for_normal_windowed_state() {
+        assert!(should_nudge_repaint(false, false));
     }
 }
