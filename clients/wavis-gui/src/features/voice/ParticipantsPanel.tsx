@@ -282,7 +282,7 @@ function ParticipantsPanelImpl({
                         setPassthrough(subRoom.id);
                       }
                     }}
-                    className={`min-w-7 text-xs py-0.5 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
+                    className={`min-w-7 text-sm py-1 px-1 border transition-colors cursor-pointer disabled:cursor-not-allowed ${passthroughClassName}`}
                   >
                     {passthroughLabel}
                   </button>
