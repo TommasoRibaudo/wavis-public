@@ -92,7 +92,8 @@ export async function waitForVisibleDomElement(
               return false;
             if (expectedRole !== undefined && element.getAttribute('role') !== expectedRole)
               return false;
-            if (expectedText !== undefined && !element.textContent?.includes(expectedText)) return false;
+            if (expectedText !== undefined && !element.textContent?.includes(expectedText))
+              return false;
             const style = getComputedStyle(element);
             const rect = element.getBoundingClientRect();
             return (

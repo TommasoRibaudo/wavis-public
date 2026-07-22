@@ -43,8 +43,7 @@ async function activateWithoutPointerWait(page, locator) {
 }
 
 const CAMERA_SKIP_REASON =
-  process.platform === 'linux' &&
-  !readdirSync('/dev').some((entry) => /^video\d+$/.test(entry))
+  process.platform === 'linux' && !readdirSync('/dev').some((entry) => /^video\d+$/.test(entry))
     ? 'no Linux V4L2 camera device is available under /dev/video*'
     : false;
 

@@ -291,7 +291,9 @@ export default function ChannelsList() {
                           </span>
                         )}
                         <ChannelRoleBadge role={ch.role} variant="list" />
-                        {ch.role === 'owner' && <span className="text-wavis-accent text-xs">★</span>}
+                        {ch.role === 'owner' && (
+                          <span className="text-wavis-accent text-xs">★</span>
+                        )}
                       </span>
                     </button>
                     <button

@@ -69,9 +69,7 @@ async function switchToLogTab(page) {
 }
 
 async function switchToParticipantsTab(page) {
-  const participantsButton = page
-    .locator('button:visible', { hasText: /^VOICE \(\d+\)$/ })
-    .first();
+  const participantsButton = page.locator('button:visible', { hasText: /^VOICE \(\d+\)$/ }).first();
   if (await participantsButton.isVisible().catch(() => false)) {
     await participantsButton.click();
   }
