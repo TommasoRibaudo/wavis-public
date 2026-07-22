@@ -478,7 +478,7 @@ export default function ActiveRoom() {
   const isHost = roomState?.selfIsHost ?? false;
   const selfSharing = selfP?.isSharing ?? false;
   // True when video capture (or fallback getDisplayMedia) is active — does NOT include audio-only share.
-  // Used to decide whether the ◉ compact button and the expanded /stopshare button should be in stop-mode.
+  // Used to decide whether the ◉ compact button and the expanded /stop-share button should be in stop-mode.
   const isVideoOrFallbackSharing =
     !!roomState?.activeVideoShare || (selfSharing && !roomState?.activeAudioShare);
   const voiceRoomConnected = roomState
@@ -837,7 +837,7 @@ export default function ActiveRoom() {
     '/deafen',
     '/kick',
     '/share',
-    '/stopshare',
+    '/stop-share',
     '/revoke',
     '/stopall',
     '/shareperm',
@@ -918,7 +918,7 @@ export default function ActiveRoom() {
         '  /deafen                      — toggle deafen (mute + silence)',
         '  /kick <name>                 — kick a participant',
         '  /share                       — start screen share',
-        '  /stopshare                   — stop your share',
+        '  /stop-share                  — stop your share',
         "  /revoke <name>               — stop a participant's share",
         '  /stopall                     — stop all shares',
         '  /shareperm anyone|host       — set share permission',
@@ -953,7 +953,7 @@ export default function ActiveRoom() {
       } else {
         void handleStartShare();
       }
-    } else if (raw === '/stopshare') {
+    } else if (raw === '/stop-share') {
       stopShareAction();
     } else if (raw.startsWith('/revoke ')) {
       const name = raw.replace('/revoke ', '').trim();
@@ -1173,7 +1173,7 @@ export default function ActiveRoom() {
                   ? 'var(--wavis-danger)'
                   : 'var(--wavis-text-secondary)',
               }}
-              title={isVideoOrFallbackSharing ? '/stopshare' : '/share'}
+              title={isVideoOrFallbackSharing ? '/stop-share' : '/share'}
             >
               {isVideoOrFallbackSharing ? (
                 <ScreenShareOff size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -1225,7 +1225,7 @@ export default function ActiveRoom() {
                       onClick={stopShareAction}
                       className="w-full py-0.5 px-1 text-xs text-center transition-colors border text-wavis-danger border-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg"
                     >
-                      /stopshare
+                      /stop-share
                     </button>
                     {sharePickerLoading &&
                       shareLoadingNotice(
@@ -1306,7 +1306,7 @@ export default function ActiveRoom() {
                                       : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'
                                 }`}
                               >
-                                {shareAudioOn ? '/audio on' : '/audio off'}
+                                {shareAudioOn ? '/audio-on' : '/audio-off'}
                               </button>
                             );
                           })()}
