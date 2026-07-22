@@ -71,6 +71,7 @@ interface ActiveCameraEntry {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
   pollInterval: ReturnType<typeof setInterval> | null;
+  pollInFlight: boolean;
   lastSeq: number | null;
 }
 
@@ -122,6 +123,13 @@ interface MediaEventScreenShareStats {
   available_bandwidth_kbps: number;
 }
 
+interface MediaEventVideoReceiveStats {
+  type: 'video_receive_stats';
+  fps: number;
+  frame_width: number;
+  frame_height: number;
+}
+
 type MediaEventPayload =
   | MediaEventConnected
   | MediaEventFailed
@@ -129,7 +137,8 @@ type MediaEventPayload =
   | MediaEventAudioLevels
   | MediaEventLocalAudioLevel
   | MediaEventStats
-  | MediaEventScreenShareStats;
+  | MediaEventScreenShareStats
+  | MediaEventVideoReceiveStats;
 
 interface NativeAudioDevice {
   id: string;
@@ -249,6 +258,22 @@ export class NativeMediaModule {
             pliCount: payload.pli_count,
             nackCount: payload.nack_count,
             availableBandwidthKbps: payload.available_bandwidth_kbps,
+          });
+          break;
+
+        case 'video_receive_stats':
+          this.callbacks.onVideoReceiveStats?.({
+            fps: payload.fps,
+            frameWidth: payload.frame_width,
+            frameHeight: payload.frame_height,
+            framesDropped: 0,
+            packetLossPercent: 0,
+            jitterBufferDelayMs: 0,
+            freezeCount: 0,
+            freezeDurationMs: 0,
+            pliCount: 0,
+            nackCount: 0,
+            avgDecodeTimeMs: 0,
           });
           break;
       }
@@ -421,7 +446,9 @@ export class NativeMediaModule {
 
   /** Allow a participant's screen share audio into the native Rust mix. */
   attachScreenShareAudio(participantIdentity: string): void {
-    invoke('media_attach_screen_share_audio', { id: participantIdentity }).catch(() => {});
+    invoke('media_attach_screen_share_audio', { id: participantIdentity })
+      .then(() => console.log(LOG, `attached screen share audio: ${participantIdentity}`))
+      .catch(() => {});
   }
 
   /** Remove a participant's screen share audio from the native Rust mix. */
@@ -585,7 +612,7 @@ export class NativeMediaModule {
     this.localCameraTrack = track;
     entry.pollInterval = setInterval(() => {
       void this.pollLocalCameraFrame();
-    }, 66);
+    }, 100);
     void this.pollLocalCameraFrame();
     return { trackId: 'native-linux-camera' };
   }
@@ -668,6 +695,7 @@ export class NativeMediaModule {
   }
 
   private handleScreenShareAudioAvailable(identity: string): void {
+    console.log(LOG, `screen share audio available: ${identity}`);
     if (this.activeShares.has(identity)) {
       return;
     }
@@ -725,7 +753,7 @@ export class NativeMediaModule {
     }
     entry.pollInterval = setInterval(() => {
       void this.pollCameraFrame(identity);
-    }, 66);
+    }, 100);
     this.activeCameras.set(identity, entry);
 
     console.log(LOG, `camera available (native viewer path): ${identity}`);
@@ -743,36 +771,40 @@ export class NativeMediaModule {
   private async pollCameraFrame(identity: string): Promise<void> {
     if (this.disposed) return;
     const entry = this.activeCameras.get(identity);
-    if (!entry) return;
+    if (!entry || entry.pollInFlight) return;
 
-    let payload: PolledCameraFrame | null;
+    entry.pollInFlight = true;
     try {
-      payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
+      const payload = await invoke<PolledCameraFrame | null>('media_poll_camera_frame', {
         identity,
         lastSeq: entry.lastSeq,
       });
+      if (!payload || payload.seq === entry.lastSeq) return;
+      this.paintCameraPayload(entry, payload);
     } catch (err) {
       console.warn(LOG, `camera frame poll failed for ${identity}:`, err);
-      return;
+    } finally {
+      entry.pollInFlight = false;
     }
-    if (!payload || payload.seq === entry.lastSeq) return;
-    this.paintCameraPayload(entry, payload);
   }
 
   private async pollLocalCameraFrame(): Promise<void> {
     if (this.disposed || !this.localCamera) return;
     const entry = this.localCamera;
-    let payload: PolledCameraFrame | null;
+    if (entry.pollInFlight) return;
+
+    entry.pollInFlight = true;
     try {
-      payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
+      const payload = await invoke<PolledCameraFrame | null>('media_poll_local_camera_frame', {
         lastSeq: entry.lastSeq,
       });
+      if (!payload || payload.seq === entry.lastSeq) return;
+      this.paintCameraPayload(entry, payload);
     } catch (err) {
       console.warn(LOG, 'local camera frame poll failed:', err);
-      return;
+    } finally {
+      entry.pollInFlight = false;
     }
-    if (!payload || payload.seq === entry.lastSeq) return;
-    this.paintCameraPayload(entry, payload);
   }
 
   private createCameraCanvasEntry(_identity: string): ActiveCameraEntry | null {
@@ -796,6 +828,7 @@ export class NativeMediaModule {
       canvas,
       context,
       pollInterval: null,
+      pollInFlight: false,
       lastSeq: null,
     };
   }

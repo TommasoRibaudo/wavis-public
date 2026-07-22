@@ -277,6 +277,17 @@ impl RealLiveKitConnection {
     pub fn on_stats(&self, cb: Box<dyn Fn(f64, f64, f64) + Send + 'static>) {
         *self.stats_cb.lock().unwrap() = Some(cb);
     }
+
+    /// Schedule camera unpublish from a non-Tokio capture thread without
+    /// calling the synchronous trait bridge outside its required runtime.
+    pub fn schedule_camera_unpublish(self: &Arc<Self>) {
+        let conn = Arc::clone(self);
+        self.rt_handle.spawn(async move {
+            if let Err(error) = conn.unpublish_camera_video() {
+                warn!("scheduled camera unpublish failed: {error}");
+            }
+        });
+    }
 }
 
 impl Default for RealLiveKitConnection {

@@ -50,8 +50,12 @@ const DEFAULT_TIMEOUT_MS = process.platform === 'linux' ? 60_000 : 30_000;
 // actually marks the test outcome.
 class SkipSignal extends Error {}
 
-export function test(name, fn, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export function test(name, fn, { timeoutMs = DEFAULT_TIMEOUT_MS, skipReason = false } = {}) {
   nodeTest(name, { timeout: timeoutMs }, async (t) => {
+    if (skipReason) {
+      t.skip(skipReason);
+      return;
+    }
     const app = await launchApp();
     // A SECOND real, independently-driveable app instance — lazy (only
     // launched by specs that destructure it, e.g. two-instances.spec.mjs),

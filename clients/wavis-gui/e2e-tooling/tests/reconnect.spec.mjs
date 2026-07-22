@@ -68,6 +68,15 @@ async function switchToLogTab(page) {
   }
 }
 
+async function switchToParticipantsTab(page) {
+  const participantsButton = page
+    .locator('button:visible', { hasText: /^VOICE \(\d+\)$/ })
+    .first();
+  if (await participantsButton.isVisible().catch(() => false)) {
+    await participantsButton.click();
+  }
+}
+
 async function connectPeerWithTone(peer, { channelId, displayName }) {
   await joinVoiceAsPeer(peer, { channelId, displayName });
   await joinDefaultSubRoomAsPeer(peer);
@@ -154,6 +163,7 @@ test(
         displayName: PEER_DISPLAY_NAME,
       });
 
+      await switchToParticipantsTab(main);
       await expect(participantRow(main, PEER_DISPLAY_NAME)).toHaveCount(1);
       await expect
         .poll(

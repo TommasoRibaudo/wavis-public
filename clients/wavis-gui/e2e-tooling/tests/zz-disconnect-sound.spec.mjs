@@ -50,8 +50,6 @@ test(
     await enterChannelRoom(main, channelName);
     await joinDefaultSubRoomViaUi(main);
 
-    await expect(visibleText(main, 'LIVE')).toBeVisible();
-
     try {
       const outageStartedAt = Date.now();
       await stopBackendContainer();

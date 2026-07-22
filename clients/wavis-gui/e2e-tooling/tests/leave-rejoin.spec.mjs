@@ -51,14 +51,9 @@ test(
     // across a room leave (only the voice call ended, not the channel
     // membership), so re-using the invite code here would 409 "already a
     // member" — just re-enter the channel row directly, like a real user
-    // clicking it again. Unlike the first entry (enterChannelRoom, above),
-    // having visited this channel's room once already means its name now
-    // also appears in a persistent recents/switcher element outside the
-    // channels-list row, so an exact-text locator resolves to multiple
-    // elements here — `.first()` picks the real channels-list row (still
-    // first in DOM order).
-    await main.getByText(channelName, { exact: true }).first().click();
-    await main.waitForURL(/\/room/, { timeout: 10_000 });
+    // clicking it again. Reuse the semantic row + keyboard activation helper;
+    // WebKitGTK can drop the pointer activation after the first room teardown.
+    await enterChannelRoom(main, channelName);
     await joinDefaultSubRoomViaUi(main);
 
     // The bug: after leaving, a second join never recovers — machineState gets

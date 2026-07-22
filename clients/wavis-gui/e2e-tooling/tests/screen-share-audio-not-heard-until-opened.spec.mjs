@@ -63,13 +63,19 @@ import { connectTonePeer } from './livekit-tone-peer.mjs';
 // is genuine "never attached", not "debug logging was off". Distinct substring
 // from the `attachScreenShareAudio called for …` debug line so the negative
 // assertion can't match that instead.
-const ATTACH_LOG = /\[mac-share-audio\] attached screen share audio/;
+const ATTACH_LOG =
+  process.platform === 'linux'
+    ? /\[wavis:native-media\] attached screen share audio/
+    : /\[mac-share-audio\] attached screen share audio/;
 // livekit-media.ts:2700 — the peer's ScreenShareAudio *publication* reached
 // the GUI's SFU connection (gated by VITE_DEBUG_SHARE_TRACK_SUBSCRIPTION, baked
 // true in .env). This is the right arrival proof: the GUI deliberately
 // setSubscribed(false)s the deferred track, so TrackSubscribed is intentionally
 // suppressed pre-intent and is NOT a reliable "arrived" signal.
-const TRACK_ARRIVED_LOG = /\[diag\] TrackPublished[^\n]*source: screen_share_audio/;
+const TRACK_ARRIVED_LOG =
+  process.platform === 'linux'
+    ? /\[wavis:native-media\] screen share audio available/
+    : /\[diag\] TrackPublished[^\n]*source: screen_share_audio/;
 
 test(
   "a peer's screen-share audio stays silent until the user unmutes it",

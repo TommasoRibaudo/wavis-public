@@ -70,6 +70,57 @@ export function participantRow(page, displayName) {
   return page.getByRole('button', { name: new RegExp(escaped) }).and(page.locator(':visible'));
 }
 
+/**
+ * Polls high-churn participant UI without retaining a WebDriver element
+ * handle. Native media-level events can replace a ParticipantRow between a
+ * locator lookup and isDisplayed() on WebKitGTK, producing an endless stream
+ * of stale-element retries even though the desired DOM state is present.
+ */
+export async function waitForVisibleDomElement(
+  page,
+  { title, role, text, visible = true, timeoutMs = 10_000 },
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const found = await page.browser.execute(
+        ({ expectedTitle, expectedRole, expectedText }) => {
+          const selector = expectedTitle === undefined ? '*' : '[title]';
+          return [...document.querySelectorAll(selector)].some((element) => {
+            if (expectedTitle !== undefined && element.getAttribute('title') !== expectedTitle)
+              return false;
+            if (expectedRole !== undefined && element.getAttribute('role') !== expectedRole)
+              return false;
+            if (expectedText !== undefined && !element.textContent?.includes(expectedText)) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              Number(style.opacity) !== 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          });
+        },
+        { expectedTitle: title, expectedRole: role, expectedText: text },
+      );
+      if (found === visible) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const description = title
+    ? `title=${JSON.stringify(title)}`
+    : `role=${role}, text=${JSON.stringify(text)}`;
+  throw new Error(
+    `Timed out waiting for ${description} to be ${visible ? 'visible' : 'not visible'}` +
+      (lastError ? ` (last WebDriver error: ${lastError.message})` : ''),
+  );
+}
+
 /* ─── REST setup (backend-side identities/channels — no GUI involved) ──── */
 
 async function postJson(pathname, body, accessToken) {
@@ -406,11 +457,17 @@ const VISIBLE_CHAT_INPUT = 'input[placeholder="type message..."]:visible';
 export async function sendCliCommand(page, command) {
   let cli = page.locator(VISIBLE_CLI_INPUT).first();
   if (!(await cli.isVisible().catch(() => false))) {
-    await page
-      .locator('button:visible', { hasText: /^LOGS?\b/ })
-      .first()
-      .click();
+    const logTab = page.locator('button:visible', { hasText: /^LOGS?\b/ }).first();
+    await logTab.waitFor({ state: 'visible', timeout: 10_000 });
+    const element = await logTab.resolveOne();
+    // WebKitGTK can strand a W3C pointer/keyboard action when React replaces
+    // the responsive panel during the same event. Schedule the DOM activation
+    // after execute() returns so the driver has no in-flight input sequence.
+    await page.browser.execute((target) => {
+      setTimeout(() => target.click(), 0);
+    }, element);
     cli = page.locator(VISIBLE_CLI_INPUT).first();
+    await cli.waitFor({ state: 'visible', timeout: 10_000 });
   }
   await cli.fill(command);
   await cli.press('Enter');

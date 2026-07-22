@@ -455,10 +455,7 @@ fn main() {
     // with WebKitWebDriver for native port 4445 and make the app exit before
     // tauri-driver can create a session.
     #[cfg(feature = "e2e-webdriver")]
-    if matches!(
-        std::env::var("WDIO_EMBEDDED_SERVER").as_deref(),
-        Ok("true")
-    ) {
+    if matches!(std::env::var("WDIO_EMBEDDED_SERVER").as_deref(), Ok("true")) {
         builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     }
 

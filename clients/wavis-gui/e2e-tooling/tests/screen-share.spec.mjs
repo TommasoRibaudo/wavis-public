@@ -36,12 +36,31 @@ import {
   joinDefaultSubRoomViaUi,
   joinDefaultSubRoomAsPeer,
   visibleText,
-  visibleTitle,
   visibleIcon,
+  waitForVisibleDomElement,
   spawnPeer,
   joinVoiceAsPeer,
   sendCliCommand,
 } from './live-backend-helpers.mjs';
+
+async function showParticipants(page, displayName) {
+  await page.browser.execute(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const tab = [...document.querySelectorAll('button')].find(
+      (element) => isVisible(element) && /^VOICE \(\d+\)/.test(element.textContent ?? ''),
+    );
+    if (tab) setTimeout(() => tab.click(), 0);
+  });
+  await waitForVisibleDomElement(page, {
+    role: 'button',
+    text: displayName,
+    timeoutMs: 10_000,
+  });
+}
 
 test('GUI shares its screen and a peer observes start/stop; a peer signaling a share shows as waiting-for-stream', async ({
   app,
@@ -73,7 +92,11 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
     // Participant rows (and hence the "waiting for stream..." indicator in
     // Direction B) only render for sub-room members.
     await joinDefaultSubRoomAsPeer(peer);
-    await expect(visibleText(main, 'PeerBot')).toBeVisible({ timeout: 10_000 });
+    // The harness window is narrow enough to use ActiveRoom's mobile tabbed
+    // layout. Open the visible VOICE tab when present; otherwise a text-only
+    // check can false-positive on the transient "PeerBot joined" toast while
+    // every real participant row remains hidden behind the Chat tab.
+    await showParticipants(main, 'PeerBot');
 
     /* ── Direction A: GUI shares, peer observes ───────────────────── */
     await sendCliCommand(main, '/share');
@@ -90,9 +113,9 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
     const shareButton = picker.getByRole('button', { name: 'Share', exact: true });
     if (process.platform === 'linux') {
       // The picker closes itself from this handler. WebKitWebDriver's W3C
-      // pointer action otherwise waits to release the pointer in a window
-      // that no longer exists and strands the whole session. Schedule the
-      // same native button click after execute() has returned to the driver.
+      // pointer action otherwise tries to release the pointer in a window
+      // that no longer exists. Schedule the same DOM click after execute()
+      // has returned to the driver so there is no in-flight action sequence.
       await shareButton.waitFor({ state: 'visible', timeout: 10_000 });
       const element = await shareButton.resolveOne();
       await picker.browser.execute((target) => {
@@ -102,6 +125,18 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
       await shareButton.click();
     }
 
+    // Move WebKitWebDriver back to the main window before inspecting capture
+    // state. A single DOM query avoids role-locator scans racing React's
+    // rapidly updating room rows, while still preserving the native error
+    // text that the UI only displays for five seconds.
+    await main.url();
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const captureError = await main.browser.execute(() => {
+      const dismiss = document.querySelector('[aria-label="Dismiss screen share error"]');
+      return dismiss?.parentElement?.innerText?.trim() ?? null;
+    });
+    if (captureError) throw new Error(`GUI screen capture failed: ${captureError}`);
+
     await peer.waitForOutput(/"type":"share_started"/, 15_000);
     await expect(visibleIcon(main, 'you are sharing')).toBeVisible({ timeout: 10_000 });
 
@@ -110,17 +145,31 @@ test('GUI shares its screen and a peer observes start/stop; a peer signaling a s
     await expect(main.getByRole('img', { name: 'you are sharing' })).toHaveCount(0);
 
     /* ── Direction B: peer signals a share, GUI shows waiting indicator ── */
-    peer.send({ type: 'start_share' });
-    await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
+    // Use the current typed signaling form so the UI can classify this as a
+    // video slot even though the script peer intentionally publishes no
+    // media track.
+    peer.send({ type: 'start_share', shareType: 'window' });
+    await peer.waitForOutput(
+      /(?=.*"shareType":"window")(?=.*"type":"share_started")/,
+      10_000,
+    );
+    // sendCliCommand('/share' | '/stopshare') activates the mobile Log tab;
+    // return to VOICE before asserting a control inside ParticipantRow.
+    await showParticipants(main, 'PeerBot');
+    await waitForVisibleDomElement(main, { title: 'waiting for stream...', timeoutMs: 20_000 });
 
     // Wire tag is "stop-share" (hyphen), not "stop_share" — StopShare has an
     // explicit #[serde(rename = "stop-share")] overriding the enum's
     // rename_all = "snake_case" default (shared/src/signaling/mod.rs). The
     // wrong tag parses as an unknown message type and gets silently dropped.
     peer.send({ type: 'stop-share' });
-    await expect(main.getByTitle('waiting for stream...')).toHaveCount(0, { timeout: 10_000 });
+    await waitForVisibleDomElement(main, {
+      title: 'waiting for stream...',
+      visible: false,
+      timeoutMs: 10_000,
+    });
   } finally {
     await peer.close();
     await leaveRoomIfActive(main);
   }
-});
+}, { timeoutMs: process.platform === 'linux' ? 90_000 : 60_000 });

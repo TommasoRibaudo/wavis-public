@@ -21,6 +21,7 @@ import {
   joinDefaultSubRoomViaUi,
   joinDefaultSubRoomAsPeer,
   visibleText,
+  participantRow,
   spawnPeer,
   joinVoiceAsPeer,
 } from './live-backend-helpers.mjs';
@@ -55,7 +56,7 @@ test('the participant count and row update when a second participant joins and l
     await joinDefaultSubRoomAsPeer(peer);
 
     await expect(visibleText(main, /ROOM \d+\s*\(2\)/)).toBeVisible({ timeout: 10_000 });
-    await expect(visibleText(main, 'PeerBot')).toBeVisible();
+    await expect(participantRow(main, 'PeerBot')).toBeVisible();
 
     // The backend closes the leaving peer's own socket immediately after
     // processing Leave (ws_dispatch.rs), so the leaver never observes its
@@ -64,7 +65,7 @@ test('the participant count and row update when a second participant joins and l
     peer.send({ type: 'leave' });
 
     await expect(visibleText(main, /ROOM \d+\s*\(1\)/)).toBeVisible({ timeout: 10_000 });
-    await expect(visibleText(main, 'PeerBot')).toHaveCount(0);
+    await expect(participantRow(main, 'PeerBot')).toHaveCount(0);
   } finally {
     await peer.close();
   }

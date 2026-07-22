@@ -72,7 +72,7 @@ export async function launchApp({
   port,
   settleMs = 4000,
   keyringService = 'com.wavis.gui.e2e',
-  authStoreName,
+  authStoreName = 'wavis-auth-e2e-a.json',
 } = {}) {
   const driverProvider = process.platform === 'linux' ? 'external' : 'embedded';
   const embeddedPort = port ?? DEFAULT_EMBEDDED_PORT;
@@ -111,6 +111,7 @@ export async function launchApp({
   if (process.env.E2E_CAPTURE_BACKEND_LOGS === '1') {
     capabilities['wdio:tauriServiceOptions'].captureBackendLogs = true;
     capabilities['wdio:tauriServiceOptions'].backendLogLevel = 'debug';
+    capabilities['wdio:tauriServiceOptions'].logDir = path.join(__dirname, 'logs');
   }
   capabilities['wdio:tauriServiceOptions'].env = {
     // The embedded service overwrites this to "true" when it spawns the app.
@@ -164,11 +165,10 @@ export async function launchApp({
     WAVIS_KEYRING_SERVICE: keyringService,
     // Runtime override for the Tauri store filename (auth.ts's
     // resolveStoreName, read via src-tauri/src/main.rs's
-    // get_auth_store_name). Undefined `authStoreName` means "use the
-    // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
-    // (not simply omitting the key) so a value inherited from the
-    // caller's own shell environment can't leak through.
-    WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
+    // get_auth_store_name). Every harness launch uses an explicit store so
+    // the production single-instance plugin stays disabled; appB supplies a
+    // different name to keep the two real instances independent.
+    WAVIS_AUTH_STORE_NAME: authStoreName,
     // Runtime auto-open for the diagnostics window — separate from the
     // build-time VITE_DIAGNOSTICS flag (build-app.mjs) which only
     // controls whether it's bundled at all. multi-window.spec.mjs relies
@@ -176,7 +176,36 @@ export async function launchApp({
     WAVIS_DIAGNOSTICS_WINDOW: '1',
   };
 
-  const browser = await startWdioSession(capabilities);
+  let browser;
+  if (process.platform === 'linux') {
+    // @wdio/tauri-service@1.2.0's standalone init path auto-enables
+    // per-worker mode, then builds the driver environment from process.env
+    // instead of the capability-level `env` above. Temporarily mirror the
+    // launch variables into process.env until startWdioSession has spawned
+    // tauri-driver and the app. TMPDIR is port-keyed because the service
+    // derives its otherwise-fixed XDG profile as
+    // "$TMPDIR/tauri-worker-standalone".
+    const driverTempRoot = path.join(os.tmpdir(), 'wavis-e2e-driver', `port-${tauriDriverPort}`);
+    mkdirSync(driverTempRoot, { recursive: true });
+    const processEnvOverrides = {
+      ...capabilities['wdio:tauriServiceOptions'].env,
+      TMPDIR: driverTempRoot,
+    };
+    const previousEnv = new Map(
+      Object.keys(processEnvOverrides).map((key) => [key, process.env[key]]),
+    );
+    try {
+      Object.assign(process.env, processEnvOverrides);
+      browser = await startWdioSession(capabilities);
+    } finally {
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  } else {
+    browser = await startWdioSession(capabilities);
+  }
 
   await new Promise((resolve) => setTimeout(resolve, settleMs));
 
