@@ -189,15 +189,22 @@ function ParticipantsPanelImpl({
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="border-b border-wavis-text-secondary">
+      <div className="border-b border-wavis-text-secondary px-3 py-2 flex items-center gap-2">
         <button
           type="button"
           onClick={() => toggleSection('rooms')}
-          className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
+          className="flex-1 min-w-0 flex items-center gap-2 text-base font-bold text-left hover:opacity-80 cursor-pointer"
         >
           <span className="text-wavis-text-secondary">{roomsExpanded ? '[-]' : '[+]'}</span>
           <span>ROOMS</span>
-          <span className="text-wavis-text-secondary">({subRooms.length})</span>
+          <span className="text-wavis-text-secondary text-sm font-normal">({subRooms.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => createSubRoom()}
+          className="shrink-0 text-sm font-bold py-1 px-2 border border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text transition-colors hover:bg-wavis-text-secondary hover:text-wavis-text-contrast cursor-pointer"
+        >
+          /create-room
         </button>
       </div>
       {roomsExpanded && (
@@ -300,9 +307,11 @@ function ParticipantsPanelImpl({
               </button>
             );
             // /join lives in the header only while the room is collapsed (no
-            // participant list to sit under); once expanded it moves below
-            // the participant list instead — see the isExpanded block below.
-            const joinButton = (
+            // participant list to sit under); once expanded it moves below the
+            // participant list instead, full-width — see the isExpanded block
+            // below. Two call sites need different widths, hence a function
+            // rather than a single JSX value.
+            const joinButton = (fullWidth: boolean) => (
               <button
                 type="button"
                 onPointerDown={(event) => {
@@ -312,7 +321,7 @@ function ParticipantsPanelImpl({
                   event.stopPropagation();
                   joinSubRoom(subRoom.id);
                 }}
-                className="text-sm font-bold py-1 px-2 border border-wavis-accent bg-wavis-accent/8 text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer"
+                className={`${fullWidth ? 'w-full block ' : ''}text-sm font-bold py-1 px-2 border border-wavis-accent bg-wavis-accent/8 text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg cursor-pointer`}
               >
                 /join
               </button>
@@ -336,7 +345,7 @@ function ParticipantsPanelImpl({
                     event.preventDefault();
                     toggleSection(sectionKey);
                   }}
-                  className="w-full px-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
+                  className="w-full pl-5 pr-3 py-2 flex items-center gap-2 text-sm text-left hover:opacity-80 cursor-pointer"
                 >
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     <span className="text-wavis-text-secondary">{isExpanded ? '[-]' : '[+]'}</span>
@@ -345,14 +354,15 @@ function ParticipantsPanelImpl({
                   </div>
                   <div className="shrink-0 flex items-center gap-1">
                     {subRooms.length >= 2 &&
+                      !!joinedSubRoomId &&
                       (!isJoinedRoom || activePassthroughInvolvesRoom) &&
                       passthroughButton}
                     {isJoinedRoom && leaveButton}
-                    {!isJoinedRoom && !isExpanded && joinButton}
+                    {!isJoinedRoom && !isExpanded && joinButton(false)}
                   </div>
                 </div>
                 {isExpanded && (
-                  <div id={roomPanelId} className="px-3 py-2 space-y-1 text-sm">
+                  <div id={roomPanelId} className="pl-5 pr-3 py-2 space-y-1 text-sm">
                     {roomParticipants.length > 0 ? (
                       roomParticipants.map((participant) => (
                         <ParticipantRow
@@ -417,7 +427,7 @@ function ParticipantsPanelImpl({
                         {roomRemovalText && <div>{roomRemovalText}</div>}
                       </div>
                     )}
-                    {!isJoinedRoom && <div className="pt-2">{joinButton}</div>}
+                    {!isJoinedRoom && <div className="pt-2">{joinButton(true)}</div>}
                     {showEnabledWatchAll && (
                       <div className="pt-2 flex items-center gap-2">
                         <button
@@ -437,26 +447,16 @@ function ParticipantsPanelImpl({
               </div>
             );
           })}
-          <div className="px-3 py-2 flex items-center justify-between gap-2 border-b border-wavis-text-secondary">
-            <button
-              onClick={() => createSubRoom()}
-              className="text-sm font-bold py-1 px-2 border border-wavis-accent bg-wavis-accent/8 text-wavis-accent transition-colors hover:bg-wavis-accent hover:text-wavis-bg"
-            >
-              /create-room
-            </button>
-            {isHost && sharersCount > 1 ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={stopAllShares}
-                  className="text-wavis-danger text-xs border border-wavis-danger py-0.5 px-1 hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
-                >
-                  /stopall
-                </button>
-              </div>
-            ) : (
-              <span />
-            )}
-          </div>
+          {isHost && sharersCount > 1 && (
+            <div className="px-3 py-2 flex items-center justify-end gap-2 border-b border-wavis-text-secondary">
+              <button
+                onClick={stopAllShares}
+                className="text-wavis-danger text-xs border border-wavis-danger py-0.5 px-1 hover:bg-wavis-danger hover:text-wavis-bg transition-colors"
+              >
+                /stopall
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
