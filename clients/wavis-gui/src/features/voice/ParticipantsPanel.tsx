@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../../components/ui/tooltip';
 import type { VoicePassthroughState, VoiceSubRoom } from './participant-volume-model';
 import { ParticipantRow, type ParticipantRowViewModel } from './ParticipantRow';
@@ -152,6 +152,14 @@ function ParticipantsPanelImpl({
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   // Local mute state: key = participantId, value = pre-mute volume (presence means muted).
   const [localMicMuted, setLocalMicMuted] = useState<Map<string, number>>(new Map());
+  // Sticky across leaving/re-joining: once you've been in any room this
+  // session, /join goes back to being a small header-row action (like
+  // /leave) instead of the big first-time CTA below the participant list.
+  // Written during render (not an effect) since it only ever flips false ->
+  // true and must be current for this same render's JSX below.
+  const hasEverJoinedRoomRef = useRef(joinedSubRoomId !== null);
+  if (joinedSubRoomId !== null) hasEverJoinedRoomRef.current = true;
+  const hasEverJoinedRoom = hasEverJoinedRoomRef.current;
 
   const toggleLocalMicMute = useCallback((participantId: string, currentVolume: number) => {
     setLocalMicMuted((prev) => {
@@ -306,11 +314,13 @@ function ParticipantsPanelImpl({
                 /leave
               </button>
             );
-            // /join lives in the header only while the room is collapsed (no
-            // participant list to sit under); once expanded it moves below the
-            // participant list instead, full-width — see the isExpanded block
-            // below. Two call sites need different widths, hence a function
-            // rather than a single JSX value.
+            // Small (header, next to the room name) is the normal /join,
+            // matching /leave. The big full-width variant below the
+            // participant list is reserved for the very first join of the
+            // session — see hasEverJoinedRoom — after which /join is always
+            // small, even for an expanded room. Two call sites need
+            // different widths, hence a function rather than a single JSX
+            // value.
             const joinButton = (fullWidth: boolean) => (
               <button
                 type="button"
@@ -358,7 +368,7 @@ function ParticipantsPanelImpl({
                       (!isJoinedRoom || activePassthroughInvolvesRoom) &&
                       passthroughButton}
                     {isJoinedRoom && leaveButton}
-                    {!isJoinedRoom && !isExpanded && joinButton(false)}
+                    {!isJoinedRoom && (hasEverJoinedRoom || !isExpanded) && joinButton(false)}
                   </div>
                 </div>
                 {isExpanded && (
@@ -427,7 +437,9 @@ function ParticipantsPanelImpl({
                         {roomRemovalText && <div>{roomRemovalText}</div>}
                       </div>
                     )}
-                    {!isJoinedRoom && <div className="pt-2">{joinButton(true)}</div>}
+                    {!isJoinedRoom && !hasEverJoinedRoom && (
+                      <div className="pt-2">{joinButton(true)}</div>
+                    )}
                     {showEnabledWatchAll && (
                       <div className="pt-2 flex items-center gap-2">
                         <button
