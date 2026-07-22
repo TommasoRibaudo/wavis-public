@@ -1417,7 +1417,7 @@ export default function ActiveRoom() {
                     setChannelSwitcherOpen(false);
                   }
                 }}
-                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                className={`w-full border py-0.5 px-1 text-xs text-center transition-colors ${showSettings ? 'border-wavis-danger bg-wavis-danger/8 text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
               >
                 {showSettings ? '/close-settings' : '/settings'}
               </button>

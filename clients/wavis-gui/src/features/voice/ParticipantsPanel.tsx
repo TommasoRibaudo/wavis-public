@@ -443,7 +443,7 @@ function ParticipantsPanelImpl({
                             void toggleWatchAllWindow();
                           }}
                           title={`${watchAllOpen ? '/close-all' : '/watch-all'} (${watchAllHotkeyLabel})`}
-                          className={`w-full block text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-purple bg-wavis-purple/8 text-wavis-purple hover:bg-wavis-purple hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
+                          className={`w-full block text-sm font-bold py-1 px-2 border transition-colors cursor-pointer ${watchAllOpen ? 'border-wavis-danger bg-wavis-danger/8 text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg' : 'border-wavis-text-secondary bg-wavis-text-secondary/8 text-wavis-text hover:bg-wavis-text-secondary hover:text-wavis-text-contrast'}`}
                         >
                           {watchAllOpen ? '/close-all' : '/watch-all'}
                         </button>
