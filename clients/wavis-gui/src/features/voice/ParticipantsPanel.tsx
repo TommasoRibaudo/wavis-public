@@ -263,7 +263,7 @@ function ParticipantsPanelImpl({
               ? 'border-wavis-danger text-wavis-danger hover:bg-wavis-danger hover:text-wavis-bg'
               : passthroughDisabled
                 ? 'border-wavis-text-secondary text-wavis-text-secondary opacity-60 cursor-not-allowed'
-                : 'border-wavis-accent text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg';
+                : 'border-wavis-accent bg-wavis-accent/8 text-wavis-accent hover:bg-wavis-accent hover:text-wavis-bg';
             const passthroughButton = (
               <Tooltip>
                 <TooltipTrigger asChild>
