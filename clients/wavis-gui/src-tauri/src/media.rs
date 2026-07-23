@@ -133,6 +133,12 @@ pub enum MediaEvent {
         nack_count: u32,
         available_bandwidth_kbps: u32,
     },
+    #[cfg(target_os = "linux")]
+    VideoReceiveStats {
+        fps: f64,
+        frame_width: u32,
+        frame_height: u32,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -213,11 +219,18 @@ impl LocalCameraCapture {
         if let Ok(mut child_guard) = self.child.lock() {
             if let Some(child) = child_guard.as_mut() {
                 let _ = child.kill();
-                let _ = child.wait();
             }
         }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            // Do not block the Tauri IPC command while ffmpeg closes its pipe
+            // and the reader thread reaps the child. The active flag prevents
+            // the worker from unpublishing; the command does that on the
+            // Tokio media runtime after requesting this stop.
+            let _ = std::thread::Builder::new()
+                .name("wavis-camera-reaper".to_string())
+                .spawn(move || {
+                    let _ = thread.join();
+                });
         }
     }
 }
@@ -1650,14 +1663,14 @@ pub fn media_connect(
     }
 
     // Wire audio frame callback → emit audio levels to frontend. The frontend
-    // only renders the isSpeaking transition (see voiceIcon in
-    // ActiveRoom.tsx), so only emit when a participant's speaking state
-    // actually flips — this callback otherwise fires on every decoded audio
-    // frame (~50Hz per remote participant) and was flooding the webview with
-    // IPC events that each triggered a full room re-render for no visible
-    // change.
+    // applies a three-sample debounce before changing isSpeaking, so it must
+    // receive repeated samples while a participant remains above or below the
+    // threshold. Throttle the decoder's ~50Hz callbacks to ~20Hz instead of
+    // suppressing every sample after the raw speaking state first flips.
+    // voice-room.ts already avoids a UI render when the debounced state is
+    // unchanged.
     let app_levels = app.clone();
-    let last_speaking: Arc<Mutex<std::collections::HashMap<String, bool>>> =
+    let last_audio_emit: Arc<Mutex<std::collections::HashMap<String, (bool, std::time::Instant)>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
     conn.on_audio_frame(Box::new(move |identity, samples| {
         // Compute RMS from samples
@@ -1669,12 +1682,19 @@ pub fn media_connect(
         };
         let is_speaking = rms > 0.02;
 
+        let now = std::time::Instant::now();
         {
-            let mut last = last_speaking.lock().unwrap();
-            if last.get(identity) == Some(&is_speaking) {
+            let mut last = last_audio_emit.lock().unwrap();
+            if last
+                .get(identity)
+                .is_some_and(|(last_speaking, last_emit)| {
+                    *last_speaking == is_speaking
+                        && now.duration_since(*last_emit) < std::time::Duration::from_millis(50)
+                })
+            {
                 return;
             }
-            last.insert(identity.to_string(), is_speaking);
+            last.insert(identity.to_string(), (is_speaking, now));
         }
 
         let entry = AudioLevelEntry {
@@ -1712,6 +1732,7 @@ pub fn media_connect(
         let app_video = app.clone();
         let latest_remote_frames = Arc::clone(&state.remote_screen_share_frames);
         let remote_seq = Arc::clone(&state.remote_screen_share_seq);
+        let remote_video_stats = Arc::new(Mutex::new((std::time::Instant::now(), 0_u64)));
         conn.on_video_frame(Box::new(move |identity, rgba_data, width, height| {
             let seq = remote_seq.fetch_add(1, Ordering::Relaxed) + 1;
             let identity_owned = identity.to_string();
@@ -1739,6 +1760,33 @@ pub fn media_connect(
                     "screen_share_available",
                     ScreenShareAvailablePayload {
                         identity: identity_owned,
+                    },
+                );
+            }
+
+            let stats = {
+                let mut stats = match remote_video_stats.lock() {
+                    Ok(stats) => stats,
+                    Err(_) => return,
+                };
+                stats.1 = stats.1.saturating_add(1);
+                let elapsed = stats.0.elapsed();
+                if elapsed >= std::time::Duration::from_secs(1) {
+                    let fps = stats.1 as f64 / elapsed.as_secs_f64();
+                    stats.0 = std::time::Instant::now();
+                    stats.1 = 0;
+                    Some(fps)
+                } else {
+                    None
+                }
+            };
+            if let Some(fps) = stats {
+                let _ = app_video.emit(
+                    "media-event",
+                    MediaEvent::VideoReceiveStats {
+                        fps,
+                        frame_width: width,
+                        frame_height: height,
                     },
                 );
             }
@@ -2166,7 +2214,12 @@ pub fn media_camera_start(
                 let _ = child.wait();
             }
         }
-        let _ = conn_thread.unpublish_camera_video();
+        // Unexpected capture failure must remove the publication. A normal
+        // user-requested stop clears `active` and lets media_camera_stop do
+        // the unpublish on the Tokio media runtime instead of this OS thread.
+        if active_thread.load(Ordering::Relaxed) {
+            conn_thread.schedule_camera_unpublish();
+        }
     });
 
     *state
@@ -2205,12 +2258,17 @@ pub fn media_camera_stop(state: State<'_, MediaState>) -> Result<(), String> {
     };
     if let Some(capture) = capture {
         capture.stop();
-    } else if let Ok(lk_guard) = state.lk.lock() {
-        if let Some(conn) = lk_guard.as_ref() {
-            let _ = state
-                .runtime
-                .block_on(async { conn.unpublish_camera_video() });
-        }
+    }
+    let conn = state
+        .lk
+        .lock()
+        .map_err(|e| format!("lock: {e}"))?
+        .as_ref()
+        .cloned();
+    if let Some(conn) = conn {
+        let _ = state
+            .runtime
+            .block_on(async { conn.unpublish_camera_video() });
     }
     if let Ok(mut frame) = state.local_camera_frame.lock() {
         *frame = None;

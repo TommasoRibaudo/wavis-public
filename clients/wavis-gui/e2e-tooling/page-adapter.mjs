@@ -247,15 +247,36 @@ export class Locator {
     // at all. Callers that want a fast, deliberate failure (e.g. the "Not
     // you" detour link, tried opportunistically in a try/catch) pass an
     // explicit `{ timeout }` of their own, same as before.
-    await this.waitFor({ state: 'visible', timeout });
-    const el = await this.resolveOne();
-    return el.click(opts);
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const el = await this.resolveOne();
+      const visible = await el.isDisplayed().catch(() => false);
+      // Playwright waits for enabled as part of click actionability. This is
+      // significant for React-controlled submit buttons: fill() dispatches
+      // input events, but WebKit may not commit the enabling render before
+      // the immediately-following WebDriver command arrives.
+      const enabled = visible && (await el.isEnabled().catch(() => false));
+      if (enabled) return el.click(opts);
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Locator.click() timed out after ${timeout}ms waiting for a visible, enabled element (selector: ${this.selector})`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 
   async fill(text) {
     const el = await this.resolveOne();
     await el.clearValue().catch(() => {});
     return el.setValue(text);
+  }
+
+  async focus({ timeout = 5_000 } = {}) {
+    await this.waitFor({ state: 'visible', timeout });
+    const el = await this.resolveOne();
+    await this.page._focus();
+    return this.page.browser.execute((target) => target.focus(), el);
   }
 
   async press(key) {

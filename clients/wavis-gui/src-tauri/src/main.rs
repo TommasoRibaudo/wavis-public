@@ -448,11 +448,14 @@ fn main() {
 
     let mut builder = tauri::Builder::default();
 
-    // Embedded WebDriver server for the e2e-tooling harness (issue #297) —
-    // only compiled in when built with `--features e2e-webdriver`; absent
-    // from production and plain dev builds.
+    // Embedded WebDriver server for the e2e-tooling harness (issue #297).
+    // The Cargo feature makes the plugin available, while the runtime flag
+    // is set only by @wdio/tauri-service's embedded provider. Linux uses the
+    // external provider; registering the embedded server there would contend
+    // with WebKitWebDriver for native port 4445 and make the app exit before
+    // tauri-driver can create a session.
     #[cfg(feature = "e2e-webdriver")]
-    {
+    if matches!(std::env::var("WDIO_EMBEDDED_SERVER").as_deref(), Ok("true")) {
         builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     }
 

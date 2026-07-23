@@ -17,7 +17,7 @@
 // listWindows() require the separate tauri-plugin-wdio (execute/mock
 // bridge), which is out of scope for this ticket — basic element
 // interactions and window handles work without it.
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,11 +72,13 @@ export async function launchApp({
   port,
   settleMs = 4000,
   keyringService = 'com.wavis.gui.e2e',
-  authStoreName,
+  authStoreName = 'wavis-auth-e2e-a.json',
 } = {}) {
   const driverProvider = process.platform === 'linux' ? 'external' : 'embedded';
   const embeddedPort = port ?? DEFAULT_EMBEDDED_PORT;
   const tauriDriverPort = port ?? DEFAULT_TAURI_DRIVER_PORT;
+  const linuxDataDir = path.join(os.tmpdir(), 'wavis-e2e-xdg', `port-${tauriDriverPort}`);
+  if (process.platform === 'linux') mkdirSync(linuxDataDir, { recursive: true });
 
   // Everything below the `env` key on this options object — including `env`
   // itself and `embeddedPort` above it — is silently dropped by
@@ -106,7 +108,26 @@ export async function launchApp({
     startTimeout: 60_000,
   });
   capabilities['wdio:tauriServiceOptions'].embeddedPort = embeddedPort;
+  if (process.env.E2E_CAPTURE_BACKEND_LOGS === '1') {
+    capabilities['wdio:tauriServiceOptions'].captureBackendLogs = true;
+    capabilities['wdio:tauriServiceOptions'].backendLogLevel = 'debug';
+    capabilities['wdio:tauriServiceOptions'].logDir = path.join(__dirname, 'logs');
+  }
   capabilities['wdio:tauriServiceOptions'].env = {
+    // The embedded service overwrites this to "true" when it spawns the app.
+    // Keep external-provider launches from accidentally enabling the plugin
+    // through an inherited shell variable and colliding with WebKitWebDriver.
+    WDIO_EMBEDDED_SERVER: 'false',
+    // @wdio/tauri-service's standalone path otherwise assigns every Linux
+    // launch the same /tmp/tauri-worker-standalone XDG profile. Separate
+    // startWdioSession() calls (especially app + appB) then contend for the
+    // same WebKit storage and Tauri app-data files. Key the profile by the
+    // caller-selected driver port, just like the WebView2 profile below.
+    ...(process.platform === 'linux'
+      ? {
+          XDG_DATA_HOME: linuxDataDir,
+        }
+      : {}),
     // --disable-features=WebRtcHideLocalIpsWithMdns: test-launches only —
     // exposes real local IPs in ICE host candidates instead of Chromium's
     // default randomly-generated ".local" mDNS obfuscation. Needed because
@@ -144,11 +165,10 @@ export async function launchApp({
     WAVIS_KEYRING_SERVICE: keyringService,
     // Runtime override for the Tauri store filename (auth.ts's
     // resolveStoreName, read via src-tauri/src/main.rs's
-    // get_auth_store_name). Undefined `authStoreName` means "use the
-    // build-time VITE_AUTH_STORE_NAME baked into the exe" — explicit ''
-    // (not simply omitting the key) so a value inherited from the
-    // caller's own shell environment can't leak through.
-    WAVIS_AUTH_STORE_NAME: authStoreName ?? '',
+    // get_auth_store_name). Every harness launch uses an explicit store so
+    // the production single-instance plugin stays disabled; appB supplies a
+    // different name to keep the two real instances independent.
+    WAVIS_AUTH_STORE_NAME: authStoreName,
     // Runtime auto-open for the diagnostics window — separate from the
     // build-time VITE_DIAGNOSTICS flag (build-app.mjs) which only
     // controls whether it's bundled at all. multi-window.spec.mjs relies
@@ -156,7 +176,39 @@ export async function launchApp({
     WAVIS_DIAGNOSTICS_WINDOW: '1',
   };
 
-  const browser = await startWdioSession(capabilities);
+  let browser;
+  if (process.platform === 'linux') {
+    // @wdio/tauri-service@1.2.0's standalone init path auto-enables
+    // per-worker mode, then builds the driver environment from process.env
+    // instead of the capability-level `env` above. Temporarily mirror the
+    // launch variables into process.env until startWdioSession has spawned
+    // tauri-driver and the app. TMPDIR is port-keyed because the service
+    // derives its otherwise-fixed XDG profile as
+    // "$TMPDIR/tauri-worker-standalone".
+    // This temporary mutation is safe because fixtures.mjs awaits app and
+    // appB launches sequentially. Do not Promise.all() launchApp calls: their
+    // override windows would race and could silently swap instance settings.
+    const driverTempRoot = path.join(os.tmpdir(), 'wavis-e2e-driver', `port-${tauriDriverPort}`);
+    mkdirSync(driverTempRoot, { recursive: true });
+    const processEnvOverrides = {
+      ...capabilities['wdio:tauriServiceOptions'].env,
+      TMPDIR: driverTempRoot,
+    };
+    const previousEnv = new Map(
+      Object.keys(processEnvOverrides).map((key) => [key, process.env[key]]),
+    );
+    try {
+      Object.assign(process.env, processEnvOverrides);
+      browser = await startWdioSession(capabilities);
+    } finally {
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  } else {
+    browser = await startWdioSession(capabilities);
+  }
 
   await new Promise((resolve) => setTimeout(resolve, settleMs));
 
@@ -172,16 +224,24 @@ export async function launchApp({
     return handles.map((handle) => new Page(browser, handle, focus));
   };
 
-  const getPageByPath = async (pathSubstring) => {
-    const all = await pages();
-    for (const p of all) {
-      const url = await p.url();
-      if (url.includes(pathSubstring)) return p;
+  const getPageByPath = async (pathSubstring, { timeout = 10_000 } = {}) => {
+    const deadline = Date.now() + timeout;
+    let urls = [];
+    for (;;) {
+      const all = await pages();
+      urls = [];
+      for (const p of all) {
+        const url = await p.url();
+        urls.push(url);
+        if (url.includes(pathSubstring)) return p;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `No open window with URL containing "${pathSubstring}" after ${timeout}ms. Open: ${urls.join(', ') || '(none)'}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    const urls = await Promise.all(all.map((p) => p.url()));
-    throw new Error(
-      `No open window with URL containing "${pathSubstring}". Open: ${urls.join(', ') || '(none)'}`,
-    );
   };
 
   const page = async () => {

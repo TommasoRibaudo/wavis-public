@@ -11,7 +11,7 @@
 // is expected and does not affect this test, which is only about whether
 // the video-share and audio-share badges render independently, both while
 // connected and after the observing window rejoins the room.
-import { test, expect } from './fixtures.mjs';
+import { test } from './fixtures.mjs';
 import {
   SERVER_URL,
   waitForBackendHealth,
@@ -22,7 +22,7 @@ import {
   leaveRoomIfActive,
   joinDefaultSubRoomViaUi,
   joinDefaultSubRoomAsPeer,
-  visibleTitle,
+  waitForVisibleDomElement,
   spawnPeer,
   joinVoiceAsPeer,
 } from './live-backend-helpers.mjs';
@@ -74,14 +74,16 @@ test(
       // "SharerBot joined" line, which a plain text match ambiguously matches
       // too. The participant row itself is the only `role="button"` element
       // with this name (see ParticipantRow.tsx).
-      await expect(
-        main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
-      ).toBeVisible({ timeout: 10_000 });
+      await waitForVisibleDomElement(main, {
+        role: 'button',
+        text: 'SharerBot',
+        timeoutMs: 10_000,
+      });
 
       /* ── Peer starts a video-type share (no companion audio) ──────────── */
       peer.send({ type: 'start_share', shareType: 'window' });
       await peer.waitForOutput(/"type":"share_started"/, 15_000);
-      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
+      await waitForVisibleDomElement(main, { title: 'waiting for stream...', timeoutMs: 10_000 });
 
       /* ── Peer ALSO starts an independent standalone audio-only share ──── */
       peer.send({ type: 'start_share', shareType: 'audio_only' });
@@ -96,8 +98,8 @@ test(
 
       // Both badges must render at once: the audio-only start must not hide
       // the still-active video share, and vice versa.
-      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
-      await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
+      await waitForVisibleDomElement(main, { title: 'waiting for stream...', timeoutMs: 10_000 });
+      await waitForVisibleDomElement(main, { title: 'mute audio share', timeoutMs: 10_000 });
 
       /* ── Regression: leave and rejoin — only the ShareState snapshot ──── */
       // now describes the sharer's state to the rejoining client. Both slots
@@ -113,12 +115,14 @@ test(
       // "SharerBot joined" line, which a plain text match ambiguously matches
       // too. The participant row itself is the only `role="button"` element
       // with this name (see ParticipantRow.tsx).
-      await expect(
-        main.getByRole('button', { name: /SharerBot/ }).and(main.locator(':visible')),
-      ).toBeVisible({ timeout: 10_000 });
+      await waitForVisibleDomElement(main, {
+        role: 'button',
+        text: 'SharerBot',
+        timeoutMs: 10_000,
+      });
 
-      await expect(visibleTitle(main, 'waiting for stream...')).toBeVisible({ timeout: 10_000 });
-      await expect(visibleTitle(main, 'mute audio share')).toBeVisible({ timeout: 10_000 });
+      await waitForVisibleDomElement(main, { title: 'waiting for stream...', timeoutMs: 10_000 });
+      await waitForVisibleDomElement(main, { title: 'mute audio share', timeoutMs: 10_000 });
     } finally {
       await peer.close();
       await leaveRoomIfActive(main);

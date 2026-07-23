@@ -36,6 +36,7 @@ import {
   joinDefaultSubRoomAsPeer,
   visibleText,
   participantRow,
+  switchToParticipantsTab,
   spawnPeer,
   joinVoiceAsPeer,
   waitForMediaToken,
@@ -154,6 +155,10 @@ test(
         displayName: PEER_DISPLAY_NAME,
       });
 
+      await switchToParticipantsTab(main, {
+        displayName: PEER_DISPLAY_NAME,
+        timeoutMs: 15_000,
+      });
       await expect(participantRow(main, PEER_DISPLAY_NAME)).toHaveCount(1);
       await expect
         .poll(

@@ -37,7 +37,12 @@ function lazyApp(options) {
 // that need more headroom pass it as a third argument instead of Playwright's
 // mid-test `test.setTimeout(ms)` (node:test's timeout is fixed at
 // declaration time, not adjustable from inside the test body).
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Linux's external tauri-driver + WebKitWebDriver startup is materially
+// slower than the embedded Windows provider and can legitimately consume
+// most of 30s before the test body reaches its first assertion. Timing out
+// during launch starts the next node:test case while the first driver's
+// teardown is still killing processes, which creates a suite-wide cascade.
+const DEFAULT_TIMEOUT_MS = process.platform === 'linux' ? 60_000 : 30_000;
 
 // Thrown by `skip()` purely to unwind the test body right at the call site
 // (matching Playwright's test.skip(condition) control flow) — caught below
@@ -45,8 +50,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // actually marks the test outcome.
 class SkipSignal extends Error {}
 
-export function test(name, fn, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export function test(name, fn, { timeoutMs = DEFAULT_TIMEOUT_MS, skipReason = false } = {}) {
   nodeTest(name, { timeout: timeoutMs }, async (t) => {
+    if (skipReason) {
+      t.skip(skipReason);
+      return;
+    }
     const app = await launchApp();
     // A SECOND real, independently-driveable app instance — lazy (only
     // launched by specs that destructure it, e.g. two-instances.spec.mjs),

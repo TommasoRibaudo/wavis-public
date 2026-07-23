@@ -488,6 +488,30 @@ describe('VoiceRoom screen share audio delegation', () => {
     leaveRoom();
   });
 
+  it('restores concurrent video and audio-only slots from a late-join share_state', async () => {
+    resetAll();
+    await driveToActive();
+
+    messageHandler!({
+      type: 'share_state',
+      participantIds: ['peer-2'],
+      activeShares: [
+        { participantId: 'peer-2', shareType: 'window' },
+        { participantId: 'peer-2', shareType: 'audio_only' },
+      ],
+    });
+    await tick();
+
+    expect(getState().participants.find((p) => p.id === 'peer-2')).toMatchObject({
+      isSharing: true,
+      shareType: 'window',
+    });
+    expect(getState().audioOnlySharers.has('peer-2')).toBe(true);
+    expect(getState().confirmedAudioOnlySharers.has('peer-2')).toBe(true);
+
+    leaveRoom();
+  });
+
   it('keeps LiveKit-inferred audio-only state when share_started arrives without shareType', async () => {
     resetAll();
     await driveToActive();
