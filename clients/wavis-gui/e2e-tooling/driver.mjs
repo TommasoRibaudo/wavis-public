@@ -185,6 +185,9 @@ export async function launchApp({
     // tauri-driver and the app. TMPDIR is port-keyed because the service
     // derives its otherwise-fixed XDG profile as
     // "$TMPDIR/tauri-worker-standalone".
+    // This temporary mutation is safe because fixtures.mjs awaits app and
+    // appB launches sequentially. Do not Promise.all() launchApp calls: their
+    // override windows would race and could silently swap instance settings.
     const driverTempRoot = path.join(os.tmpdir(), 'wavis-e2e-driver', `port-${tauriDriverPort}`);
     mkdirSync(driverTempRoot, { recursive: true });
     const processEnvOverrides = {

@@ -36,6 +36,7 @@ import {
   joinDefaultSubRoomAsPeer,
   visibleText,
   participantRow,
+  switchToParticipantsTab,
   spawnPeer,
   joinVoiceAsPeer,
   waitForMediaToken,
@@ -65,13 +66,6 @@ async function switchToLogTab(page) {
   const logsButton = page.locator('button:visible', { hasText: /^LOGS?\b/ }).first();
   if (await logsButton.isVisible().catch(() => false)) {
     await logsButton.click();
-  }
-}
-
-async function switchToParticipantsTab(page) {
-  const participantsButton = page.locator('button:visible', { hasText: /^VOICE \(\d+\)$/ }).first();
-  if (await participantsButton.isVisible().catch(() => false)) {
-    await participantsButton.click();
   }
 }
 
@@ -161,7 +155,10 @@ test(
         displayName: PEER_DISPLAY_NAME,
       });
 
-      await switchToParticipantsTab(main);
+      await switchToParticipantsTab(main, {
+        displayName: PEER_DISPLAY_NAME,
+        timeoutMs: 15_000,
+      });
       await expect(participantRow(main, PEER_DISPLAY_NAME)).toHaveCount(1);
       await expect
         .poll(

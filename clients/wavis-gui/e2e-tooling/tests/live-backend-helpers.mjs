@@ -122,6 +122,41 @@ export async function waitForVisibleDomElement(
   );
 }
 
+/**
+ * Opens ActiveRoom's visible VOICE tab when the responsive layout has one.
+ * The direct, deferred DOM activation avoids WebKitGTK retaining an input
+ * action against the tab node while React replaces the responsive panel.
+ * When displayName is supplied, the participant-row wait also proves that
+ * the transition completed without retaining a high-churn element handle.
+ */
+export async function switchToParticipantsTab(page, { displayName, timeoutMs = 10_000 } = {}) {
+  await page.browser.execute(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity) !== 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
+    const tab = [...document.querySelectorAll('button')].find(
+      (element) => isVisible(element) && /^VOICE \(\d+\)/.test(element.textContent ?? ''),
+    );
+    if (tab) setTimeout(() => tab.click(), 0);
+  });
+
+  if (displayName !== undefined) {
+    await waitForVisibleDomElement(page, {
+      role: 'button',
+      text: displayName,
+      timeoutMs,
+    });
+  }
+}
+
 /* ─── REST setup (backend-side identities/channels — no GUI involved) ──── */
 
 async function postJson(pathname, body, accessToken) {

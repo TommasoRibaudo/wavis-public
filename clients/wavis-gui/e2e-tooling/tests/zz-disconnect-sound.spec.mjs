@@ -49,6 +49,10 @@ test(
     await joinChannelViaUi(main, invite.code);
     await enterChannelRoom(main, channelName);
     await joinDefaultSubRoomViaUi(main);
+    // No transient LIVE-badge precondition here: a responsive tier can hide
+    // that badge even after the real sub-room join succeeds. The helper's
+    // joined-room assertion plus the outage/reconnect behavior below provide
+    // the relevant proof that the client was connected before shutdown.
 
     try {
       const outageStartedAt = Date.now();

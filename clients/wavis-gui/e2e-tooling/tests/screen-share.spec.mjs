@@ -38,34 +38,11 @@ import {
   visibleText,
   visibleIcon,
   waitForVisibleDomElement,
+  switchToParticipantsTab,
   spawnPeer,
   joinVoiceAsPeer,
   sendCliCommand,
 } from './live-backend-helpers.mjs';
-
-async function showParticipants(page, displayName) {
-  await page.browser.execute(() => {
-    const isVisible = (element) => {
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return (
-        style.display !== 'none' &&
-        style.visibility !== 'hidden' &&
-        rect.width > 0 &&
-        rect.height > 0
-      );
-    };
-    const tab = [...document.querySelectorAll('button')].find(
-      (element) => isVisible(element) && /^VOICE \(\d+\)/.test(element.textContent ?? ''),
-    );
-    if (tab) setTimeout(() => tab.click(), 0);
-  });
-  await waitForVisibleDomElement(page, {
-    role: 'button',
-    text: displayName,
-    timeoutMs: 10_000,
-  });
-}
 
 test(
   'GUI shares its screen and a peer observes start/stop; a peer signaling a share shows as waiting-for-stream',
@@ -101,7 +78,7 @@ test(
       // layout. Open the visible VOICE tab when present; otherwise a text-only
       // check can false-positive on the transient "PeerBot joined" toast while
       // every real participant row remains hidden behind the Chat tab.
-      await showParticipants(main, 'PeerBot');
+      await switchToParticipantsTab(main, { displayName: 'PeerBot' });
 
       /* ── Direction A: GUI shares, peer observes ───────────────────── */
       await sendCliCommand(main, '/share');
@@ -156,7 +133,7 @@ test(
       await peer.waitForOutput(/(?=.*"shareType":"window")(?=.*"type":"share_started")/, 10_000);
       // sendCliCommand('/share' | '/stopshare') activates the mobile Log tab;
       // return to VOICE before asserting a control inside ParticipantRow.
-      await showParticipants(main, 'PeerBot');
+      await switchToParticipantsTab(main, { displayName: 'PeerBot' });
       await waitForVisibleDomElement(main, { title: 'waiting for stream...', timeoutMs: 20_000 });
 
       // Wire tag is "stop-share" (hyphen), not "stop_share" — StopShare has an
