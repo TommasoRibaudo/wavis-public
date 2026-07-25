@@ -14,6 +14,10 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alert_email
 }
 
+# NOTE: RDS alarm/dashboard dimensions must use aws_db_instance.postgres.identifier
+# ("wavis-dev-ecs-postgres"), NOT .id. Under AWS provider v5, .id returns the
+# DbiResourceId ("db-CEKDFR..."), which matches no AWS/RDS metric — alarms built on
+# it sit in INSUFFICIENT_DATA forever and look like coverage while providing none.
 resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   alarm_name          = "${local.project}-${local.env}-rds-cpu"
   alarm_description   = "RDS CPU utilization above 80 percent for 15 minutes"
@@ -26,7 +30,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   evaluation_periods  = 3
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.postgres.id
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
@@ -47,7 +51,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_memory" {
   evaluation_periods  = 2
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.postgres.id
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
@@ -68,7 +72,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
   evaluation_periods  = 2
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.postgres.id
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
@@ -92,7 +96,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_credit_balance_low" {
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.postgres.id
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
@@ -336,7 +340,7 @@ resource "aws_cloudwatch_dashboard" "dev_ops" {
           region  = var.region
           stacked = false
           metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.postgres.id],
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.postgres.identifier],
             [".", "DatabaseConnections", ".", "."],
             [".", "FreeableMemory", ".", "."],
             [".", "CPUCreditBalance", ".", "."]
