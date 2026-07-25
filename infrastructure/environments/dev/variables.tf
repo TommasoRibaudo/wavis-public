@@ -79,12 +79,6 @@ variable "cf_origin_secret" {
   default     = ""
 }
 
-variable "waf_web_acl_arn" {
-  description = "ARN of the WAF WebACL attached to the CloudFront distribution. Get from: aws cloudfront get-distribution --id E1234567890EXAMPLE --query 'Distribution.DistributionConfig.WebACLId' --output text"
-  type        = string
-  default     = ""
-}
-
 # ---------- Private Subnet Migration ----------
 
 variable "enable_private_subnet" {

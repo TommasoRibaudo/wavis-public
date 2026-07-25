@@ -37,12 +37,12 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
 
 resource "aws_cloudwatch_metric_alarm" "rds_memory" {
   alarm_name          = "${local.project}-${local.env}-rds-memory"
-  alarm_description   = "RDS freeable memory below 256 MB for 10 minutes"
+  alarm_description   = "RDS freeable memory below ${floor(var.rds_freeable_memory_alarm_threshold_bytes / 1048576)} MB for 10 minutes"
   namespace           = "AWS/RDS"
   metric_name         = "FreeableMemory"
   statistic           = "Average"
   comparison_operator = "LessThanThreshold"
-  threshold           = 268435456
+  threshold           = var.rds_freeable_memory_alarm_threshold_bytes
   period              = 300
   evaluation_periods  = 2
 
@@ -66,6 +66,30 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
   threshold           = var.rds_connections_alarm_threshold
   period              = 300
   evaluation_periods  = 2
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.postgres.id
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_cpu_credit_balance_low" {
+  count = var.rds_cpu_credit_alarm_enabled ? 1 : 0
+
+  alarm_name          = "${local.project}-${local.env}-rds-cpu-credits-low"
+  alarm_description   = "RDS CPU credit balance is low on the burstable dev database"
+  namespace           = "AWS/RDS"
+  metric_name         = "CPUCreditBalance"
+  statistic           = "Minimum"
+  comparison_operator = "LessThanThreshold"
+  threshold           = var.rds_cpu_credit_balance_alarm_threshold
+  period              = 300
+  evaluation_periods  = 2
+  treat_missing_data  = "notBreaching"
 
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.postgres.id
@@ -314,7 +338,8 @@ resource "aws_cloudwatch_dashboard" "dev_ops" {
           metrics = [
             ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.postgres.id],
             [".", "DatabaseConnections", ".", "."],
-            [".", "FreeableMemory", ".", "."]
+            [".", "FreeableMemory", ".", "."],
+            [".", "CPUCreditBalance", ".", "."]
           ]
         }
       },

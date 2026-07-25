@@ -46,18 +46,11 @@ output "health_check" {
 }
 
 # ---------- CloudFront ----------
-
-output "cloudfront_distribution_id" {
-  value = aws_cloudfront_distribution.wavis.id
-}
-
-output "cloudfront_domain" {
-  value = aws_cloudfront_distribution.wavis.domain_name
-}
-
-output "cloudfront_url" {
-  value = "wss://${aws_cloudfront_distribution.wavis.domain_name}/ws"
-}
+#
+# The legacy backend distribution and its outputs were removed along with
+# cloudfront.tf once the distribution was deleted in AWS. The website
+# distribution is unrelated and still lives in website.tf, which exposes its
+# own website_cloudfront_id / website_url outputs.
 
 # ---------- SSM ----------
 

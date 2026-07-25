@@ -127,7 +127,34 @@ terraform apply
 - The current baseline uses a single NAT gateway for simplicity and cost control. If cross-AZ egress resilience becomes important, split to one NAT per AZ later.
 - `livekit_public_hostname` is stored as config so the backend can reference the
   existing dev LiveKit endpoint while LiveKit remains on EC2.
-- The default LiveKit prod host size is `c7a.large`, reflecting the benchmark result that `t3.small` saturates CPU under the target 5-room profile.
+- The `livekit_instance_type` default of `c7a.large` is the **prod** sizing, from the
+  benchmark result that `t3.small` saturates CPU under the target 5-room profile. It does
+  **not** describe dev: with `create_livekit_instance = false`, `livekit.tf` reads the host
+  through a `data "aws_instance"` and never applies an instance type, so the variable is
+  inert and the running dev host is a `t3.small` no matter what tfvars says. Do not read
+  that value as the dev host size.
+- RDS runs `db.t4g.micro` in dev, sized from 14 days of CloudWatch (3.5% avg / 6.0% max CPU,
+  8 peak connections against an app pool hardcoded to 10 in `wavis-backend/src/main.rs`).
+  Two consequences worth knowing before touching it: the burst baseline is 10% rather than
+  the 20% a `db.t4g.small` gets — watched by the `rds-cpu-credits-low` alarm — and
+  `FreeableMemory` settles near ~300 MB, which is why
+  `rds_freeable_memory_alarm_threshold_bytes` is 128 MB in dev instead of the 256 MB default.
+  Both alarm thresholds must be re-checked if the class changes again.
+- The backend task is `256` CPU units / `1024` MiB. The CPU number has ~6x headroom against
+  the observed peak. The memory number is deliberately **not** halved to match: Argon2id is
+  configured at 64 MiB per hash (`wavis-backend/src/auth/phrase.rs`) and hashing is not
+  wrapped in `spawn_blocking`, so concurrent register/recover requests each hold 64 MiB.
+  512 MiB would OOM at roughly 7 concurrent hashes. Idle memory utilization cannot see that
+  cliff, and the smoke test's two registrations are sequential — so neither is evidence that
+  the memory is safe to trim.
+- Changing `backend_task_cpu` or `backend_task_memory` registers a new task definition
+  revision but does **not** roll it out — `aws_ecs_service.backend` has
+  `ignore_changes = [task_definition]`. Follow the apply with an explicit
+  `aws ecs update-service --force-new-deployment --task-definition <new-arn>`, or wait for
+  the next CI deploy, which resolves the family to its latest ACTIVE revision.
+- Dev runs with `enable_waf = false`. `waf.tf` recreates a Terraform-managed WebACL when it
+  is flipped back on, and the `precondition` in `cloudfront.tf` refuses to plan a
+  prod/production environment with WAF disabled.
 - `ops_dashboard_name` exposes the shared CloudWatch dashboard for day-to-day
   ECS, edge, RDS, and LiveKit checks.
 - `aws_ecs_service.backend` ignores `task_definition` drift so CI can own

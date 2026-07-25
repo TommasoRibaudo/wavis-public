@@ -17,12 +17,16 @@ resource "aws_cloudfront_distribution" "backend" {
     # price_class is left to AWS's CloudFront security plan defaults; we don't
     # want Terraform fighting with console-side adjustments to it.
     #
-    # web_acl_id is also ignored until the CloudFront pricing-plan subscription
-    # lapses (end of May 2026). While the subscription is active, AWS rejects
-    # any UpdateDistribution call that removes the WebACL, even if the call
-    # only intends to change tags. See doc/aws_costs/JUNE WAF DETACH.md for
-    # the planned removal of this ignore once the subscription expires.
-    ignore_changes = [price_class, web_acl_id]
+    # web_acl_id used to be ignored here too: while the CloudFront security
+    # pricing-plan subscription was active, AWS rejected any UpdateDistribution
+    # call that removed the WebACL, even one that only meant to change tags.
+    # The subscription has since lapsed and the dev WebACL was detached
+    # out-of-band (CLI, deliberately outside any apply -- an AWS-side rejection
+    # mid-apply is what aborted a previous maintenance pass). Terraform now owns
+    # the attribute again, so enable_waf is the single switch: false leaves the
+    # distribution unprotected in dev, true recreates the WebACL from waf.tf.
+    # See docs/dev-cost-maintenance-runbook.md.
+    ignore_changes = [price_class]
 
     # Prod safety net: refuse to plan if someone tries to deploy a prod
     # environment with WAF disabled. Add new prod-like environment names

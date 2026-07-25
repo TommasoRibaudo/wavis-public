@@ -20,7 +20,7 @@ historical reference and any remaining cleanup work.
 ## What Terraform Manages
 
 - **EC2 instance** — imported from console, `prevent_destroy` lifecycle
-- **CloudFront distribution** — imported from console, `prevent_destroy` lifecycle
+- ~~**CloudFront distribution**~~ — deleted. See "Legacy CloudFront distribution" below.
 - **Security group** — hardened: HTTPS/443 from anywhere, SSH disabled (SSM), backend 3000 restricted to CF prefix list, LiveKit ports
 - **IAM role + instance profile** — SSM parameter read, Session Manager, CloudWatch Agent
 - **SSM Parameter Store** — all secrets and config
@@ -63,9 +63,6 @@ terraform init
 
 # Import the EC2 instance
 terraform import aws_instance.wavis i-0123456789abcdef0
-
-# Import the CloudFront distribution
-terraform import aws_cloudfront_distribution.wavis E1234567890EXAMPLE
 ```
 
 ### 4. Verify — No Destructive Changes
@@ -157,9 +154,18 @@ terraform apply
 
 The `cf_origin_secret` variable is marked `sensitive` and should never be committed to `terraform.tfvars`. Always pass it via environment variable or `-var` flag.
 
-### CloudFront Changes
+### Legacy CloudFront distribution
 
-CloudFront config changes (cache behaviors, origin settings, etc.) are now made in `cloudfront.tf` and applied via `terraform apply`. No more console edits.
+`cloudfront.tf` and its outputs are gone. The distribution it managed
+(`dt2nm86rf5ksq.cloudfront.net`) was disabled during the ECS migration but never
+actually deleted, and it kept billing a `CreatedByCloudFront-*` WebACL
+(`Global-WebACLV2` + `Global-RuleV2`, ~$8.3/mo) while pointing at a terminated
+backend and a stale LiveKit IP. It has now been deleted in AWS and removed from
+this config so a later `apply` here cannot recreate it. See
+`docs/dev-cost-maintenance-runbook.md`.
+
+The current dev edge is the `dev-ecs` distribution. The **website** distribution
+in `website.tf` is unrelated and still live.
 
 If you need to update the origin verification secret:
 1. Generate a new secret

@@ -7,7 +7,14 @@ public_subnet_cidrs      = ["10.40.0.0/24", "10.40.1.0/24"]
 private_app_subnet_cidrs = ["10.40.10.0/24", "10.40.11.0/24"]
 private_data_subnet_cidrs = ["10.40.20.0/24", "10.40.21.0/24"]
 
-rds_instance_class        = "db.t4g.small"
+# ---------- RDS ----------
+# Sized from 14 days of CloudWatch: 3.5% avg / 6.0% max CPU, 1.4 avg / 8 max
+# connections. max_connections on db.t4g.micro is ~112 against an app pool
+# hardcoded to 10 (wavis-backend/src/main.rs:203), so connections are not the
+# binding constraint. CPU sits well under the 10% burst baseline, so credits
+# accrue rather than drain -- watched by the rds-cpu-credits-low alarm.
+rds_instance_class        = "db.t4g.micro"
+rds_identifier_suffix     = "ecs"
 rds_allocated_storage     = 20
 rds_max_allocated_storage = 100
 rds_backup_retention      = 14
@@ -20,7 +27,20 @@ backend_enable_https           = true
 route53_hosted_zone_id         = "Z1234567890EXAMPLE"
 backend_public_hostname        = "api.wavis.app"
 backend_certificate_arn        = ""
-backend_task_cpu               = 512
+
+# ---------- Backend task sizing ----------
+# CPU: observed peak is ~7.7% of 0.5 vCPU, i.e. ~15% of 0.25 vCPU -- roughly 6x
+# headroom at 256 units. That peak already includes registration work, since the
+# post-deploy smoke test registers against live dev.
+#
+# Memory stays at 1024 MiB deliberately. Argon2id is configured at 64 MiB per
+# hash (wavis-backend/src/auth/phrase.rs) and hashing is not wrapped in
+# spawn_blocking, so N concurrent register/recover requests hold N x 64 MiB. A
+# 512 MiB task would OOM at roughly 7 concurrent hashes; 1024 MiB holds ~15.
+# Idle memory metrics cannot see that cliff -- it only appears under a
+# registration burst -- and the delta is well under $1/mo. Do not trim this on
+# the strength of idle utilization alone.
+backend_task_cpu               = 256
 backend_task_memory            = 1024
 backend_desired_count          = 1
 backend_autoscaling_enabled    = false
@@ -29,10 +49,36 @@ backend_autoscaling_max_capacity = 2
 backend_memory_alarm_threshold = 85
 backend_target_5xx_alarm_threshold = 5
 backend_image_tag              = "latest"
+backend_alb_idle_timeout_seconds = 3600
+
+# ---------- LiveKit ----------
+# Dev reuses the existing LiveKit host rather than letting Terraform create one.
+# While create_livekit_instance = false, livekit.tf reads the instance through a
+# data source and livekit_instance_type is inert -- the running dev host is a
+# t3.small regardless of what is set here. The c7a.large default in variables.tf
+# is the prod sizing, from the benchmark where t3.small saturates CPU under the
+# 5-room target profile.
 livekit_public_hostname        = "livekit.wavis.app"
-create_livekit_instance        = true
-existing_livekit_instance_id   = ""
+create_livekit_instance        = false
+existing_livekit_instance_id   = "i-xxxxxxxxxxxxxxxxx"
 livekit_ami_id                 = "ami-0123456789abcdef0"
 livekit_instance_type          = "c7a.large"
+livekit_extra_alarms_enabled   = true
+
+# ---------- Alarms ----------
 cloudfront_5xx_error_rate_alarm_threshold = 1
 rds_connections_alarm_threshold            = 40
+# 128 MB, not the 256 MB default. Freeable memory on a 1 GB db.t4g.micro settles
+# near ~300 MB once shared_buffers halves with instance memory, so the 256 MB
+# threshold would sit permanently in ALARM -- and ok_actions is wired, so every
+# flap emails.
+rds_freeable_memory_alarm_threshold_bytes  = 134217728
+rds_cpu_credit_alarm_enabled               = true
+rds_cpu_credit_balance_alarm_threshold     = 30
+
+# ---------- WAF ----------
+# Dev runs without a WAF (~$8.3/mo in Global-WebACLV2 + Global-RuleV2 charges).
+# waf.tf recreates a Terraform-managed WebACL on enable_waf = true, and the
+# precondition in cloudfront.tf refuses to plan a prod environment with it off.
+enable_waf                     = false
+cloudfront_web_acl_id          = ""
