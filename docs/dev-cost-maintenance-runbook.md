@@ -163,20 +163,48 @@ Causes ~5–10 min of dev backend downtime while RDS modifies. Do not run it whi
 a deploy is in flight. Merging the infrastructure PR will not itself trigger one —
 the `deploy-dev-ec2.yml` `paths:` filter does not include `infrastructure/**`.
 
-## 6. Repoint the ECS service
+## 6. Roll out the new task size — via CI, never by hand
 
 `aws_ecs_service.backend` has `ignore_changes = [task_definition]`, so the new
 revision is registered but idle. Terraform will not roll it out.
 
+> ⛔ **Do not `update-service --task-definition` onto the Terraform-registered
+> revision.** It would deploy the wrong container image.
+>
+> `ecs_backend.tf` hardcodes `image = "<repo>:${var.backend_image_tag}"`, which
+> defaults to `latest`. CI pushes **only** SHA tags
+> (`docker push "$ECR_REPOSITORY:$IMAGE_SHA_TAG"` — no `latest`), so nothing
+> refreshes that tag. Every Terraform-registered revision therefore points at a
+> stale `:latest` — when this was first run it was three and a half months old.
+> It pulls fine and passes health checks, so the regression is silent.
+>
+> This is exactly what `ignore_changes = [task_definition]` is protecting: CI
+> owns rollouts, Terraform owns shape.
+
+Trigger the **Deploy Dev ECS** workflow (`workflow_dispatch`). It runs
+`describe-task-definition --task-definition "$ECS_SERVICE"`; the family name
+equals the service name, so it resolves to the latest ACTIVE revision — the one
+Terraform just registered, carrying the new `cpu`/`memory` — then overrides only
+the image with a freshly built SHA and registers the next revision. You get the
+new task size and current code in one rollout.
+
+Leave the Terraform-registered revision ACTIVE; CI needs it as the base.
+
+If a rollout has already been pointed at a Terraform revision by mistake, cancel
+it by repointing at the last CI-built revision, then run the workflow:
+
 ```bash
 aws ecs update-service --cluster wavis-dev-backend --service wavis-dev-backend \
-  --task-definition <new-arn> --force-new-deployment --region us-east-2
+  --task-definition wavis-dev-backend:<last-ci-revision> --region us-east-2
 ```
 
-The next CI deploy would also pick it up — the workflow runs
-`describe-task-definition --task-definition "$ECS_SERVICE"`, and the family name
-equals the service name, so it resolves to the latest ACTIVE revision and carries
-`cpu`/`memory` forward. Don't rely on that for a change you want verified now.
+Confirm which revisions are CI-built by their image tag — a SHA means CI, `latest`
+means Terraform:
+
+```bash
+aws ecs describe-task-definition --task-definition wavis-dev-backend:<n> \
+  --region us-east-2 --query "taskDefinition.containerDefinitions[0].image"
+```
 
 ## 7. Verify
 

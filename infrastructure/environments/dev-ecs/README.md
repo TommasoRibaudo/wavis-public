@@ -149,9 +149,14 @@ terraform apply
   the memory is safe to trim.
 - Changing `backend_task_cpu` or `backend_task_memory` registers a new task definition
   revision but does **not** roll it out — `aws_ecs_service.backend` has
-  `ignore_changes = [task_definition]`. Follow the apply with an explicit
-  `aws ecs update-service --force-new-deployment --task-definition <new-arn>`, or wait for
-  the next CI deploy, which resolves the family to its latest ACTIVE revision.
+  `ignore_changes = [task_definition]`. **Roll it out with the CI deploy workflow, not
+  with `aws ecs update-service --task-definition`.** Terraform's task definition
+  hardcodes `image = "<repo>:${var.backend_image_tag}"` (default `latest`), and CI
+  pushes only SHA tags — nothing ever refreshes `latest`, so every Terraform-registered
+  revision points at a stale image that still pulls and still passes health checks.
+  Pointing the service at one silently downgrades the backend. The CI workflow resolves
+  the family to its latest ACTIVE revision (picking up the new cpu/memory) and overrides
+  the image with a fresh build, which is the only path that gets both right.
 - Dev runs with `enable_waf = false`. `waf.tf` recreates a Terraform-managed WebACL when it
   is flipped back on, and the `precondition` in `cloudfront.tf` refuses to plan a
   prod/production environment with WAF disabled.
