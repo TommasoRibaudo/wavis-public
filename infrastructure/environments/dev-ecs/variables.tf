@@ -278,6 +278,24 @@ variable "rds_connections_alarm_threshold" {
   default     = 40
 }
 
+variable "rds_freeable_memory_alarm_threshold_bytes" {
+  description = "FreeableMemory threshold in bytes for the RDS memory alarm. Scale this with the instance class: 256 MB is 12.5% of a 2 GB db.t4g.small but 25% of a 1 GB db.t4g.micro, where steady-state freeable sits near 300 MB and the alarm would fire permanently."
+  type        = number
+  default     = 268435456
+}
+
+variable "rds_cpu_credit_alarm_enabled" {
+  description = "Enable the RDS CPUCreditBalance alarm. Matters on burstable classes: dropping db.t4g.small to db.t4g.micro halves the baseline CPU allowance, and credit depletion is otherwise invisible until latency degrades."
+  type        = bool
+  default     = true
+}
+
+variable "rds_cpu_credit_balance_alarm_threshold" {
+  description = "CPUCreditBalance threshold for the RDS burstable-credit alarm"
+  type        = number
+  default     = 30
+}
+
 variable "cloudfront_web_acl_id" {
   description = "WAF WebACL ARN attached to the CloudFront distribution (required by CF Security Bundle pricing plan)"
   type        = string

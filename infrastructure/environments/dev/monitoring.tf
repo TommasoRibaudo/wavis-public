@@ -110,7 +110,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   evaluation_periods  = 3
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.wavis[0].id
+    DBInstanceIdentifier = aws_db_instance.wavis[0].identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts[0].arn]
@@ -133,7 +133,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_memory" {
   evaluation_periods  = 2
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.wavis[0].id
+    DBInstanceIdentifier = aws_db_instance.wavis[0].identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts[0].arn]
@@ -156,7 +156,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
   evaluation_periods  = 2
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.wavis[0].id
+    DBInstanceIdentifier = aws_db_instance.wavis[0].identifier
   }
 
   alarm_actions = [aws_sns_topic.alerts[0].arn]
