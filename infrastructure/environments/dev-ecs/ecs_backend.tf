@@ -211,6 +211,11 @@ resource "aws_ecs_service" "backend" {
   enable_execute_command            = true
   wait_for_steady_state             = false
 
+  # Without this, the service's own tags don't propagate to the Fargate tasks
+  # it runs -- task-hour cost then shows up untagged in Cost Explorer even
+  # though the service/cluster/task-def are all tagged. See doc/aws_costs/.
+  propagate_tags = "SERVICE"
+
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
     weight            = 1
