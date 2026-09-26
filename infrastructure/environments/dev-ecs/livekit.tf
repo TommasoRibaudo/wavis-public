@@ -143,6 +143,10 @@ resource "aws_instance" "livekit" {
     volume_type           = "gp3"
     delete_on_termination = true
     encrypted             = true
+
+    tags = merge(local.tags, {
+      Name = "${local.project}-livekit-${local.env}-root"
+    })
   }
 
   metadata_options {
