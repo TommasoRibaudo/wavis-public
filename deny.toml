@@ -20,9 +20,6 @@ ignore = [
     "RUSTSEC-2025-0052",
     # `bincode` unmaintained — webrtc-dtls → webrtc v0.11 transitive dep.
     "RUSTSEC-2025-0141",
-    # `failure` deprecated + unsound — transitive dep, not used directly.
-    "RUSTSEC-2020-0036",
-    "RUSTSEC-2019-0036",
     # `rand` <0.9.3 unsoundness requires a custom logger that calls rand::rng/thread_rng.
     # Remaining transitive rand 0.8 users are pinned by upstream crates such as webrtc/sqlx.
     "RUSTSEC-2026-0097",
